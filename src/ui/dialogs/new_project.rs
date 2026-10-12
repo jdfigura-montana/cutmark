@@ -40,6 +40,13 @@ impl Default for NewProjectDialog {
 }
 
 impl NewProjectDialog {
+    /// Creates the dialog already open, e.g. from the start screen or Project > New.
+    pub fn new_open() -> Self {
+        NewProjectDialog {
+            open: true,
+            ..NewProjectDialog::default()
+        }
+    }
     /// Shows the dialog; returns the created Editor when the user succeeds.
     pub fn show(&mut self, ctx: &egui::Context) -> Option<Editor> {
         let mut created = None;

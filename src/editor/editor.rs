@@ -103,7 +103,18 @@ pub fn remove_recent(root: &Path) {
 mod tests {
     use super::*;
     use std::path::Path;
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    /// Serializes tests that read/write the real recent list, which race otherwise.
+    static RECENT_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Locks the recent list for the calling test.
+    fn lock_recent() -> std::sync::MutexGuard<'static, ()> {
+        RECENT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     /// Cleans the temp project root out of the real recent list after a test.
     fn drop_from_recent(root: &Path) {
@@ -112,6 +123,7 @@ mod tests {
 
     #[test]
     fn create_makes_layout_saves_and_is_not_dirty() {
+        let _recent = lock_recent();
         let parent = tempdir().unwrap();
         let editor = Editor::create("My Project", parent.path(), 48_000, BitDepth::Int24).unwrap();
         assert!(editor.paths.project_json().is_file());
@@ -127,6 +139,7 @@ mod tests {
 
     #[test]
     fn open_round_trips_a_created_project() {
+        let _recent = lock_recent();
         let parent = tempdir().unwrap();
         let editor = Editor::create("Round", parent.path(), 44_100, BitDepth::Float32).unwrap();
         let reopened = Editor::open(&editor.paths.root).unwrap();
@@ -157,6 +170,7 @@ mod tests {
 
     #[test]
     fn save_clears_dirty_flag() {
+        let _recent = lock_recent();
         let parent = tempdir().unwrap();
         let mut editor = Editor::create("Dirty", parent.path(), 48_000, BitDepth::Int16).unwrap();
         editor.dirty = true;
@@ -167,6 +181,7 @@ mod tests {
 
     #[test]
     fn create_and_remove_update_the_recent_list() {
+        let _recent = lock_recent();
         let parent = tempdir().unwrap();
         let editor = Editor::create("RecentTest", parent.path(), 48_000, BitDepth::Int24).unwrap();
         let list = recent_projects();

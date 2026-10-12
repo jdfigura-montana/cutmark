@@ -1,23 +1,22 @@
-
+ï»¿
 # Active Context
 
 ## Current state
-**Task 1.5 is DONE (2026-10-12).** Minimal Editor (src/editor/editor.rs): Editor{project: Arc<Project>, view, paths, dirty} with create/open/save; `// undo/redo: phase 2`; EditorError wrapping IoError; free recent_projects()/remove_recent() so UI never touches io::recent; recent writes best-effort (failure ignored). 6 tempdir tests (they touch + remove entries in the real %APPDATA% recent.json, cleaning up after themselves).
+**Task 1.6 is DONE (2026-10-12).** ui/menu.rs: ProjectMenu.show(ui, editor) -> ProjectMenuAction{None,New,Open,Close}; Save calls Editor::save, failures open ConfirmDialog modal (ui/dialogs/confirm.rs, centered fixed Window, message + OK). app.rs: App{screen, menu, title}; ui() mem::replaces the screen out each frame so editor/menu/screen borrow disjointly (methods are associated fns taking pieces); Project shortcuts Ctrl+N/O/S via ui.input key_pressed, guarded by ctx.egui_wants_keyboard_input() (+ dialog_is_open on the start screen); title via ViewportCommand::Title sent only when changed: "Audio Editor" / "[*]{name} - Audio Editor". status_bar.rs: show(ui, &project) right-aligned "{rate} Hz", left reserved for playhead/selection. ui/start_screen.rs: with_new_dialog()/with_open_request()/dialog_is_open(); pending_open triggers the file picker on first show. ui/dialogs/new_project.rs: new_open().
 
-UI: ui/dialogs/new_project.rs NewProjectDialog (centered fixed egui::Window — NO egui::Modal in egui 0.36.2; no Label::truncate used) with name, Browse (rfd pick_folder), rate combo default 48 kHz, depth combo default 24-bit, Create disabled until name+folder set, red error label, returns Option<Editor>. ui/start_screen.rs StartScreen (cached recent list, greyed missing entries with Remove, red error label under buttons, returns Option<Editor>). app.rs: enum Screen{Start(StartScreen), Editing(Editor)}; Editing draws the task 1.1 panel layout (draw_editor_panels helper). main.rs: App::default().
-
-Also fixed corrupted one-line mod.rs files (ui, ui/dialogs, editor, util, audio) that contained literal `r`n escapes — rewritten with real newlines. editor/mod.rs re-exports {Editor, recent_projects, remove_recent} and io::recent::RecentEntry; has #[allow(clippy::module_inception)] on pub mod editor (SPEC names editor/editor.rs).
+Fixed a pre-existing bug: NewProjectDialog::default() has open:false, so the start screen's "New Project" button showed nothing; now uses new_open(). Also fixed 3 more corrupted one-line mod.rs files (editor/ops, ui/timeline, ui/widgets). Flaky editor tests (parallel writes to the real %APPDATA% recent.json) serialized with a static Mutex in editor.rs tests.
 
 ## Key learnings
-- egui 0.36.2: CentralPanel::show (show_inside deprecated); Window::show(ctx: &Context); Window::open(&mut bool) borrows, so Cancel must set a separate bool.
-- clippy -D warnings catches module_inception, ptr_arg, deprecated, unused imports — all target-blocking.
-- mod.rs files may still be corrupted single-line (literal `r`n) elsewhere; check Get-Content when a module unexpectedly fails to resolve.
+- egui 0.36.2: CentralPanel::show (show_inside deprecated); Window::show(ctx: &Context); Window::open(&mut bool) borrows, so Cancel/OK must set a separate local bool inside the closure; Ui::close() closes menus (no close_menu); Context::egui_wants_keyboard_input(); ViewportCommand::Title via ctx.send_viewport_cmd; Ui::menu_button exists, closure gets a Ui.
+- clippy -D warnings catches module_inception, ptr_arg, deprecated, unused imports - all target-blocking.
+- mod.rs files may still be corrupted single-line (literal backtick-r backtick-n) elsewhere; check Get-Content when a module unexpectedly fails to resolve.
+- Match on &mut self.screen then calling &mut self methods is a borrow error; use mem::replace + associated fns.
 
 ## Next steps (rest of SPEC phase 1)
-- Phase 1 check by hand: create a project, restart, open from Recent; delete folder, restart, greyed entry + Remove.
+- Phase 1 check by hand: create a project, Ctrl+S, Project > Close, reopen from Recent (task 1.6 check); delete folder, restart, greyed entry + Remove.
 - No more phase-1 tasks known; await next task prompt (phase 2: model invariants + undo core).
 
 ## Active considerations
-- Do NOT build ahead into later phases (clinerules). Remove `#![allow(dead_code)]` in main.rs in phase 10.
+- Do NOT build ahead into later phases (clinerules). Remove #![allow(dead_code)] in main.rs in phase 10.
 - Before any new egui/eframe/cpal/symphonia API use, verify docs.rs for the exact locked version.
 

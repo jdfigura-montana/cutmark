@@ -1,1 +1,4 @@
-﻿//! ui::widgets: reusable egui widgets.`r`n`r`npub mod fader;`r`npub mod meter;
+﻿//! ui::widgets: reusable egui widgets.
+
+pub mod fader;
+pub mod meter;

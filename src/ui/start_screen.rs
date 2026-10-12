@@ -16,12 +16,39 @@ pub struct StartScreen {
     recent: Option<Vec<RecentEntry>>,
     /// Last open error, shown in red under the buttons.
     error: Option<String>,
+    /// True when the Project > Open picker must be shown on the next frame.
+    pending_open: bool,
 }
 
 impl StartScreen {
+    /// Creates the start screen with the New Project dialog already open.
+    pub fn with_new_dialog() -> Self {
+        StartScreen {
+            dialog: Some(NewProjectDialog::new_open()),
+            ..StartScreen::default()
+        }
+    }
+
+    /// Creates the start screen showing the Open Project picker next frame.
+    pub fn with_open_request() -> Self {
+        StartScreen {
+            pending_open: true,
+            ..StartScreen::default()
+        }
+    }
+
+    /// True when the New Project dialog is currently open.
+    pub fn dialog_is_open(&self) -> bool {
+        self.dialog.is_some()
+    }
+
     /// Draws the start screen; returns the Editor to edit when one opens.
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<Editor> {
         let mut opened = None;
+        if self.pending_open {
+            self.pending_open = false;
+            self.open_project_file(&mut opened);
+        }
         if let Some(dialog) = &mut self.dialog {
             let ctx = ui.ctx().clone();
             if let Some(editor) = dialog.show(&ctx) {
@@ -37,7 +64,7 @@ impl StartScreen {
                 ui.add_space(16.0);
 
                 if ui.button("New Project").clicked() {
-                    self.dialog = Some(NewProjectDialog::default());
+                    self.dialog = Some(NewProjectDialog::new_open());
                 }
                 if ui.button("Open Project...").clicked() {
                     self.open_project_file(&mut opened);

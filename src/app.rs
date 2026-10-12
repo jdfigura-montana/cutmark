@@ -1,9 +1,12 @@
 //! app: the eframe::App; start screen vs editor.
 
 use eframe::egui;
+use eframe::egui::ViewportCommand;
 
 use crate::editor::Editor;
+use crate::ui::menu::{ProjectMenu, ProjectMenuAction};
 use crate::ui::start_screen::StartScreen;
+use crate::ui::status_bar;
 
 /// The currently shown screen.
 enum Screen {
@@ -17,66 +20,147 @@ enum Screen {
 pub struct App {
     /// Which screen is currently shown.
     screen: Screen,
+    /// The Project menu with its save-error modal.
+    menu: ProjectMenu,
+    /// Last window title sent to the OS, to avoid resending every frame.
+    title: String,
 }
 
 impl Default for App {
     fn default() -> Self {
         App {
             screen: Screen::Start(StartScreen::default()),
+            menu: ProjectMenu::default(),
+            title: "Audio Editor".to_string(),
         }
     }
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        match &mut self.screen {
+        self.update_title(ui);
+        // Work on the screen outside self so menu, editor and screen can be
+        // borrowed separately within one frame.
+        let mut screen = std::mem::replace(&mut self.screen, Screen::Start(StartScreen::default()));
+        let mut opened: Option<Editor> = None;
+        let mut action = ProjectMenuAction::None;
+        match &mut screen {
             Screen::Start(start) => {
-                if let Some(editor) = start.show(ui) {
-                    self.screen = Screen::Editing(editor);
+                if !ui.ctx().egui_wants_keyboard_input() && !start.dialog_is_open() {
+                    Self::handle_start_shortcuts(ui, start);
                 }
+                opened = start.show(ui);
             }
-            Screen::Editing(_editor) => draw_editor_panels(ui),
+            Screen::Editing(editor) => {
+                action = Self::show_editor(ui, editor, &mut self.menu);
+            }
         }
+        if let Some(editor) = opened {
+            screen = Screen::Editing(editor);
+        }
+        match action {
+            ProjectMenuAction::None => {}
+            ProjectMenuAction::New => screen = Screen::Start(StartScreen::with_new_dialog()),
+            ProjectMenuAction::Open => screen = Screen::Start(StartScreen::with_open_request()),
+            ProjectMenuAction::Close => screen = Screen::Start(StartScreen::default()),
+        }
+        self.screen = screen;
     }
 }
 
-/// Draws the panel layout from task 1.1 (placeholder content for now).
-fn draw_editor_panels(ui: &mut egui::Ui) {
-    // Top: menu bar with an empty "Project" menu, then the toolbar row.
-    egui::Panel::top("menu_bar").show(ui, |ui| {
-        ui.menu_button("Project", |_menu| {});
-        grey_label(ui, "Menu Bar");
-    });
-    egui::Panel::top("toolbar").show(ui, |ui| {
-        grey_label(ui, "Toolbar");
-    });
-
-    // Bottom: status bar.
-    egui::Panel::bottom("status_bar").show(ui, |ui| {
-        grey_label(ui, "Status");
-    });
-
-    // Right: Master strip, fixed width.
-    egui::Panel::right("master_strip")
-        .resizable(false)
-        .exact_size(90.0)
-        .show(ui, |ui| {
-            grey_label(ui, "Master");
+impl App {
+    /// Draws the editor panel layout and handles the Project menu and shortcuts.
+    fn show_editor(
+        ui: &mut egui::Ui,
+        editor: &mut Editor,
+        menu: &mut ProjectMenu,
+    ) -> ProjectMenuAction {
+        // Top: menu bar with the Project menu, then the toolbar row.
+        let mut action = menu.show(ui, editor);
+        egui::Panel::top("toolbar").show(ui, |ui| {
+            grey_label(ui, "Toolbar");
         });
 
-    // Left: resizable Media Bin panel.
-    egui::Panel::left("media_bin")
-        .resizable(true)
-        .default_size(220.0)
-        .show(ui, |ui| {
-            ui.take_available_space();
-            grey_label(ui, "Media Bin");
+        // Bottom: status bar.
+        egui::Panel::bottom("status_bar").show(ui, |ui| {
+            status_bar::show(ui, &editor.project);
         });
 
-    // Center: timeline, filling the remainder.
-    egui::CentralPanel::default().show(ui, |ui| {
-        grey_label(ui, "Timeline");
-    });
+        // Right: Master strip, fixed width.
+        egui::Panel::right("master_strip")
+            .resizable(false)
+            .exact_size(90.0)
+            .show(ui, |ui| {
+                grey_label(ui, "Master");
+            });
+
+        // Left: resizable Media Bin panel.
+        egui::Panel::left("media_bin")
+            .resizable(true)
+            .default_size(220.0)
+            .show(ui, |ui| {
+                ui.take_available_space();
+                grey_label(ui, "Media Bin");
+            });
+
+        // Center: timeline, filling the remainder.
+        egui::CentralPanel::default().show(ui, |ui| {
+            grey_label(ui, "Timeline");
+        });
+
+        // Project shortcuts, only when no text field has keyboard focus.
+        if !ui.ctx().egui_wants_keyboard_input() {
+            let (ctrl, n, o, s) = ui.input(|i| {
+                (
+                    i.modifiers.ctrl,
+                    i.key_pressed(egui::Key::N),
+                    i.key_pressed(egui::Key::O),
+                    i.key_pressed(egui::Key::S),
+                )
+            });
+            if ctrl && n {
+                action = ProjectMenuAction::New;
+            } else if ctrl && o {
+                action = ProjectMenuAction::Open;
+            } else if ctrl && s {
+                menu.save(editor);
+            }
+        }
+        action
+    }
+
+    /// Handles Ctrl+N (New Project dialog) and Ctrl+O (Open picker) on the start screen.
+    fn handle_start_shortcuts(ui: &egui::Ui, start: &mut StartScreen) {
+        let (ctrl, n, o) = ui.input(|i| {
+            (
+                i.modifiers.ctrl,
+                i.key_pressed(egui::Key::N),
+                i.key_pressed(egui::Key::O),
+            )
+        });
+        if ctrl && n {
+            *start = StartScreen::with_new_dialog();
+        } else if ctrl && o {
+            *start = StartScreen::with_open_request();
+        }
+    }
+
+    /// Sends the window title to the OS when it changed:
+    /// "*<name> - Audio Editor" when dirty, "<name> - Audio Editor" otherwise.
+    fn update_title(&mut self, ui: &egui::Ui) {
+        let title = match &self.screen {
+            Screen::Start(_) => "Audio Editor".to_string(),
+            Screen::Editing(editor) => format!(
+                "{}{} - Audio Editor",
+                if editor.dirty { "*" } else { "" },
+                editor.project.name
+            ),
+        };
+        if title != self.title {
+            self.title = title.clone();
+            ui.ctx().send_viewport_cmd(ViewportCommand::Title(title));
+        }
+    }
 }
 
 /// Draws a label in grey, naming a panel region.
