@@ -1,1 +1,7 @@
-﻿//! ui::dialogs: modal dialogs.`r`n`r`npub mod confirm;`r`npub mod export;`r`npub mod gain;`r`npub mod new_project;`r`npub mod normalize;
+//! ui::dialogs: modal dialogs.
+
+pub mod confirm;
+pub mod export;
+pub mod gain;
+pub mod new_project;
+pub mod normalize;

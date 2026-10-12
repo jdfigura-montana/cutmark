@@ -1,31 +1,26 @@
-﻿# Progress
 
-## What works - Task 1.4 complete (2026-10-12)
-- Task 1.4: io/recent.rs — RecentEntry/RecentList (serde), default_path (directories ProjectDirs, config_dir()/recent.json), RecentList::load (empty list on missing/unreadable), save (parent dir + .json.tmp rename), touch (top insert, dedupe by root, max 10), remove, RecentEntry::exists. 8 tempdir tests.
-- Task 1.3: src/io/mod.rs IoError enum; io::paths (ProjectPaths, validate_project_name, create_layout) and io::project_file (FORMAT_VERSION=1, ProjectFile, atomic save via .tmp rename, load from folder or project.json). 8 tempdir tests added.
-- Task 1.2: model data types per SPEC "Timeline model" with serde; Project::new; re-exports in model/mod.rs; invariants.rs untouched (phase 2).
-- Task 1.1: Cargo binary crate `audio_editor` (edition 2021), full SPEC module tree, eframe 0.36.2 window with all labeled regions.
-- cargo test: 10 passed; clippy -D warnings clean; cargo fmt applied.
+# Progress
+
+## What works - Task 1.5 complete (2026-10-12)
+- Task 1.5: minimal editor::Editor (create/open/save, dirty flag, recent-list touch), EditorError, free recent_projects/remove_recent; New Project dialog; start screen (New/Open Project/Open Folder/recent list with greyed missing + Remove); app.rs Screen{Start, Editing} switching to the task 1.1 panel layout. 6 new editor tests.
+- Task 1.4: io/recent.rs (RecentEntry/RecentList, default_path via directories, touch/remove, atomic save, 8 tests).
+- Task 1.3: io::paths (ProjectPaths, validate_project_name, create_layout), io::project_file (FORMAT_VERSION=1, atomic save, load from folder or project.json), IoError enum.
+- Task 1.2: model data types per SPEC "Timeline model" with serde; Project::new.
+- Task 1.1: module tree, eframe window with labeled panel regions (now shown when a project is open).
+- cargo test: 24 passed; clippy -D warnings clean; cargo fmt applied.
 
 ## What is left (SPEC "Build phases")
-1. **Skeleton** - IN PROGRESS: project folder + project.json done (task 1.3); start screen, New/Open UI wiring, recent projects list remain.
-2. Model and undo core (invariants, Editor, Action, history, ops; cargo test coverage of apply/undo/compare)
-3. Media import (decode/resample/cache/peaks, bin panel)
-4. Timeline view (ruler, headers, lanes, clips, waveforms, zoom, drag-drop)
-5. Playback (cpal engine, MixPlan, mixer, transport)
-6. Editing (selections, move/trim/split/cut/copy/paste, ripple, snapping)
-7. Levels and processing (volume/pan/mute/solo, meters, gain/normalize/fades/silence)
-8. Markers and scrubbing (markers, variable-speed audible scrub)
-9. Export (two-pass render, WAV + MP3, clipping warning)
-10. Safety net and polish (autosave/recovery, relink, unsaved prompts; remove `allow(dead_code)` and model/mod.rs re-export allows)
+1. **Skeleton** - DONE.
+2. Model and undo core (invariants, Action, history, ops; Editor gains undo/redo fields per SPEC "Undo and redo").
+3. Media import (decode/resample/cache/peaks, bin panel).
+4. Timeline view. 5. Playback. 6. Editing. 7. Levels/processing. 8. Markers/scrub. 9. Export. 10. Safety net/polish (remove allow(dead_code)).
 
 ## Known issues / environment notes
-- cargo not on default PATH in PowerShell (prepend %USERPROFILE%\.cargo\bin; chain commands with `;` in one call).
-- Keep no unwrap()/expect() outside tests and main.rs as code is filled in.
+- cargo not on default PATH (prepend %USERPROFILE%\cargo... i.e. $env:USERPROFILE\.cargo\bin; chain with ;).
+- Keep no unwrap()/expect() outside tests and main.rs.
 
 ## Evolution of decisions
-- 2026-10-12: Rust toolchain and VS Build Tools installed via winget (user-approved).
-- 2026-10-12: Adopted egui 0.36.2 new API after compile errors, per clinerules "check docs.rs for the exact locked version".
-- 2026-10-12: Memory bank uses docs/SPEC.md as the project brief (summarized + section pointers, not copied).
-- 2026-10-12: Model structs copied field-for-field from SPEC "Timeline model"; ViewState defaults (1024 spp, snap on, ripple off).
-- 2026-10-12: Task 1.3: IoError variants InvalidProjectName/FolderExists/NotAProject/UnsupportedVersion{found,max}; save is atomic (tmp + rename); load accepts folder or project.json and only rejects versions greater than 1 (forward-compat, per task).
+- 2026-10-12: egui 0.36.2 API (App::ui, Panel::show, CentralPanel::show) adopted; egui::Modal does not exist in 0.36.2 � dialogs use centered fixed egui::Window.
+- 2026-10-12: editor/mod.rs re-exports RecentEntry from io::recent so UI never imports io directly (architecture rule: ui calls only editor).
+- 2026-10-12: Editor tests touch the real recent.json but remove their entries afterwards (create_layout/save paths need Editor::create which writes recent).
+

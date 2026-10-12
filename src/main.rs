@@ -18,6 +18,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Audio Editor",
         options,
-        Box::new(|_cc| Ok(Box::new(crate::app::App))),
+        Box::new(|_cc| Ok(Box::new(crate::app::App::default()))),
     )
 }

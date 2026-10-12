@@ -1,34 +1,23 @@
-ï»¿# Active Context
+
+# Active Context
 
 ## Current state
-**Task 1.4 is DONE (2026-10-12).** io/recent.rs implemented: RecentEntry{name, root}, RecentList{entries}, default_path() via directories::ProjectDirs::from("", "", "AudioEditor")/config_dir()/recent.json, load (never errors, empty on missing/unreadable), save (create parent, .json.tmp + rename), touch (dedupe by root, top insert, max 10), remove, RecentEntry::exists. 8 tempdir tests, none touch real %APPDATA%. Next: start screen + New/Open wiring in app.rs.
+**Task 1.5 is DONE (2026-10-12).** Minimal Editor (src/editor/editor.rs): Editor{project: Arc<Project>, view, paths, dirty} with create/open/save; `// undo/redo: phase 2`; EditorError wrapping IoError; free recent_projects()/remove_recent() so UI never touches io::recent; recent writes best-effort (failure ignored). 6 tempdir tests (they touch + remove entries in the real %APPDATA% recent.json, cleaning up after themselves).
 
-## What Task 1.3 delivered
-- src/io/mod.rs: IoError thiserror enum (InvalidProjectName, FolderExists, NotAProject, UnsupportedVersion{found,max}, Io, Json) + pub(crate) is_project_json helper.
-- src/io/paths.rs: ProjectPaths{root} with project_json()/media()/cache()/autosave()/exports(); validate_project_name (empty/whitespace/`< > : " / \ | ? *` rejected); create_layout (errors if folder exists, creates 5 dirs).
-- src/io/project_file.rs: FORMAT_VERSION=1, ProjectFile{format_version, project, view} serde; save() pretty JSON via project.json.tmp + rename; load() accepts folder or project.json path, errors if format_version > 1.
-- 8 new tests (tempdir based); cargo test 10 passed, clippy -D warnings clean, fmt applied.
+UI: ui/dialogs/new_project.rs NewProjectDialog (centered fixed egui::Window — NO egui::Modal in egui 0.36.2; no Label::truncate used) with name, Browse (rfd pick_folder), rate combo default 48 kHz, depth combo default 24-bit, Create disabled until name+folder set, red error label, returns Option<Editor>. ui/start_screen.rs StartScreen (cached recent list, greyed missing entries with Remove, red error label under buttons, returns Option<Editor>). app.rs: enum Screen{Start(StartScreen), Editing(Editor)}; Editing draws the task 1.1 panel layout (draw_editor_panels helper). main.rs: App::default().
 
-## What Task 1.2 delivered
-- src/model/: Project, BitDepth, ViewState (project.rs), MediaItem (media.rs), Track (track.rs), Clip (clip.rs), Marker (marker.rs) - exactly per SPEC "Timeline model" block; serde derive on all; Default for ViewState; Project::new. Re-exports in model/mod.rs.
-- invariants.rs left as doc comment only (phase 2).
-- Tests in project.rs: Project::new field check; serde_json round trip with one track/clip/media/marker.
-
-## What Task 1.1 delivered
-- Toolchain via winget (rustup, Rust 1.99.0 MSVC, VS 2022 Build Tools). cargo init (edition 2021). Deps via cargo add. Full SPEC module tree as ~45 one-line stubs. main.rs has TEMP `#![allow(dead_code)]` (remove in phase 10). app.rs: eframe App with all labeled regions (egui 0.36.2 new API: App::ui / egui::Panel).
+Also fixed corrupted one-line mod.rs files (ui, ui/dialogs, editor, util, audio) that contained literal `r`n escapes — rewritten with real newlines. editor/mod.rs re-exports {Editor, recent_projects, remove_recent} and io::recent::RecentEntry; has #[allow(clippy::module_inception)] on pub mod editor (SPEC names editor/editor.rs).
 
 ## Key learnings
-- Stub files were written with literal `` `r`n `` escapes (single-line files). When rewriting, rewrite the whole file (Set-Content with here-string), not substring replace or editor inserts.
-- The editor tool call kept losing old_text during this task; prefer Set-Content here-strings for whole-file rewrites.
-- cargo needs `%USERPROFILE%\.cargo\bin` prepended to PATH; chain commands with `;` in one command string (each array element is a separate shell). PowerShell reports exit code 1 for stderr noise; judge by the cargo output itself.
+- egui 0.36.2: CentralPanel::show (show_inside deprecated); Window::show(ctx: &Context); Window::open(&mut bool) borrows, so Cancel must set a separate bool.
+- clippy -D warnings catches module_inception, ptr_arg, deprecated, unused imports — all target-blocking.
+- mod.rs files may still be corrupted single-line (literal `r`n) elsewhere; check Get-Content when a module unexpectedly fails to resolve.
 
 ## Next steps (rest of SPEC phase 1)
-- Start screen vs editor state in app.rs.
-- New Project dialog (name, parent, sample rate, bit depth) wiring create_layout + save.
-- Open project wiring load().
-- Phase 1 check: create a project, close, reopen it from Recent.
+- Phase 1 check by hand: create a project, restart, open from Recent; delete folder, restart, greyed entry + Remove.
+- No more phase-1 tasks known; await next task prompt (phase 2: model invariants + undo core).
 
 ## Active considerations
-- Do NOT build ahead into later phases (clinerules).
-- Remove `#![allow(dead_code)]` and model/mod.rs re-export allows in phase 10.
+- Do NOT build ahead into later phases (clinerules). Remove `#![allow(dead_code)]` in main.rs in phase 10.
 - Before any new egui/eframe/cpal/symphonia API use, verify docs.rs for the exact locked version.
+

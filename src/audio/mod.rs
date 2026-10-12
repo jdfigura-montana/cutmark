@@ -1,1 +1,7 @@
-﻿//! audio: playback and mixing; never touches files.`r`n`r`npub mod engine;`r`npub mod meters;`r`npub mod mix_plan;`r`npub mod mixer;`r`npub mod scrub;
+//! audio: playback and mixing; never touches files.
+
+pub mod engine;
+pub mod meters;
+pub mod mix_plan;
+pub mod mixer;
+pub mod scrub;

@@ -1,1 +1,11 @@
-﻿//! ui: egui panels and views; talks only to the editor.`r`n`r`npub mod bin_panel;`r`npub mod dialogs;`r`npub mod master_strip;`r`npub mod menu;`r`npub mod start_screen;`r`npub mod status_bar;`r`npub mod timeline;`r`npub mod toolbar;`r`npub mod widgets;
+//! ui: egui panels and views; talks only to the editor.
+
+pub mod bin_panel;
+pub mod dialogs;
+pub mod master_strip;
+pub mod menu;
+pub mod start_screen;
+pub mod status_bar;
+pub mod timeline;
+pub mod toolbar;
+pub mod widgets;
