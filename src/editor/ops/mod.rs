@@ -1,0 +1,1 @@
+﻿//! editor::ops: pure edit operations on clips, ranges, paste, tracks, markers and media.`r`n`r`npub mod amplitude;`r`npub mod clip;`r`npub mod marker;`r`npub mod media;`r`npub mod paste;`r`npub mod range;`r`npub mod track;

@@ -1,0 +1,1 @@
+﻿//! ui: egui panels and views; talks only to the editor.`r`n`r`npub mod bin_panel;`r`npub mod dialogs;`r`npub mod master_strip;`r`npub mod menu;`r`npub mod start_screen;`r`npub mod status_bar;`r`npub mod timeline;`r`npub mod toolbar;`r`npub mod widgets;

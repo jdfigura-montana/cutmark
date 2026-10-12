@@ -1,0 +1,1 @@
+﻿//! model: plain project data with serde derive; read by all layers, written only by the editor.`r`n`r`npub mod clip;`r`npub mod invariants;`r`npub mod marker;`r`npub mod media;`r`npub mod project;`r`npub mod track;

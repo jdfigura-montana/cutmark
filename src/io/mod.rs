@@ -1,0 +1,1 @@
+﻿//! io: file decoding, encoding and project file handling; never plays audio.`r`n`r`npub mod autosave;`r`npub mod decode;`r`npub mod import;`r`npub mod mp3;`r`npub mod paths;`r`npub mod peaks;`r`npub mod project_file;`r`npub mod recent;`r`npub mod resample;`r`npub mod wav;
