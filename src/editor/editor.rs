@@ -72,6 +72,18 @@ impl Editor {
         Ok(())
     }
 
+    /// Copies the project folder to parent/new_name, renames the project,
+    /// points the paths at the new root and saves there. The old folder is
+    /// left untouched on disk.
+    pub fn save_as(&mut self, parent: &Path, new_name: &str) -> Result<(), EditorError> {
+        let new_paths = project_file::copy_project(&self.paths, parent, new_name)?;
+        Arc::make_mut(&mut self.project).name = new_name.to_string();
+        self.paths = new_paths;
+        self.save()?;
+        Self::touch_recent(&self.project.name, &self.paths.root);
+        Ok(())
+    }
+
     /// Adds the project to the recent list; a write failure is ignored.
     fn touch_recent(name: &str, root: &Path) {
         if let Some(list_path) = crate::io::recent::default_path() {
@@ -177,6 +189,32 @@ mod tests {
         editor.save().unwrap();
         assert!(!editor.dirty);
         drop_from_recent(&editor.paths.root);
+    }
+
+    #[test]
+    fn save_as_copies_folder_renames_and_keeps_old_project() {
+        let _recent = lock_recent();
+        let parent = tempdir().unwrap();
+        let destination = tempdir().unwrap();
+        let mut editor =
+            Editor::create("Original", parent.path(), 48_000, BitDepth::Int24).unwrap();
+        editor.save_as(destination.path(), "Renamed").unwrap();
+
+        // New paths, new name, not dirty.
+        assert_eq!(editor.paths.root, destination.path().join("Renamed"));
+        assert_eq!(editor.project.name, "Renamed");
+        assert!(!editor.dirty);
+        let (paths, project, _) = project_file::load(&editor.paths.root).unwrap();
+        assert_eq!(project.name, "Renamed");
+        assert_eq!(paths.root, destination.path().join("Renamed"));
+
+        // The old folder still exists with its old name and old project.json.
+        let (old_paths, old_project, _) =
+            project_file::load(&parent.path().join("Original")).unwrap();
+        assert_eq!(old_project.name, "Original");
+        assert_eq!(old_paths.root, parent.path().join("Original"));
+        drop_from_recent(&editor.paths.root);
+        drop_from_recent(&old_paths.root);
     }
 
     #[test]

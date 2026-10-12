@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::paths::ProjectPaths;
+use super::paths::{self, ProjectPaths};
 use super::{IoError, is_project_json};
 use crate::model::project::{Project, ViewState};
 
@@ -65,6 +65,40 @@ pub fn load(path: &Path) -> Result<(ProjectPaths, Project, ViewState), IoError> 
         });
     }
     Ok((ProjectPaths { root }, file.project, file.view))
+}
+
+/// Copies a whole project folder to parent/new_name: validates the name, errors
+/// if the target exists, then copies every file and folder recursively.
+/// Returns the paths of the new project folder.
+pub fn copy_project(
+    from: &ProjectPaths,
+    parent: &Path,
+    new_name: &str,
+) -> Result<ProjectPaths, IoError> {
+    paths::validate_project_name(new_name)?;
+    let target_root = parent.join(new_name);
+    if target_root.exists() {
+        return Err(IoError::FolderExists(target_root.display().to_string()));
+    }
+    fs::create_dir(&target_root)?;
+    copy_tree(&from.root, &target_root)?;
+    Ok(ProjectPaths { root: target_root })
+}
+
+/// Recursively copies every entry of `source` into `target` (both are folders).
+fn copy_tree(source: &Path, target: &Path) -> Result<(), IoError> {
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        if source_path.is_dir() {
+            fs::create_dir(&target_path)?;
+            copy_tree(&source_path, &target_path)?;
+        } else {
+            fs::copy(&source_path, &target_path)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -134,6 +168,50 @@ mod tests {
         assert!(matches!(
             load(&paths.root),
             Err(IoError::UnsupportedVersion { found: 999, max: 1 })
+        ));
+    }
+
+    #[test]
+    fn copy_project_copies_nested_files_in_media_and_cache() {
+        let parent = tempdir().unwrap();
+        let paths = create_layout(parent.path(), "Proj").unwrap();
+        fs::create_dir_all(paths.media().join("conformed")).unwrap();
+        fs::write(paths.media().join("conformed").join("song.wav"), b"wav").unwrap();
+        fs::write(paths.cache().join("peaks.bin"), b"peaks").unwrap();
+        fs::write(paths.project_json(), b"{}").unwrap();
+
+        let destination = tempdir().unwrap();
+        let copied = copy_project(&paths, destination.path(), "Copy").unwrap();
+
+        assert_eq!(copied.root, destination.path().join("Copy"));
+        assert_eq!(
+            fs::read(copied.media().join("conformed").join("song.wav")).unwrap(),
+            b"wav"
+        );
+        assert_eq!(
+            fs::read(copied.cache().join("peaks.bin")).unwrap(),
+            b"peaks"
+        );
+        assert!(copied.project_json().is_file());
+    }
+
+    #[test]
+    fn copy_project_errors_if_target_exists() {
+        let parent = tempdir().unwrap();
+        let paths = create_layout(parent.path(), "Proj").unwrap();
+        assert!(matches!(
+            copy_project(&paths, parent.path(), "Proj"),
+            Err(IoError::FolderExists(_))
+        ));
+    }
+
+    #[test]
+    fn copy_project_errors_on_invalid_name() {
+        let parent = tempdir().unwrap();
+        let paths = create_layout(parent.path(), "Proj").unwrap();
+        assert!(matches!(
+            copy_project(&paths, parent.path(), "a/b"),
+            Err(IoError::InvalidProjectName(_))
         ));
     }
 }

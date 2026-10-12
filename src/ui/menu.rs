@@ -1,9 +1,10 @@
-﻿//! ui::menu: the top Project menu bar.
+//! ui::menu: the top Project menu bar.
 
 use eframe::egui;
 
 use crate::editor::Editor;
 use crate::ui::dialogs::confirm::ConfirmDialog;
+use crate::ui::dialogs::save_as::SaveAsDialog;
 
 /// What the user chose in the Project menu this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,11 +19,13 @@ pub enum ProjectMenuAction {
     Close,
 }
 
-/// The Project menu plus the modal shown when Save fails.
+/// The Project menu plus its modals (save error, Save As).
 #[derive(Default)]
 pub struct ProjectMenu {
     /// Modal error dialog for a failed save, when shown.
     error_dialog: Option<ConfirmDialog>,
+    /// Save As dialog, when open.
+    save_as_dialog: Option<SaveAsDialog>,
 }
 
 impl ProjectMenu {
@@ -42,13 +45,23 @@ impl ProjectMenu {
                 self.save(editor);
                 menu.close();
             }
+            if menu.button("Save As... (Ctrl+Shift+S)").clicked() {
+                self.open_save_as(editor);
+                menu.close();
+            }
             if menu.button("Close").clicked() {
                 action = ProjectMenuAction::Close;
                 menu.close();
             }
         });
+        let ctx = ui.ctx().clone();
+        if let Some(dialog) = &mut self.save_as_dialog {
+            dialog.show(&ctx, editor);
+            if dialog.is_closed() {
+                self.save_as_dialog = None;
+            }
+        }
         if let Some(dialog) = &mut self.error_dialog {
-            let ctx = ui.ctx().clone();
             dialog.show(&ctx);
         }
         action
@@ -59,5 +72,13 @@ impl ProjectMenu {
         if let Err(error) = editor.save() {
             self.error_dialog = Some(ConfirmDialog::new("Save Error", error.to_string()));
         }
+    }
+
+    /// Opens the Save As dialog prefilled with the current name and folder.
+    pub fn open_save_as(&mut self, editor: &mut Editor) {
+        self.save_as_dialog = Some(SaveAsDialog::new_open(
+            &editor.project.name,
+            &editor.paths.root,
+        ));
     }
 }

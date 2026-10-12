@@ -110,9 +110,10 @@ impl App {
 
         // Project shortcuts, only when no text field has keyboard focus.
         if !ui.ctx().egui_wants_keyboard_input() {
-            let (ctrl, n, o, s) = ui.input(|i| {
+            let (ctrl, shift, n, o, s) = ui.input(|i| {
                 (
                     i.modifiers.ctrl,
+                    i.modifiers.shift,
                     i.key_pressed(egui::Key::N),
                     i.key_pressed(egui::Key::O),
                     i.key_pressed(egui::Key::S),
@@ -122,6 +123,8 @@ impl App {
                 action = ProjectMenuAction::New;
             } else if ctrl && o {
                 action = ProjectMenuAction::Open;
+            } else if ctrl && shift && s {
+                menu.open_save_as(editor);
             } else if ctrl && s {
                 menu.save(editor);
             }
