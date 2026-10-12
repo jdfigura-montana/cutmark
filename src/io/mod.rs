@@ -1,1 +1,53 @@
-﻿//! io: file decoding, encoding and project file handling; never plays audio.`r`n`r`npub mod autosave;`r`npub mod decode;`r`npub mod import;`r`npub mod mp3;`r`npub mod paths;`r`npub mod peaks;`r`npub mod project_file;`r`npub mod recent;`r`npub mod resample;`r`npub mod wav;
+//! io: file decoding, encoding and project file handling; never plays audio.
+
+pub mod autosave;
+pub mod decode;
+pub mod import;
+pub mod mp3;
+pub mod paths;
+pub mod peaks;
+pub mod project_file;
+pub mod recent;
+pub mod resample;
+pub mod wav;
+
+use std::path::Path;
+
+use thiserror::Error;
+
+/// Errors from project folder layout and project.json handling.
+#[derive(Debug, Error)]
+pub enum IoError {
+    /// Invalid project name.
+    #[error("invalid project name: {0}")]
+    InvalidProjectName(String),
+    /// The target project folder already exists.
+    #[error("project folder already exists: {0}")]
+    FolderExists(String),
+    /// The path is not a project folder or project.json file.
+    #[error("not a project: {0}")]
+    NotAProject(String),
+    /// Unsupported project.json format version.
+    #[error("unsupported project file format version: found {found}, maximum supported {max}")]
+    UnsupportedVersion {
+        /// Version found in the file.
+        found: u32,
+        /// Highest version this build supports.
+        max: u32,
+    },
+    /// Wrapped std::io error.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    /// Wrapped serde_json error.
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+}
+
+/// Returns true if the path is an existing file named project.json.
+pub(crate) fn is_project_json(path: &Path) -> bool {
+    path.is_file()
+        && path
+            .file_name()
+            .map(|n| n == "project.json")
+            .unwrap_or(false)
+}
