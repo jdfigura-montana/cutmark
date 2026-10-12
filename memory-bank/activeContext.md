@@ -1,7 +1,7 @@
 ﻿# Active Context
 
 ## Current state
-**Task 1.3 is DONE (2026-10-12).** Project folders + project.json save/load done. Next work is rest of SPEC phase 1: start screen, New/Open wiring in UI, recent projects list (io/recent.rs still stub). (Model/undo core is phase 2.)
+**Task 1.4 is DONE (2026-10-12).** io/recent.rs implemented: RecentEntry{name, root}, RecentList{entries}, default_path() via directories::ProjectDirs::from("", "", "AudioEditor")/config_dir()/recent.json, load (never errors, empty on missing/unreadable), save (create parent, .json.tmp + rename), touch (dedupe by root, top insert, max 10), remove, RecentEntry::exists. 8 tempdir tests, none touch real %APPDATA%. Next: start screen + New/Open wiring in app.rs.
 
 ## What Task 1.3 delivered
 - src/io/mod.rs: IoError thiserror enum (InvalidProjectName, FolderExists, NotAProject, UnsupportedVersion{found,max}, Io, Json) + pub(crate) is_project_json helper.
@@ -25,7 +25,7 @@
 ## Next steps (rest of SPEC phase 1)
 - Start screen vs editor state in app.rs.
 - New Project dialog (name, parent, sample rate, bit depth) wiring create_layout + save.
-- Open project wiring load(); Recent Projects in %APPDATA% via `directories` (io/recent.rs).
+- Open project wiring load().
 - Phase 1 check: create a project, close, reopen it from Recent.
 
 ## Active considerations

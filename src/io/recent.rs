@@ -1,1 +1,182 @@
 ﻿//! io::recent: the recent-projects list in %APPDATA%.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use super::IoError;
+
+/// Maximum number of entries kept in the recent list.
+const MAX_ENTRIES: usize = 10;
+
+/// One recent project: display name and project root folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentEntry {
+    /// Project name shown on the start screen.
+    pub name: String,
+    /// Project root folder path.
+    pub root: PathBuf,
+}
+
+impl RecentEntry {
+    /// True if the project root still contains project.json.
+    pub fn exists(&self) -> bool {
+        self.root.join("project.json").is_file()
+    }
+}
+
+/// The recent-projects list, newest first.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentList {
+    /// Entries, newest first.
+    pub entries: Vec<RecentEntry>,
+}
+
+/// Default location of recent.json in %APPDATA%, if the config dir can be found.
+pub fn default_path() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", "AudioEditor")
+        .map(|dirs| dirs.config_dir().join("recent.json"))
+}
+
+impl RecentList {
+    /// Loads the list from `path`; returns an empty list if the file is missing or unreadable.
+    pub fn load(path: &Path) -> RecentList {
+        let text = match fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(_) => return RecentList::default(),
+        };
+        serde_json::from_str(&text).unwrap_or_default()
+    }
+
+    /// Saves the list pretty-printed: writes recent.json.tmp next to the target,
+    /// creating the parent folder if needed, then renames it over the target.
+    pub fn save(&self, path: &Path) -> Result<(), IoError> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::to_string_pretty(self)?;
+        let tmp = path.with_extension("json.tmp");
+        fs::write(&tmp, json)?;
+        fs::rename(&tmp, path)?;
+        Ok(())
+    }
+
+    /// Moves the entry with the given root to the top (or inserts it there),
+    /// keeping at most MAX_ENTRIES entries.
+    pub fn touch(&mut self, name: String, root: PathBuf) {
+        self.entries.retain(|e| e.root != root);
+        self.entries.insert(0, RecentEntry { name, root });
+        self.entries.truncate(MAX_ENTRIES);
+    }
+
+    /// Removes the entry with the given root, if present.
+    pub fn remove(&mut self, root: &Path) {
+        self.entries.retain(|e| e.root != root);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    /// Creates a fake project root containing project.json.
+    fn make_project(parent: &Path, name: &str) -> PathBuf {
+        let root = parent.join(name);
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("project.json"), "{}").unwrap();
+        root
+    }
+
+    #[test]
+    fn touch_puts_newest_first() {
+        let dir = tempdir().unwrap();
+        let mut list = RecentList::default();
+        list.touch("A".into(), dir.path().join("a"));
+        list.touch("B".into(), dir.path().join("b"));
+        assert_eq!(list.entries[0].name, "B");
+        assert_eq!(list.entries[1].name, "A");
+    }
+
+    #[test]
+    fn touch_moves_existing_root_to_top_without_duplicate() {
+        let dir = tempdir().unwrap();
+        let mut list = RecentList::default();
+        let root_a = dir.path().join("a");
+        list.touch("A".into(), root_a.clone());
+        list.touch("B".into(), dir.path().join("b"));
+        list.touch("A2".into(), root_a);
+        assert_eq!(list.entries.len(), 2);
+        assert_eq!(list.entries[0].name, "A2");
+        assert!(list.entries[1..].iter().all(|e| e.name != "A2"));
+    }
+
+    #[test]
+    fn eleventh_touch_drops_oldest() {
+        let dir = tempdir().unwrap();
+        let mut list = RecentList::default();
+        for i in 0..11 {
+            list.touch(format!("P{i}"), dir.path().join(format!("p{i}")));
+        }
+        assert_eq!(list.entries.len(), 10);
+        assert_eq!(list.entries[0].name, "P10");
+        assert_eq!(list.entries[9].name, "P1");
+        assert!(list.entries.iter().all(|e| e.name != "P0"));
+    }
+
+    #[test]
+    fn remove_deletes_entry() {
+        let dir = tempdir().unwrap();
+        let mut list = RecentList::default();
+        let root = dir.path().join("a");
+        list.touch("A".into(), root.clone());
+        list.touch("B".into(), dir.path().join("b"));
+        list.remove(&root);
+        assert_eq!(list.entries.len(), 1);
+        assert_eq!(list.entries[0].name, "B");
+    }
+
+    #[test]
+    fn save_then_load_round_trips() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("sub").join("recent.json");
+        let mut list = RecentList::default();
+        list.touch("A".into(), dir.path().join("a"));
+        list.touch("B".into(), dir.path().join("b"));
+        list.save(&path).unwrap();
+        let loaded = RecentList::load(&path);
+        assert_eq!(loaded, list);
+        assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn load_missing_file_gives_empty_list() {
+        let dir = tempdir().unwrap();
+        let list = RecentList::load(&dir.path().join("nope.json"));
+        assert!(list.entries.is_empty());
+    }
+
+    #[test]
+    fn load_unreadable_file_gives_empty_list() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("recent.json");
+        fs::write(&path, "not json").unwrap();
+        let list = RecentList::load(&path);
+        assert!(list.entries.is_empty());
+    }
+
+    #[test]
+    fn exists_false_for_deleted_folder() {
+        let dir = tempdir().unwrap();
+        let root = make_project(dir.path(), "gone");
+        let entry = RecentEntry {
+            name: "gone".into(),
+            root: root.clone(),
+        };
+        assert!(entry.exists());
+        fs::remove_dir_all(&root).unwrap();
+        assert!(!entry.exists());
+    }
+}

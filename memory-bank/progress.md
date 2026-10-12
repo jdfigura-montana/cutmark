@@ -1,6 +1,7 @@
 ﻿# Progress
 
-## What works - Task 1.3 complete (2026-10-12)
+## What works - Task 1.4 complete (2026-10-12)
+- Task 1.4: io/recent.rs — RecentEntry/RecentList (serde), default_path (directories ProjectDirs, config_dir()/recent.json), RecentList::load (empty list on missing/unreadable), save (parent dir + .json.tmp rename), touch (top insert, dedupe by root, max 10), remove, RecentEntry::exists. 8 tempdir tests.
 - Task 1.3: src/io/mod.rs IoError enum; io::paths (ProjectPaths, validate_project_name, create_layout) and io::project_file (FORMAT_VERSION=1, ProjectFile, atomic save via .tmp rename, load from folder or project.json). 8 tempdir tests added.
 - Task 1.2: model data types per SPEC "Timeline model" with serde; Project::new; re-exports in model/mod.rs; invariants.rs untouched (phase 2).
 - Task 1.1: Cargo binary crate `audio_editor` (edition 2021), full SPEC module tree, eframe 0.36.2 window with all labeled regions.
