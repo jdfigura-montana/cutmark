@@ -3,12 +3,14 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
 use crate::audio::engine::Engine;
 use crate::audio::mix_plan::MixPlan;
+use crate::audio::player::Command;
 use crate::editor::action::Action;
 use crate::editor::clipboard::{Clipboard, copy_range};
 use crate::editor::history::{History, HistoryEntry};
@@ -78,6 +80,8 @@ pub struct Editor {
     pub audio_error: Option<String>,
     /// Transport state from the previous `poll_transport`, to detect a stop.
     pub(crate) transport_prev: Option<TransportState>,
+    /// Bin item currently previewed, if the UI started one.
+    preview_item: Option<Uuid>,
 }
 
 impl Editor {
@@ -112,6 +116,7 @@ impl Editor {
             retired: Vec::new(),
             audio_error: None,
             transport_prev: None,
+            preview_item: None,
         })
     }
 
@@ -138,6 +143,7 @@ impl Editor {
             retired: Vec::new(),
             audio_error: None,
             transport_prev: None,
+            preview_item: None,
         };
         editor.start_media_loads();
         Ok(editor)
@@ -164,6 +170,7 @@ impl Editor {
             retired: Vec::new(),
             audio_error: None,
             transport_prev: None,
+            preview_item: None,
         }
     }
 
@@ -462,6 +469,72 @@ impl Editor {
                 None => "No audio".to_string(),
             },
         }
+    }
+
+    /// Previews a bin item on its own: publishes a preview MixPlan, starts it
+    /// and stops timeline playback. A no-op without audio or unloaded media.
+    pub fn preview_media(&mut self, id: Uuid) {
+        let engine = match &self.audio {
+            Some(engine) => engine,
+            None => return,
+        };
+        let Some(loaded) = self.media_store.get(id) else {
+            return;
+        };
+        let Some(item) = self.project.media.iter().find(|m| m.id == id) else {
+            return;
+        };
+        let plan = MixPlan::preview(
+            item.length,
+            item.channels,
+            Arc::clone(&loaded.samples),
+            self.project.sample_rate,
+            self.project.master_volume_db,
+        );
+        let old = engine.publish_preview(Arc::new(plan));
+        self.retired.push((Instant::now(), old));
+        engine.send(Command::Preview);
+        self.preview_item = Some(id);
+    }
+
+    /// Stops the running bin preview, if any.
+    pub fn stop_preview(&mut self) {
+        if self.transport_state() == TransportState::Previewing
+            && let Some(engine) = &self.audio
+        {
+            engine.send(Command::StopPreview);
+        }
+        self.preview_item = None;
+    }
+
+    /// The item being previewed while the transport state is Previewing.
+    pub fn previewing(&self) -> Option<Uuid> {
+        if self.transport_state() == TransportState::Previewing {
+            self.preview_item
+        } else {
+            None
+        }
+    }
+
+    /// Bin preview progress 0.0..1.0; 0.0 when not previewing.
+    pub fn preview_progress(&self) -> f32 {
+        let Some(engine) = &self.audio else {
+            return 0.0;
+        };
+        if self.transport_state() != TransportState::Previewing {
+            return 0.0;
+        }
+        let Some(item) = self
+            .preview_item
+            .and_then(|id| self.project.media.iter().find(|m| m.id == id))
+        else {
+            return 0.0;
+        };
+        if item.length == 0 {
+            return 0.0;
+        }
+        let pos = engine.shared().preview_pos.load(Ordering::Relaxed);
+        (pos as f32 / item.length as f32).clamp(0.0, 1.0)
     }
 
     /// Starts background import jobs for the supported files.

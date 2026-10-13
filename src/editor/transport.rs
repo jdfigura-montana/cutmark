@@ -143,6 +143,16 @@ mod tests {
     }
 
     #[test]
+    fn bin_preview_methods_are_noops_without_audio() {
+        let mut editor = editor();
+        editor.preview_media(uuid::Uuid::nil());
+        assert_eq!(editor.previewing(), None);
+        assert_eq!(editor.preview_progress(), 0.0);
+        editor.stop_preview();
+        assert_eq!(editor.previewing(), None);
+    }
+
+    #[test]
     fn without_audio_the_state_is_stopped_and_commands_do_nothing() {
         let mut editor = editor();
         assert_eq!(editor.transport_state(), TransportState::Stopped);

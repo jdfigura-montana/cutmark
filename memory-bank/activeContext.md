@@ -1,4 +1,9 @@
 ﻿## Current state
+Task 5.5 DONE (2026-10-13). Bin Preview.
+- Editor: `preview_item: Option<Uuid>` field (3 constructors); preview_media(id) (no-op without audio/unloaded item; builds MixPlan::preview(item.length, item.channels, samples, project rate, master_volume_db), publish_preview + retire, Command::Preview), stop_preview(), previewing() (Some only while state Previewing), preview_progress() (shared.preview_pos / item.length, clamped). Test in transport.rs tests.
+- bin_panel: ▶/⏹ small button left of online rows (toggles preview via editor), 2 px progress bar under the previewing row (row height 34→38, allocate_exact_size returns (Rect, Response)), context menu Preview/Stop Preview on online rows.
+- Space already stops preview via toggle_play; master fader is in the preview plan.
+- cargo test 242 passed; clippy clean; fmt applied.
 Task 5.4 DONE (2026-10-13). Transport keys, toolbar, playhead following.
 - editor::transport: TransportState enum (Stopped/Playing/Paused/Previewing, own type — ui must not see audio::player types); Editor methods transport_state/toggle_play/toggle_pause/stop/play_range/seek/jump_start/jump_end/poll_transport, all no-ops without audio. poll_transport copies Shared.playhead into view.playhead while Playing and on Playing→Stopped (return point); uses new Editor field transport_prev: Option<TransportState> (initialized in all 3 constructors).
 - app.rs: poll_transport() every frame after tick(); repaints while Playing/Previewing. Keys (when egui_wants_keyboard_input false, modifiers.is_none()): Space toggle_play (consume_key(Modifiers::NONE, Key) so a focused button does not activate), P toggle_pause, Home/End jumps; `// phase 6: play range selection (Shift+Space)` comment left in the input_mut closure.

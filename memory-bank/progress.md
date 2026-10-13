@@ -1,5 +1,7 @@
 ﻿# Progress
 # Progress
+## What works - Task 5.5 complete (2026-10-13)
+- Task 5.5: bin Preview. editor::editor preview_media/stop_preview/previewing/preview_progress (preview_item field, no-ops without audio); bin_panel play/stop button per online row, 2 px progress bar under the previewing row, Preview context-menu entry. Space stops preview (existing toggle_play); master gain applies via MixPlan::preview. 1 new test. cargo test 242 passed; clippy clean; fmt applied.
 ## What works - Task 5.4 complete (2026-10-13)
 - Task 5.4: editor::transport (TransportState + Editor methods: toggle_play/toggle_pause/stop/play_range/seek/jump_start/jump_end/transport_state/poll_transport, no-ops without audio; poll mirrors audio playhead into view, restores return point on Playing→Stopped) + app.rs poll/repaint/keys (Space consumed, P, Home, End; Shift+Space commented for phase 6) + toolbar transport buttons (glyphs) + timeline click-seeks-while-playing and follow-paging (5% left margin, playing only). 4 new tests. cargo test 241 passed; clippy clean; fmt applied.
 ## What works - Task 5.3 complete (2026-10-13)

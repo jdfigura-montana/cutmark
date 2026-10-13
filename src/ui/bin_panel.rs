@@ -84,9 +84,21 @@ impl BinPanel {
         let offline = editor.is_media_offline(item.id);
         let usage = editor.media_usage(item.id);
         let selected = self.selected == Some(item.id);
+        let previewing_this = editor.previewing() == Some(item.id);
 
-        let inner = ui.allocate_ui(egui::vec2(ui.available_width(), 34.0), |ui| {
+        let inner = ui.allocate_ui(egui::vec2(ui.available_width(), 38.0), |ui| {
             ui.horizontal(|ui| {
+                if !offline
+                    && ui
+                        .small_button(if previewing_this { "⏹" } else { "▶" })
+                        .clicked()
+                {
+                    if previewing_this {
+                        editor.stop_preview();
+                    } else {
+                        editor.preview_media(item.id);
+                    }
+                }
                 if selected {
                     let (bar, _) =
                         ui.allocate_exact_size(egui::vec2(3.0, 30.0), egui::Sense::hover());
@@ -130,6 +142,18 @@ impl BinPanel {
                     );
                 });
             });
+            // Thin progress bar under the row while this item previews.
+            if previewing_this {
+                let frac = editor.preview_progress();
+                let (bar, _) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), 2.0),
+                    egui::Sense::hover(),
+                );
+                let filled =
+                    egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * frac, 2.0));
+                ui.painter()
+                    .rect_filled(filled, 1.0, ui.visuals().selection.bg_fill);
+            }
         });
         let row = ui.interact(
             inner.response.rect,
@@ -148,6 +172,22 @@ impl BinPanel {
             self.selected = Some(item.id);
         }
         row.context_menu(|menu| {
+            if !offline
+                && menu
+                    .button(if previewing_this {
+                        "Stop Preview"
+                    } else {
+                        "Preview"
+                    })
+                    .clicked()
+            {
+                if previewing_this {
+                    editor.stop_preview();
+                } else {
+                    editor.preview_media(item.id);
+                }
+                menu.close();
+            }
             if menu.button("Rename").clicked() {
                 self.begin_rename(item);
                 menu.close();
