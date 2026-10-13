@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
+arc-swap = "1.9.2"
 crossbeam-channel = "0.5.17"
 directories = "6.0.0"
 eframe = "0.36.2"

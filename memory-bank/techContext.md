@@ -20,7 +20,8 @@
 - anyhow (app edge), thiserror (core) â€” errors
 - tempfile (dev) â€” atomic write tests
 - rubato 5.0.1 — resample imported media to the project rate (v5 API is a full rewrite; see activeContext learnings)
-- NOT YET ADDED (later phases): cpal, mp3lame-encoder, crossbeam-channel, arc-swap
+- NOT YET ADDED (later phases): cpal, mp3lame-encoder, crossbeam-channel
+- arc-swap 1.9.2 added (Task 5.1; not yet used — engine task)
 
 ## Commands
 - Validate per task, in order: `cargo fmt`; `cargo clippy --all-targets -- -D warnings`; `cargo test`
