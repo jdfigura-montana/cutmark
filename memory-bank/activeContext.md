@@ -1,5 +1,9 @@
 ﻿## Current state
-Task 4.3 DONE (2026-10-13). Clips drawn + drag from bin.
+Task 4.4 DONE (2026-10-13). Waveforms in clips.
+- ui::timeline::waveform: pure fns choose_level (None iff spp<256; coarsest level with block_size<=spp), level_minmax (blocks covering frames from..to, (0,0) on empty/past end/bad channel), samples_minmax (raw interleaved), envelope (gain_db * min(fade_in, fade_out), saturating len-fade_out). draw(painter, clip, &Loaded, g, body_rect, wave_scale): stereo = 2 lanes L/R, mono 1, faint white center line each; spp>=1 -> one vertical line per pixel column (x_to_sample(x)..(x+1), +src_in-start mapping, env at column center sample * wave_scale, clamped to lane); spp<1 -> polyline per lane, dots when spp<0.125; whole clip added as ONE Shape::Vec.
+- clip_view::draw gained media: Option<&Loaded> + wave_scale params (#[allow(too_many_arguments)]); waveform drawn after header fill when !offline && Some. timeline mod.rs passes editor.media(id) (None when offline) and editor.wave_scale().
+- track volume does not affect drawing; offline media never gets a waveform.
+- 8 new tests in waveform.rs (choose_level 100/256/1000/1024/20000 -> None/0/0/1/3, level_minmax ramp + zero cases, samples_minmax channel pick, envelope 1.0 / 2.0 @ +6.0206 dB / 0.5 fades). cargo test 203 passed; clippy -D warnings clean; fmt applied.
 - ops::clip::place_clip_on_new_track(project, media_id, start): appends Track::new("Track N") with one full-length clip (src_in 0, src_out = media length); Action::PlaceClipOnNewTrack, label "Add Clip", ONE undo step (test place_clip_on_new_track_roundtrip in editor.rs).
 - editor::drop_media(media_id, track_index: Option<usize>, start, insert): Some -> Action::PlaceClip (src_in 0, src_out = media len); None -> PlaceClipOnNewTrack. Errors leave the project unchanged (NotFound media / Overflow bad index).
 - ui::timeline::clip_view::draw(painter, clip, name, offline, g, track_rect, visuals): clip = lane minus 2 px top/bottom, culled to visible_range, <3 px clips draw as 1 px line; 18 px header (darker, darken() 0.7 of body) with name + gain "+3.0 dB"/"-6.0 dB" (only when != 0), text clipped via painter.with_clip_rect; body visuals.widgets.hovered.bg_fill; offline: red fill + "Media offline"; rect_stroke(..., StrokeKind::Inside) border.
@@ -21,6 +25,6 @@ Task 4.3 DONE (2026-10-13). Clips drawn + drag from bin.
 - PowerShell cargo exit code 1 whenever stderr is written; judge by output text.
 - cargo not on default PATH (prepend $env:USERPROFILE\.cargo\bin).
 ## Next steps
-- Await next task prompt (4.4: waveforms in clips per SPEC).
+- Await next task prompt (4.5 per SPEC build phase 4 is done through waveforms; check next task number when it arrives).
 ## Active considerations
 - Do NOT build ahead into later phases (clinerules).

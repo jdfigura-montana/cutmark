@@ -324,7 +324,23 @@ fn draw(
             // Clips (no waveforms yet, ui::timeline::clip_view).
             for clip in &track.clips {
                 let (name, offline) = media_info(editor, clip.media_id);
-                clip_view::draw(&lane_painter, clip, name, offline, g, track_rect, &visuals);
+                let loaded = if offline {
+                    None
+                } else {
+                    editor.media(clip.media_id)
+                };
+                let wave_scale = editor.wave_scale();
+                clip_view::draw(
+                    &lane_painter,
+                    clip,
+                    name,
+                    offline,
+                    loaded,
+                    g,
+                    track_rect,
+                    &visuals,
+                    wave_scale,
+                );
             }
         }
         y = bottom;

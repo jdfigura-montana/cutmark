@@ -2,6 +2,7 @@
 
 use eframe::egui;
 
+use crate::io::import::Loaded;
 use crate::model::clip::Clip;
 
 use super::Geom;
@@ -25,15 +26,20 @@ const TEXT_PAD: f32 = 4.0;
 /// `track_rect` is the clip's track lane in window points; the clip body fills
 /// the lane minus 2 px at the top and bottom. Clips outside the visible sample
 /// range are skipped; clips narrower than 3 px draw as a single 1 px line.
-/// Offline media gets a red fill and a "Media offline" label.
+/// Offline media gets a red fill and a "Media offline" label. `media` is the
+/// loaded audio for the clip's bin entry, `None` when offline or not loaded;
+/// its waveform fills the body below the header strip.
+#[allow(clippy::too_many_arguments)]
 pub fn draw(
     painter: &egui::Painter,
     clip: &Clip,
     media_name: &str,
     offline: bool,
+    media: Option<&Loaded>,
     g: &Geom,
     track_rect: egui::Rect,
     visuals: &egui::Visuals,
+    wave_scale: f32,
 ) {
     let (vis_start, vis_end) = g.visible_range();
     if clip.end() <= vis_start || clip.start >= vis_end {
@@ -79,6 +85,11 @@ pub fn draw(
             darken(body_fill(visuals), 0.7)
         },
     );
+
+    // Waveform in the body (below the header), for online, loaded media.
+    if !offline && let Some(loaded) = media {
+        super::waveform::draw(painter, clip, loaded, g, body_rect, wave_scale);
+    }
     painter.rect_stroke(
         rect,
         2.0,
