@@ -6,12 +6,14 @@ use eframe::egui;
 use eframe::egui::ViewportCommand;
 
 use crate::editor::Editor;
+use crate::editor::action::Action;
 use crate::ui::bin_panel::{self, BinPanel};
 use crate::ui::dialogs::confirm::ConfirmDialog;
 use crate::ui::menu::{ProjectMenu, ProjectMenuAction};
 use crate::ui::start_screen::StartScreen;
 use crate::ui::status_bar;
 use crate::ui::timeline;
+use crate::ui::toolbar;
 
 /// The currently shown screen.
 enum Screen {
@@ -110,7 +112,7 @@ impl App {
             action = ProjectMenuAction::None;
         }
         egui::Panel::top("toolbar").show(ui, |ui| {
-            grey_label(ui, "Toolbar");
+            toolbar::show(ui, editor);
         });
 
         // Bottom: status bar.
@@ -154,7 +156,7 @@ impl App {
 
         // Editor shortcuts, only when no text field has keyboard focus.
         if !ui.ctx().egui_wants_keyboard_input() {
-            let (ctrl, shift, n, o, s, i, z, y) = ui.input(|i| {
+            let (ctrl, shift, n, o, s, i, z, y, t) = ui.input(|i| {
                 (
                     i.modifiers.ctrl,
                     i.modifiers.shift,
@@ -164,6 +166,7 @@ impl App {
                     i.key_pressed(egui::Key::I),
                     i.key_pressed(egui::Key::Z),
                     i.key_pressed(egui::Key::Y),
+                    i.key_pressed(egui::Key::T),
                 )
             });
             if ctrl && i {
@@ -182,6 +185,11 @@ impl App {
                 action = ProjectMenuAction::Open;
             } else if ctrl && shift && s {
                 menu.open_save_as(editor);
+            } else if ctrl && shift && t {
+                let _ = editor.apply(Action::AddTrack {
+                    index: None,
+                    name: None,
+                });
             } else if ctrl && s {
                 menu.save(editor);
             }

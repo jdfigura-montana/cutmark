@@ -185,6 +185,19 @@ impl Editor {
         self.view.scroll_y = y.max(0.0);
     }
 
+    /// Sets one track's lane height in points. UI only: clamped to 40..=400,
+    /// no undo history entry and no dirty flag.
+    pub fn set_track_height(&mut self, id: Uuid, height: f32) {
+        let mut next = (*self.project).clone();
+        let Some(track) = next.tracks.iter_mut().find(|t| t.id == id) else {
+            return;
+        };
+        track.height = height.clamp(40.0, 400.0);
+        if next != *self.project {
+            self.project = Arc::new(next);
+        }
+    }
+
     /// End of the last clip on any track, in samples; 0 when there are no clips.
     pub fn project_length(&self) -> u64 {
         self.project
@@ -667,6 +680,31 @@ mod tests {
         assert_eq!(*editor.project, original, "undo must restore the original");
         assert!(editor.redo(), "redo after undo");
         (*editor.project).clone()
+    }
+
+    #[test]
+    fn set_track_height_clamps_without_history_or_dirty() {
+        let mut editor = Editor::with_project(
+            project_with_clips(&[&[]]),
+            ViewState::default(),
+            ProjectPaths {
+                root: PathBuf::from("unused"),
+            },
+        );
+        let id = editor.project.tracks[0].id;
+        editor.set_track_height(id, 1_000.0);
+        assert_eq!(editor.project.tracks[0].height, 400.0);
+        editor.set_track_height(id, 10.0);
+        assert_eq!(editor.project.tracks[0].height, 40.0);
+        editor.set_track_height(id, 120.0);
+        assert_eq!(editor.project.tracks[0].height, 120.0);
+        editor.set_track_height(Uuid::new_v4(), 200.0);
+        assert_eq!(editor.project.tracks[0].height, 120.0);
+        assert!(
+            editor.history.undo_label().is_none(),
+            "track height must not create a history entry"
+        );
+        assert!(!editor.dirty);
     }
 
     #[test]

@@ -280,7 +280,7 @@ fn clamp_scroll_x(editor: &Editor, spp: f64, lane_width: f32, scroll_x: u64) -> 
 /// Draws the header column, lanes, ruler, markers, playhead and scrollbar.
 #[allow(clippy::too_many_arguments)]
 fn draw(
-    ui: &egui::Ui,
+    ui: &mut egui::Ui,
     editor: &mut Editor,
     g: &Geom,
     ruler_rect: egui::Rect,
@@ -298,34 +298,21 @@ fn draw(
     let visuals = ui.visuals().clone();
     let view = editor.view.clone();
 
-    // Header column (track headers arrive in a later task).
-    painter.rect_filled(header_rect, 0.0, visuals.faint_bg_color);
-
-    // Lane area background and track lanes.
-    painter.rect_filled(lane_rect, 0.0, visuals.extreme_bg_color);
+    // Track lanes: alternating shades and separators (ui::timeline::lane).
     let lane_painter = ui.painter_at(lane_rect);
     let mut y = lane_rect.top() - view.scroll_y;
     for (i, track) in editor.project.tracks.iter().enumerate() {
         let bottom = y + track.height;
         if bottom >= lane_rect.top() && y <= lane_rect.bottom() {
-            let bg = if i % 2 == 0 {
-                visuals.extreme_bg_color
-            } else {
-                visuals.faint_bg_color
-            };
-            lane_painter.rect_filled(
+            lane::draw(
+                &lane_painter,
                 egui::Rect::from_min_max(
                     egui::pos2(g.lane_left, y),
                     egui::pos2(lane_rect.right(), bottom),
                 ),
-                0.0,
-                bg,
-            );
-            lane_painter.line_segment(
-                [
-                    egui::pos2(g.lane_left, bottom),
-                    egui::pos2(lane_rect.right(), bottom),
-                ],
+                i % 2 == 0,
+                visuals.extreme_bg_color,
+                visuals.faint_bg_color,
                 visuals.widgets.noninteractive.bg_stroke,
             );
         }
@@ -404,6 +391,9 @@ fn draw(
             editor.set_view_x(view.samples_per_pixel, new_x);
         }
     }
+
+    // Track headers: grip, rename, menu, resize, reorder (with lanes scrolled).
+    track_header::show(ui, editor, header_rect, lane_rect, view.scroll_y);
 }
 
 /// True while the pointer hovers the scrollbar thumb.
