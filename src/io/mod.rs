@@ -44,6 +44,12 @@ pub enum IoError {
     /// A waveform peaks cache file is corrupt (bad magic, bad version or truncated).
     #[error("corrupt peaks file: {0}")]
     CorruptPeaks(String),
+    /// Audio data could not be decoded.
+    #[error("could not decode audio: {0}")]
+    Decode(String),
+    /// The file is not a supported audio format or is malformed.
+    #[error("unsupported audio file: {0}")]
+    UnsupportedAudio(String),
 }
 
 /// Returns true if the path is an existing file named project.json.

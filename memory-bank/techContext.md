@@ -11,13 +11,15 @@
 
 ## Dependencies (Cargo.toml; add only via `cargo add`, never hand-type versions)
 - eframe 0.36.2 / egui 0.36.2 — GUI (breaking-API release; see systemPatterns; always check docs.rs for the locked version before using crate APIs)
+- symphonia 0.6.1 (features wav, mp3, pcm) — decode WAV and MP3 (0.6 API differs a lot from 0.5; see activeContext learnings)
+- hound 3.5.1 — write/read WAV (16-bit, 24-bit int, 32-bit float)
 - serde 1.0 (derive), serde_json 1.0 — project file
 - uuid 1.28 (v4, serde) — IDs
 - rfd 0.17 — native file dialogs
 - directories 6.0 — %APPDATA% config path
 - anyhow (app edge), thiserror (core) — errors
 - tempfile (dev) — atomic write tests
-- NOT YET ADDED (later phases): cpal, symphonia (wav, mp3, pcm), hound, mp3lame-encoder, rubato, crossbeam-channel, arc-swap
+- NOT YET ADDED (later phases): cpal, mp3lame-encoder, rubato, crossbeam-channel, arc-swap
 
 ## Commands
 - Validate per task, in order: `cargo fmt`; `cargo clippy --all-targets -- -D warnings`; `cargo test`
