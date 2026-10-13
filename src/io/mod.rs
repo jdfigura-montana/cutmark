@@ -41,6 +41,9 @@ pub enum IoError {
     /// Wrapped serde_json error.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    /// A waveform peaks cache file is corrupt (bad magic, bad version or truncated).
+    #[error("corrupt peaks file: {0}")]
+    CorruptPeaks(String),
 }
 
 /// Returns true if the path is an existing file named project.json.

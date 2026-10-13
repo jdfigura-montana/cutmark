@@ -1,24 +1,17 @@
 ﻿# Active Context
 
 ## Current state
-Task 2.8 is DONE (2026-10-12). Project Settings: ops::set_project_settings(project, name, BitDepth) in ops/mod.rs (validates name via io::paths::validate_project_name, IoError mapped to OpError::Invalid; does NOT touch paths/folder name). Action::SetProjectSettings{name, export_bit_depth}, label "Project Settings". ui::dialogs::project_settings (name field + bit depth combo, OK applies via Editor::apply, errors red) hosted by ProjectMenu::open_settings, menu item "Project Settings...". Tests: 2 in ops/mod.rs + roundtrip in editor.rs. cargo test 130 passed; clippy clean; fmt applied.
+Task 3.1 DONE (2026-10-12). util::time (samples_to_timecode HH:MM:SS.mmm floor-ms, samples_to_seconds, seconds_to_samples round-nearest saturating), util::db (db_to_linear, linear_to_db -inf at 0), model::media Peaks/PeakLevel (plain, no serde), io::peaks build/write/read. IoError gained CorruptPeaks(String) variant in io/mod.rs. cargo test 147 passed; clippy clean; fmt applied.
 
 ## Key learnings
-- clear_range keeps a ZERO-LENGTH left/right piece when the range edge aligns exactly with a clip start/end (covers-both branch); trim must retain(|c| c.len() > 0) after clears.
-- The editor tool often MANGLES insert_line edits and can mis-place old_text-based inserts into the middle of match arms: it corrupted action.rs twice; recovered with git checkout + full-file PowerShell here-string Set-Content. Prefer full-file rewrites via Set-Content for BOM files and single old_text anchor edits for the rest, one edit per call, verify after each.
-- Action::DeleteRange/TrimToSelection track_ids are plain Vec<Uuid> (NOT Option); SplitAt uses Option.
-- PowerShell here-string + Set-Content -Encoding UTF8 is the reliable way to rewrite BOM-carrying files.
-- clippy 1.99: collapsible_if suggests let-chains; Rust 2021 supports them.
-- `pub fn f(&mut v, v.field)` is an E0502 in tests: bind `let id = v.field;` first.
-- Arc<Project> != Arc<Project>: deref both sides in assert_eq! (*a, *b).
+- PeakLevel has no channels field; channel count comes from Peaks.channels (io/peaks divides data.len() by channels).
+- clippy 1.99: manual_checked_ops wants checked_div().unwrap_or(0); chunks_exact(2) wants as_chunks::<2>().0.
+- Editor tool handles full-file/anchor edits on BOM .rs files fine now; only .md anchors were unreliable.
 - PowerShell cargo invocations report exit code 1 whenever cargo writes to stderr even on success; judge by output text.
-- Test fixtures each make their own media id; pasting between two fixture projects needs the clipboard source media id replaced with the targets (see clipboard_of in editor.rs tests).
-- Do NOT run multi-line/broken PowerShell; a mangled command can leave the shell interactive.
-- old_text anchors can fail on BOM files even mid-file (activeContext.md did); use Set-Content for memory-bank .md too.
+- cargo not on default PATH (append $env:USERPROFILE\.cargo\bin).
 
 ## Next steps
-- Await next task prompt (phase 2: model/undo core is now complete per SPEC build phases).
+- Await next task prompt (phase 3 media import in progress; peaks infra now done).
 
 ## Active considerations
 - Do NOT build ahead into later phases (clinerules).
-- `// publish to audio: phase 5` marker now sits in Editor::commit.
