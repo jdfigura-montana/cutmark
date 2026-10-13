@@ -2,7 +2,7 @@
 
 use crate::editor::ops::OpError;
 use crate::editor::ops::{clip, marker, range, track};
-use crate::model::project::Project;
+use crate::model::project::{BitDepth, Project};
 
 /// One user-facing edit, dispatched to a pure function in `editor::ops`.
 #[derive(Debug, Clone)]
@@ -130,6 +130,13 @@ pub enum Action {
         /// Track ids to trim on.
         track_ids: Vec<uuid::Uuid>,
     },
+    /// Sets the project name and default export bit depth.
+    SetProjectSettings {
+        /// New project name.
+        name: String,
+        /// New default export bit depth.
+        export_bit_depth: BitDepth,
+    },
 }
 
 impl Action {
@@ -158,6 +165,7 @@ impl Action {
             Action::AddMarker { .. } => "Add Marker",
             Action::MoveMarker { .. } => "Move Marker",
             Action::DeleteMarkers { .. } => "Delete Marker",
+            Action::SetProjectSettings { .. } => "Project Settings",
         }
     }
 
@@ -217,6 +225,10 @@ impl Action {
             Action::TrimToSelection { s, e, track_ids } => {
                 range::trim_to_selection(project, *s, *e, track_ids)
             }
+            Action::SetProjectSettings {
+                name,
+                export_bit_depth,
+            } => crate::editor::ops::set_project_settings(project, name, *export_bit_depth),
         }
     }
 }

@@ -4,6 +4,7 @@ use eframe::egui;
 
 use crate::editor::Editor;
 use crate::ui::dialogs::confirm::ConfirmDialog;
+use crate::ui::dialogs::project_settings::ProjectSettingsDialog;
 use crate::ui::dialogs::save_as::SaveAsDialog;
 
 /// What the user chose in the Project menu this frame.
@@ -26,6 +27,8 @@ pub struct ProjectMenu {
     error_dialog: Option<ConfirmDialog>,
     /// Save As dialog, when open.
     save_as_dialog: Option<SaveAsDialog>,
+    /// Project Settings dialog, when open.
+    settings_dialog: Option<ProjectSettingsDialog>,
 }
 
 impl ProjectMenu {
@@ -53,12 +56,22 @@ impl ProjectMenu {
                 action = ProjectMenuAction::Close;
                 menu.close();
             }
+            if menu.button("Project Settings...").clicked() {
+                self.open_settings(editor);
+                menu.close();
+            }
         });
         let ctx = ui.ctx().clone();
         if let Some(dialog) = &mut self.save_as_dialog {
             dialog.show(&ctx, editor);
             if dialog.is_closed() {
                 self.save_as_dialog = None;
+            }
+        }
+        if let Some(dialog) = &mut self.settings_dialog {
+            dialog.show(&ctx, editor);
+            if dialog.is_closed() {
+                self.settings_dialog = None;
             }
         }
         if let Some(dialog) = &mut self.error_dialog {
@@ -79,6 +92,14 @@ impl ProjectMenu {
         self.save_as_dialog = Some(SaveAsDialog::new_open(
             &editor.project.name,
             &editor.paths.root,
+        ));
+    }
+
+    /// Opens the Project Settings dialog prefilled with the current settings.
+    pub fn open_settings(&mut self, editor: &mut Editor) {
+        self.settings_dialog = Some(ProjectSettingsDialog::new_open(
+            &editor.project.name,
+            editor.project.export_bit_depth,
         ));
     }
 }

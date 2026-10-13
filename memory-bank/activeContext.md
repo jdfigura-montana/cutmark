@@ -1,7 +1,7 @@
 ﻿# Active Context
 
 ## Current state
-Task 2.7 is DONE (2026-10-12). Marker ops: ops::marker add_marker/move_marker (OpError::Invalid when a marker already sits at pos, list re-sorted by position), delete_markers (NotFound for unknown ids, validated before mutate), helpers prev_marker/next_marker (strictly before/after, no Result). Action variants AddMarker{pos}/MoveMarker{id,pos}/DeleteMarkers{ids}, labels "Add Marker"/"Move Marker"/"Delete Marker". 13 marker tests (9 in ops::marker, 5 roundtrip in editor.rs incl. add-at-existing-position error and ripple DeleteRange leaves markers untouched). cargo test 127 passed; clippy clean; fmt applied.
+Task 2.8 is DONE (2026-10-12). Project Settings: ops::set_project_settings(project, name, BitDepth) in ops/mod.rs (validates name via io::paths::validate_project_name, IoError mapped to OpError::Invalid; does NOT touch paths/folder name). Action::SetProjectSettings{name, export_bit_depth}, label "Project Settings". ui::dialogs::project_settings (name field + bit depth combo, OK applies via Editor::apply, errors red) hosted by ProjectMenu::open_settings, menu item "Project Settings...". Tests: 2 in ops/mod.rs + roundtrip in editor.rs. cargo test 130 passed; clippy clean; fmt applied.
 
 ## Key learnings
 - clear_range keeps a ZERO-LENGTH left/right piece when the range edge aligns exactly with a clip start/end (covers-both branch); trim must retain(|c| c.len() > 0) after clears.
@@ -14,6 +14,7 @@ Task 2.7 is DONE (2026-10-12). Marker ops: ops::marker add_marker/move_marker (O
 - PowerShell cargo invocations report exit code 1 whenever cargo writes to stderr even on success; judge by output text.
 - Test fixtures each make their own media id; pasting between two fixture projects needs the clipboard source media id replaced with the targets (see clipboard_of in editor.rs tests).
 - Do NOT run multi-line/broken PowerShell; a mangled command can leave the shell interactive.
+- old_text anchors can fail on BOM files even mid-file (activeContext.md did); use Set-Content for memory-bank .md too.
 
 ## Next steps
 - Await next task prompt (phase 2: model/undo core is now complete per SPEC build phases).

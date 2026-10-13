@@ -1412,4 +1412,25 @@ mod tests {
             "ripple must never move markers"
         );
     }
+
+    #[test]
+    fn set_project_settings_roundtrip_sets_name_and_depth() {
+        let project = roundtrip(
+            project_with_clips(&[&[]]),
+            Action::SetProjectSettings {
+                name: "Renamed".to_string(),
+                export_bit_depth: BitDepth::Float32,
+            },
+        );
+        assert_eq!(project.name, "Renamed");
+        assert_eq!(project.export_bit_depth, BitDepth::Float32);
+        assert_eq!(
+            Action::SetProjectSettings {
+                name: String::new(),
+                export_bit_depth: BitDepth::Int16
+            }
+            .label(),
+            "Project Settings"
+        );
+    }
 }
