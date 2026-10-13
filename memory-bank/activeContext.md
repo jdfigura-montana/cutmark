@@ -1,5 +1,5 @@
 ﻿## Current state
-Task 3.3 DONE (2026-10-12). Added rubato 5.0.1 via cargo add. io::resample::resample(samples, channels, from, to, progress) -> Result<Vec<f32>, IoError>: same-rate copy; otherwise rubato Async::new_sinc (sinc_len 256, BlackmanHarris2, oversampling 256, Cubic), FixedAsync::Input, chunk 1024; manual chunk loop with Indexing offsets + final partial_len flush (Some(0) is valid); trims output_delay() startup silence, then trims/zero-pads to exactly round(in*to/from) in u64 integer math; progress per chunk. Tests: same-rate identity, 44.1->48 exact 48000 stereo frames, 1000 frames 48->44.1 = 919, impulse alignment within 2 frames, 1 kHz sine peak 0.45-0.55. cargo test 158 passed; clippy clean; fmt applied.
+Task 3.4 DONE (2026-10-12). io::paths gained unique_media_name (x.wav -> "x (2).wav" style), conformed_path, peaks_path (cache/<id>.f32.wav / .peaks) and reveal_in_explorer (explorer.exe /select via raw_arg, errors ignored). New io::import: Loaded { samples: Arc<[f32]>, peaks: Arc<Peaks> }, import_file (reject unsupported ext, decode 0-0.6, copy to media/ with unique name, resample 0.6-0.85, wav::write_f32 to cache 0-0.95, peaks build+write to 1.0; on failure after the copy deletes media copy + cache files) and load_or_rebuild (media missing -> MediaOffline(id); cache valid when wav has item channels/length and peaks reads -> load; else rebuild from media/). 6 new tests (44.1->48 length 48000, duplicate naming, .txt rejected with empty dirs, cache reuse preserves mtime, cache rebuild, media missing -> MediaOffline). Let chains (`if c && let Ok(x) = y`) work and keep clippy happy even in edition 2021. cargo test 166 passed; clippy clean; fmt applied.
 
 ## Key learnings
 - PeakLevel has no channels field; channel count comes from Peaks.channels (io/peaks divides data.len() by channels).
@@ -12,7 +12,7 @@ Task 3.3 DONE (2026-10-12). Added rubato 5.0.1 via cargo add. io::resample::resa
 - cargo not on default PATH (append $env:USERPROFILE\.cargo\bin).
 
 ## Next steps
-- Await next task prompt (phase 3 media import: copy to media/, cache, bin panel remain).
+- Await next task prompt (phase 3 media import remaining: bin panel with all bin actions except Preview).
 
 ## Active considerations
 - Do NOT build ahead into later phases (clinerules).

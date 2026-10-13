@@ -1,1 +1,318 @@
 ﻿//! io::import: copy originals into media/, conform, cache and build peaks.
+
+use std::fs;
+use std::path::Path;
+use std::sync::Arc;
+
+use uuid::Uuid;
+
+use super::IoError;
+use super::decode::{self, Decoded};
+use super::paths::{ProjectPaths, conformed_path, peaks_path, unique_media_name};
+use super::peaks;
+use super::resample::resample;
+use super::wav;
+use crate::model::media::{MediaItem, Peaks};
+
+/// Fully loaded media: interleaved f32 samples at the project rate, plus peaks.
+#[derive(Debug, Clone)]
+pub struct Loaded {
+    /// Interleaved f32 samples at the project sample rate.
+    pub samples: Arc<[f32]>,
+    /// Waveform peaks built from those samples.
+    pub peaks: Arc<Peaks>,
+}
+
+/// Imports a supported audio file into the project.
+///
+/// Decodes `src`, copies it unmodified into media/, resamples it to
+/// `project_rate`, writes the conformed WAV and peaks into cache/, and returns
+/// the bin entry plus the loaded audio. `progress` reports 0.0..=1.0. If any
+/// step after the copy fails, the copy and any cache files written are deleted.
+pub fn import_file(
+    src: &Path,
+    paths: &ProjectPaths,
+    media_id: Uuid,
+    project_rate: u32,
+    progress: &mut dyn FnMut(f32),
+) -> Result<(MediaItem, Loaded), IoError> {
+    if !decode::is_supported(src) {
+        return Err(IoError::UnsupportedAudio(src.display().to_string()));
+    }
+    progress(0.0);
+    let decoded = decode_file_mapped(src, progress, 0.0, 0.6)?;
+
+    // Copy the original into media/. Everything after this point cleans up.
+    let src_name = src
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or_else(|| IoError::UnsupportedAudio(src.display().to_string()))?;
+    let media_name = unique_media_name(&paths.media(), &src_name);
+    let media_path = paths.media().join(&media_name);
+    fs::copy(src, &media_path)?;
+
+    let cleanup = || {
+        let _ = fs::remove_file(&media_path);
+        let _ = fs::remove_file(conformed_path(paths, media_id));
+        let _ = fs::remove_file(peaks_path(paths, media_id));
+    };
+
+    let resampled = match resample(
+        &decoded.samples,
+        decoded.channels,
+        decoded.rate,
+        project_rate,
+        &mut |p| progress(0.6 + p * 0.25),
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            cleanup();
+            return Err(e);
+        }
+    };
+
+    let channels = decoded.channels;
+    let frames = resampled.len() as u64 / u64::from(channels);
+
+    let conformed = conformed_path(paths, media_id);
+    if let Err(e) = wav::write_f32(&conformed, &resampled, channels, project_rate) {
+        cleanup();
+        return Err(e);
+    }
+    progress(0.95);
+
+    let built = peaks::build(&resampled, channels);
+    if let Err(e) = peaks::write(&peaks_path(paths, media_id), &built) {
+        cleanup();
+        return Err(e);
+    }
+    progress(1.0);
+
+    let item = MediaItem {
+        id: media_id,
+        display_name: display_stem(src),
+        file_name: media_name,
+        original_rate: decoded.rate,
+        channels,
+        length: frames,
+    };
+    Ok((
+        item,
+        Loaded {
+            samples: resampled.into(),
+            peaks: built.into(),
+        },
+    ))
+}
+
+/// Loads previously imported media, rebuilding the cache if needed.
+///
+/// If the original file in media/ is missing, returns `IoError::MediaOffline`.
+/// If the conformed WAV and peaks cache are intact and match the item, they
+/// are loaded directly; otherwise they are rebuilt from the media file.
+/// `progress` reports 0.0..=1.0.
+pub fn load_or_rebuild(
+    paths: &ProjectPaths,
+    item: &MediaItem,
+    project_rate: u32,
+    progress: &mut dyn FnMut(f32),
+) -> Result<Loaded, IoError> {
+    let media_path = paths.media().join(&item.file_name);
+    if !media_path.is_file() {
+        return Err(IoError::MediaOffline(item.id));
+    }
+    let conformed = conformed_path(paths, item.id);
+    let peaks_file = peaks_path(paths, item.id);
+
+    // Fast path: intact cache. The WAV must have the item's channel count and
+    // frame count, and the peaks file must read cleanly.
+    if let Ok(decoded) = wav::read_f32(&conformed) {
+        let frames = decoded.samples.len() as u64 / u64::from(decoded.channels.max(1));
+        if decoded.channels == item.channels
+            && frames == item.length
+            && let Ok(loaded) = peaks::read(&peaks_file)
+        {
+            progress(1.0);
+            return Ok(Loaded {
+                samples: decoded.samples.into(),
+                peaks: loaded.into(),
+            });
+        }
+    }
+
+    // Slow path: rebuild from the original in media/.
+    let decoded = decode_file_mapped(&media_path, progress, 0.0, 0.6)?;
+    let resampled = resample(
+        &decoded.samples,
+        decoded.channels,
+        decoded.rate,
+        project_rate,
+        &mut |p| progress(0.6 + p * 0.25),
+    )?;
+    let channels = decoded.channels;
+    let conformed = conformed_path(paths, item.id);
+    wav::write_f32(&conformed, &resampled, channels, project_rate)?;
+    progress(0.95);
+    let built = peaks::build(&resampled, channels);
+    peaks::write(&peaks_path(paths, item.id), &built)?;
+    progress(1.0);
+    Ok(Loaded {
+        samples: resampled.into(),
+        peaks: built.into(),
+    })
+}
+
+/// Decodes a file while mapping progress into the given sub-range.
+fn decode_file_mapped(
+    path: &Path,
+    progress: &mut dyn FnMut(f32),
+    from: f32,
+    to: f32,
+) -> Result<Decoded, IoError> {
+    decode::decode_file(path, &mut |p| progress(from + p * (to - from)))
+}
+
+/// File stem of a path, for the bin's display name.
+fn display_stem(path: &Path) -> String {
+    path.file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::io::paths::create_layout;
+    use hound::{SampleFormat, WavSpec, WavWriter};
+    use tempfile::tempdir;
+
+    /// Writes a 16-bit int WAV with `frames` stereo sine frames at `rate`.
+    fn write_stereo_wav(path: &Path, rate: u32, frames: usize) {
+        let spec = WavSpec {
+            channels: 2,
+            sample_rate: rate,
+            bits_per_sample: 16,
+            sample_format: SampleFormat::Int,
+        };
+        let mut writer = WavWriter::create(path, spec).unwrap();
+        for i in 0..frames {
+            let s = (2.0 * std::f32::consts::PI * 440.0 * i as f32 / rate as f32).sin();
+            let v = (s * 16_000.0) as i16;
+            writer.write_sample(v).unwrap();
+            writer.write_sample(-v).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    fn cache_file_count(paths: &ProjectPaths) -> usize {
+        fs::read_dir(paths.cache()).unwrap().count()
+    }
+
+    #[test]
+    fn import_conforms_44k_stereo_to_48k() {
+        let src_dir = tempdir().unwrap();
+        let src = src_dir.path().join("tone.wav");
+        write_stereo_wav(&src, 44_100, 44_100);
+
+        let proj_dir = tempdir().unwrap();
+        let paths = create_layout(proj_dir.path(), "Proj").unwrap();
+        let (item, loaded) =
+            import_file(&src, &paths, Uuid::new_v4(), 48_000, &mut |_| {}).unwrap();
+
+        assert_eq!(item.original_rate, 44_100);
+        assert_eq!(item.channels, 2);
+        assert_eq!(item.length, 48_000);
+        assert_eq!(item.display_name, "tone");
+        assert!(paths.media().join(&item.file_name).is_file());
+        assert!(conformed_path(&paths, item.id).is_file());
+        assert!(peaks_path(&paths, item.id).is_file());
+        assert_eq!(loaded.samples.len(), 48_000 * 2);
+        assert_eq!(loaded.peaks.frames, 48_000);
+        assert_eq!(loaded.peaks.channels, 2);
+        assert_eq!(cache_file_count(&paths), 2);
+    }
+
+    #[test]
+    fn import_same_file_twice_gives_second_name() {
+        let src_dir = tempdir().unwrap();
+        let src = src_dir.path().join("x.wav");
+        write_stereo_wav(&src, 48_000, 100);
+
+        let proj_dir = tempdir().unwrap();
+        let paths = create_layout(proj_dir.path(), "Proj").unwrap();
+        let (first, _) = import_file(&src, &paths, Uuid::new_v4(), 48_000, &mut |_| {}).unwrap();
+        let (second, _) = import_file(&src, &paths, Uuid::new_v4(), 48_000, &mut |_| {}).unwrap();
+        assert_eq!(first.file_name, "x.wav");
+        assert_eq!(second.file_name, "x (2).wav");
+        assert!(paths.media().join("x.wav").is_file());
+        assert!(paths.media().join("x (2).wav").is_file());
+    }
+
+    #[test]
+    fn import_txt_errors_and_leaves_folders_empty() {
+        let src_dir = tempdir().unwrap();
+        let src = src_dir.path().join("notes.txt");
+        fs::write(&src, "hello").unwrap();
+
+        let proj_dir = tempdir().unwrap();
+        let paths = create_layout(proj_dir.path(), "Proj").unwrap();
+        let result = import_file(&src, &paths, Uuid::new_v4(), 48_000, &mut |_| {});
+        assert!(matches!(result, Err(IoError::UnsupportedAudio(_))));
+        assert_eq!(fs::read_dir(paths.media()).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(paths.cache()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn load_or_rebuild_intact_cache_does_not_rewrite() {
+        let src_dir = tempdir().unwrap();
+        let src = src_dir.path().join("keep.wav");
+        write_stereo_wav(&src, 48_000, 500);
+
+        let proj_dir = tempdir().unwrap();
+        let paths = create_layout(proj_dir.path(), "Proj").unwrap();
+        let (item, _) = import_file(&src, &paths, Uuid::new_v4(), 48_000, &mut |_| {}).unwrap();
+        let conformed = conformed_path(&paths, item.id);
+        let before = fs::metadata(&conformed).unwrap().modified().unwrap();
+
+        let loaded = load_or_rebuild(&paths, &item, 48_000, &mut |_| {}).unwrap();
+        let after = fs::metadata(&conformed).unwrap().modified().unwrap();
+        assert_eq!(before, after, "intact cache must not be rewritten");
+        assert_eq!(loaded.samples.len(), 500 * 2);
+    }
+
+    #[test]
+    fn load_or_rebuild_rebuilds_deleted_cache() {
+        let src_dir = tempdir().unwrap();
+        let src = src_dir.path().join("gone.wav");
+        write_stereo_wav(&src, 48_000, 500);
+
+        let proj_dir = tempdir().unwrap();
+        let paths = create_layout(proj_dir.path(), "Proj").unwrap();
+        let (item, _) = import_file(&src, &paths, Uuid::new_v4(), 48_000, &mut |_| {}).unwrap();
+        fs::remove_file(conformed_path(&paths, item.id)).unwrap();
+        fs::remove_file(peaks_path(&paths, item.id)).unwrap();
+
+        let loaded = load_or_rebuild(&paths, &item, 48_000, &mut |_| {}).unwrap();
+        assert_eq!(loaded.samples.len(), 500 * 2);
+        assert!(conformed_path(&paths, item.id).is_file());
+        assert!(peaks_path(&paths, item.id).is_file());
+    }
+
+    #[test]
+    fn load_or_rebuild_media_offline() {
+        let src_dir = tempdir().unwrap();
+        let src = src_dir.path().join("offline.wav");
+        write_stereo_wav(&src, 48_000, 500);
+
+        let proj_dir = tempdir().unwrap();
+        let paths = create_layout(proj_dir.path(), "Proj").unwrap();
+        let (item, _) = import_file(&src, &paths, Uuid::new_v4(), 48_000, &mut |_| {}).unwrap();
+        fs::remove_file(paths.media().join(&item.file_name)).unwrap();
+
+        let result = load_or_rebuild(&paths, &item, 48_000, &mut |_| {});
+        match result {
+            Err(IoError::MediaOffline(id)) => assert_eq!(id, item.id),
+            other => panic!("expected MediaOffline, got {other:?}"),
+        }
+    }
+}

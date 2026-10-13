@@ -47,9 +47,12 @@ pub enum IoError {
     /// Audio data could not be decoded.
     #[error("could not decode audio: {0}")]
     Decode(String),
-    /// The file is not a supported audio format or is malformed.
+    /// Unsupported audio file or malformed.
     #[error("unsupported audio file: {0}")]
     UnsupportedAudio(String),
+    /// A media file referenced by the bin is missing from the project's media/ folder.
+    #[error("media file is missing: {0}")]
+    MediaOffline(uuid::Uuid),
 }
 
 /// Returns true if the path is an existing file named project.json.
