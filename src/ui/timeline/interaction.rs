@@ -6,8 +6,12 @@ use eframe::egui;
 use uuid::Uuid;
 
 use crate::editor::Editor;
+use crate::editor::action::Action;
+use crate::editor::ops::clip::Edge as TrimEdge;
+use crate::ui::bin_panel;
 
 use super::Geom;
+use super::clip_view::{self, Zone};
 
 /// The drag payload set by the media bin: the dragged media item's id.
 #[derive(Clone, Copy)]
@@ -592,4 +596,487 @@ pub fn draw_range(ui: &egui::Ui, editor: &Editor, g: &Geom, lane_rect: egui::Rec
             egui::Stroke::new(2.0, snap_line_color()),
         );
     }
+}
+
+// ---- Clip interaction: selection, moving, trimming, context menu (6.3) ----
+
+/// Key under which the clip interaction state is carried between frames.
+const CLIP_STATE_KEY: &str = "timeline_clip_state";
+
+/// A primary press on a clip's header or edge, kept until release.
+#[derive(Clone, Copy)]
+struct ClipPress {
+    /// The pressed clip.
+    clip_id: Uuid,
+    /// Index of the clip's track at press time.
+    track_index: usize,
+    /// Pointer position at press time.
+    pos: egui::Pos2,
+    /// The zone that was pressed.
+    zone: Zone,
+}
+
+/// An active clip drag: moving by the header or trimming an edge.
+#[derive(Clone)]
+enum ClipDrag {
+    /// Moving the selected clips by the header.
+    Move {
+        /// All clips that move together.
+        ids: Vec<Uuid>,
+        /// Timeline start of the pressed clip in the gesture base.
+        base_start: u64,
+        /// Timeline end of the pressed clip in the gesture base.
+        base_end: u64,
+        /// Index of the pressed clip's track at press time.
+        press_track: usize,
+    },
+    /// Trimming one edge of the pressed clip.
+    Trim {
+        /// The clip being trimmed.
+        clip_id: Uuid,
+        /// Which edge is being dragged.
+        edge: TrimEdge,
+    },
+}
+
+/// A clip context menu shown at a fixed screen position.
+#[derive(Clone, Copy)]
+struct ClipMenu {
+    /// The right-clicked clip.
+    clip_id: Uuid,
+    /// The clip's track.
+    track_id: Uuid,
+    /// Screen position of the menu's top left corner.
+    pos: egui::Pos2,
+}
+
+/// Clip interaction state carried between frames.
+#[derive(Clone, Default)]
+struct ClipState {
+    /// Press on a clip header or edge, when the primary button is down.
+    press: Option<ClipPress>,
+    /// Active move or trim drag, when any.
+    drag: Option<ClipDrag>,
+    /// Snap point to highlight while a clip drag is snapping, if any.
+    snap_line: Option<u64>,
+    /// Open clip context menu, if any.
+    menu: Option<ClipMenu>,
+}
+
+/// Reads the clip interaction state from egui's temp storage.
+fn clip_state(ctx: &egui::Context) -> ClipState {
+    ctx.data(|d| {
+        d.get_temp(egui::Id::new(CLIP_STATE_KEY))
+            .unwrap_or_default()
+    })
+}
+
+/// Writes the clip interaction state back to egui's temp storage.
+fn save_clip_state(ctx: &egui::Context, state: &ClipState) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(CLIP_STATE_KEY), state.clone()));
+}
+
+/// True when the clip is in the current clip selection.
+fn clip_selected(editor: &Editor, id: Uuid) -> bool {
+    matches!(
+        editor.selection(),
+        crate::editor::selection::Selection::Clips(ids) if ids.contains(&id)
+    )
+}
+
+/// The topmost clip under the pointer: `(clip id, track index, zone)`.
+///
+/// Tracks and clips are scanned in draw order, so the clip painted last wins.
+fn clip_hit(
+    editor: &Editor,
+    g: &Geom,
+    lane_rect: egui::Rect,
+    scroll_y: f32,
+    p: egui::Pos2,
+) -> Option<(Uuid, usize, Zone)> {
+    if !lane_rect.contains(p) {
+        return None;
+    }
+    let mut found = None;
+    let mut y = lane_rect.top() - scroll_y;
+    for (index, track) in editor.project.tracks.iter().enumerate() {
+        let bottom = y + track.height;
+        let track_rect = egui::Rect::from_min_max(
+            egui::pos2(g.lane_left, y),
+            egui::pos2(lane_rect.right(), bottom),
+        );
+        for clip in &track.clips {
+            let rect = clip_view::clip_rect(clip, g, track_rect);
+            if let Some(zone) = clip_view::hit_test(rect, p) {
+                found = Some((clip.id, index, zone));
+            }
+        }
+        y = bottom;
+    }
+    found
+}
+
+/// Starts a move or trim gesture for the pressed clip, selecting it alone
+/// first when it is not in the clip selection. `None` when the clip is gone.
+fn begin_clip_drag(editor: &mut Editor, press: &ClipPress) -> Option<ClipDrag> {
+    match press.zone {
+        Zone::LeftEdge | Zone::RightEdge => {
+            editor.begin_gesture();
+            Some(ClipDrag::Trim {
+                clip_id: press.clip_id,
+                edge: if press.zone == Zone::LeftEdge {
+                    TrimEdge::Start
+                } else {
+                    TrimEdge::End
+                },
+            })
+        }
+        Zone::Header => {
+            if !clip_selected(editor, press.clip_id) {
+                editor.select_clips(vec![press.clip_id]);
+            }
+            let ids = match editor.selection() {
+                crate::editor::selection::Selection::Clips(ids) => ids.clone(),
+                _ => vec![press.clip_id],
+            };
+            let (base_start, base_end) = editor.project.tracks.iter().find_map(|track| {
+                track
+                    .clips
+                    .iter()
+                    .find(|clip| clip.id == press.clip_id)
+                    .map(|clip| (clip.start, clip.end()))
+            })?;
+            editor.begin_gesture();
+            Some(ClipDrag::Move {
+                ids,
+                base_start,
+                base_end,
+                press_track: press.track_index,
+            })
+        }
+        Zone::Body => None,
+    }
+}
+
+/// One frame of an active clip drag: previews the move or trim.
+#[allow(clippy::too_many_arguments)]
+fn run_clip_drag(
+    editor: &mut Editor,
+    g: &Geom,
+    lane_rect: egui::Rect,
+    scroll_y: f32,
+    press: &ClipPress,
+    p: egui::Pos2,
+    alt: bool,
+    state: &mut ClipState,
+) {
+    let Some(drag) = state.drag.clone() else {
+        return;
+    };
+    match drag {
+        ClipDrag::Move {
+            ids,
+            base_start,
+            base_end,
+            press_track,
+        } => {
+            let mut delta = ((p.x - press.pos.x) as f64 * g.spp).round() as i64;
+            // Snap the pressed clip's start or end, whichever adjusts less.
+            let mut snap_point = None;
+            let mut options: Vec<(i64, u64)> = Vec::new();
+            let cand_start = base_start as i64 + delta;
+            let cand_end = base_end as i64 + delta;
+            if cand_start >= 0 {
+                let (snapped, _) = editor.snap_pos(cand_start as u64, &ids, alt);
+                if snapped != cand_start as u64 {
+                    options.push((snapped as i64 - cand_start, snapped));
+                }
+            }
+            if cand_end >= 0 {
+                let (snapped, _) = editor.snap_pos(cand_end as u64, &ids, alt);
+                if snapped != cand_end as u64 {
+                    options.push((snapped as i64 - cand_end, snapped));
+                }
+            }
+            if let Some((adjust, point)) =
+                options.into_iter().min_by_key(|(adjust, _)| adjust.abs())
+            {
+                delta += adjust;
+                snap_point = Some(point);
+            }
+            if let Some(track) = track_index_at(editor, lane_rect, scroll_y, p.y, false) {
+                let delta_tracks = track as i64 - press_track as i64;
+                if editor
+                    .preview(Action::MoveClips {
+                        clip_ids: ids.clone(),
+                        delta_time: delta,
+                        delta_tracks: delta_tracks as i32,
+                    })
+                    .is_ok()
+                {
+                    state.snap_line = snap_point;
+                } else {
+                    // Off the top or bottom track, or before 0: keep the last good preview.
+                    state.snap_line = None;
+                }
+            } else {
+                state.snap_line = None;
+            }
+        }
+        ClipDrag::Trim { clip_id, edge } => {
+            let (new_pos, snap_point) = editor.snap_pos(g.x_to_sample(p.x), &[clip_id], alt);
+            if editor
+                .preview(Action::TrimClip {
+                    clip_id,
+                    edge,
+                    new_pos,
+                })
+                .is_ok()
+            {
+                state.snap_line = snap_point;
+            } else {
+                state.snap_line = None;
+            }
+        }
+    }
+}
+
+/// Handles clip mouse interaction: header selection and drags, edge trims,
+/// right-click menus and hover cursors.
+///
+/// Returns true when the press (or an active clip drag or menu) is handled
+/// here, so the lane interaction must not react to it. Clip body presses fall
+/// through to the lane interaction as before.
+pub fn handle_clip_input(
+    ui: &egui::Ui,
+    editor: &mut Editor,
+    g: &Geom,
+    lane_rect: egui::Rect,
+    scroll_y: f32,
+) -> bool {
+    let mut state = clip_state(ui.ctx());
+    let (pressed, down, released, secondary, pos, ctrl, alt, esc) = ui.input(|i| {
+        (
+            i.pointer.primary_pressed(),
+            i.pointer.primary_down(),
+            i.pointer.any_released(),
+            i.pointer.secondary_pressed(),
+            i.pointer.latest_pos(),
+            i.modifiers.ctrl,
+            i.modifiers.alt,
+            i.key_pressed(egui::Key::Escape),
+        )
+    });
+
+    // Esc during a drag cancels the gesture; the key is consumed so the
+    // global Esc handler does not also clear the selection.
+    if esc && state.drag.is_some() {
+        editor.cancel_gesture();
+        state.drag = None;
+        state.snap_line = None;
+        state.press = None;
+        save_clip_state(ui.ctx(), &state);
+        ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        return true;
+    }
+
+    let mut handled = false;
+    if released {
+        if let Some(press) = state.press.take() {
+            handled = true;
+            if state.drag.take().is_some() {
+                editor.end_gesture();
+                state.snap_line = None;
+            } else if let Some(p) = pos {
+                // A click on the header: select, or toggle with Ctrl.
+                let dist = ((p.x - press.pos.x).powi(2) + (p.y - press.pos.y).powi(2)).sqrt();
+                if dist < DRAG_START_PX {
+                    if ctrl {
+                        editor.toggle_clip(press.clip_id);
+                    } else {
+                        editor.select_clips(vec![press.clip_id]);
+                    }
+                }
+            }
+        }
+    } else if down && let (Some(press), Some(p)) = (state.press, pos) {
+        handled = true;
+        let dist = ((p.x - press.pos.x).powi(2) + (p.y - press.pos.y).powi(2)).sqrt();
+        if dist >= DRAG_START_PX {
+            if state.drag.is_none()
+                && let Some(drag) = begin_clip_drag(editor, &press)
+            {
+                state.drag = Some(drag);
+            }
+            if state.drag.is_some() {
+                run_clip_drag(editor, g, lane_rect, scroll_y, &press, p, alt, &mut state);
+            }
+        }
+        match &state.drag {
+            Some(ClipDrag::Move { .. }) => ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing),
+            Some(ClipDrag::Trim { .. }) => {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal)
+            }
+            None => {}
+        }
+    } else if pressed && let Some(p) = pos {
+        if secondary {
+            if let Some((clip_id, index, _zone)) = clip_hit(editor, g, lane_rect, scroll_y, p) {
+                let track_id = editor.project.tracks[index].id;
+                state.menu = Some(ClipMenu {
+                    clip_id,
+                    track_id,
+                    pos: p,
+                });
+                handled = true;
+            }
+        } else if let Some((clip_id, index, zone)) = clip_hit(editor, g, lane_rect, scroll_y, p) {
+            match zone {
+                Zone::Body => {}
+                _ => {
+                    state.press = Some(ClipPress {
+                        clip_id,
+                        track_index: index,
+                        pos: p,
+                        zone,
+                    });
+                    handled = true;
+                }
+            }
+        }
+    } else if !down && let Some(p) = pos {
+        // Hover cursors: grab over the header, horizontal resize over edges.
+        if let Some((_id, _index, zone)) = clip_hit(editor, g, lane_rect, scroll_y, p) {
+            let icon = match zone {
+                Zone::Header => Some(egui::CursorIcon::Grab),
+                Zone::LeftEdge | Zone::RightEdge => Some(egui::CursorIcon::ResizeHorizontal),
+                Zone::Body => None,
+            };
+            if let Some(icon) = icon {
+                ui.ctx().set_cursor_icon(icon);
+            }
+        }
+    }
+    save_clip_state(ui.ctx(), &state);
+    handled
+}
+
+/// Draws the bright snap line while a clip drag is snapping.
+pub fn draw_clip_snap_line(ui: &egui::Ui, g: &Geom, lane_rect: egui::Rect) {
+    let state = clip_state(ui.ctx());
+    let Some(snap) = state.snap_line else {
+        return;
+    };
+    let painter = ui.painter_at(lane_rect);
+    let x = g.sample_to_x(snap);
+    painter.line_segment(
+        [
+            egui::pos2(x, lane_rect.top()),
+            egui::pos2(x, lane_rect.bottom()),
+        ],
+        egui::Stroke::new(2.0, snap_line_color()),
+    );
+}
+
+/// Draws the clip context menu and runs its actions.
+///
+/// Closes on Esc, on a click outside the menu, or after an action. Returns
+/// human-readable error messages from failed actions.
+pub fn draw_clip_menu(ui: &egui::Ui, editor: &mut Editor) -> Vec<String> {
+    let mut state = clip_state(ui.ctx());
+    let mut messages = Vec::new();
+    let Some(menu) = state.menu else {
+        return messages;
+    };
+    let (esc, clicked, pointer) = ui.input(|i| {
+        (
+            i.key_pressed(egui::Key::Escape),
+            i.pointer.any_click(),
+            i.pointer.latest_pos(),
+        )
+    });
+    if esc {
+        state.menu = None;
+        save_clip_state(ui.ctx(), &state);
+        return messages;
+    }
+
+    // Gather everything the menu entries need before any action mutates the project.
+    let info = editor.project.tracks.iter().find_map(|track| {
+        track
+            .clips
+            .iter()
+            .find(|clip| clip.id == menu.clip_id)
+            .map(|clip| (clip.clone(), track.id))
+    });
+    let Some((clip, track_id)) = info else {
+        state.menu = None;
+        save_clip_state(ui.ctx(), &state);
+        return messages;
+    };
+    let playhead = editor.view.playhead;
+    let splittable = clip.start < playhead && playhead < clip.end();
+    let delete_ids: Vec<Uuid> = if clip_selected(editor, clip.id) {
+        match editor.selection() {
+            crate::editor::selection::Selection::Clips(ids) => ids.clone(),
+            _ => vec![clip.id],
+        }
+    } else {
+        vec![clip.id]
+    };
+    let media_id = clip.media_id;
+
+    let mut close = false;
+    let response = egui::Area::new(egui::Id::new("clip_context_menu"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(menu.pos)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_min_width(150.0);
+                if ui
+                    .add_enabled(splittable, egui::Button::new("Split"))
+                    .clicked()
+                {
+                    if let Err(error) = editor.apply(Action::SplitAt {
+                        pos: playhead,
+                        track_ids: Some(vec![track_id]),
+                    }) {
+                        messages.push(error.to_string());
+                    }
+                    close = true;
+                }
+                if ui.button("Delete").clicked() {
+                    if let Err(error) = editor.apply(Action::DeleteClips {
+                        clip_ids: delete_ids,
+                        ripple: editor.view.ripple,
+                    }) {
+                        messages.push(error.to_string());
+                    }
+                    close = true;
+                }
+                if ui.button("Reset Fades").clicked() {
+                    if let Err(error) = editor.apply(Action::SetClipFades {
+                        clip_id: clip.id,
+                        fade_in: 0,
+                        fade_out: 0,
+                    }) {
+                        messages.push(error.to_string());
+                    }
+                    close = true;
+                }
+                if ui.button("Reveal in Bin").clicked() {
+                    bin_panel::request_reveal(ui.ctx(), media_id);
+                    close = true;
+                }
+            });
+        });
+    let menu_rect = response.response.rect;
+    if clicked && pointer.is_some_and(|p| !menu_rect.contains(p)) {
+        close = true;
+    }
+    if close {
+        state.menu = None;
+    }
+    save_clip_state(ui.ctx(), &state);
+    messages
 }

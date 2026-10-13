@@ -221,9 +221,14 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction) -
         scroll_x: view.scroll_x,
     };
     // A bin item dragged over the lanes: Esc cancels, release over a lane drops.
-    let messages = interaction::handle_bin_drag(ui, editor, &g, lane_rect, view.scroll_y);
+    let mut messages = interaction::handle_bin_drag(ui, editor, &g, lane_rect, view.scroll_y);
+    // Clip mouse interaction: header moves, edge trims, clip menu, cursors.
+    // When it takes the press, the lane interaction must not see it.
+    let clip_handled = interaction::handle_clip_input(ui, editor, &g, lane_rect, view.scroll_y);
     // Lane mouse interaction: range selection, boundary drags, playhead clicks.
-    interaction::handle_lane_input(ui, editor, &g, lane_rect, view.scroll_y);
+    if !clip_handled {
+        interaction::handle_lane_input(ui, editor, &g, lane_rect, view.scroll_y);
+    }
     let visible = g.visible_range().1 - g.visible_range().0;
     let length = editor.project_length();
     let max_scroll_x = scroll_extent(length, visible).saturating_sub(visible);
@@ -239,6 +244,9 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction) -
         visible,
         max_scroll_x,
     );
+    // Clip drag snap line (over the clips) and the open clip context menu.
+    interaction::draw_clip_snap_line(ui, &g, lane_rect);
+    messages.extend(interaction::draw_clip_menu(ui, editor));
     messages
 }
 
@@ -459,6 +467,10 @@ fn draw(
                     editor.media(clip.media_id)
                 };
                 let wave_scale = editor.wave_scale();
+                let selected = matches!(
+                    editor.selection(),
+                    crate::editor::selection::Selection::Clips(ids) if ids.contains(&clip.id)
+                );
                 clip_view::draw(
                     &lane_painter,
                     clip,
@@ -469,6 +481,7 @@ fn draw(
                     track_rect,
                     &visuals,
                     wave_scale,
+                    selected,
                 );
             }
         }

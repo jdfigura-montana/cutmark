@@ -19,6 +19,15 @@ enum BinSort {
     Name,
 }
 
+/// Key under which another panel requests the bin to reveal a media item.
+const REVEAL_KEY: &str = "bin_reveal_request";
+
+/// Requests selecting and scrolling to a media item in the bin panel
+/// (used by the clip context menu's "Reveal in Bin").
+pub fn request_reveal(ctx: &egui::Context, media_id: Uuid) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(REVEAL_KEY), media_id));
+}
+
 /// State of the Media Bin panel.
 #[derive(Default)]
 pub struct BinPanel {
@@ -34,12 +43,23 @@ pub struct BinPanel {
     sort: BinSort,
     /// Pending remove confirmation: media id and its clip usage count.
     confirm_remove: Option<(Uuid, usize)>,
+    /// Media item to scroll into view this frame (Reveal in Bin).
+    reveal: Option<Uuid>,
 }
 
 impl BinPanel {
     /// Draws the bin panel; returns human-readable messages for the user.
     pub fn show(&mut self, ui: &mut egui::Ui, editor: &mut Editor) -> Vec<String> {
         let mut messages = Vec::new();
+
+        // A Reveal in Bin request from another panel: select and scroll to it.
+        let reveal_request = ui
+            .ctx()
+            .data_mut(|d| d.remove_temp::<Uuid>(egui::Id::new(REVEAL_KEY)));
+        if let Some(id) = reveal_request {
+            self.selected = Some(id);
+            self.reveal = Some(id);
+        }
 
         ui.horizontal(|ui| {
             if ui.button("Import...").clicked() {
@@ -85,6 +105,12 @@ impl BinPanel {
         let usage = editor.media_usage(item.id);
         let selected = self.selected == Some(item.id);
         let previewing_this = editor.previewing() == Some(item.id);
+
+        // Reveal in Bin: scroll the requested item into view.
+        if self.reveal == Some(item.id) {
+            ui.scroll_to_cursor(Some(egui::Align::Center));
+            self.reveal = None;
+        }
 
         let inner = ui.allocate_ui(egui::vec2(ui.available_width(), 38.0), |ui| {
             ui.horizontal(|ui| {

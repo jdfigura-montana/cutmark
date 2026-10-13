@@ -1,4 +1,6 @@
 ﻿# Progress
+## What works - Task 6.3 complete (2026-10-13)
+- Task 6.3: clip_view Zone/hit_test/clip_rect + selected styling; interaction handle_clip_input (header click/Ctrl+click select, multi-clip move drag with snapping + track change, edge trim drags, Esc cancel, hover cursors), clip right-click menu (Split at playhead on that track / Delete / Reset Fades / Reveal in Bin), draw_clip_snap_line; app.rs Delete/Backspace deletes clips or range with ripple; Ctrl+Z/Y ignored during gestures; bin_panel Reveal in Bin select+scroll. 2 new tests. cargo test 263 passed; clippy clean; fmt applied.
 ## What works - Task 6.2 complete (2026-10-13)
 - Task 6.2: interaction::handle_lane_input + draw_range (drag range select across tracks with snapping/Alt, click sets snapped playhead + clears selection and seeks while playing, Shift+click extend, boundary line drag with swap, snap line drawing), timeline zoom_to_selection + Ctrl+\ + View menu, status bar Sel readout, toolbar Ripple/Snap toggles, keys Esc/Ctrl+A/R/N/Shift+Space, track header Ctrl+click toggle_range_track, Edit/View menu entries. 5 new tests. cargo test 261 passed; clippy clean; fmt applied.
 ## What works - Task 6.1 complete (2026-10-13)

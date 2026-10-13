@@ -167,7 +167,7 @@ impl App {
 
         // Editor shortcuts, only when no text field has keyboard focus.
         if !ui.ctx().egui_wants_keyboard_input() {
-            let (ctrl, shift, n, o, s, i, z, y, t, r, a, escape) = ui.input(|i| {
+            let (ctrl, shift, n, o, s, i, z, y, t, r, a, escape, del, back) = ui.input(|i| {
                 (
                     i.modifiers.ctrl,
                     i.modifiers.shift,
@@ -181,19 +181,23 @@ impl App {
                     i.key_pressed(egui::Key::R),
                     i.key_pressed(egui::Key::A),
                     i.key_pressed(egui::Key::Escape),
+                    i.key_pressed(egui::Key::Delete),
+                    i.key_pressed(egui::Key::Backspace),
                 )
             });
+            // A continuous gesture is active: undo/redo keys are ignored.
+            let gesture_active = editor.gesture_base.is_some();
             if ctrl && a {
                 editor.select_all();
             } else if ctrl && i {
                 msgs.extend(bin_panel::pick_and_import(editor));
-            } else if ctrl && z {
+            } else if ctrl && z && !gesture_active {
                 if shift {
                     let _ = editor.redo();
                 } else {
                     let _ = editor.undo();
                 }
-            } else if ctrl && y {
+            } else if ctrl && y && !gesture_active {
                 let _ = editor.redo();
             } else if ctrl && n {
                 action = ProjectMenuAction::New;
@@ -208,6 +212,8 @@ impl App {
                 });
             } else if ctrl && s {
                 menu.save(editor);
+            } else if del || back {
+                Self::delete_selection(editor);
             } else if escape {
                 editor.clear_selection();
             } else if r && !ctrl {
@@ -256,6 +262,30 @@ impl App {
             dialog.show(&ui.ctx().clone());
         }
         action
+    }
+
+    /// Delete / Backspace: removes the clip selection (with the ripple
+    /// setting), or the range selection and moves the playhead to its start.
+    fn delete_selection(editor: &mut Editor) {
+        match editor.selection().clone() {
+            crate::editor::selection::Selection::Clips(ids) => {
+                let _ = editor.apply(Action::DeleteClips {
+                    clip_ids: ids,
+                    ripple: editor.view.ripple,
+                });
+            }
+            crate::editor::selection::Selection::Range { start, end, tracks } => {
+                let _ = editor.apply(Action::DeleteRange {
+                    s: start,
+                    e: end,
+                    track_ids: tracks,
+                    ripple: editor.view.ripple,
+                });
+                editor.clear_selection();
+                editor.set_playhead(start);
+            }
+            crate::editor::selection::Selection::None => {}
+        }
     }
 
     /// Handles Ctrl+N (New Project dialog) and Ctrl+O (Open picker) on the start screen.
