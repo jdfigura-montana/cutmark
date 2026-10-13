@@ -1,7 +1,7 @@
 //! editor::action: Action, the single undoable edit path applied to the Project.
 
 use crate::editor::ops::OpError;
-use crate::editor::ops::track;
+use crate::editor::ops::{clip, track};
 use crate::model::project::Project;
 
 /// One user-facing edit, dispatched to a pure function in `editor::ops`.
@@ -30,6 +30,13 @@ pub enum Action {
     SoloExclusive { id: uuid::Uuid },
     /// Sets the master volume in dB, clamped to -60..+12.
     SetMasterVolume { db: f32 },
+    /// Splits clips at the given sample position on the given tracks, or all tracks.
+    SplitAt {
+        /// Split position in samples.
+        pos: u64,
+        /// Track ids to split on, or all tracks when `None`.
+        track_ids: Option<Vec<uuid::Uuid>>,
+    },
 }
 
 impl Action {
@@ -46,6 +53,7 @@ impl Action {
             Action::SetTrackSolo { .. } => "Solo",
             Action::SoloExclusive { .. } => "Solo Exclusive",
             Action::SetMasterVolume { .. } => "Master Volume",
+            Action::SplitAt { .. } => "Split",
         }
     }
 
@@ -62,6 +70,7 @@ impl Action {
             Action::SetTrackSolo { id, solo } => track::set_track_solo(project, *id, *solo),
             Action::SoloExclusive { id } => track::solo_exclusive(project, *id),
             Action::SetMasterVolume { db } => track::set_master_volume(project, *db),
+            Action::SplitAt { pos, track_ids } => clip::split_at(project, *pos, track_ids.clone()),
         }
     }
 }

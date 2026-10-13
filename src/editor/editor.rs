@@ -256,7 +256,7 @@ mod tests {
 
     use crate::editor::action::Action;
     use crate::editor::ops::OpError;
-    use crate::model::fixtures::project_with_clips;
+    use crate::model::fixtures::{project_with_clips, spans};
 
     /// Serializes tests that read/write the real recent list, which race otherwise.
     static RECENT_LOCK: Mutex<()> = Mutex::new(());
@@ -670,5 +670,41 @@ mod tests {
             "Solo Exclusive"
         );
         assert_eq!(Action::SetMasterVolume { db: 0.0 }.label(), "Master Volume");
+        assert_eq!(
+            Action::SplitAt {
+                pos: 0,
+                track_ids: None
+            }
+            .label(),
+            "Split"
+        );
+    }
+
+    #[test]
+    fn split_at_roundtrip_all_tracks() {
+        let project = roundtrip(
+            project_with_clips(&[&[(100, 100)], &[(100, 100)]]),
+            Action::SplitAt {
+                pos: 150,
+                track_ids: None,
+            },
+        );
+        assert_eq!(spans(&project, 0), [(100, 150), (150, 200)]);
+        assert_eq!(spans(&project, 1), [(100, 150), (150, 200)]);
+    }
+
+    #[test]
+    fn split_at_roundtrip_single_track() {
+        let target = project_with_clips(&[&[(100, 100)], &[(100, 100)]]);
+        let id = target.tracks[1].id;
+        let project = roundtrip(
+            target,
+            Action::SplitAt {
+                pos: 150,
+                track_ids: Some(vec![id]),
+            },
+        );
+        assert_eq!(spans(&project, 0), [(100, 200)]);
+        assert_eq!(spans(&project, 1), [(100, 150), (150, 200)]);
     }
 }
