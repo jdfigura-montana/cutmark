@@ -1,4 +1,4 @@
-//! ui::menu: the top Project menu bar.
+//! ui::menu: the top Project and Edit menus.
 
 use eframe::egui;
 
@@ -18,9 +18,11 @@ pub enum ProjectMenuAction {
     Open,
     /// Close the project and return to the start screen.
     Close,
+    /// Open the media import picker.
+    Import,
 }
 
-/// The Project menu plus its modals (save error, Save As).
+/// The Project and Edit menus plus their modals (save error, Save As).
 #[derive(Default)]
 pub struct ProjectMenu {
     /// Modal error dialog for a failed save, when shown.
@@ -32,7 +34,7 @@ pub struct ProjectMenu {
 }
 
 impl ProjectMenu {
-    /// Shows the Project menu; returns the action the user chose.
+    /// Shows the menus; returns the action the user chose.
     pub fn show(&mut self, ui: &mut egui::Ui, editor: &mut Editor) -> ProjectMenuAction {
         let mut action = ProjectMenuAction::None;
         ui.menu_button("Project", |menu| {
@@ -52,6 +54,10 @@ impl ProjectMenu {
                 self.open_save_as(editor);
                 menu.close();
             }
+            if menu.button("Import Media... (Ctrl+I)").clicked() {
+                action = ProjectMenuAction::Import;
+                menu.close();
+            }
             if menu.button("Close").clicked() {
                 action = ProjectMenuAction::Close;
                 menu.close();
@@ -59,6 +65,30 @@ impl ProjectMenu {
             if menu.button("Project Settings...").clicked() {
                 self.open_settings(editor);
                 menu.close();
+            }
+        });
+        ui.menu_button("Edit", |menu| {
+            match editor.undo_label() {
+                Some(label) => {
+                    if menu.button(format!("Undo {label} (Ctrl+Z)")).clicked() {
+                        let _ = editor.undo();
+                        menu.close();
+                    }
+                }
+                None => {
+                    menu.add_enabled(false, egui::Button::new("Undo (Ctrl+Z)"));
+                }
+            }
+            match editor.redo_label() {
+                Some(label) => {
+                    if menu.button(format!("Redo {label} (Ctrl+Y)")).clicked() {
+                        let _ = editor.redo();
+                        menu.close();
+                    }
+                }
+                None => {
+                    menu.add_enabled(false, egui::Button::new("Redo (Ctrl+Y)"));
+                }
             }
         });
         let ctx = ui.ctx().clone();

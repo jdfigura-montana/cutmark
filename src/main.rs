@@ -12,7 +12,8 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Audio Editor")
-            .with_inner_size([1400.0, 850.0]),
+            .with_inner_size([1400.0, 850.0])
+            .with_drag_and_drop(true),
         ..Default::default()
     };
     eframe::run_native(

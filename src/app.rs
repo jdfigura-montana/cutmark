@@ -1,9 +1,13 @@
 //! app: the eframe::App; start screen vs editor.
 
+use std::path::PathBuf;
+
 use eframe::egui;
 use eframe::egui::ViewportCommand;
 
 use crate::editor::Editor;
+use crate::ui::bin_panel::{self, BinPanel};
+use crate::ui::dialogs::confirm::ConfirmDialog;
 use crate::ui::menu::{ProjectMenu, ProjectMenuAction};
 use crate::ui::start_screen::StartScreen;
 use crate::ui::status_bar;
@@ -22,6 +26,10 @@ pub struct App {
     screen: Screen,
     /// The Project menu with its save-error modal.
     menu: ProjectMenu,
+    /// The media bin panel state.
+    bin: BinPanel,
+    /// Modal message dialog (import rejections, job errors), when shown.
+    messages: Option<ConfirmDialog>,
     /// Last window title sent to the OS, to avoid resending every frame.
     title: String,
 }
@@ -31,6 +39,8 @@ impl Default for App {
         App {
             screen: Screen::Start(StartScreen::default()),
             menu: ProjectMenu::default(),
+            bin: BinPanel::default(),
+            messages: None,
             title: "Audio Editor".to_string(),
         }
     }
@@ -52,7 +62,13 @@ impl eframe::App for App {
                 opened = start.show(ui);
             }
             Screen::Editing(editor) => {
-                action = Self::show_editor(ui, editor, &mut self.menu);
+                action = Self::show_editor(
+                    ui,
+                    editor,
+                    &mut self.menu,
+                    &mut self.bin,
+                    &mut self.messages,
+                );
             }
         }
         if let Some(editor) = opened {
@@ -63,20 +79,35 @@ impl eframe::App for App {
             ProjectMenuAction::New => screen = Screen::Start(StartScreen::with_new_dialog()),
             ProjectMenuAction::Open => screen = Screen::Start(StartScreen::with_open_request()),
             ProjectMenuAction::Close => screen = Screen::Start(StartScreen::default()),
+            ProjectMenuAction::Import => {}
         }
         self.screen = screen;
     }
 }
 
 impl App {
-    /// Draws the editor panel layout and handles the Project menu and shortcuts.
+    /// Draws the editor layout, handles the menus and the editor shortcuts.
     fn show_editor(
         ui: &mut egui::Ui,
         editor: &mut Editor,
         menu: &mut ProjectMenu,
+        bin: &mut BinPanel,
+        messages: &mut Option<ConfirmDialog>,
     ) -> ProjectMenuAction {
-        // Top: menu bar with the Project menu, then the toolbar row.
+        // Pump background jobs and keep repainting while any are running.
+        editor.poll_jobs();
+        if editor.has_pending_jobs() {
+            ui.ctx().request_repaint();
+        }
+
+        let mut msgs: Vec<String> = Vec::new();
+
+        // Top: menu bar with the Project and Edit menus, then the toolbar row.
         let mut action = menu.show(ui, editor);
+        if action == ProjectMenuAction::Import {
+            msgs.extend(bin_panel::pick_and_import(editor));
+            action = ProjectMenuAction::None;
+        }
         egui::Panel::top("toolbar").show(ui, |ui| {
             grey_label(ui, "Toolbar");
         });
@@ -100,7 +131,7 @@ impl App {
             .default_size(220.0)
             .show(ui, |ui| {
                 ui.take_available_space();
-                grey_label(ui, "Media Bin");
+                msgs.extend(bin.show(ui, editor));
             });
 
         // Center: timeline, filling the remainder.
@@ -108,18 +139,43 @@ impl App {
             grey_label(ui, "Timeline");
         });
 
-        // Project shortcuts, only when no text field has keyboard focus.
+        // Files dropped anywhere on the window go to the importer.
+        let dropped: Vec<PathBuf> = ui.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .collect()
+        });
+        if !dropped.is_empty() {
+            msgs.extend(editor.import_files(dropped));
+        }
+
+        // Editor shortcuts, only when no text field has keyboard focus.
         if !ui.ctx().egui_wants_keyboard_input() {
-            let (ctrl, shift, n, o, s) = ui.input(|i| {
+            let (ctrl, shift, n, o, s, i, z, y) = ui.input(|i| {
                 (
                     i.modifiers.ctrl,
                     i.modifiers.shift,
                     i.key_pressed(egui::Key::N),
                     i.key_pressed(egui::Key::O),
                     i.key_pressed(egui::Key::S),
+                    i.key_pressed(egui::Key::I),
+                    i.key_pressed(egui::Key::Z),
+                    i.key_pressed(egui::Key::Y),
                 )
             });
-            if ctrl && n {
+            if ctrl && i {
+                msgs.extend(bin_panel::pick_and_import(editor));
+            } else if ctrl && z {
+                if shift {
+                    let _ = editor.redo();
+                } else {
+                    let _ = editor.undo();
+                }
+            } else if ctrl && y {
+                let _ = editor.redo();
+            } else if ctrl && n {
                 action = ProjectMenuAction::New;
             } else if ctrl && o {
                 action = ProjectMenuAction::Open;
@@ -128,6 +184,15 @@ impl App {
             } else if ctrl && s {
                 menu.save(editor);
             }
+        }
+
+        // Background job errors from this frame.
+        msgs.extend(editor.take_job_errors());
+        if !msgs.is_empty() {
+            *messages = Some(ConfirmDialog::new("Media", msgs.join("\n")));
+        }
+        if let Some(dialog) = messages {
+            dialog.show(&ui.ctx().clone());
         }
         action
     }
