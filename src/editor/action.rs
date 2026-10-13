@@ -37,6 +37,62 @@ pub enum Action {
         /// Track ids to split on, or all tracks when `None`.
         track_ids: Option<Vec<uuid::Uuid>>,
     },
+    /// Places a new clip on a track (overwrite, or insert when `insert`).
+    PlaceClip {
+        /// Destination track id.
+        track_id: uuid::Uuid,
+        /// Media item the clip plays.
+        media_id: uuid::Uuid,
+        /// Timeline start in samples.
+        start: u64,
+        /// Source in-point in samples.
+        src_in: u64,
+        /// Exclusive source out-point in samples.
+        src_out: u64,
+        /// Insert (ripple right) instead of overwrite.
+        insert: bool,
+    },
+    /// Moves the listed clips in time and across tracks.
+    MoveClips {
+        /// Clips to move.
+        clip_ids: Vec<uuid::Uuid>,
+        /// Time shift in samples (may be negative).
+        delta_time: i64,
+        /// Track shift (may be negative).
+        delta_tracks: i32,
+    },
+    /// Trims one edge of a clip.
+    TrimClip {
+        /// Clip to trim.
+        clip_id: uuid::Uuid,
+        /// Which edge to trim.
+        edge: clip::Edge,
+        /// New edge position in samples.
+        new_pos: u64,
+    },
+    /// Deletes the listed clips, optionally closing the gaps (ripple).
+    DeleteClips {
+        /// Clips to delete.
+        clip_ids: Vec<uuid::Uuid>,
+        /// Close the gaps left behind.
+        ripple: bool,
+    },
+    /// Sets clip gain in dB, clamped to -60..+24.
+    SetClipGain {
+        /// Clip to change.
+        clip_id: uuid::Uuid,
+        /// New gain in dB.
+        db: f32,
+    },
+    /// Sets the clip's fade in/out lengths, clamped to the clip length.
+    SetClipFades {
+        /// Clip to change.
+        clip_id: uuid::Uuid,
+        /// Fade-in length in samples.
+        fade_in: u64,
+        /// Fade-out length in samples.
+        fade_out: u64,
+    },
 }
 
 impl Action {
@@ -54,6 +110,12 @@ impl Action {
             Action::SoloExclusive { .. } => "Solo Exclusive",
             Action::SetMasterVolume { .. } => "Master Volume",
             Action::SplitAt { .. } => "Split",
+            Action::PlaceClip { .. } => "Add Clip",
+            Action::MoveClips { .. } => "Move Clip",
+            Action::TrimClip { .. } => "Trim Clip",
+            Action::DeleteClips { .. } => "Delete Clip",
+            Action::SetClipGain { .. } => "Clip Gain",
+            Action::SetClipFades { .. } => "Fades",
         }
     }
 
@@ -71,6 +133,36 @@ impl Action {
             Action::SoloExclusive { id } => track::solo_exclusive(project, *id),
             Action::SetMasterVolume { db } => track::set_master_volume(project, *db),
             Action::SplitAt { pos, track_ids } => clip::split_at(project, *pos, track_ids.clone()),
+            Action::PlaceClip {
+                track_id,
+                media_id,
+                start,
+                src_in,
+                src_out,
+                insert,
+            } => clip::place_clip(
+                project, *track_id, *media_id, *start, *src_in, *src_out, *insert,
+            )
+            .map(|_| ()),
+            Action::MoveClips {
+                clip_ids,
+                delta_time,
+                delta_tracks,
+            } => clip::move_clips(project, clip_ids, *delta_time, *delta_tracks),
+            Action::TrimClip {
+                clip_id,
+                edge,
+                new_pos,
+            } => clip::trim_clip(project, *clip_id, *edge, *new_pos),
+            Action::DeleteClips { clip_ids, ripple } => {
+                clip::delete_clips(project, clip_ids, *ripple)
+            }
+            Action::SetClipGain { clip_id, db } => clip::set_clip_gain(project, *clip_id, *db),
+            Action::SetClipFades {
+                clip_id,
+                fade_in,
+                fade_out,
+            } => clip::set_clip_fades(project, *clip_id, *fade_in, *fade_out),
         }
     }
 }

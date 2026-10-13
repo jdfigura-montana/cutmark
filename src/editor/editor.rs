@@ -1,4 +1,4 @@
-//! editor::editor: the Editor struct owning the Project, view, paths and dirty flag.
+﻿//! editor::editor: the Editor struct owning the Project, view, paths and dirty flag.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -256,7 +256,7 @@ mod tests {
 
     use crate::editor::action::Action;
     use crate::editor::ops::OpError;
-    use crate::model::fixtures::{project_with_clips, spans};
+    use crate::model::fixtures::{project_with_clips, spans, srcs};
 
     /// Serializes tests that read/write the real recent list, which race otherwise.
     static RECENT_LOCK: Mutex<()> = Mutex::new(());
@@ -678,6 +678,61 @@ mod tests {
             .label(),
             "Split"
         );
+        assert_eq!(
+            Action::PlaceClip {
+                track_id: uuid::Uuid::nil(),
+                media_id: uuid::Uuid::nil(),
+                start: 0,
+                src_in: 0,
+                src_out: 0,
+                insert: false
+            }
+            .label(),
+            "Add Clip"
+        );
+        assert_eq!(
+            Action::MoveClips {
+                clip_ids: vec![],
+                delta_time: 0,
+                delta_tracks: 0
+            }
+            .label(),
+            "Move Clip"
+        );
+        assert_eq!(
+            Action::TrimClip {
+                clip_id: uuid::Uuid::nil(),
+                edge: crate::editor::ops::clip::Edge::Start,
+                new_pos: 0
+            }
+            .label(),
+            "Trim Clip"
+        );
+        assert_eq!(
+            Action::DeleteClips {
+                clip_ids: vec![],
+                ripple: false
+            }
+            .label(),
+            "Delete Clip"
+        );
+        assert_eq!(
+            Action::SetClipGain {
+                clip_id: uuid::Uuid::nil(),
+                db: 0.0
+            }
+            .label(),
+            "Clip Gain"
+        );
+        assert_eq!(
+            Action::SetClipFades {
+                clip_id: uuid::Uuid::nil(),
+                fade_in: 0,
+                fade_out: 0
+            }
+            .label(),
+            "Fades"
+        );
     }
 
     #[test]
@@ -706,5 +761,217 @@ mod tests {
         );
         assert_eq!(spans(&project, 0), [(100, 200)]);
         assert_eq!(spans(&project, 1), [(100, 150), (150, 200)]);
+    }
+
+    /// Wraps a project in an in-memory editor for error-path tests.
+    fn with_editor(project: Project) -> Editor {
+        Editor::with_project(
+            project,
+            ViewState::default(),
+            ProjectPaths {
+                root: PathBuf::from("unused"),
+            },
+        )
+    }
+
+    #[test]
+    fn place_clip_overwrite_roundtrip() {
+        let target = project_with_clips(&[&[(100, 100)]]);
+        let track_id = target.tracks[0].id;
+        let media_id = target.media[0].id;
+        let project = roundtrip(
+            target,
+            Action::PlaceClip {
+                track_id,
+                media_id,
+                start: 150,
+                src_in: 0,
+                src_out: 100,
+                insert: false,
+            },
+        );
+        assert_eq!(spans(&project, 0), [(100, 150), (150, 250)]);
+    }
+
+    #[test]
+    fn place_clip_insert_roundtrip() {
+        let target = project_with_clips(&[&[(100, 100)]]);
+        let track_id = target.tracks[0].id;
+        let media_id = target.media[0].id;
+        let project = roundtrip(
+            target,
+            Action::PlaceClip {
+                track_id,
+                media_id,
+                start: 150,
+                src_in: 0,
+                src_out: 100,
+                insert: true,
+            },
+        );
+        assert_eq!(spans(&project, 0), [(100, 150), (150, 250), (250, 300)]);
+    }
+
+    #[test]
+    fn move_clip_overwrites_neighbor_roundtrip() {
+        let target = project_with_clips(&[&[(100, 100), (220, 100)]]);
+        let clip_id = target.tracks[0].clips[0].id;
+        let project = roundtrip(
+            target,
+            Action::MoveClips {
+                clip_ids: vec![clip_id],
+                delta_time: 50,
+                delta_tracks: 0,
+            },
+        );
+        assert_eq!(spans(&project, 0), [(150, 250), (250, 320)]);
+    }
+
+    #[test]
+    fn move_clips_down_one_track_roundtrip() {
+        let target = project_with_clips(&[&[(100, 100)], &[(150, 100)], &[]]);
+        let first = target.tracks[0].clips[0].id;
+        let second = target.tracks[1].clips[0].id;
+        let project = roundtrip(
+            target,
+            Action::MoveClips {
+                clip_ids: vec![first, second],
+                delta_time: 0,
+                delta_tracks: 1,
+            },
+        );
+        assert!(project.tracks[0].clips.is_empty());
+        assert_eq!(spans(&project, 1), [(100, 200)]);
+        assert_eq!(spans(&project, 2), [(150, 250)]);
+    }
+
+    #[test]
+    fn move_clips_below_zero_errors_and_leaves_the_project_unchanged() {
+        let target = project_with_clips(&[&[(100, 100)]]);
+        let clip_id = target.tracks[0].clips[0].id;
+        let original = target.clone();
+        let mut editor = with_editor(target);
+        let result = editor.apply(Action::MoveClips {
+            clip_ids: vec![clip_id],
+            delta_time: -200,
+            delta_tracks: 0,
+        });
+        assert!(matches!(result, Err(EditorError::Op(OpError::Invalid(_)))));
+        assert_eq!(*editor.project, original);
+    }
+
+    #[test]
+    fn move_clips_off_the_last_track_errors_and_leaves_the_project_unchanged() {
+        let target = project_with_clips(&[&[(100, 100)]]);
+        let clip_id = target.tracks[0].clips[0].id;
+        let original = target.clone();
+        let mut editor = with_editor(target);
+        let result = editor.apply(Action::MoveClips {
+            clip_ids: vec![clip_id],
+            delta_time: 0,
+            delta_tracks: 1,
+        });
+        assert!(matches!(result, Err(EditorError::Op(OpError::Invalid(_)))));
+        assert_eq!(*editor.project, original);
+    }
+
+    #[test]
+    fn trim_start_roundtrip() {
+        let target = project_with_clips(&[&[(100, 100)]]);
+        let clip_id = target.tracks[0].clips[0].id;
+        let project = roundtrip(
+            target,
+            Action::TrimClip {
+                clip_id,
+                edge: crate::editor::ops::clip::Edge::Start,
+                new_pos: 120,
+            },
+        );
+        assert_eq!(spans(&project, 0), [(120, 200)]);
+        assert_eq!(srcs(&project, 0), [(20, 100)]);
+    }
+
+    #[test]
+    fn trim_start_clamps_at_src_in_zero_roundtrip() {
+        let target = project_with_clips(&[&[(100, 100)]]);
+        let clip_id = target.tracks[0].clips[0].id;
+        let project = roundtrip(
+            target,
+            Action::TrimClip {
+                clip_id,
+                edge: crate::editor::ops::clip::Edge::Start,
+                new_pos: 50,
+            },
+        );
+        assert_eq!(spans(&project, 0), [(100, 200)]);
+        assert_eq!(srcs(&project, 0), [(0, 100)]);
+    }
+
+    #[test]
+    fn trim_end_stops_at_neighbor_roundtrip() {
+        let target = project_with_clips(&[&[(100, 150), (250, 100)]]);
+        let clip_id = target.tracks[0].clips[0].id;
+        let project = roundtrip(
+            target,
+            Action::TrimClip {
+                clip_id,
+                edge: crate::editor::ops::clip::Edge::End,
+                new_pos: 400,
+            },
+        );
+        assert_eq!(spans(&project, 0), [(100, 250), (250, 350)]);
+    }
+
+    #[test]
+    fn delete_clips_ripple_roundtrip() {
+        let target = project_with_clips(&[&[(0, 100), (100, 100), (200, 100)]]);
+        let clip_id = target.tracks[0].clips[1].id;
+        let project = roundtrip(
+            target,
+            Action::DeleteClips {
+                clip_ids: vec![clip_id],
+                ripple: true,
+            },
+        );
+        assert_eq!(spans(&project, 0), [(0, 100), (100, 200)]);
+    }
+
+    #[test]
+    fn delete_clips_without_ripple_leaves_the_gap_roundtrip() {
+        let target = project_with_clips(&[&[(0, 100), (100, 100), (200, 100)]]);
+        let clip_id = target.tracks[0].clips[1].id;
+        let project = roundtrip(
+            target,
+            Action::DeleteClips {
+                clip_ids: vec![clip_id],
+                ripple: false,
+            },
+        );
+        assert_eq!(spans(&project, 0), [(0, 100), (200, 300)]);
+    }
+
+    #[test]
+    fn set_clip_gain_clamps_roundtrip() {
+        let target = project_with_clips(&[&[(100, 100)]]);
+        let clip_id = target.tracks[0].clips[0].id;
+        let project = roundtrip(target, Action::SetClipGain { clip_id, db: 30.0 });
+        assert_eq!(project.tracks[0].clips[0].gain_db, 24.0);
+    }
+
+    #[test]
+    fn set_clip_fades_clamp_on_a_short_clip_roundtrip() {
+        let target = project_with_clips(&[&[(100, 10)]]);
+        let clip_id = target.tracks[0].clips[0].id;
+        let project = roundtrip(
+            target,
+            Action::SetClipFades {
+                clip_id,
+                fade_in: 8,
+                fade_out: 8,
+            },
+        );
+        let clip = &project.tracks[0].clips[0];
+        assert_eq!(clip.fade_in, 2);
+        assert_eq!(clip.fade_out, 8);
     }
 }
