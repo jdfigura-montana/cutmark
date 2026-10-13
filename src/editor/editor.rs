@@ -12,7 +12,7 @@ use crate::audio::engine::Engine;
 use crate::audio::mix_plan::MixPlan;
 use crate::audio::player::Command;
 use crate::editor::action::Action;
-use crate::editor::clipboard::{Clipboard, copy_range};
+use crate::editor::clipboard::{Clipboard, copy_clips, copy_range};
 use crate::editor::history::{History, HistoryEntry};
 use crate::editor::jobs::{JobChannels, JobMessage};
 use crate::editor::media_store::MediaStore;
@@ -453,6 +453,93 @@ impl Editor {
     /// The clipboard content from the last copy or cut, if any.
     pub fn clipboard(&self) -> Option<Arc<Clipboard>> {
         self.clipboard.clone()
+    }
+
+    /// Copy: with a range, copies it (see `copy`); with clips selected, copies
+    /// them whole with their track offsets; with nothing selected, does nothing.
+    pub fn copy_selection(&mut self) {
+        match self.selection.clone() {
+            Selection::Range { start, end, tracks } => self.copy(start, end, &tracks),
+            Selection::Clips(ids) => {
+                self.clipboard = Some(Arc::new(copy_clips(&self.project, &ids)));
+            }
+            Selection::None => {}
+        }
+    }
+
+    /// Cut: with a range, copies then deletes it with the current ripple,
+    /// clears the selection and puts the playhead at the range start; with
+    /// clips selected, copies them then deletes them (label "Cut").
+    pub fn cut_selection(&mut self) -> Result<(), EditorError> {
+        match self.selection.clone() {
+            Selection::Range { start, end, tracks } => {
+                self.cut(start, end, tracks, self.view.ripple)?;
+                self.clear_selection();
+                self.set_playhead(start);
+                Ok(())
+            }
+            Selection::Clips(ids) => {
+                self.clipboard = Some(Arc::new(copy_clips(&self.project, &ids)));
+                self.apply_labeled(
+                    Action::DeleteClips {
+                        clip_ids: ids,
+                        ripple: self.view.ripple,
+                    },
+                    "Cut",
+                )
+            }
+            Selection::None => Ok(()),
+        }
+    }
+
+    /// Paste: does nothing with an empty clipboard; with a range selected,
+    /// replaces it and puts the playhead at the range start; otherwise inserts
+    /// at the playhead on the target track.
+    pub fn paste(&mut self) -> Result<(), EditorError> {
+        if self
+            .clipboard()
+            .is_none_or(|c| c.tracks.iter().all(|t| t.is_empty()))
+        {
+            return Ok(());
+        }
+        match self.selection.clone() {
+            Selection::Range { start, end, .. } => {
+                let target = self.target_track();
+                self.paste_replace_range(start, end, target, self.view.ripple)?;
+                self.clear_selection();
+                self.set_playhead(start);
+                Ok(())
+            }
+            _ => {
+                let pos = self.view.playhead;
+                let target = self.target_track();
+                self.paste_insert_at(pos, target)
+            }
+        }
+    }
+
+    /// Split: splits clips under the playhead on the range tracks, or on all
+    /// tracks when nothing (or only clips) is selected.
+    pub fn split(&mut self) -> Result<(), EditorError> {
+        let pos = self.view.playhead;
+        let track_ids = match &self.selection {
+            Selection::Range { tracks, .. } => Some(tracks.clone()),
+            _ => None,
+        };
+        self.apply(Action::SplitAt { pos, track_ids })
+    }
+
+    /// Trim to selection: removes everything outside the range on the range
+    /// tracks; keeps the selection and does nothing without a range.
+    pub fn trim_to_selection(&mut self) -> Result<(), EditorError> {
+        match self.selection.clone() {
+            Selection::Range { start, end, tracks } => self.apply(Action::TrimToSelection {
+                s: start,
+                e: end,
+                track_ids: tracks,
+            }),
+            _ => Ok(()),
+        }
     }
     /// Applies one action: clone, run the op, check invariants, push undo, swap in.
     pub fn apply(&mut self, action: Action) -> Result<(), EditorError> {
@@ -1769,6 +1856,129 @@ mod tests {
         assert!(editor.undo_label().is_none());
         let clipboard = editor.clipboard().expect("copy stores the clipboard");
         assert_eq!(clipboard.length, 100);
+    }
+
+    #[test]
+    fn copy_selection_of_clips_keeps_track_offsets() {
+        let target = project_with_clips(&[&[(100, 50)], &[], &[(200, 50)]]);
+        let mut editor = Editor::with_project(
+            target,
+            ViewState::default(),
+            ProjectPaths {
+                root: PathBuf::from("unused"),
+            },
+        );
+        let clip_ids = vec![
+            editor.project.tracks[0].clips[0].id,
+            editor.project.tracks[2].clips[0].id,
+        ];
+        editor.select_clips(clip_ids);
+        editor.copy_selection();
+        let clipboard = editor.clipboard().expect("copy stores the clipboard");
+        assert_eq!(clipboard.tracks.len(), 3, "track 1 stays as an empty gap");
+        assert_eq!(clipboard.length, 150);
+        assert_eq!(clipboard.tracks[0][0].start, 0);
+        assert_eq!(clipboard.tracks[2][0].start, 100);
+    }
+
+    #[test]
+    fn cut_selection_of_clips_is_one_cut_step_and_undoes() {
+        let target = project_with_clips(&[&[(0, 100), (200, 100), (400, 100)]]);
+        let original = target.clone();
+        let mut editor = Editor::with_project(
+            target,
+            ViewState::default(),
+            ProjectPaths {
+                root: PathBuf::from("unused"),
+            },
+        );
+        editor.view.ripple = true;
+        let clip_id = editor.project.tracks[0].clips[1].id;
+        editor.select_clips(vec![clip_id]);
+
+        editor.cut_selection().unwrap();
+        assert_eq!(editor.undo_label(), Some("Cut"));
+        assert_eq!(
+            spans(&editor.project, 0),
+            [(0, 100), (300, 400)],
+            "ripple on closes the gap",
+        );
+
+        assert!(editor.undo(), "one undo step restores the clips");
+        assert_eq!(*editor.project, original);
+    }
+
+    #[test]
+    fn paste_with_a_range_selected_replaces_it() {
+        let target = project_with_clips(&[&[(0, 100), (200, 100)]]);
+        let track_id = target.tracks[0].id;
+        let clipboard = clipboard_of(&target, &[&[(0, 50)]], 0, 50);
+        let mut editor = paste_editor(target, clipboard);
+        editor.set_range(200, 300, vec![track_id]);
+        editor.set_playhead(0);
+
+        editor.paste().unwrap();
+        assert_eq!(
+            spans(&editor.project, 0),
+            [(0, 100), (200, 250)],
+            "replace puts the clipboard at the range start",
+        );
+        assert_eq!(editor.selection(), &Selection::None, "selection cleared");
+        assert_eq!(editor.view.playhead, 200, "playhead at the range start");
+    }
+
+    #[test]
+    fn paste_without_selection_inserts_at_the_playhead_on_the_target_track() {
+        let target = project_with_clips(&[&[], &[(0, 100)]]);
+        let track1_id = target.tracks[1].id;
+        let clipboard = clipboard_of(&target, &[&[(0, 50)]], 0, 50);
+        let mut editor = paste_editor(target, clipboard);
+        editor.set_last_clicked_track(track1_id);
+        editor.set_playhead(100);
+
+        editor.paste().unwrap();
+        assert_eq!(spans(&editor.project, 0), [], "track 0 untouched");
+        assert_eq!(
+            spans(&editor.project, 1),
+            [(0, 100), (100, 150)],
+            "insert at the playhead on the last clicked track",
+        );
+    }
+
+    #[test]
+    fn split_with_a_range_splits_only_the_range_tracks() {
+        let target = project_with_clips(&[&[(0, 100)], &[(0, 100)]]);
+        let track1_id = target.tracks[1].id;
+        let mut editor = Editor::with_project(
+            target,
+            ViewState::default(),
+            ProjectPaths {
+                root: PathBuf::from("unused"),
+            },
+        );
+        editor.set_range(0, 100, vec![track1_id]);
+        editor.set_playhead(50);
+
+        editor.split().unwrap();
+        assert_eq!(spans(&editor.project, 0), [(0, 100)], "track 0 untouched");
+        assert_eq!(spans(&editor.project, 1), [(0, 50), (50, 100)]);
+    }
+
+    #[test]
+    fn split_without_selection_splits_every_track() {
+        let target = project_with_clips(&[&[(0, 100)], &[(0, 100)]]);
+        let mut editor = Editor::with_project(
+            target,
+            ViewState::default(),
+            ProjectPaths {
+                root: PathBuf::from("unused"),
+            },
+        );
+        editor.set_playhead(50);
+
+        editor.split().unwrap();
+        assert_eq!(spans(&editor.project, 0), [(0, 50), (50, 100)]);
+        assert_eq!(spans(&editor.project, 1), [(0, 50), (50, 100)]);
     }
 
     /// Wraps the target project in an editor with the clipboard already stored.

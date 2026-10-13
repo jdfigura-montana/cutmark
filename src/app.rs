@@ -167,24 +167,28 @@ impl App {
 
         // Editor shortcuts, only when no text field has keyboard focus.
         if !ui.ctx().egui_wants_keyboard_input() {
-            let (ctrl, shift, n, o, s, i, z, y, t, r, a, escape, del, back) = ui.input(|i| {
-                (
-                    i.modifiers.ctrl,
-                    i.modifiers.shift,
-                    i.key_pressed(egui::Key::N),
-                    i.key_pressed(egui::Key::O),
-                    i.key_pressed(egui::Key::S),
-                    i.key_pressed(egui::Key::I),
-                    i.key_pressed(egui::Key::Z),
-                    i.key_pressed(egui::Key::Y),
-                    i.key_pressed(egui::Key::T),
-                    i.key_pressed(egui::Key::R),
-                    i.key_pressed(egui::Key::A),
-                    i.key_pressed(egui::Key::Escape),
-                    i.key_pressed(egui::Key::Delete),
-                    i.key_pressed(egui::Key::Backspace),
-                )
-            });
+            let (ctrl, shift, n, o, s, i, z, y, t, r, a, c, x, v, escape, del, back) =
+                ui.input(|i| {
+                    (
+                        i.modifiers.ctrl,
+                        i.modifiers.shift,
+                        i.key_pressed(egui::Key::N),
+                        i.key_pressed(egui::Key::O),
+                        i.key_pressed(egui::Key::S),
+                        i.key_pressed(egui::Key::I),
+                        i.key_pressed(egui::Key::Z),
+                        i.key_pressed(egui::Key::Y),
+                        i.key_pressed(egui::Key::T),
+                        i.key_pressed(egui::Key::R),
+                        i.key_pressed(egui::Key::A),
+                        i.key_pressed(egui::Key::C),
+                        i.key_pressed(egui::Key::X),
+                        i.key_pressed(egui::Key::V),
+                        i.key_pressed(egui::Key::Escape),
+                        i.key_pressed(egui::Key::Delete),
+                        i.key_pressed(egui::Key::Backspace),
+                    )
+                });
             // A continuous gesture is active: undo/redo keys are ignored.
             let gesture_active = editor.gesture_base.is_some();
             if ctrl && a {
@@ -220,6 +224,16 @@ impl App {
                 editor.toggle_ripple();
             } else if n && !ctrl {
                 editor.toggle_snap();
+            } else if s && !ctrl {
+                let _ = editor.split();
+            } else if ctrl && c {
+                editor.copy_selection();
+            } else if ctrl && x && !gesture_active {
+                let _ = editor.cut_selection();
+            } else if ctrl && v {
+                let _ = editor.paste();
+            } else if ctrl && t {
+                let _ = editor.trim_to_selection();
             }
         }
 

@@ -1,6 +1,7 @@
 //! ui::menu: the top Project, Edit and View menus.
 
 use eframe::egui;
+use uuid::Uuid;
 
 use crate::editor::Editor;
 use crate::ui::dialogs::confirm::ConfirmDialog;
@@ -74,25 +75,6 @@ impl ProjectMenu {
             }
         });
         ui.menu_button("Edit", |menu| {
-            if menu.button("Select All (Ctrl+A)").clicked() {
-                editor.select_all();
-                menu.close();
-            }
-            if editor.selection() == &crate::editor::selection::Selection::None {
-                menu.add_enabled(false, egui::Button::new("Clear Selection (Esc)"));
-            } else if menu.button("Clear Selection (Esc)").clicked() {
-                editor.clear_selection();
-                menu.close();
-            }
-            if menu.button("Ripple (R)").clicked() {
-                editor.toggle_ripple();
-                menu.close();
-            }
-            if menu.button("Snap (N)").clicked() {
-                editor.toggle_snap();
-                menu.close();
-            }
-            menu.separator();
             match editor.undo_label() {
                 Some(label) => {
                     if menu.button(format!("Undo {label} (Ctrl+Z)")).clicked() {
@@ -114,6 +96,132 @@ impl ProjectMenu {
                 None => {
                     menu.add_enabled(false, egui::Button::new("Redo (Ctrl+Y)"));
                 }
+            }
+            menu.separator();
+            let selection = editor.selection().clone();
+            let has_selection = !matches!(selection, crate::editor::selection::Selection::None);
+            let can_paste = editor
+                .clipboard()
+                .is_some_and(|c| c.tracks.iter().any(|t| !t.is_empty()));
+            let can_split = {
+                let pos = editor.view.playhead;
+                let range_tracks: Option<Vec<Uuid>> = match &selection {
+                    crate::editor::selection::Selection::Range { tracks, .. } => {
+                        Some(tracks.clone())
+                    }
+                    _ => None,
+                };
+                editor.project.tracks.iter().any(|track| {
+                    range_tracks
+                        .as_ref()
+                        .is_none_or(|ids| ids.contains(&track.id))
+                        && track
+                            .clips
+                            .iter()
+                            .any(|clip| clip.start < pos && pos < clip.end())
+                })
+            };
+            let can_trim = matches!(selection, crate::editor::selection::Selection::Range { .. });
+            let can_select_all = !editor.project.tracks.is_empty() && editor.project_length() > 0;
+
+            if has_selection {
+                if menu.button("Cut (Ctrl+X)").clicked() {
+                    let _ = editor.cut_selection();
+                    menu.close();
+                }
+            } else {
+                menu.add_enabled(false, egui::Button::new("Cut (Ctrl+X)"));
+            }
+            if has_selection {
+                if menu.button("Copy (Ctrl+C)").clicked() {
+                    editor.copy_selection();
+                    menu.close();
+                }
+            } else {
+                menu.add_enabled(false, egui::Button::new("Copy (Ctrl+C)"));
+            }
+            if can_paste {
+                if menu.button("Paste (Ctrl+V)").clicked() {
+                    let _ = editor.paste();
+                    menu.close();
+                }
+            } else {
+                menu.add_enabled(false, egui::Button::new("Paste (Ctrl+V)"));
+            }
+            if has_selection {
+                if menu.button("Delete (Del)").clicked() {
+                    match &selection {
+                        crate::editor::selection::Selection::Clips(ids) => {
+                            let _ = editor.apply(crate::editor::action::Action::DeleteClips {
+                                clip_ids: ids.clone(),
+                                ripple: editor.view.ripple,
+                            });
+                        }
+                        crate::editor::selection::Selection::Range { start, end, tracks } => {
+                            let _ = editor.apply(crate::editor::action::Action::DeleteRange {
+                                s: *start,
+                                e: *end,
+                                track_ids: tracks.clone(),
+                                ripple: editor.view.ripple,
+                            });
+                            editor.clear_selection();
+                            editor.set_playhead(*start);
+                        }
+                        crate::editor::selection::Selection::None => {}
+                    }
+                    menu.close();
+                }
+            } else {
+                menu.add_enabled(false, egui::Button::new("Delete (Del)"));
+            }
+            menu.separator();
+            if can_split {
+                if menu.button("Split (S)").clicked() {
+                    let _ = editor.split();
+                    menu.close();
+                }
+            } else {
+                menu.add_enabled(false, egui::Button::new("Split (S)"));
+            }
+            if can_trim {
+                if menu.button("Trim to Selection (Ctrl+T)").clicked() {
+                    let _ = editor.trim_to_selection();
+                    menu.close();
+                }
+            } else {
+                menu.add_enabled(false, egui::Button::new("Trim to Selection (Ctrl+T)"));
+            }
+            menu.separator();
+            if can_select_all {
+                if menu.button("Select All (Ctrl+A)").clicked() {
+                    editor.select_all();
+                    menu.close();
+                }
+            } else {
+                menu.add_enabled(false, egui::Button::new("Select All (Ctrl+A)"));
+            }
+            if has_selection {
+                if menu.button("Clear Selection (Esc)").clicked() {
+                    editor.clear_selection();
+                    menu.close();
+                }
+            } else {
+                menu.add_enabled(false, egui::Button::new("Clear Selection (Esc)"));
+            }
+            menu.separator();
+            let mut ripple = editor.view.ripple;
+            if menu
+                .add(egui::Checkbox::new(&mut ripple, "Ripple (R)"))
+                .changed()
+            {
+                editor.toggle_ripple();
+            }
+            let mut snap = editor.view.snap;
+            if menu
+                .add(egui::Checkbox::new(&mut snap, "Snap (N)"))
+                .changed()
+            {
+                editor.toggle_snap();
             }
         });
         ui.menu_button("View", |menu| {

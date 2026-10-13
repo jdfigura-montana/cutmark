@@ -1,4 +1,6 @@
 ﻿# Progress
+## What works - Task 6.4 complete (2026-10-13)
+- Task 6.4: clipboard::copy_clips (track offsets kept, empty in-between clipboard tracks), editor copy_selection/cut_selection/paste/split/trim_to_selection, keys S/Ctrl+C/X/V/T, Edit menu reordered with shortcuts, greyed items and Ripple/Snap checkmarks. 8 new tests. cargo test 271 passed; clippy clean; fmt applied.
 ## What works - Task 6.3 complete (2026-10-13)
 - Task 6.3: clip_view Zone/hit_test/clip_rect + selected styling; interaction handle_clip_input (header click/Ctrl+click select, multi-clip move drag with snapping + track change, edge trim drags, Esc cancel, hover cursors), clip right-click menu (Split at playhead on that track / Delete / Reset Fades / Reveal in Bin), draw_clip_snap_line; app.rs Delete/Backspace deletes clips or range with ripple; Ctrl+Z/Y ignored during gestures; bin_panel Reveal in Bin select+scroll. 2 new tests. cargo test 263 passed; clippy clean; fmt applied.
 ## What works - Task 6.2 complete (2026-10-13)
