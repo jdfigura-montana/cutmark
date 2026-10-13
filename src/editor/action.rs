@@ -1,7 +1,7 @@
 //! editor::action: Action, the single undoable edit path applied to the Project.
 
 use crate::editor::ops::OpError;
-use crate::editor::ops::{clip, range, track};
+use crate::editor::ops::{clip, marker, range, track};
 use crate::model::project::Project;
 
 /// One user-facing edit, dispatched to a pure function in `editor::ops`.
@@ -93,6 +93,23 @@ pub enum Action {
         /// Fade-out length in samples.
         fade_out: u64,
     },
+    /// Adds a marker at the given sample position.
+    AddMarker {
+        /// Position in samples.
+        pos: u64,
+    },
+    /// Moves the marker with the given id to a new position.
+    MoveMarker {
+        /// Marker to move.
+        id: uuid::Uuid,
+        /// New position in samples.
+        pos: u64,
+    },
+    /// Deletes the listed markers.
+    DeleteMarkers {
+        /// Markers to delete.
+        ids: Vec<uuid::Uuid>,
+    },
     /// Deletes the range `s..e` on the listed tracks, optionally rippling.
     DeleteRange {
         /// Range start in samples.
@@ -138,6 +155,9 @@ impl Action {
             Action::SetClipFades { .. } => "Fades",
             Action::DeleteRange { .. } => "Delete",
             Action::TrimToSelection { .. } => "Trim to Selection",
+            Action::AddMarker { .. } => "Add Marker",
+            Action::MoveMarker { .. } => "Move Marker",
+            Action::DeleteMarkers { .. } => "Delete Marker",
         }
     }
 
@@ -185,6 +205,9 @@ impl Action {
                 fade_in,
                 fade_out,
             } => clip::set_clip_fades(project, *clip_id, *fade_in, *fade_out),
+            Action::AddMarker { pos } => marker::add_marker(project, *pos),
+            Action::MoveMarker { id, pos } => marker::move_marker(project, *id, *pos),
+            Action::DeleteMarkers { ids } => marker::delete_markers(project, ids),
             Action::DeleteRange {
                 s,
                 e,

@@ -1300,4 +1300,116 @@ mod tests {
         assert!(!editor.dirty);
         assert!(editor.undo_label().is_none());
     }
+
+    #[test]
+    fn add_markers_roundtrip_sorts_and_labels() {
+        let project = project_with_clips(&[&[]]);
+        let project = roundtrip(project, Action::AddMarker { pos: 500 });
+        assert_eq!(
+            project
+                .markers
+                .iter()
+                .map(|m| m.position)
+                .collect::<Vec<_>>(),
+            [500]
+        );
+        let project = roundtrip(project, Action::AddMarker { pos: 100 });
+        let project = roundtrip(project, Action::AddMarker { pos: 300 });
+        assert_eq!(
+            project
+                .markers
+                .iter()
+                .map(|m| m.position)
+                .collect::<Vec<_>>(),
+            [100, 300, 500]
+        );
+        assert_eq!(Action::AddMarker { pos: 0 }.label(), "Add Marker");
+    }
+
+    #[test]
+    fn add_marker_on_existing_position_errors_and_undoes_cleanly() {
+        let project = project_with_clips(&[&[]]);
+        let mut editor = Editor::with_project(
+            project.clone(),
+            ViewState::default(),
+            ProjectPaths {
+                root: PathBuf::from("unused"),
+            },
+        );
+        editor.apply(Action::AddMarker { pos: 250 }).unwrap();
+        let before = editor.project.clone();
+        assert!(matches!(
+            editor.apply(Action::AddMarker { pos: 250 }),
+            Err(EditorError::Op(OpError::Invalid(_)))
+        ));
+        assert_eq!(*editor.project, *before, "failed add must change nothing");
+        assert_eq!(*editor.project, *before, "failed add must change nothing");
+    }
+
+    #[test]
+    fn move_marker_roundtrip_re_sorts() {
+        let project = project_with_clips(&[&[]]);
+        let project = roundtrip(project, Action::AddMarker { pos: 100 });
+        let project = roundtrip(project, Action::AddMarker { pos: 300 });
+        let id = project.markers[1].id;
+        let project = roundtrip(project, Action::MoveMarker { id, pos: 50 });
+        assert_eq!(
+            project
+                .markers
+                .iter()
+                .map(|m| m.position)
+                .collect::<Vec<_>>(),
+            [50, 100]
+        );
+        assert_eq!(Action::MoveMarker { id, pos: 0 }.label(), "Move Marker");
+    }
+
+    #[test]
+    fn delete_markers_roundtrip_removes_two_at_once() {
+        let project = project_with_clips(&[&[]]);
+        let project = roundtrip(project, Action::AddMarker { pos: 100 });
+        let project = roundtrip(project, Action::AddMarker { pos: 200 });
+        let project = roundtrip(project, Action::AddMarker { pos: 300 });
+        let ids = vec![project.markers[0].id, project.markers[2].id];
+        let project = roundtrip(project, Action::DeleteMarkers { ids });
+        assert_eq!(
+            project
+                .markers
+                .iter()
+                .map(|m| m.position)
+                .collect::<Vec<_>>(),
+            [200]
+        );
+        assert_eq!(
+            Action::DeleteMarkers { ids: Vec::new() }.label(),
+            "Delete Marker"
+        );
+    }
+
+    #[test]
+    fn ripple_delete_range_does_not_move_markers() {
+        let project = project_with_clips(&[&[(0, 100), (300, 100)]]);
+        let track_id = project.tracks[0].id;
+        let project = roundtrip(project, Action::AddMarker { pos: 500 });
+        let project = roundtrip(project, Action::AddMarker { pos: 350 });
+        let project = roundtrip(
+            project,
+            Action::DeleteRange {
+                s: 200,
+                e: 300,
+                track_ids: vec![track_id],
+                ripple: true,
+            },
+        );
+        assert_eq!(spans(&project, 0), [(0, 100), (200, 300)]);
+        assert_eq!(
+            project
+                .markers
+                .iter()
+                .map(|m| m.position)
+                .collect::<Vec<_>>(),
+            [350, 500],
+            "ripple must never move markers"
+        );
+    }
 }
