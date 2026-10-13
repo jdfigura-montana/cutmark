@@ -1,6 +1,7 @@
 //! editor::editor: the Editor struct owning the Project, view, paths and dirty flag.
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use thiserror::Error;
@@ -8,6 +9,8 @@ use thiserror::Error;
 use crate::editor::action::Action;
 use crate::editor::clipboard::{Clipboard, copy_range};
 use crate::editor::history::{History, HistoryEntry};
+use crate::editor::jobs::{JobChannels, JobMessage};
+use crate::editor::media_store::MediaStore;
 use crate::editor::ops::OpError;
 use crate::editor::ops::paste;
 use crate::io::IoError;
@@ -16,6 +19,7 @@ use crate::io::project_file;
 use crate::io::recent::{RecentEntry, RecentList};
 use crate::model::invariants::{self, InvariantError};
 use crate::model::project::{BitDepth, Project, ViewState};
+use uuid::Uuid;
 
 /// Errors from creating, opening, saving or editing a project.
 #[derive(Debug, Error)]
@@ -49,6 +53,16 @@ pub struct Editor {
     pub gesture_label: Option<&'static str>,
     /// Clipboard content from the last copy or cut, if any.
     pub clipboard: Option<Arc<Clipboard>>,
+    /// Conformed audio for bin items, kept for the whole session.
+    pub media_store: MediaStore,
+    /// Pending background jobs: job id -> (label, progress 0.0..1.0).
+    pub pending: BTreeMap<u64, (String, f32)>,
+    /// Id of the next background job to start.
+    pub next_job: u64,
+    /// Messages from failed background jobs, read and cleared by the UI.
+    job_errors: Vec<String>,
+    /// Worker-thread job channel pair.
+    pub jobs: JobChannels,
 }
 
 impl Editor {
@@ -73,6 +87,11 @@ impl Editor {
             gesture_base: None,
             gesture_label: None,
             clipboard: None,
+            media_store: MediaStore::new(),
+            pending: BTreeMap::new(),
+            next_job: 1,
+            job_errors: Vec::new(),
+            jobs: JobChannels::new(),
         })
     }
 
@@ -80,7 +99,7 @@ impl Editor {
     pub fn open(path: &Path) -> Result<Editor, EditorError> {
         let (project_paths, project, view) = project_file::load(path)?;
         Self::touch_recent(&project.name, &project_paths.root);
-        Ok(Editor {
+        let mut editor = Editor {
             project: Arc::new(project),
             view,
             paths: project_paths,
@@ -89,7 +108,14 @@ impl Editor {
             gesture_base: None,
             gesture_label: None,
             clipboard: None,
-        })
+            media_store: MediaStore::new(),
+            pending: BTreeMap::new(),
+            next_job: 1,
+            job_errors: Vec::new(),
+            jobs: JobChannels::new(),
+        };
+        editor.start_media_loads();
+        Ok(editor)
     }
 
     /// Wraps an existing project for tests: no disk access, no history.
@@ -103,6 +129,11 @@ impl Editor {
             gesture_base: None,
             gesture_label: None,
             clipboard: None,
+            media_store: MediaStore::new(),
+            pending: BTreeMap::new(),
+            next_job: 1,
+            job_errors: Vec::new(),
+            jobs: JobChannels::new(),
         }
     }
 
@@ -300,6 +331,126 @@ impl Editor {
         self.gesture_label = None;
     }
 
+    /// Starts background import jobs for the supported files.
+    ///
+    /// Returns the file names that were rejected because their extension is
+    /// not supported; one import job is started per supported file.
+    pub fn import_files(&mut self, files: Vec<PathBuf>) -> Vec<String> {
+        let mut rejected = Vec::new();
+        for file in files {
+            if crate::io::decode::is_supported(&file) {
+                let job = self.next_job;
+                self.next_job += 1;
+                self.pending.insert(job, ("Import".to_string(), 0.0));
+                self.jobs.spawn_import(
+                    job,
+                    file,
+                    self.paths.clone(),
+                    Uuid::new_v4(),
+                    self.project.sample_rate,
+                );
+            } else {
+                let name = file
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| file.display().to_string());
+                rejected.push(name);
+            }
+        }
+        rejected
+    }
+
+    /// Drains worker-thread messages without blocking.
+    pub fn poll_jobs(&mut self) {
+        while let Ok(message) = self.jobs.rx.try_recv() {
+            match message {
+                JobMessage::Progress { job, frac } => {
+                    if let Some(entry) = self.pending.get_mut(&job) {
+                        entry.1 = frac;
+                    }
+                }
+                JobMessage::ImportDone { job, result } => {
+                    self.pending.remove(&job);
+                    match result {
+                        Ok((item, loaded)) => {
+                            self.media_store.insert(item.id, loaded);
+                            if let Err(error) = self.apply(Action::ImportMedia { item }) {
+                                self.job_errors.push(error.to_string());
+                            }
+                        }
+                        Err(error) => self.job_errors.push(error.to_string()),
+                    }
+                }
+                JobMessage::LoadDone {
+                    job,
+                    media_id,
+                    result,
+                } => {
+                    self.pending.remove(&job);
+                    match result {
+                        Ok(loaded) => self.media_store.insert(media_id, loaded),
+                        Err(IoError::MediaOffline(id)) => self.media_store.set_offline(id),
+                        Err(error) => {
+                            self.media_store.set_offline(media_id);
+                            self.job_errors.push(error.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Starts one background load job per media item (used on open).
+    fn start_media_loads(&mut self) {
+        for item in self.project.media.clone() {
+            let job = self.next_job;
+            self.next_job += 1;
+            self.pending.insert(job, ("Load".to_string(), 0.0));
+            self.jobs
+                .spawn_load(job, item, self.paths.clone(), self.project.sample_rate);
+        }
+    }
+
+    /// Pending background jobs as (label, progress 0.0..1.0), oldest first.
+    pub fn pending_jobs(&self) -> Vec<(String, f32)> {
+        self.pending.values().cloned().collect()
+    }
+
+    /// True while any background job is still running.
+    pub fn has_pending_jobs(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    /// Takes the messages recorded from failed background jobs.
+    pub fn take_job_errors(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.job_errors)
+    }
+
+    /// Loaded audio for the media id, if it has been imported or loaded.
+    pub fn media(&self, id: Uuid) -> Option<&crate::io::import::Loaded> {
+        self.media_store.get(id)
+    }
+
+    /// True when the media item's file is missing from media/.
+    pub fn is_media_offline(&self, id: Uuid) -> bool {
+        self.media_store.is_offline(id)
+    }
+
+    /// Number of clips on the timeline that use the media item.
+    pub fn media_usage(&self, id: Uuid) -> usize {
+        self.project
+            .tracks
+            .iter()
+            .map(|t| t.clips.iter().filter(|c| c.media_id == id).count())
+            .sum()
+    }
+
+    /// Reveals the media item's file in media/ in Windows Explorer.
+    pub fn reveal_media(&self, id: Uuid) {
+        if let Some(item) = self.project.media.iter().find(|m| m.id == id) {
+            paths::reveal_in_explorer(&self.paths.media().join(&item.file_name));
+        }
+    }
     /// Adds the project to the recent list; a write failure is ignored.
     fn touch_recent(name: &str, root: &Path) {
         if let Some(list_path) = crate::io::recent::default_path() {
@@ -1432,5 +1583,171 @@ mod tests {
             .label(),
             "Project Settings"
         );
+    }
+
+    // ---- Task 3.5: media store, background import, media actions ----
+
+    #[test]
+    fn import_media_action_roundtrip() {
+        let target = project_with_clips(&[&[]]);
+        let mut new_item = target.media[0].clone();
+        new_item.id = uuid::Uuid::new_v4();
+        new_item.display_name = "Extra".to_string();
+        let project = roundtrip(target, Action::ImportMedia { item: new_item });
+        assert_eq!(project.media.len(), 2);
+        assert_eq!(project.media[1].display_name, "Extra");
+    }
+
+    #[test]
+    fn rename_media_action_roundtrip() {
+        let target = project_with_clips(&[&[]]);
+        let id = target.media[0].id;
+        let project = roundtrip(
+            target,
+            Action::RenameMedia {
+                id,
+                name: "New Name".to_string(),
+            },
+        );
+        assert_eq!(project.media[0].display_name, "New Name");
+    }
+
+    #[test]
+    fn remove_media_removes_clips_and_undo_restores_both() {
+        let target = project_with_clips(&[&[(0, 100)], &[(200, 100)]]);
+        let original = target.clone();
+        let id = target.media[0].id;
+        let mut editor = Editor::with_project(
+            target,
+            ViewState::default(),
+            ProjectPaths {
+                root: PathBuf::from("unused"),
+            },
+        );
+        assert_eq!(editor.media_usage(id), 2);
+        editor.apply(Action::RemoveMedia { id }).unwrap();
+        assert!(editor.project.media.is_empty());
+        assert!(editor.project.tracks.iter().all(|t| t.clips.is_empty()));
+        assert!(editor.undo(), "remove media is undoable");
+        assert_eq!(
+            *editor.project, original,
+            "undo restores the item and its clips"
+        );
+    }
+
+    #[test]
+    fn remove_media_action_roundtrip() {
+        let target = project_with_clips(&[&[(0, 100)]]);
+        let id = target.media[0].id;
+        let project = roundtrip(target, Action::RemoveMedia { id });
+        assert!(project.media.is_empty());
+        assert!(project.tracks.iter().all(|t| t.clips.is_empty()));
+    }
+
+    #[test]
+    fn rename_media_empty_name_errors() {
+        let target = project_with_clips(&[&[]]);
+        let id = target.media[0].id;
+        let mut editor = Editor::with_project(
+            target,
+            ViewState::default(),
+            ProjectPaths {
+                root: PathBuf::from("unused"),
+            },
+        );
+        assert!(
+            editor
+                .apply(Action::RenameMedia {
+                    id,
+                    name: "   ".to_string(),
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project.media[0].display_name, "Test Media");
+    }
+
+    /// Writes a 16-bit stereo WAV with `frames` frames at 48 kHz.
+    fn write_test_wav(path: &Path, frames: usize) {
+        use hound::{SampleFormat, WavSpec, WavWriter};
+        let spec = WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: SampleFormat::Int,
+        };
+        let mut writer = WavWriter::create(path, spec).unwrap();
+        for i in 0..frames {
+            let v = (i % 100) as i16;
+            writer.write_sample(v).unwrap();
+            writer.write_sample(-v).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    /// Wraps a fresh 48 kHz project over a real project folder layout.
+    fn editor_over_layout(parent: &Path, name: &str) -> Editor {
+        let paths = paths::create_layout(parent, name).unwrap();
+        let project = Project::new(name.to_string(), 48_000, BitDepth::Int24);
+        Editor::with_project(project, ViewState::default(), paths)
+    }
+
+    #[test]
+    fn import_job_end_to_end() {
+        let src_dir = tempdir().unwrap();
+        let src = src_dir.path().join("tone.wav");
+        write_test_wav(&src, 500);
+
+        let proj_dir = tempdir().unwrap();
+        let mut editor = editor_over_layout(proj_dir.path(), "Imp");
+
+        let rejected = editor.import_files(vec![src]);
+        assert!(rejected.is_empty());
+        assert!(editor.has_pending_jobs());
+
+        let start = std::time::Instant::now();
+        while editor.has_pending_jobs() {
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(10),
+                "import job timed out"
+            );
+            editor.poll_jobs();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            editor.take_job_errors().is_empty(),
+            "no job errors expected"
+        );
+        assert_eq!(editor.project.media.len(), 1);
+        let (media_id, display_name, length) = {
+            let item = &editor.project.media[0];
+            (item.id, item.display_name.clone(), item.length)
+        };
+        assert_eq!(display_name, "tone");
+        assert_eq!(length, 500);
+        let loaded = editor.media(media_id).expect("imported audio is loaded");
+        assert_eq!(loaded.samples.len(), 500 * 2);
+        assert!(!editor.is_media_offline(media_id));
+
+        assert!(editor.undo(), "import is undoable");
+        assert!(editor.project.media.is_empty());
+        assert!(
+            editor.media(media_id).is_some(),
+            "store keeps audio for undo"
+        );
+    }
+
+    #[test]
+    fn import_files_rejects_unsupported_extensions() {
+        let src_dir = tempdir().unwrap();
+        let src = src_dir.path().join("song.flac");
+        std::fs::write(&src, b"flac").unwrap();
+
+        let proj_dir = tempdir().unwrap();
+        let mut editor = editor_over_layout(proj_dir.path(), "Rej");
+
+        let rejected = editor.import_files(vec![src]);
+        assert_eq!(rejected, vec!["song.flac".to_string()]);
+        assert!(!editor.has_pending_jobs());
+        assert!(editor.project.media.is_empty());
     }
 }

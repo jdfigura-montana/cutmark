@@ -6,6 +6,7 @@ pub mod clipboard;
 pub mod editor;
 pub mod history;
 pub mod jobs;
+pub mod media_store;
 pub mod ops;
 pub mod selection;
 pub mod snap;

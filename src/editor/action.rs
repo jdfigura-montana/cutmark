@@ -137,6 +137,23 @@ pub enum Action {
         /// New default export bit depth.
         export_bit_depth: BitDepth,
     },
+    /// Appends a bin entry to the media bin (audio already conformed).
+    ImportMedia {
+        /// The bin entry to add.
+        item: crate::model::media::MediaItem,
+    },
+    /// Removes the bin entry and every clip that uses it.
+    RemoveMedia {
+        /// Media id to remove.
+        id: uuid::Uuid,
+    },
+    /// Renames a bin entry's display name.
+    RenameMedia {
+        /// Media id to rename.
+        id: uuid::Uuid,
+        /// New display name (must not be empty).
+        name: String,
+    },
 }
 
 impl Action {
@@ -166,6 +183,9 @@ impl Action {
             Action::MoveMarker { .. } => "Move Marker",
             Action::DeleteMarkers { .. } => "Delete Marker",
             Action::SetProjectSettings { .. } => "Project Settings",
+            Action::ImportMedia { .. } => "Import",
+            Action::RemoveMedia { .. } => "Remove Media",
+            Action::RenameMedia { .. } => "Rename Media",
         }
     }
 
@@ -229,6 +249,13 @@ impl Action {
                 name,
                 export_bit_depth,
             } => crate::editor::ops::set_project_settings(project, name, *export_bit_depth),
+            Action::ImportMedia { item } => {
+                crate::editor::ops::media::import_media(project, item.clone())
+            }
+            Action::RemoveMedia { id } => crate::editor::ops::media::remove_media(project, *id),
+            Action::RenameMedia { id, name } => {
+                crate::editor::ops::media::rename_media(project, *id, name)
+            }
         }
     }
 }
