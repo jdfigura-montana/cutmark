@@ -1,4 +1,4 @@
-﻿//! editor::editor: the Editor struct owning the Project, view, paths and dirty flag.
+//! editor::editor: the Editor struct owning the Project, view, paths and dirty flag.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -6,6 +6,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::editor::action::Action;
+use crate::editor::clipboard::{Clipboard, copy_range};
 use crate::editor::history::{History, HistoryEntry};
 use crate::editor::ops::OpError;
 use crate::io::IoError;
@@ -45,6 +46,8 @@ pub struct Editor {
     pub gesture_base: Option<Arc<Project>>,
     /// Label remembered from the last previewed action of the current gesture.
     pub gesture_label: Option<&'static str>,
+    /// Clipboard content from the last copy or cut, if any.
+    pub clipboard: Option<Arc<Clipboard>>,
 }
 
 impl Editor {
@@ -68,6 +71,7 @@ impl Editor {
             history: History::new(),
             gesture_base: None,
             gesture_label: None,
+            clipboard: None,
         })
     }
 
@@ -83,6 +87,7 @@ impl Editor {
             history: History::new(),
             gesture_base: None,
             gesture_label: None,
+            clipboard: None,
         })
     }
 
@@ -96,6 +101,7 @@ impl Editor {
             history: History::new(),
             gesture_base: None,
             gesture_label: None,
+            clipboard: None,
         }
     }
 
@@ -118,6 +124,37 @@ impl Editor {
         Ok(())
     }
 
+    /// Copies the range `s..e` on the listed tracks to the clipboard.
+    ///
+    /// Not undoable and does not mark the project dirty.
+    pub fn copy(&mut self, s: u64, e: u64, track_ids: &[uuid::Uuid]) {
+        self.clipboard = Some(Arc::new(copy_range(&self.project, s, e, track_ids)));
+    }
+
+    /// Copies the range, then deletes it with the label "Cut".
+    pub fn cut(
+        &mut self,
+        s: u64,
+        e: u64,
+        track_ids: Vec<uuid::Uuid>,
+        ripple: bool,
+    ) -> Result<(), EditorError> {
+        self.clipboard = Some(Arc::new(copy_range(&self.project, s, e, &track_ids)));
+        self.apply_labeled(
+            Action::DeleteRange {
+                s,
+                e,
+                track_ids,
+                ripple,
+            },
+            "Cut",
+        )
+    }
+
+    /// The clipboard content from the last copy or cut, if any.
+    pub fn clipboard(&self) -> Option<Arc<Clipboard>> {
+        self.clipboard.clone()
+    }
     /// Applies one action: clone, run the op, check invariants, push undo, swap in.
     pub fn apply(&mut self, action: Action) -> Result<(), EditorError> {
         let label = action.label();
@@ -973,5 +1010,94 @@ mod tests {
         let clip = &project.tracks[0].clips[0];
         assert_eq!(clip.fade_in, 2);
         assert_eq!(clip.fade_out, 8);
+    }
+    #[test]
+    fn delete_range_roundtrip() {
+        let target = project_with_clips(&[&[(0, 100), (200, 100)]]);
+        let track_id = target.tracks[0].id;
+        let project = roundtrip(
+            target,
+            Action::DeleteRange {
+                s: 50,
+                e: 150,
+                track_ids: vec![track_id],
+                ripple: true,
+            },
+        );
+        assert_eq!(spans(&project, 0), [(0, 50), (100, 200)]);
+    }
+
+    #[test]
+    fn delete_range_without_ripple_roundtrip() {
+        let target = project_with_clips(&[&[(0, 100), (200, 100)]]);
+        let track_id = target.tracks[0].id;
+        let project = roundtrip(
+            target,
+            Action::DeleteRange {
+                s: 50,
+                e: 150,
+                track_ids: vec![track_id],
+                ripple: false,
+            },
+        );
+        assert_eq!(spans(&project, 0), [(0, 50), (200, 300)]);
+    }
+
+    #[test]
+    fn trim_to_selection_roundtrip() {
+        let target = project_with_clips(&[&[(0, 100), (200, 100)]]);
+        let track_id = target.tracks[0].id;
+        let project = roundtrip(
+            target,
+            Action::TrimToSelection {
+                s: 50,
+                e: 250,
+                track_ids: vec![track_id],
+            },
+        );
+        assert_eq!(spans(&project, 0), [(50, 100), (200, 250)]);
+    }
+
+    #[test]
+    fn cut_copies_to_the_clipboard_and_undo_restores() {
+        let target = project_with_clips(&[&[(0, 100), (200, 100)]]);
+        let track_id = target.tracks[0].id;
+        let original = target.clone();
+        let mut editor = Editor::with_project(
+            target,
+            ViewState::default(),
+            ProjectPaths {
+                root: PathBuf::from("unused"),
+            },
+        );
+        editor.cut(50, 150, vec![track_id], true).unwrap();
+        assert!(editor.dirty);
+
+        let clipboard = editor.clipboard().expect("cut stores the clipboard");
+        assert_eq!(clipboard.length, 100);
+        let clip = &clipboard.tracks[0][0];
+        assert_eq!((clip.start, clip.start + clip.len()), (0, 50));
+        assert_eq!((clip.src_in, clip.src_out), (50, 100));
+
+        assert_eq!(editor.undo_label(), Some("Cut"));
+        assert!(editor.undo(), "undo after cut");
+        assert_eq!(*editor.project, original, "undo must restore the clips");
+    }
+
+    #[test]
+    fn copy_is_not_undoable_and_not_dirty() {
+        let mut editor = Editor::with_project(
+            project_with_clips(&[&[(0, 100)]]),
+            ViewState::default(),
+            ProjectPaths {
+                root: PathBuf::from("unused"),
+            },
+        );
+        let track_id = editor.project.tracks[0].id;
+        editor.copy(0, 100, &[track_id]);
+        assert!(!editor.dirty);
+        assert!(editor.undo_label().is_none());
+        let clipboard = editor.clipboard().expect("copy stores the clipboard");
+        assert_eq!(clipboard.length, 100);
     }
 }

@@ -1,7 +1,7 @@
 //! editor::action: Action, the single undoable edit path applied to the Project.
 
 use crate::editor::ops::OpError;
-use crate::editor::ops::{clip, track};
+use crate::editor::ops::{clip, range, track};
 use crate::model::project::Project;
 
 /// One user-facing edit, dispatched to a pure function in `editor::ops`.
@@ -93,6 +93,26 @@ pub enum Action {
         /// Fade-out length in samples.
         fade_out: u64,
     },
+    /// Deletes the range `s..e` on the listed tracks, optionally rippling.
+    DeleteRange {
+        /// Range start in samples.
+        s: u64,
+        /// Exclusive range end in samples.
+        e: u64,
+        /// Track ids to delete on.
+        track_ids: Vec<uuid::Uuid>,
+        /// Shift later clips left by `e - s`.
+        ripple: bool,
+    },
+    /// Removes everything outside `s..e` on the listed tracks.
+    TrimToSelection {
+        /// Range start in samples.
+        s: u64,
+        /// Exclusive range end in samples.
+        e: u64,
+        /// Track ids to trim on.
+        track_ids: Vec<uuid::Uuid>,
+    },
 }
 
 impl Action {
@@ -116,6 +136,8 @@ impl Action {
             Action::DeleteClips { .. } => "Delete Clip",
             Action::SetClipGain { .. } => "Clip Gain",
             Action::SetClipFades { .. } => "Fades",
+            Action::DeleteRange { .. } => "Delete",
+            Action::TrimToSelection { .. } => "Trim to Selection",
         }
     }
 
@@ -163,6 +185,15 @@ impl Action {
                 fade_in,
                 fade_out,
             } => clip::set_clip_fades(project, *clip_id, *fade_in, *fade_out),
+            Action::DeleteRange {
+                s,
+                e,
+                track_ids,
+                ripple,
+            } => range::delete_range(project, *s, *e, track_ids, *ripple),
+            Action::TrimToSelection { s, e, track_ids } => {
+                range::trim_to_selection(project, *s, *e, track_ids)
+            }
         }
     }
 }
