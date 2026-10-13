@@ -12,7 +12,7 @@ pub fn show(ui: &mut egui::Ui, editor: &Editor) {
     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.label(egui::RichText::new(timecode).monospace());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(format!("{} Hz", editor.project.sample_rate));
+            ui.label(editor.audio_status());
         });
     });
 }

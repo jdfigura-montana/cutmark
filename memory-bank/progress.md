@@ -1,4 +1,7 @@
 ﻿# Progress
+# Progress
+## What works - Task 5.3 complete (2026-10-13)
+- Task 5.3: audio::engine (cpal 0.18.2 stream, Shared atomics, bounded(64) command queue, ArcSwap MixPlan timeline+preview, f32 config selection with device-rate fallback + DeviceResampler, 20 ms fixed buffer when supported, preallocated scratch, assert_no_alloc debug callback, device_info string) + editor::start_audio/publish/tick/audio_status wired into commit, undo/redo, gesture preview/end/cancel and load-job completions; retired plans kept 2 s; status bar shows device rate; main.rs installs AllocDisabler (warn_debug) in debug builds. 1 new test. cargo test 237 passed; clippy clean; fmt applied.
 ## What works - Task 5.2 complete (2026-10-13)
 - Task 5.2: audio::player (Command/State/Player transport state machine, 5 ms declick ramps with deferred apply, range end declicks to zero exactly at range_end, renders via mixer::render in pieces, no allocation) + audio::resampler (DeviceResampler, cubic Hermite, preallocated 16,384+8-frame scratch, seam-free across calls). 13 new tests. cargo test 236 passed; clippy clean; fmt applied.
 - Task 5.1: audio::mix_plan (MixPlan/TrackPlan/ClipPlan, build with mute/solo/constant-power pan/offline-media resolution, preview) + audio::mixer (render, partition_point clip lookup, linear fades min-combined, .get() sample reads, master gain). 17 new tests. arc-swap added.

@@ -3,9 +3,12 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
+use crate::audio::engine::Engine;
+use crate::audio::mix_plan::MixPlan;
 use crate::editor::action::Action;
 use crate::editor::clipboard::{Clipboard, copy_range};
 use crate::editor::history::{History, HistoryEntry};
@@ -65,6 +68,13 @@ pub struct Editor {
     pub jobs: JobChannels,
     /// Display-only vertical waveform scale, 1.0..=16.0 (not saved).
     pub wave_scale: f32,
+    /// The live audio engine, when it started successfully.
+    pub audio: Option<Engine>,
+    /// Mix plans retired from the ArcSwap, kept 2 s so the audio thread
+    /// never frees the last reference.
+    pub retired: Vec<(Instant, Arc<MixPlan>)>,
+    /// Message from a failed `Engine::start`, shown by `audio_status`.
+    pub audio_error: Option<String>,
 }
 
 impl Editor {
@@ -95,6 +105,9 @@ impl Editor {
             job_errors: Vec::new(),
             jobs: JobChannels::new(),
             wave_scale: 1.0,
+            audio: None,
+            retired: Vec::new(),
+            audio_error: None,
         })
     }
 
@@ -117,6 +130,9 @@ impl Editor {
             job_errors: Vec::new(),
             jobs: JobChannels::new(),
             wave_scale: 1.0,
+            audio: None,
+            retired: Vec::new(),
+            audio_error: None,
         };
         editor.start_media_loads();
         Ok(editor)
@@ -139,6 +155,9 @@ impl Editor {
             job_errors: Vec::new(),
             jobs: JobChannels::new(),
             wave_scale: 1.0,
+            audio: None,
+            retired: Vec::new(),
+            audio_error: None,
         }
     }
 
@@ -279,7 +298,7 @@ impl Editor {
         });
         self.project = Arc::new(next);
         self.dirty = true;
-        // publish to audio: phase 5
+        self.publish();
         Ok(())
     }
 
@@ -323,6 +342,7 @@ impl Editor {
             Some(entry) => {
                 self.project = entry.before;
                 self.dirty = true;
+                self.publish();
                 true
             }
             None => false,
@@ -335,6 +355,7 @@ impl Editor {
             Some(entry) => {
                 self.project = entry.before;
                 self.dirty = true;
+                self.publish();
                 true
             }
             None => false,
@@ -367,6 +388,7 @@ impl Editor {
         action.run(&mut next)?;
         invariants::check(&next)?;
         self.project = Arc::new(next);
+        self.publish();
         self.gesture_label = Some(action.label());
         Ok(())
     }
@@ -381,6 +403,7 @@ impl Editor {
                     before: base,
                 });
                 self.dirty = true;
+                self.publish();
             }
         }
     }
@@ -389,8 +412,50 @@ impl Editor {
     pub fn cancel_gesture(&mut self) {
         if let Some(base) = self.gesture_base.take() {
             self.project = base;
+            self.publish();
         }
         self.gesture_label = None;
+    }
+
+    /// Starts the audio engine for the project rate; stores the error on failure.
+    pub fn start_audio(&mut self) {
+        if self.audio.is_some() {
+            return;
+        }
+        match Engine::start(self.project.sample_rate) {
+            Ok(engine) => self.audio = Some(engine),
+            Err(error) => self.audio_error = Some(error.to_string()),
+        }
+    }
+
+    /// Publishes a fresh MixPlan to the audio engine; a no-op without audio.
+    pub fn publish(&mut self) {
+        let engine = match &self.audio {
+            Some(engine) => engine,
+            None => return,
+        };
+        let media = &self.media_store;
+        let project = &self.project;
+        let plan = MixPlan::build(project, &|id| media.get(id).map(|l| Arc::clone(&l.samples)));
+        let old = engine.publish_timeline(Arc::new(plan));
+        self.retired.push((Instant::now(), old));
+    }
+
+    /// Drops retired mix plans older than 2 s; called every frame.
+    pub fn tick(&mut self) {
+        self.retired
+            .retain(|(at, _)| at.elapsed() < Duration::from_secs(2));
+    }
+
+    /// One-line audio summary for the status bar.
+    pub fn audio_status(&self) -> String {
+        match &self.audio {
+            Some(engine) => engine.device_info().to_string(),
+            None => match &self.audio_error {
+                Some(error) => format!("No audio: {error}"),
+                None => "No audio".to_string(),
+            },
+        }
     }
 
     /// Starts background import jobs for the supported files.
@@ -450,8 +515,14 @@ impl Editor {
                 } => {
                     self.pending.remove(&job);
                     match result {
-                        Ok(loaded) => self.media_store.insert(media_id, loaded),
-                        Err(IoError::MediaOffline(id)) => self.media_store.set_offline(id),
+                        Ok(loaded) => {
+                            self.media_store.insert(media_id, loaded);
+                            self.publish();
+                        }
+                        Err(IoError::MediaOffline(id)) => {
+                            self.media_store.set_offline(id);
+                            self.publish();
+                        }
                         Err(error) => {
                             self.media_store.set_offline(media_id);
                             self.job_errors.push(error.to_string());
@@ -1898,5 +1969,24 @@ mod tests {
         assert_eq!(rejected, vec!["song.flac".to_string()]);
         assert!(!editor.has_pending_jobs());
         assert!(editor.project.media.is_empty());
+    }
+
+    #[test]
+    fn publish_without_audio_is_a_noop() {
+        let mut editor = with_editor(project_with_clips(&[&[(100, 100)]]));
+        assert!(editor.audio.is_none());
+        assert!(editor.audio_status().starts_with("No audio"));
+        // An edit with no engine running must not panic; publish is a no-op.
+        assert!(
+            editor
+                .apply(Action::AddTrack {
+                    index: None,
+                    name: None
+                })
+                .is_ok()
+        );
+        editor.publish();
+        editor.tick();
+        assert!(editor.retired.is_empty());
     }
 }

@@ -8,6 +8,13 @@ mod model;
 mod ui;
 mod util;
 
+// Detect allocations on the audio thread: debug builds print a warning on
+// stderr instead of aborting (feature warn_debug); release builds are
+// untouched because the disable_release default feature is enabled.
+#[cfg(debug_assertions)]
+#[global_allocator]
+static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
+
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()

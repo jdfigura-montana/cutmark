@@ -20,7 +20,7 @@ enum Screen {
     /// Start screen with New/Open/Recent.
     Start(StartScreen),
     /// An open project being edited.
-    Editing(Editor),
+    Editing(Box<Editor>),
 }
 
 /// Root application state shown in the main window.
@@ -74,8 +74,9 @@ impl eframe::App for App {
                 );
             }
         }
-        if let Some(editor) = opened {
-            screen = Screen::Editing(editor);
+        if let Some(mut editor) = opened {
+            editor.start_audio();
+            screen = Screen::Editing(Box::new(editor));
         }
         match action {
             ProjectMenuAction::None => {}
@@ -99,6 +100,8 @@ impl App {
     ) -> ProjectMenuAction {
         // Pump background jobs and keep repainting while any are running.
         editor.poll_jobs();
+        // Retire old mix plans and keep the audio status fresh.
+        editor.tick();
         if editor.has_pending_jobs() {
             ui.ctx().request_repaint();
         }
