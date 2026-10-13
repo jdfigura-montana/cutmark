@@ -1,6 +1,7 @@
 ﻿# Progress
 
-## What works - Task 1.7 complete (2026-10-12)
+## What works - Task 2.1 complete (2026-10-12)
+- Task 2.1: model helpers (Clip len/end/clamp_fades, Track::new/sort_clips), model::invariants (InvariantError a-g + check, 13 tests), model::fixtures (project_with_clips/spans/srcs, cfg(test)). cargo test 44 passed; clippy -D warnings clean; fmt applied.
 - Task 1.7: Save As. io/project_file.rs::copy_project (recursive copy_tree, name validation, FolderExists error), Editor::save_as (copy, rename via Arc::make_mut, repoint paths, save, touch recent), ui/dialogs/save_as.rs SaveAsDialog (name prefilled, parent + Browse, red inline errors), ProjectMenu item + open_save_as, Ctrl+Shift+S shortcut in app.rs. 5 new tests (3 io, 1 editor save_as).
 - Task 1.6: Project menu (New/Open/Save/Close) in ui/menu.rs, save-error modal in ui/dialogs/confirm.rs; Ctrl+N/O/S shortcuts; window title "[*]{name} - Audio Editor"; status bar sample rate. StartScreen with_new_dialog/with_open_request/dialog_is_open; NewProjectDialog::new_open.
 - Task 1.5: minimal editor::Editor (create/open/save, dirty flag, recent-list touch), EditorError, free recent_projects/remove_recent; New Project dialog; start screen (New/Open Project/Open Folder/recent list with greyed missing + Remove); app.rs Screen{Start, Editing}.

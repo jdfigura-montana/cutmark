@@ -7,6 +7,9 @@ pub mod media;
 pub mod project;
 pub mod track;
 
+#[cfg(test)]
+pub mod fixtures;
+
 // TEMP: the binary crate has no consumers of these re-exports yet; remove this allow in phase 10.
 #[allow(unused_imports)]
 pub use clip::Clip;

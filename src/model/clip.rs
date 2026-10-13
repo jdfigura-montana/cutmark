@@ -23,3 +23,21 @@ pub struct Clip {
     /// Fade-out length in samples.
     pub fade_out: u64,
 }
+
+impl Clip {
+    /// Clip length in samples: `src_out - src_in`.
+    pub fn len(&self) -> u64 {
+        self.src_out - self.src_in
+    }
+
+    /// Exclusive timeline end: `start + len()`.
+    pub fn end(&self) -> u64 {
+        self.start + self.len()
+    }
+
+    /// Shrinks the fades so `fade_in + fade_out <= len`, trimming fade_out first.
+    pub fn clamp_fades(&mut self) {
+        self.fade_out = self.fade_out.min(self.len());
+        self.fade_in = self.fade_in.min(self.len() - self.fade_out);
+    }
+}
