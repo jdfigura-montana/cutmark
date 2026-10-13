@@ -167,7 +167,7 @@ impl App {
 
         // Editor shortcuts, only when no text field has keyboard focus.
         if !ui.ctx().egui_wants_keyboard_input() {
-            let (ctrl, shift, n, o, s, i, z, y, t) = ui.input(|i| {
+            let (ctrl, shift, n, o, s, i, z, y, t, r, a, escape) = ui.input(|i| {
                 (
                     i.modifiers.ctrl,
                     i.modifiers.shift,
@@ -178,9 +178,14 @@ impl App {
                     i.key_pressed(egui::Key::Z),
                     i.key_pressed(egui::Key::Y),
                     i.key_pressed(egui::Key::T),
+                    i.key_pressed(egui::Key::R),
+                    i.key_pressed(egui::Key::A),
+                    i.key_pressed(egui::Key::Escape),
                 )
             });
-            if ctrl && i {
+            if ctrl && a {
+                editor.select_all();
+            } else if ctrl && i {
                 msgs.extend(bin_panel::pick_and_import(editor));
             } else if ctrl && z {
                 if shift {
@@ -203,16 +208,32 @@ impl App {
                 });
             } else if ctrl && s {
                 menu.save(editor);
+            } else if escape {
+                editor.clear_selection();
+            } else if r && !ctrl {
+                editor.toggle_ripple();
+            } else if n && !ctrl {
+                editor.toggle_snap();
             }
         }
 
         // Transport keys (Space is consumed so a focused button does not also
-        // activate). Shift+Space is left for play-range selection in phase 6.
+        // activate).
         if !ui.ctx().egui_wants_keyboard_input() {
             ui.input_mut(|i| {
                 if i.key_pressed(egui::Key::Space) && i.modifiers.is_none() {
                     editor.toggle_play();
                     i.consume_key(egui::Modifiers::NONE, egui::Key::Space);
+                } else if i.key_pressed(egui::Key::Space)
+                    && i.modifiers.shift
+                    && !i.modifiers.ctrl
+                    && let crate::editor::selection::Selection::Range { start, end, .. } =
+                        editor.selection().clone()
+                {
+                    // Play selection: plays the range once, then returns to its
+                    // start. Without a range, Shift+Space does nothing.
+                    editor.play_range(start, end);
+                    i.consume_key(egui::Modifiers::SHIFT, egui::Key::Space);
                 } else if i.key_pressed(egui::Key::P) && i.modifiers.is_none() {
                     editor.toggle_pause();
                     i.consume_key(egui::Modifiers::NONE, egui::Key::P);
@@ -223,7 +244,6 @@ impl App {
                     editor.jump_end();
                     i.consume_key(egui::Modifiers::NONE, egui::Key::End);
                 }
-                // phase 6: play range selection (Shift+Space)
             });
         }
 

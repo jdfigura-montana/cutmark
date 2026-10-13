@@ -37,6 +37,8 @@ pub enum ViewMenuAction {
     ZoomOut,
     /// Zoom so the whole project fits.
     ZoomToFit,
+    /// Zoom so the range selection fills the lane area.
+    ZoomToSelection,
 }
 
 /// Ruler tick step, in seconds, from the coarsest-fitting list.
@@ -104,6 +106,21 @@ pub fn zoom_to_fit(project_length: u64, sample_rate: u32, lane_width: f32) -> (f
     (spp, 0)
 }
 
+/// Zoom and scroll that show the range selection: samples-per-pixel is the
+/// range length over the lane width times 1.1, and the scroll puts the range
+/// start 5 percent of the visible width in from the left edge, not below 0.
+/// Both are clamped to the usual zoom limits.
+pub fn zoom_to_selection(start: u64, end: u64, lane_width: f32) -> (f64, u64) {
+    if lane_width <= 0.0 {
+        return (MAX_SPP, 0);
+    }
+    let len = (end.saturating_sub(start)) as f64;
+    let spp = (len / f64::from(lane_width) * 1.1).clamp(MIN_SPP, MAX_SPP);
+    let visible = f64::from(lane_width) * spp;
+    let scroll = (start as f64 - 0.05 * visible).round().max(0.0) as u64;
+    (spp, scroll)
+}
+
 /// Smallest ruler tick step (in samples) that is at least `min_px` wide at
 /// the given zoom and sample rate. Uses the largest step when none fit.
 pub fn tick_step(spp: f64, rate: u32, min_px: f32) -> u64 {
@@ -161,9 +178,13 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction) -
     if !(MIN_SPP..=MAX_SPP).contains(&editor.view.samples_per_pixel) {
         apply_fit(editor, lane_width);
     }
-    // \ zooms to fit, even when the pointer is not over the timeline.
+    // \ zooms to fit, Ctrl+\ zooms to the selection, wherever the pointer is.
     if !ui.ctx().egui_wants_keyboard_input() && ui.input(|i| i.key_pressed(egui::Key::Backslash)) {
-        apply_fit(editor, lane_width);
+        if ui.input(|i| i.modifiers.ctrl) {
+            apply_view_menu(editor, ViewMenuAction::ZoomToSelection, lane_width);
+        } else {
+            apply_fit(editor, lane_width);
+        }
     }
     apply_view_menu(editor, view_menu, lane_width);
 
@@ -174,7 +195,6 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction) -
         lane_left,
         lane_width,
         ruler_rect,
-        lane_rect,
         max_scroll_y,
         &resp,
     );
@@ -202,6 +222,8 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction) -
     };
     // A bin item dragged over the lanes: Esc cancels, release over a lane drops.
     let messages = interaction::handle_bin_drag(ui, editor, &g, lane_rect, view.scroll_y);
+    // Lane mouse interaction: range selection, boundary drags, playhead clicks.
+    interaction::handle_lane_input(ui, editor, &g, lane_rect, view.scroll_y);
     let visible = g.visible_range().1 - g.visible_range().0;
     let length = editor.project_length();
     let max_scroll_x = scroll_extent(length, visible).saturating_sub(visible);
@@ -235,6 +257,14 @@ fn apply_view_menu(editor: &mut Editor, action: ViewMenuAction, lane_width: f32)
     match action {
         ViewMenuAction::None => {}
         ViewMenuAction::ZoomToFit => apply_fit(editor, lane_width),
+        ViewMenuAction::ZoomToSelection => {
+            if let crate::editor::selection::Selection::Range { start, end, .. } =
+                editor.selection()
+            {
+                let (spp, scroll_x) = zoom_to_selection(*start, *end, lane_width);
+                editor.set_view_x(spp, clamp_scroll_x(editor, spp, lane_width, scroll_x));
+            }
+        }
         ViewMenuAction::ZoomIn | ViewMenuAction::ZoomOut => {
             let factor = if action == ViewMenuAction::ZoomIn {
                 1.5
@@ -260,7 +290,6 @@ fn handle_input(
     lane_left: f32,
     lane_width: f32,
     ruler_rect: egui::Rect,
-    lane_rect: egui::Rect,
     max_scroll_y: f32,
     resp: &egui::Response,
 ) {
@@ -268,12 +297,12 @@ fn handle_input(
         return;
     }
 
-    // Clicking the ruler or empty lane space sets the playhead.
+    // Clicking the ruler sets the playhead (scrubbing comes in task 8).
+    // Lane clicks are handled by interaction::handle_lane_input.
     if resp.clicked()
         && !ui.ctx().egui_wants_keyboard_input()
         && let Some(p) = resp.interact_pointer_pos()
-        && (ruler_rect.contains(p) || lane_rect.contains(p))
-        && p.y < lane_rect.bottom()
+        && ruler_rect.contains(p)
     {
         let g = Geom {
             lane_left,
@@ -448,6 +477,9 @@ fn draw(
 
     // Ghost clip while a bin item is dragged over the lanes.
     interaction::draw_drop_ghost(ui, editor, g, lane_rect, view.scroll_y);
+
+    // Range selection: tint on selected tracks, boundary lines, snap line.
+    interaction::draw_range(ui, editor, g, lane_rect, view.scroll_y);
 
     // Ruler: ticks, labels, markers and their faint lines.
     ruler::draw(
@@ -677,6 +709,42 @@ mod tests {
         let (spp, _) = zoom_to_fit(0, 48_000, 1_000.0);
         let expected = 480_000.0 / 1_000.0 * 1.05;
         assert!((spp - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn zoom_to_selection_fits_the_range_with_a_margin() {
+        // 100 000 samples over 1 000 px: spp = 100 * 1.1; start 0 stays 0.
+        let (spp, scroll_x) = zoom_to_selection(0, 100_000, 1_000.0);
+        assert!((spp - 110.0).abs() < 1e-9);
+        assert_eq!(scroll_x, 0);
+    }
+
+    #[test]
+    fn zoom_to_selection_scrolls_so_the_start_is_five_percent_in() {
+        // spp 1.1 -> visible 1 100; scroll = 200 - 55 = 145.
+        let (spp, scroll_x) = zoom_to_selection(200, 1_200, 1_000.0);
+        assert!((spp - 1.1).abs() < 1e-9);
+        assert_eq!(scroll_x, 145);
+    }
+
+    #[test]
+    fn zoom_to_selection_never_scrolls_below_zero() {
+        // The start is before the 5 percent margin would be.
+        let (_, scroll_x) = zoom_to_selection(40, 1_040, 1_000.0);
+        assert_eq!(scroll_x, 0);
+    }
+
+    #[test]
+    fn zoom_to_selection_clamps_spp() {
+        // A one-sample range at a huge lane width clamps at MIN_SPP.
+        let (spp, _) = zoom_to_selection(0, 1, 1_000_000_000.0);
+        assert_eq!(spp, MIN_SPP);
+    }
+
+    #[test]
+    fn zoom_to_selection_handles_empty_and_zero_width() {
+        assert_eq!(zoom_to_selection(500, 500, 1_000.0).0, MIN_SPP);
+        assert_eq!(zoom_to_selection(0, 100, 0.0), (MAX_SPP, 0));
     }
 
     #[test]

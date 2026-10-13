@@ -1,5 +1,6 @@
 ﻿# Progress
-# Progress
+## What works - Task 6.2 complete (2026-10-13)
+- Task 6.2: interaction::handle_lane_input + draw_range (drag range select across tracks with snapping/Alt, click sets snapped playhead + clears selection and seeks while playing, Shift+click extend, boundary line drag with swap, snap line drawing), timeline zoom_to_selection + Ctrl+\ + View menu, status bar Sel readout, toolbar Ripple/Snap toggles, keys Esc/Ctrl+A/R/N/Shift+Space, track header Ctrl+click toggle_range_track, Edit/View menu entries. 5 new tests. cargo test 261 passed; clippy clean; fmt applied.
 ## What works - Task 6.1 complete (2026-10-13)
 - Task 6.1: editor::selection (Selection enum + tidy), Editor selection methods (set_range/toggle_range_track/select_clips/toggle_clip/clear_selection/select_all/target_track/last_clicked_track), toggle_snap/toggle_ripple (view-only), tidy_selection after apply/undo/redo; editor::snap (snap fn, snap_candidates, snap_pos 8 px). 9 new tests (2 selection, 4 snap, 7 editor). cargo test 256 passed; clippy clean; fmt applied.
 ## What works - Task 5.5 complete (2026-10-13)

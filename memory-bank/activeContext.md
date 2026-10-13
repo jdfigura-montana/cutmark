@@ -1,4 +1,11 @@
 ﻿## Current state
+Task 6.2 DONE (2026-10-13). Range selection mouse interaction, toggles, Shift+Space, zoom to selection.
+- interaction.rs: LaneState (egui temp "timeline_lane_state": press/boundary/range_drag/snap_line); handle_lane_input (press -> set_last_clicked_track; click <3 px -> snapped playhead + clear_selection, seek while Playing; drag >=3 px -> set_range over contiguous track span, both edges snap_pos, Alt bypass; Shift+click extends nearer edge or starts range at playhead; boundary-line drag within 4 px, swaps via set_range ordering with stored tracks). draw_range: tint on selected tracks only, full-height boundary lines, bright snap line while dragging. Ctrl+press on lanes ignored (reserved for 6.3 clip select).
+- egui 0.36 gotchas: Pos2-Pos2 no longer has .length() (compute via x/y sqrt); Color32::from_rgba_unmultiplied not const (use fns); get_temp_mut_or_default needs turbofish.
+- timeline::mod: ruler-only playhead click (lanes handled by handle_lane_input); ViewMenuAction::ZoomToSelection; zoom_to_selection(start,end,lane_width) (spp=len/width*1.1 clamped, scroll=start-5% visible, >=0); Ctrl+\ and View menu wired; draw_range called after drop ghost.
+- app.rs keys: Esc clear_selection, Ctrl+A select_all, R toggle_ripple, N toggle_snap (no text focus); Shift+Space plays selection via play_range (phase 6 comment removed).
+- toolbar: Ripple/Snap selectable_label toggles (R/N). status_bar: "Sel HH:MM:SS.mmm to ... (...)". menu.rs: Edit Select All/Clear Selection (Esc, disabled when None)/Ripple/Snap; View Zoom to Selection (Ctrl+\, disabled unless Range). track_header: Ctrl+click host toggles range track.
+- 5 new zoom_to_selection tests. cargo test 261 passed; clippy clean; fmt applied.
 Task 6.1 DONE (2026-10-13). Selection state and snapping.
 - editor::selection: Selection enum (None / Range{start,end,tracks} / Clips) + tidy(project). Range always start<end, tracks in project order, no dups.
 - Editor fields `selection`, `last_clicked_track` (both private; accessors selection()/last_clicked_track()); methods set_range/toggle_range_track/select_clips/toggle_clip/clear_selection/select_all/target_track/set_last_clicked_track/toggle_snap/toggle_ripple; private tidy_selection() called from commit, undo, redo. Selection is not undoable, never dirty.

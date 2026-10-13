@@ -128,12 +128,16 @@ pub fn show(
             }
         }
 
-        // Right-click menu host for the whole header.
+        // Right-click menu host for the whole header. Ctrl+click toggles the
+        // track in or out of the current range selection.
         let host = ui.interact(
             rect,
             egui::Id::new(("track_host", *id)),
             egui::Sense::click(),
         );
+        if host.clicked() && ui.input(|i| i.modifiers.ctrl) {
+            editor.toggle_range_track(*id);
+        }
         context_menu(editor, &host, &mut state, *id, index, track_name);
         context_menu(editor, &grip, &mut state, *id, index, track_name);
         context_menu(editor, &resize, &mut state, *id, index, track_name);

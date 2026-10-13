@@ -74,6 +74,25 @@ impl ProjectMenu {
             }
         });
         ui.menu_button("Edit", |menu| {
+            if menu.button("Select All (Ctrl+A)").clicked() {
+                editor.select_all();
+                menu.close();
+            }
+            if editor.selection() == &crate::editor::selection::Selection::None {
+                menu.add_enabled(false, egui::Button::new("Clear Selection (Esc)"));
+            } else if menu.button("Clear Selection (Esc)").clicked() {
+                editor.clear_selection();
+                menu.close();
+            }
+            if menu.button("Ripple (R)").clicked() {
+                editor.toggle_ripple();
+                menu.close();
+            }
+            if menu.button("Snap (N)").clicked() {
+                editor.toggle_snap();
+                menu.close();
+            }
+            menu.separator();
             match editor.undo_label() {
                 Some(label) => {
                     if menu.button(format!("Undo {label} (Ctrl+Z)")).clicked() {
@@ -104,6 +123,15 @@ impl ProjectMenu {
             }
             if menu.button("Zoom Out (-)").clicked() {
                 view_action = ViewMenuAction::ZoomOut;
+                menu.close();
+            }
+            if !matches!(
+                editor.selection(),
+                crate::editor::selection::Selection::Range { .. }
+            ) {
+                menu.add_enabled(false, egui::Button::new("Zoom to Selection (Ctrl+\\)"));
+            } else if menu.button("Zoom to Selection (Ctrl+\\)").clicked() {
+                view_action = ViewMenuAction::ZoomToSelection;
                 menu.close();
             }
             if menu.button("Zoom to Fit (\\)").clicked() {

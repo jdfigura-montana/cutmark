@@ -44,6 +44,22 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor) {
             editor.jump_end();
         }
         ui.add_space(8.0);
+        // Ripple and Snap toggles: selected look when on.
+        if ui
+            .selectable_label(editor.view.ripple, "Ripple")
+            .on_hover_text("Ripple edit (R)")
+            .clicked()
+        {
+            editor.toggle_ripple();
+        }
+        if ui
+            .selectable_label(editor.view.snap, "Snap")
+            .on_hover_text("Snapping (N)")
+            .clicked()
+        {
+            editor.toggle_snap();
+        }
+        ui.add_space(8.0);
         if ui
             .button("Add Track")
             .on_hover_text("Add a new track (Ctrl+Shift+T)")
