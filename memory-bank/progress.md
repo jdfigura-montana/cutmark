@@ -1,5 +1,7 @@
 ﻿# Progress
 # Progress
+## What works - Task 6.1 complete (2026-10-13)
+- Task 6.1: editor::selection (Selection enum + tidy), Editor selection methods (set_range/toggle_range_track/select_clips/toggle_clip/clear_selection/select_all/target_track/last_clicked_track), toggle_snap/toggle_ripple (view-only), tidy_selection after apply/undo/redo; editor::snap (snap fn, snap_candidates, snap_pos 8 px). 9 new tests (2 selection, 4 snap, 7 editor). cargo test 256 passed; clippy clean; fmt applied.
 ## What works - Task 5.5 complete (2026-10-13)
 - Task 5.5: bin Preview. editor::editor preview_media/stop_preview/previewing/preview_progress (preview_item field, no-ops without audio); bin_panel play/stop button per online row, 2 px progress bar under the previewing row, Preview context-menu entry. Space stops preview (existing toggle_play); master gain applies via MixPlan::preview. 1 new test. cargo test 242 passed; clippy clean; fmt applied.
 ## What works - Task 5.4 complete (2026-10-13)

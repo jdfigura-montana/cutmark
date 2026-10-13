@@ -1,4 +1,9 @@
 ﻿## Current state
+Task 6.1 DONE (2026-10-13). Selection state and snapping.
+- editor::selection: Selection enum (None / Range{start,end,tracks} / Clips) + tidy(project). Range always start<end, tracks in project order, no dups.
+- Editor fields `selection`, `last_clicked_track` (both private; accessors selection()/last_clicked_track()); methods set_range/toggle_range_track/select_clips/toggle_clip/clear_selection/select_all/target_track/set_last_clicked_track/toggle_snap/toggle_ripple; private tidy_selection() called from commit, undo, redo. Selection is not undoable, never dirty.
+- editor::snap: free fn snap(pos, candidates, spp, threshold_px) (partition_point nearest); Editor::snap_candidates(exclude) (0, view.playhead, marker.position, clip start+end, sorted dedup); Editor::snap_pos(pos, exclude, bypass) (no-op when view.snap off or bypass; 8 px).
+- No UI wiring yet. cargo test 256 passed; clippy clean; fmt applied.
 Task 5.5 DONE (2026-10-13). Bin Preview.
 - Editor: `preview_item: Option<Uuid>` field (3 constructors); preview_media(id) (no-op without audio/unloaded item; builds MixPlan::preview(item.length, item.channels, samples, project rate, master_volume_db), publish_preview + retire, Command::Preview), stop_preview(), previewing() (Some only while state Previewing), preview_progress() (shared.preview_pos / item.length, clamped). Test in transport.rs tests.
 - bin_panel: ▶/⏹ small button left of online rows (toggles preview via editor), 2 px progress bar under the previewing row (row height 34→38, allocate_exact_size returns (Rect, Response)), context menu Preview/Stop Preview on online rows.

@@ -18,6 +18,7 @@ use crate::editor::jobs::{JobChannels, JobMessage};
 use crate::editor::media_store::MediaStore;
 use crate::editor::ops::OpError;
 use crate::editor::ops::paste;
+use crate::editor::selection::Selection;
 use crate::editor::transport::TransportState;
 use crate::io::IoError;
 use crate::io::paths::{self, ProjectPaths};
@@ -82,6 +83,10 @@ pub struct Editor {
     pub(crate) transport_prev: Option<TransportState>,
     /// Bin item currently previewed, if the UI started one.
     preview_item: Option<Uuid>,
+    /// Current range or clip selection; not undoable.
+    selection: Selection,
+    /// Track id of the last track clicked, for the target track fallback.
+    last_clicked_track: Option<Uuid>,
 }
 
 impl Editor {
@@ -117,6 +122,8 @@ impl Editor {
             audio_error: None,
             transport_prev: None,
             preview_item: None,
+            selection: Selection::None,
+            last_clicked_track: None,
         })
     }
 
@@ -144,6 +151,8 @@ impl Editor {
             audio_error: None,
             transport_prev: None,
             preview_item: None,
+            selection: Selection::None,
+            last_clicked_track: None,
         };
         editor.start_media_loads();
         Ok(editor)
@@ -171,6 +180,8 @@ impl Editor {
             audio_error: None,
             transport_prev: None,
             preview_item: None,
+            selection: Selection::None,
+            last_clicked_track: None,
         }
     }
 
@@ -250,6 +261,168 @@ impl Editor {
     pub fn set_wave_scale(&mut self, scale: f32) {
         self.wave_scale = scale.clamp(1.0, 16.0);
     }
+    /// The current selection; not undoable and never marks the project dirty.
+    pub fn selection(&self) -> &Selection {
+        &self.selection
+    }
+
+    /// Sets the range selection on the given tracks.
+    ///
+    /// `a` and `b` are ordered; the tracks are sorted into project order with
+    /// duplicates removed. Equal ends or no tracks gives `None`.
+    pub fn set_range(&mut self, a: u64, b: u64, tracks: Vec<Uuid>) {
+        if a == b || tracks.is_empty() {
+            self.selection = Selection::None;
+            return;
+        }
+        let (start, end) = if a < b { (a, b) } else { (b, a) };
+        let mut ranked: Vec<(usize, Uuid)> = tracks
+            .into_iter()
+            .filter_map(|id| {
+                self.project
+                    .tracks
+                    .iter()
+                    .position(|t| t.id == id)
+                    .map(|index| (index, id))
+            })
+            .collect();
+        ranked.sort_by_key(|&(index, _)| index);
+        ranked.dedup_by_key(|(index, _)| *index);
+        self.selection = Selection::Range {
+            start,
+            end,
+            tracks: ranked.into_iter().map(|(_, id)| id).collect(),
+        };
+    }
+
+    /// Ctrl+click on a track header: adds or removes a track from the current
+    /// range selection. Does nothing when there is no range selection.
+    pub fn toggle_range_track(&mut self, id: Uuid) {
+        let Selection::Range { tracks, .. } = &mut self.selection else {
+            return;
+        };
+        if let Some(position) = tracks.iter().position(|t| *t == id) {
+            tracks.remove(position);
+            if tracks.is_empty() {
+                self.selection = Selection::None;
+            }
+            return;
+        }
+        if let Some(index) = self.project.tracks.iter().position(|t| t.id == id) {
+            let insert_at = tracks
+                .iter()
+                .filter(|t| {
+                    self.project
+                        .tracks
+                        .iter()
+                        .position(|p| p.id == **t)
+                        .is_some_and(|p| p < index)
+                })
+                .count();
+            tracks.insert(insert_at, id);
+        }
+    }
+
+    /// Replaces the clip selection with the given ids.
+    pub fn select_clips(&mut self, ids: Vec<Uuid>) {
+        if ids.is_empty() {
+            self.selection = Selection::None;
+        } else {
+            self.selection = Selection::Clips(ids);
+        }
+    }
+
+    /// Toggles one clip in the clip selection; selects it alone when another
+    /// kind of selection (or none) is active. No-op for unknown clips.
+    pub fn toggle_clip(&mut self, id: Uuid) {
+        let exists = self
+            .project
+            .tracks
+            .iter()
+            .any(|t| t.clips.iter().any(|c| c.id == id));
+        if !exists {
+            return;
+        }
+        match &mut self.selection {
+            Selection::Clips(ids) => {
+                if let Some(position) = ids.iter().position(|c| *c == id) {
+                    ids.remove(position);
+                    if ids.is_empty() {
+                        self.selection = Selection::None;
+                    }
+                } else {
+                    ids.push(id);
+                }
+            }
+            _ => self.selection = Selection::Clips(vec![id]),
+        }
+    }
+
+    /// Esc: clears the selection.
+    pub fn clear_selection(&mut self) {
+        self.selection = Selection::None;
+    }
+
+    /// Selects everything: range 0..project_length on all tracks, or `None`
+    /// when the project is empty.
+    pub fn select_all(&mut self) {
+        let tracks: Vec<Uuid> = self.project.tracks.iter().map(|t| t.id).collect();
+        let length = self.project_length();
+        if tracks.is_empty() || length == 0 {
+            self.selection = Selection::None;
+            return;
+        }
+        self.selection = Selection::Range {
+            start: 0,
+            end: length,
+            tracks,
+        };
+    }
+
+    /// The track id of the last track clicked, if any.
+    pub fn last_clicked_track(&self) -> Option<Uuid> {
+        self.last_clicked_track
+    }
+
+    /// Remembers which track was last clicked.
+    pub fn set_last_clicked_track(&mut self, id: Uuid) {
+        self.last_clicked_track = Some(id);
+    }
+
+    /// Index of the target track: the topmost range track, else the last
+    /// clicked track, else track 0. Missing tracks fall through.
+    pub fn target_track(&self) -> usize {
+        if let Selection::Range { tracks, .. } = &self.selection
+            && let Some(index) = tracks
+                .first()
+                .and_then(|id| self.project.tracks.iter().position(|t| t.id == *id))
+        {
+            return index;
+        }
+        if let Some(index) = self
+            .last_clicked_track
+            .and_then(|id| self.project.tracks.iter().position(|t| t.id == id))
+        {
+            return index;
+        }
+        0
+    }
+
+    /// N: toggles snapping in the view state; not undoable, not dirty.
+    pub fn toggle_snap(&mut self) {
+        self.view.snap = !self.view.snap;
+    }
+
+    /// Toggles ripple editing in the view state; not undoable, not dirty.
+    pub fn toggle_ripple(&mut self) {
+        self.view.ripple = !self.view.ripple;
+    }
+
+    /// Drops selection ids that no longer exist after a project change.
+    fn tidy_selection(&mut self) {
+        self.selection = std::mem::take(&mut self.selection).tidy(&self.project);
+    }
+
     /// Copies the range `s..e` on the listed tracks to the clipboard.
     ///
     /// Not undoable and does not mark the project dirty.
@@ -310,6 +483,7 @@ impl Editor {
             before: Arc::clone(&self.project),
         });
         self.project = Arc::new(next);
+        self.tidy_selection();
         self.dirty = true;
         self.publish();
         Ok(())
@@ -354,6 +528,7 @@ impl Editor {
         match self.history.undo_step(Arc::clone(&self.project)) {
             Some(entry) => {
                 self.project = entry.before;
+                self.tidy_selection();
                 self.dirty = true;
                 self.publish();
                 true
@@ -367,6 +542,7 @@ impl Editor {
         match self.history.redo_step(Arc::clone(&self.project)) {
             Some(entry) => {
                 self.project = entry.before;
+                self.tidy_selection();
                 self.dirty = true;
                 self.publish();
                 true
@@ -2067,5 +2243,176 @@ mod tests {
         editor.publish();
         editor.tick();
         assert!(editor.retired.is_empty());
+    }
+
+    /// An in-memory editor with no audio engine.
+    fn selection_editor(tracks: &[&[(u64, u64)]]) -> Editor {
+        Editor::with_project(
+            project_with_clips(tracks),
+            ViewState::default(),
+            ProjectPaths {
+                root: PathBuf::from("unused"),
+            },
+        )
+    }
+
+    #[test]
+    fn set_range_orders_positions_and_tracks() {
+        let mut editor = selection_editor(&[&[], &[], &[]]);
+        let t0 = editor.project.tracks[0].id;
+        let t2 = editor.project.tracks[2].id;
+        editor.set_range(500, 100, vec![t2, t0]);
+        assert_eq!(
+            editor.selection(),
+            &Selection::Range {
+                start: 100,
+                end: 500,
+                tracks: vec![t0, t2]
+            }
+        );
+    }
+
+    #[test]
+    fn set_range_with_equal_ends_or_no_tracks_is_none() {
+        let mut editor = selection_editor(&[&[]]);
+        let t0 = editor.project.tracks[0].id;
+        editor.set_range(100, 100, vec![t0]);
+        assert_eq!(editor.selection(), &Selection::None);
+        editor.set_range(0, 100, vec![]);
+        assert_eq!(editor.selection(), &Selection::None);
+    }
+
+    #[test]
+    fn apply_undo_and_redo_tidy_the_selection() {
+        let mut editor = selection_editor(&[&[(0, 100)], &[]]);
+        let t0 = editor.project.tracks[0].id;
+        let t1 = editor.project.tracks[1].id;
+        let clip = editor.project.tracks[0].clips[0].id;
+
+        // A range whose only track is deleted becomes None.
+        editor.set_range(0, 100, vec![t1]);
+        editor.apply(Action::DeleteTrack { id: t1 }).unwrap();
+        assert_eq!(editor.selection(), &Selection::None);
+
+        // A clip selection on a deleted track is tidied away too.
+        editor.select_clips(vec![clip]);
+        editor.apply(Action::DeleteTrack { id: t0 }).unwrap();
+        assert_eq!(editor.selection(), &Selection::None);
+
+        // Undo and redo tidy as well; the restored track has nothing selected.
+        assert!(editor.undo());
+        assert_eq!(editor.selection(), &Selection::None);
+        assert!(editor.redo());
+        assert_eq!(editor.selection(), &Selection::None);
+
+        // With the track back, a clip selection is tidied by delete, undo and redo.
+        assert!(editor.undo());
+        editor.select_clips(vec![clip]);
+        editor.apply(Action::DeleteTrack { id: t0 }).unwrap();
+        assert_eq!(editor.selection(), &Selection::None);
+        assert!(editor.undo());
+        assert_eq!(editor.selection(), &Selection::None);
+        assert!(editor.redo());
+        assert_eq!(editor.selection(), &Selection::None);
+    }
+
+    #[test]
+    fn toggle_range_track_adds_in_order_and_removes() {
+        let mut editor = selection_editor(&[&[], &[], &[]]);
+        let t0 = editor.project.tracks[0].id;
+        let t1 = editor.project.tracks[1].id;
+        let t2 = editor.project.tracks[2].id;
+        editor.set_range(0, 100, vec![t2]);
+        editor.toggle_range_track(t0);
+        assert!(matches!(
+            editor.selection(),
+            Selection::Range { tracks, .. } if *tracks == vec![t0, t2]
+        ));
+        editor.toggle_range_track(t1);
+        assert!(matches!(
+            editor.selection(),
+            Selection::Range { tracks, .. } if *tracks == vec![t0, t1, t2]
+        ));
+        editor.toggle_range_track(t1);
+        assert!(matches!(
+            editor.selection(),
+            Selection::Range { tracks, .. } if *tracks == vec![t0, t2]
+        ));
+        editor.toggle_range_track(t0);
+        editor.toggle_range_track(t2);
+        assert_eq!(editor.selection(), &Selection::None);
+        // With no range, toggling does nothing.
+        editor.toggle_range_track(t0);
+        assert_eq!(editor.selection(), &Selection::None);
+    }
+
+    #[test]
+    fn clip_selection_toggles_and_clears() {
+        let mut editor = selection_editor(&[&[(0, 100), (200, 200)]]);
+        let clip0 = editor.project.tracks[0].clips[0].id;
+        let clip1 = editor.project.tracks[0].clips[1].id;
+        let gone = uuid::Uuid::new_v4();
+
+        editor.toggle_clip(clip0);
+        assert_eq!(editor.selection(), &Selection::Clips(vec![clip0]));
+        editor.toggle_clip(clip1);
+        assert_eq!(editor.selection(), &Selection::Clips(vec![clip0, clip1]));
+        editor.toggle_clip(clip0);
+        assert_eq!(editor.selection(), &Selection::Clips(vec![clip1]));
+        editor.toggle_clip(clip1);
+        assert_eq!(editor.selection(), &Selection::None);
+        editor.toggle_clip(gone);
+        assert_eq!(editor.selection(), &Selection::None);
+
+        editor.select_clips(vec![clip0, clip1]);
+        editor.clear_selection();
+        assert_eq!(editor.selection(), &Selection::None);
+    }
+
+    #[test]
+    fn select_all_covers_the_whole_project_and_every_track() {
+        let mut editor = selection_editor(&[&[(0, 100)], &[(300, 100)]]);
+        editor.select_all();
+        let tracks = editor.project.tracks.iter().map(|t| t.id).collect();
+        assert_eq!(
+            editor.selection(),
+            &Selection::Range {
+                start: 0,
+                end: 400,
+                tracks
+            }
+        );
+
+        let mut empty = selection_editor(&[]);
+        empty.select_all();
+        assert_eq!(empty.selection(), &Selection::None);
+    }
+
+    #[test]
+    fn target_track_prefers_range_then_last_clicked_then_zero() {
+        let mut editor = selection_editor(&[&[], &[], &[]]);
+        let t0 = editor.project.tracks[0].id;
+        let t1 = editor.project.tracks[1].id;
+        let t2 = editor.project.tracks[2].id;
+        editor.set_range(0, 100, vec![t1, t2]);
+        assert_eq!(editor.target_track(), 1);
+        editor.clear_selection();
+        editor.set_last_clicked_track(t2);
+        assert_eq!(editor.target_track(), 2);
+        editor.set_last_clicked_track(t0);
+        assert_eq!(editor.target_track(), 0);
+    }
+
+    #[test]
+    fn snap_toggles_flip_the_view_without_dirty() {
+        let mut editor = selection_editor(&[&[]]);
+        editor.view.snap = true;
+        editor.view.ripple = false;
+        editor.toggle_snap();
+        editor.toggle_ripple();
+        assert!(!editor.view.snap);
+        assert!(editor.view.ripple);
+        assert!(!editor.dirty);
+        assert!(editor.history.undo.is_empty());
     }
 }
