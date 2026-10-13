@@ -1,13 +1,18 @@
-﻿//! ui::status_bar: the bottom status bar with readouts and project info.
+//! ui::status_bar: the bottom status bar with readouts and project info.
 
 use eframe::egui;
 
-use crate::model::project::Project;
+use crate::editor::Editor;
+use crate::util::time::samples_to_timecode;
 
-/// Draws the status bar: playhead and selection readouts go on the left later;
-/// the project sample rate sits on the right.
-pub fn show(ui: &mut egui::Ui, project: &Project) {
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        ui.label(format!("{} Hz", project.sample_rate));
+/// Draws the status bar: the playhead time on the left, the project sample
+/// rate on the right. Selection readouts come later.
+pub fn show(ui: &mut egui::Ui, editor: &Editor) {
+    let timecode = samples_to_timecode(editor.view.playhead, editor.project.sample_rate);
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.label(egui::RichText::new(timecode).monospace());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(format!("{} Hz", editor.project.sample_rate));
+        });
     });
 }

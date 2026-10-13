@@ -63,6 +63,8 @@ pub struct Editor {
     job_errors: Vec<String>,
     /// Worker-thread job channel pair.
     pub jobs: JobChannels,
+    /// Display-only vertical waveform scale, 1.0..=16.0 (not saved).
+    pub wave_scale: f32,
 }
 
 impl Editor {
@@ -92,6 +94,7 @@ impl Editor {
             next_job: 1,
             job_errors: Vec::new(),
             jobs: JobChannels::new(),
+            wave_scale: 1.0,
         })
     }
 
@@ -113,6 +116,7 @@ impl Editor {
             next_job: 1,
             job_errors: Vec::new(),
             jobs: JobChannels::new(),
+            wave_scale: 1.0,
         };
         editor.start_media_loads();
         Ok(editor)
@@ -134,6 +138,7 @@ impl Editor {
             next_job: 1,
             job_errors: Vec::new(),
             jobs: JobChannels::new(),
+            wave_scale: 1.0,
         }
     }
 
@@ -156,6 +161,50 @@ impl Editor {
         Ok(())
     }
 
+    /// Read-only access to the view state.
+    pub fn view(&self) -> &ViewState {
+        &self.view
+    }
+
+    /// Moves the playhead. Not undoable and does not mark the project dirty,
+    /// but the view state is stored in project.json on Save.
+    pub fn set_playhead(&mut self, samples: u64) {
+        self.view.playhead = samples;
+    }
+
+    /// Sets horizontal zoom and scroll. Not undoable and does not mark the
+    /// project dirty, but the view state is stored in project.json on Save.
+    pub fn set_view_x(&mut self, spp: f64, scroll_x: u64) {
+        self.view.samples_per_pixel = spp;
+        self.view.scroll_x = scroll_x;
+    }
+
+    /// Sets the vertical scroll position in pixels. Not undoable and does not
+    /// mark the project dirty.
+    pub fn set_scroll_y(&mut self, y: f32) {
+        self.view.scroll_y = y.max(0.0);
+    }
+
+    /// End of the last clip on any track, in samples; 0 when there are no clips.
+    pub fn project_length(&self) -> u64 {
+        self.project
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips.iter())
+            .map(|c| c.start + (c.src_out - c.src_in))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Display-only vertical waveform scale, 1.0..=16.0.
+    pub fn wave_scale(&self) -> f32 {
+        self.wave_scale
+    }
+
+    /// Sets the display-only waveform scale, clamped to 1.0..=16.0.
+    pub fn set_wave_scale(&mut self, scale: f32) {
+        self.wave_scale = scale.clamp(1.0, 16.0);
+    }
     /// Copies the range `s..e` on the listed tracks to the clipboard.
     ///
     /// Not undoable and does not mark the project dirty.

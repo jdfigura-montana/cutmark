@@ -11,6 +11,7 @@ use crate::ui::dialogs::confirm::ConfirmDialog;
 use crate::ui::menu::{ProjectMenu, ProjectMenuAction};
 use crate::ui::start_screen::StartScreen;
 use crate::ui::status_bar;
+use crate::ui::timeline;
 
 /// The currently shown screen.
 enum Screen {
@@ -114,7 +115,7 @@ impl App {
 
         // Bottom: status bar.
         egui::Panel::bottom("status_bar").show(ui, |ui| {
-            status_bar::show(ui, &editor.project);
+            status_bar::show(ui, editor);
         });
 
         // Right: Master strip, fixed width.
@@ -136,7 +137,7 @@ impl App {
 
         // Center: timeline, filling the remainder.
         egui::CentralPanel::default().show(ui, |ui| {
-            grey_label(ui, "Timeline");
+            timeline::show(ui, editor);
         });
 
         // Files dropped anywhere on the window go to the importer.

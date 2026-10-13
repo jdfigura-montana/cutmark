@@ -1,5 +1,7 @@
 # Progress
-## What works - Task 3.6 complete (2026-10-13)
+## What works - Task 4.1 complete (2026-10-13)
+- Task 4.1: timeline frame - Geom/zoom_at/tick_step in ui::timeline, hand-drawn ruler (adaptive ticks, markers, playhead+handle), header column, lanes from track heights, hand-rolled h-scrollbar (10 percent padded extent), click ruler/lanes sets playhead, Ctrl+wheel zoom at mouse, Shift+wheel h-scroll, wheel v-scroll, +/- keyboard zoom, egui keyboard+Ctrl-wheel zoom disabled. editor view methods, project_length, wave_scale. Status bar playhead timecode. 12 new tests. cargo test 193 passed; clippy clean; fmt applied.
+- Task 3.6 complete (2026-10-13)
 - Task 3.6: bin panel UI (sort combo, two-line rows with usage count and details, offline styling, click select, inline rename, context menu, remove confirm, per-job progress bars), viewport drag-and-drop import, Ctrl+I + Project>Import Media..., Edit menu Undo/Redo, message modal for rejections and job errors. 4 new tests.
 - Task 3.5: editor::media_store (session-long Loaded audio + offline set), editor::jobs (JobMessage, per-job std threads, Editor-owned JobChannels), ops::media import/remove/rename + matching Action variants, Editor job plumbing (import_files, poll_jobs, pending_jobs, take_job_errors), media accessors + reveal_media, Editor::open starts load jobs. 11 new tests. cargo test 177 passed; clippy clean; fmt applied.
 - Task 3.4: io::paths unique_media_name + cache path helpers + reveal_in_explorer; io::import Loaded / import_file / load_or_rebuild. 8 new tests.
