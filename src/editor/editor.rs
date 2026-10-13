@@ -9,6 +9,7 @@ use crate::editor::action::Action;
 use crate::editor::clipboard::{Clipboard, copy_range};
 use crate::editor::history::{History, HistoryEntry};
 use crate::editor::ops::OpError;
+use crate::editor::ops::paste;
 use crate::io::IoError;
 use crate::io::paths::{self, ProjectPaths};
 use crate::io::project_file;
@@ -167,8 +168,17 @@ impl Editor {
         action: Action,
         label: &'static str,
     ) -> Result<(), EditorError> {
+        self.commit(label, |project| action.run(project))
+    }
+
+    /// Runs one pure edit op on a clone, checks invariants, pushes undo and swaps in.
+    fn commit(
+        &mut self,
+        label: &'static str,
+        run: impl FnOnce(&mut Project) -> Result<(), OpError>,
+    ) -> Result<(), EditorError> {
         let mut next = (*self.project).clone();
-        action.run(&mut next)?;
+        run(&mut next)?;
         invariants::check(&next)?;
         self.history.push_undo(HistoryEntry {
             label,
@@ -178,6 +188,40 @@ impl Editor {
         self.dirty = true;
         // publish to audio: phase 5
         Ok(())
+    }
+
+    /// Inserts the stored clipboard at `pos` on the receiving tracks (label "Paste").
+    pub fn paste_insert_at(&mut self, pos: u64, target_track: usize) -> Result<(), EditorError> {
+        let clipboard = self.require_clipboard()?;
+        self.commit("Paste", |project| {
+            paste::paste_insert(project, pos, target_track, &clipboard)
+        })
+    }
+
+    /// Replaces the range `s..e` on the receiving tracks with the stored clipboard.
+    pub fn paste_replace_range(
+        &mut self,
+        s: u64,
+        e: u64,
+        target_track: usize,
+        ripple: bool,
+    ) -> Result<(), EditorError> {
+        let clipboard = self.require_clipboard()?;
+        self.commit("Paste", |project| {
+            paste::paste_replace(project, s, e, target_track, &clipboard, ripple)
+        })
+    }
+
+    /// Returns the stored clipboard, or an error when nothing was copied or cut.
+    fn require_clipboard(&self) -> Result<Arc<Clipboard>, OpError> {
+        let clipboard = self
+            .clipboard
+            .clone()
+            .ok_or_else(|| OpError::Invalid("empty clipboard".into()))?;
+        if clipboard.tracks.iter().all(|clips| clips.is_empty()) {
+            return Err(OpError::Invalid("empty clipboard".into()));
+        }
+        Ok(clipboard)
     }
 
     /// Restores the top undo entry; returns false when there is nothing to undo.
@@ -1099,5 +1143,161 @@ mod tests {
         assert!(editor.undo_label().is_none());
         let clipboard = editor.clipboard().expect("copy stores the clipboard");
         assert_eq!(clipboard.length, 100);
+    }
+
+    /// Wraps the target project in an editor with the clipboard already stored.
+    fn paste_editor(target: Project, clipboard: Clipboard) -> Editor {
+        let mut editor = Editor::with_project(
+            target,
+            ViewState::default(),
+            ProjectPaths {
+                root: PathBuf::from("unused"),
+            },
+        );
+        editor.clipboard = Some(Arc::new(clipboard));
+        editor
+    }
+
+    /// Builds a clipboard by copying `s..e` from a fixture project that shares
+    /// the target's media id, so pasted clips pass the media invariant.
+    fn clipboard_of(target: &Project, tracks: &[&[(u64, u64)]], s: u64, e: u64) -> Clipboard {
+        let mut source = project_with_clips(tracks);
+        let media_id = target.media[0].id;
+        source.media[0].id = media_id;
+        for track in &mut source.tracks {
+            for clip in &mut track.clips {
+                clip.media_id = media_id;
+            }
+        }
+        let ids: Vec<uuid::Uuid> = source.tracks.iter().map(|t| t.id).collect();
+        copy_range(&source, s, e, &ids)
+    }
+
+    /// Applies a paste through the editor, then undoes and redoes it.
+    fn paste_roundtrip(mut editor: Editor, paste: impl FnOnce(&mut Editor)) -> Project {
+        paste(&mut editor);
+        assert!(editor.dirty);
+        assert_eq!(editor.undo_label(), Some("Paste"));
+        let redone = (*editor.project).clone();
+        assert!(editor.undo(), "paste is undoable");
+        assert!(editor.redo(), "paste is redoable");
+        assert_eq!(*editor.project, redone, "undo and redo must roundtrip");
+        redone
+    }
+
+    #[test]
+    fn paste_insert_splits_and_shifts_the_receiving_track() {
+        let target = project_with_clips(&[&[(100, 100)]]);
+        let clipboard = clipboard_of(&target, &[&[(0, 100)]], 0, 100);
+        assert_eq!(clipboard.length, 100);
+        let editor = paste_editor(target, clipboard);
+        let project = paste_roundtrip(editor, |e| e.paste_insert_at(150, 0).unwrap());
+        assert_eq!(spans(&project, 0), [(100, 150), (150, 250), (250, 300)]);
+    }
+
+    #[test]
+    fn paste_insert_shifts_only_the_receiving_tracks() {
+        let target = project_with_clips(&[&[(0, 100)], &[(0, 100)], &[(0, 100)]]);
+        let clipboard = clipboard_of(&target, &[&[(0, 50)]], 0, 50);
+        let editor = paste_editor(target, clipboard);
+        let project = paste_roundtrip(editor, |e| e.paste_insert_at(50, 0).unwrap());
+        assert_eq!(spans(&project, 0), [(0, 50), (50, 100), (100, 150)]);
+        assert_eq!(spans(&project, 1), [(0, 100)]);
+        assert_eq!(spans(&project, 2), [(0, 100)]);
+    }
+
+    #[test]
+    fn paste_insert_creates_missing_receiving_tracks() {
+        let target = project_with_clips(&[&[(0, 100)]]);
+        let clipboard = clipboard_of(&target, &[&[(0, 50)], &[(0, 50)]], 0, 50);
+        let editor = paste_editor(target, clipboard);
+        let project = paste_roundtrip(editor, |e| e.paste_insert_at(0, 0).unwrap());
+        assert_eq!(project.tracks.len(), 2);
+        assert_eq!(spans(&project, 0), [(0, 50), (50, 150)]);
+        assert_eq!(spans(&project, 1), [(0, 50)]);
+    }
+
+    #[test]
+    fn pasted_clips_get_new_ids() {
+        let target = project_with_clips(&[&[]]);
+        let clipboard = clipboard_of(&target, &[&[(0, 50)]], 0, 50);
+        let source_id = clipboard.tracks[0][0].id;
+        let editor = paste_editor(target, clipboard);
+        let project = paste_roundtrip(editor, |e| e.paste_insert_at(0, 0).unwrap());
+        assert_ne!(project.tracks[0].clips[0].id, source_id);
+    }
+
+    #[test]
+    fn paste_replace_ripple_shorter_shifts_later_clips_left() {
+        let target = project_with_clips(&[&[(100, 100), (300, 100)]]);
+        let clipboard = clipboard_of(&target, &[&[(0, 50)]], 0, 50);
+        let editor = paste_editor(target, clipboard);
+        let project = paste_roundtrip(editor, |e| {
+            e.paste_replace_range(100, 200, 0, true).unwrap()
+        });
+        assert_eq!(spans(&project, 0), [(100, 150), (250, 350)]);
+    }
+
+    #[test]
+    fn paste_replace_ripple_longer_shifts_later_clips_right() {
+        let target = project_with_clips(&[&[(100, 100), (300, 100)]]);
+        let clipboard = clipboard_of(&target, &[&[(0, 150)]], 0, 150);
+        let editor = paste_editor(target, clipboard);
+        let project = paste_roundtrip(editor, |e| {
+            e.paste_replace_range(100, 200, 0, true).unwrap()
+        });
+        assert_eq!(spans(&project, 0), [(100, 250), (350, 450)]);
+    }
+
+    #[test]
+    fn paste_replace_without_ripple_shorter_leaves_a_silent_tail() {
+        let target = project_with_clips(&[&[(100, 100), (300, 100)]]);
+        let clipboard = clipboard_of(&target, &[&[(0, 50)]], 0, 50);
+        let editor = paste_editor(target, clipboard);
+        let project = paste_roundtrip(editor, |e| {
+            e.paste_replace_range(100, 200, 0, false).unwrap()
+        });
+        assert_eq!(spans(&project, 0), [(100, 150), (300, 400)]);
+    }
+
+    #[test]
+    fn paste_replace_without_ripple_longer_overwrites_past_the_range() {
+        let target = project_with_clips(&[&[(100, 100), (200, 100)]]);
+        let clipboard = clipboard_of(&target, &[&[(0, 150)]], 0, 150);
+        let editor = paste_editor(target, clipboard);
+        let project = paste_roundtrip(editor, |e| {
+            e.paste_replace_range(100, 200, 0, false).unwrap()
+        });
+        assert_eq!(spans(&project, 0), [(100, 250), (250, 300)]);
+    }
+
+    #[test]
+    fn paste_keeps_gaps_from_the_clipboard() {
+        let target = project_with_clips(&[&[]]);
+        let clipboard = clipboard_of(&target, &[&[(0, 50), (100, 50)]], 0, 150);
+        let editor = paste_editor(target, clipboard);
+        let project = paste_roundtrip(editor, |e| e.paste_insert_at(100, 0).unwrap());
+        assert_eq!(spans(&project, 0), [(100, 150), (200, 250)]);
+    }
+
+    #[test]
+    fn paste_without_a_clipboard_is_an_error() {
+        let mut editor = Editor::with_project(
+            project_with_clips(&[&[]]),
+            ViewState::default(),
+            ProjectPaths {
+                root: PathBuf::from("unused"),
+            },
+        );
+        assert!(matches!(
+            editor.paste_insert_at(0, 0),
+            Err(EditorError::Op(OpError::Invalid(_)))
+        ));
+        assert!(matches!(
+            editor.paste_replace_range(0, 10, 0, false),
+            Err(EditorError::Op(OpError::Invalid(_)))
+        ));
+        assert!(!editor.dirty);
+        assert!(editor.undo_label().is_none());
     }
 }
