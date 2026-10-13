@@ -4,17 +4,46 @@ use eframe::egui;
 
 use crate::editor::Editor;
 use crate::editor::action::Action;
+use crate::editor::transport::TransportState;
 
 /// Draws the toolbar row under the menu.
 ///
-/// The left part is reserved for the transport buttons (phase 5); for now it
-/// holds an Add Track button (Ctrl+Shift+T) and the Wave slider, a logarithmic
-/// vertical waveform scale from 1x to 16x (double-click resets to 1x).
+/// Left: transport buttons (jump start, play/stop, pause, stop, jump end) as
+/// text glyphs. Then the Add Track button (Ctrl+Shift+T) and the Wave slider,
+/// a logarithmic vertical waveform scale from 1x to 16x (double-click resets
+/// to 1x).
 pub fn show(ui: &mut egui::Ui, editor: &mut Editor) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        // Reserved space for the transport buttons (phase 5).
-        ui.add_space(140.0);
+        // Transport: Home jumps to 0, the play button toggles play/stop and
+        // its glyph follows the transport state, then pause, stop and End.
+        if ui
+            .button("|◀")
+            .on_hover_text("Jump to start (Home)")
+            .clicked()
+        {
+            editor.jump_start();
+        }
+        let playing = editor.transport_state() == TransportState::Playing;
+        let play_resp = ui.button(if playing { "■" } else { "▶" });
+        let play_resp = if playing {
+            play_resp.on_hover_text("Stop (Space)")
+        } else {
+            play_resp.on_hover_text("Play (Space)")
+        };
+        if play_resp.clicked() {
+            editor.toggle_play();
+        }
+        if ui.button("‖").on_hover_text("Pause (P)").clicked() {
+            editor.toggle_pause();
+        }
+        if ui.button("■").on_hover_text("Stop").clicked() {
+            editor.stop();
+        }
+        if ui.button("▶|").on_hover_text("Jump to end (End)").clicked() {
+            editor.jump_end();
+        }
+        ui.add_space(8.0);
         if ui
             .button("Add Track")
             .on_hover_text("Add a new track (Ctrl+Shift+T)")

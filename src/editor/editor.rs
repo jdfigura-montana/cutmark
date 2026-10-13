@@ -16,6 +16,7 @@ use crate::editor::jobs::{JobChannels, JobMessage};
 use crate::editor::media_store::MediaStore;
 use crate::editor::ops::OpError;
 use crate::editor::ops::paste;
+use crate::editor::transport::TransportState;
 use crate::io::IoError;
 use crate::io::paths::{self, ProjectPaths};
 use crate::io::project_file;
@@ -75,6 +76,8 @@ pub struct Editor {
     pub retired: Vec<(Instant, Arc<MixPlan>)>,
     /// Message from a failed `Engine::start`, shown by `audio_status`.
     pub audio_error: Option<String>,
+    /// Transport state from the previous `poll_transport`, to detect a stop.
+    pub(crate) transport_prev: Option<TransportState>,
 }
 
 impl Editor {
@@ -108,6 +111,7 @@ impl Editor {
             audio: None,
             retired: Vec::new(),
             audio_error: None,
+            transport_prev: None,
         })
     }
 
@@ -133,6 +137,7 @@ impl Editor {
             audio: None,
             retired: Vec::new(),
             audio_error: None,
+            transport_prev: None,
         };
         editor.start_media_loads();
         Ok(editor)
@@ -158,6 +163,7 @@ impl Editor {
             audio: None,
             retired: Vec::new(),
             audio_error: None,
+            transport_prev: None,
         }
     }
 

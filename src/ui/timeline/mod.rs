@@ -4,6 +4,7 @@ use eframe::egui;
 use uuid::Uuid;
 
 use crate::editor::Editor;
+use crate::editor::transport::TransportState;
 use crate::util::time::seconds_to_samples;
 
 pub mod clip_view;
@@ -178,6 +179,20 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction) -
         &resp,
     );
 
+    // Follow the playhead while playing: when it leaves the visible lanes on
+    // either side, page so it sits 5 percent in from the left edge. Never
+    // follows while stopped.
+    if editor.transport_state() == TransportState::Playing {
+        let spp = editor.view.samples_per_pixel;
+        let playhead = editor.view.playhead;
+        let visible_end = editor.view.scroll_x + (lane_width as f64 * spp) as u64;
+        if playhead < editor.view.scroll_x || playhead > visible_end {
+            let left_margin = (0.05 * lane_width as f64 * spp) as u64;
+            let new_scroll = playhead.saturating_sub(left_margin);
+            editor.set_view_x(spp, clamp_scroll_x(editor, spp, lane_width, new_scroll));
+        }
+    }
+
     let view = editor.view.clone();
     let g = Geom {
         lane_left,
@@ -266,7 +281,13 @@ fn handle_input(
             spp: editor.view.samples_per_pixel,
             scroll_x: editor.view.scroll_x,
         };
-        editor.set_playhead(g.x_to_sample(p.x));
+        let pos = g.x_to_sample(p.x);
+        if editor.transport_state() == TransportState::Playing {
+            // While playing a click seeks: playback jumps and continues.
+            editor.seek(pos);
+        } else {
+            editor.set_playhead(pos);
+        }
     }
 
     if ui.ctx().egui_wants_keyboard_input() {

@@ -7,6 +7,7 @@ use eframe::egui::ViewportCommand;
 
 use crate::editor::Editor;
 use crate::editor::action::Action;
+use crate::editor::transport::TransportState;
 use crate::ui::bin_panel::{self, BinPanel};
 use crate::ui::dialogs::confirm::ConfirmDialog;
 use crate::ui::menu::{ProjectMenu, ProjectMenuAction};
@@ -100,9 +101,16 @@ impl App {
     ) -> ProjectMenuAction {
         // Pump background jobs and keep repainting while any are running.
         editor.poll_jobs();
-        // Retire old mix plans and keep the audio status fresh.
+        // Retire old mix plans, keep the audio status fresh and mirror the
+        // audio playhead into the view.
         editor.tick();
-        if editor.has_pending_jobs() {
+        editor.poll_transport();
+        if editor.has_pending_jobs()
+            || matches!(
+                editor.transport_state(),
+                TransportState::Playing | TransportState::Previewing
+            )
+        {
             ui.ctx().request_repaint();
         }
 
@@ -196,6 +204,27 @@ impl App {
             } else if ctrl && s {
                 menu.save(editor);
             }
+        }
+
+        // Transport keys (Space is consumed so a focused button does not also
+        // activate). Shift+Space is left for play-range selection in phase 6.
+        if !ui.ctx().egui_wants_keyboard_input() {
+            ui.input_mut(|i| {
+                if i.key_pressed(egui::Key::Space) && i.modifiers.is_none() {
+                    editor.toggle_play();
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Space);
+                } else if i.key_pressed(egui::Key::P) && i.modifiers.is_none() {
+                    editor.toggle_pause();
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::P);
+                } else if i.key_pressed(egui::Key::Home) && i.modifiers.is_none() {
+                    editor.jump_start();
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Home);
+                } else if i.key_pressed(egui::Key::End) && i.modifiers.is_none() {
+                    editor.jump_end();
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::End);
+                }
+                // phase 6: play range selection (Shift+Space)
+            });
         }
 
         // Background job errors from this frame.
