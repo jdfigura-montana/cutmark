@@ -513,6 +513,48 @@ impl Editor {
             paths::reveal_in_explorer(&self.paths.media().join(&item.file_name));
         }
     }
+
+    /// Places a clip of the given media item at `start` (drop from the bin).
+    ///
+    /// `Some(track_index)` places on that track, overwriting what it covers, or
+    /// inserting and shifting later clips right when `insert`. `None` appends a
+    /// new track holding the clip (`insert` is ignored). The clip spans the full
+    /// media (`src_in` 0, `src_out` = media length). Returns the error unchanged
+    /// and without touching the project for unknown media or a bad track index.
+    pub fn drop_media(
+        &mut self,
+        media_id: Uuid,
+        track_index: Option<usize>,
+        start: u64,
+        insert: bool,
+    ) -> Result<(), EditorError> {
+        let media_len = self
+            .project
+            .media
+            .iter()
+            .find(|media| media.id == media_id)
+            .map(|media| media.length)
+            .ok_or(EditorError::Op(OpError::NotFound(media_id)))?;
+        match track_index {
+            Some(index) => {
+                let track_id = self
+                    .project
+                    .tracks
+                    .get(index)
+                    .map(|track| track.id)
+                    .ok_or(EditorError::Op(OpError::Overflow))?;
+                self.apply(Action::PlaceClip {
+                    track_id,
+                    media_id,
+                    start,
+                    src_in: 0,
+                    src_out: media_len,
+                    insert,
+                })
+            }
+            None => self.apply(Action::PlaceClipOnNewTrack { media_id, start }),
+        }
+    }
     /// Adds the project to the recent list; a write failure is ignored.
     fn touch_recent(name: &str, root: &Path) {
         if let Some(list_path) = crate::io::recent::default_path() {
@@ -1080,6 +1122,26 @@ mod tests {
         );
         assert_eq!(spans(&project, 0), [(100, 200)]);
         assert_eq!(spans(&project, 1), [(100, 150), (150, 200)]);
+    }
+
+    #[test]
+    fn place_clip_on_new_track_roundtrip() {
+        let target = project_with_clips(&[&[]]);
+        let media_id = target.media[0].id;
+        let track_count = target.tracks.len();
+        let project = roundtrip(
+            target,
+            Action::PlaceClipOnNewTrack {
+                media_id,
+                start: 500,
+            },
+        );
+        // One undo step removed both the new track and its clip, so the
+        // roundtrip helper (apply -> undo -> original -> redo) proves it.
+        assert_eq!(project.tracks.len(), track_count + 1);
+        assert_eq!(project.tracks[track_count].name, "Track 2");
+        assert_eq!(spans(&project, track_count), [(500, 1_000_500)]);
+        assert_eq!(srcs(&project, track_count), [(0, 1_000_000)]);
     }
 
     /// Wraps a project in an in-memory editor for error-path tests.

@@ -52,6 +52,13 @@ pub enum Action {
         /// Insert (ripple right) instead of overwrite.
         insert: bool,
     },
+    /// Appends a new track holding one new clip of the media item.
+    PlaceClipOnNewTrack {
+        /// Media item the clip plays.
+        media_id: uuid::Uuid,
+        /// Timeline start in samples.
+        start: u64,
+    },
     /// Moves the listed clips in time and across tracks.
     MoveClips {
         /// Clips to move.
@@ -172,6 +179,7 @@ impl Action {
             Action::SetMasterVolume { .. } => "Master Volume",
             Action::SplitAt { .. } => "Split",
             Action::PlaceClip { .. } => "Add Clip",
+            Action::PlaceClipOnNewTrack { .. } => "Add Clip",
             Action::MoveClips { .. } => "Move Clip",
             Action::TrimClip { .. } => "Trim Clip",
             Action::DeleteClips { .. } => "Delete Clip",
@@ -214,6 +222,9 @@ impl Action {
                 project, *track_id, *media_id, *start, *src_in, *src_out, *insert,
             )
             .map(|_| ()),
+            Action::PlaceClipOnNewTrack { media_id, start } => {
+                clip::place_clip_on_new_track(project, *media_id, *start)
+            }
             Action::MoveClips {
                 clip_ids,
                 delta_time,

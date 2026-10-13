@@ -1,6 +1,7 @@
 //! ui::timeline: the central timeline view (ruler, lanes, playhead, zoom, scroll).
 
 use eframe::egui;
+use uuid::Uuid;
 
 use crate::editor::Editor;
 use crate::util::time::seconds_to_samples;
@@ -96,7 +97,7 @@ fn scroll_extent(project_length: u64, visible: u64) -> u64 {
 /// Draws the whole timeline into the remaining center space and handles its
 /// input (zoom, scroll, playhead clicks). Not a ScrollArea: everything is
 /// painted by hand over one allocated rect.
-pub fn show(ui: &mut egui::Ui, editor: &mut Editor) {
+pub fn show(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<String> {
     // The timeline owns horizontal zoom; egui's own keyboard and Ctrl+wheel
     // UI zoom must not fire here.
     ui.ctx().options_mut(|o| o.zoom_with_keyboard = false);
@@ -146,6 +147,8 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor) {
         spp: view.samples_per_pixel,
         scroll_x: view.scroll_x,
     };
+    // A bin item dragged over the lanes: Esc cancels, release over a lane drops.
+    let messages = interaction::handle_bin_drag(ui, editor, &g, lane_rect, view.scroll_y);
     let visible = g.visible_range().1 - g.visible_range().0;
     let length = editor.project_length();
     let max_scroll_x = scroll_extent(length, visible).saturating_sub(visible);
@@ -161,6 +164,7 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor) {
         visible,
         max_scroll_x,
     );
+    messages
 }
 
 /// Wheel, keyboard and click input over the timeline.
@@ -298,26 +302,36 @@ fn draw(
     let visuals = ui.visuals().clone();
     let view = editor.view.clone();
 
-    // Track lanes: alternating shades and separators (ui::timeline::lane).
+    // Track lanes: alternating shades and separators (ui::timeline::lane),
+    // with the clips of each track drawn over its lane.
     let lane_painter = ui.painter_at(lane_rect);
     let mut y = lane_rect.top() - view.scroll_y;
     for (i, track) in editor.project.tracks.iter().enumerate() {
         let bottom = y + track.height;
         if bottom >= lane_rect.top() && y <= lane_rect.bottom() {
+            let track_rect = egui::Rect::from_min_max(
+                egui::pos2(g.lane_left, y),
+                egui::pos2(lane_rect.right(), bottom),
+            );
             lane::draw(
                 &lane_painter,
-                egui::Rect::from_min_max(
-                    egui::pos2(g.lane_left, y),
-                    egui::pos2(lane_rect.right(), bottom),
-                ),
+                track_rect,
                 i % 2 == 0,
                 visuals.extreme_bg_color,
                 visuals.faint_bg_color,
                 visuals.widgets.noninteractive.bg_stroke,
             );
+            // Clips (no waveforms yet, ui::timeline::clip_view).
+            for clip in &track.clips {
+                let (name, offline) = media_info(editor, clip.media_id);
+                clip_view::draw(&lane_painter, clip, name, offline, g, track_rect, &visuals);
+            }
         }
         y = bottom;
     }
+
+    // Ghost clip while a bin item is dragged over the lanes.
+    interaction::draw_drop_ghost(ui, editor, g, lane_rect, view.scroll_y);
 
     // Ruler: ticks, labels, markers and their faint lines.
     ruler::draw(
@@ -394,6 +408,18 @@ fn draw(
 
     // Track headers: grip, rename, menu, resize, reorder (with lanes scrolled).
     track_header::show(ui, editor, header_rect, lane_rect, view.scroll_y);
+}
+
+/// Display name and offline flag of a media item, for clip drawing.
+fn media_info(editor: &Editor, media_id: Uuid) -> (&str, bool) {
+    let name = editor
+        .project
+        .media
+        .iter()
+        .find(|media| media.id == media_id)
+        .map(|media| media.display_name.as_str())
+        .unwrap_or("");
+    (name, editor.is_media_offline(media_id))
 }
 
 /// True while the pointer hovers the scrollbar thumb.

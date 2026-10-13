@@ -6,6 +6,7 @@ use uuid::Uuid;
 use crate::editor::Editor;
 use crate::editor::action::Action;
 use crate::model::media::MediaItem;
+use crate::ui::timeline::interaction::MediaDrag;
 use crate::util::time;
 
 /// Sort order of the bin list.
@@ -133,8 +134,16 @@ impl BinPanel {
         let row = ui.interact(
             inner.response.rect,
             egui::Id::new(("bin_row", item.id)),
-            egui::Sense::click(),
+            if offline {
+                egui::Sense::click()
+            } else {
+                egui::Sense::click_and_drag()
+            },
         );
+        // Online rows are drag sources for the timeline; offline ones are not.
+        if !offline && row.drag_started() {
+            egui::DragAndDrop::set_payload(ui.ctx(), MediaDrag { media_id: item.id });
+        }
         if row.clicked() {
             self.selected = Some(item.id);
         }

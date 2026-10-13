@@ -1,22 +1,26 @@
 ﻿## Current state
-Task 4.2 DONE (2026-10-13). Track headers + lanes + toolbar.
-- editor::set_track_height(id, h): clamps 40..=400, swaps a changed Arc<Project>, NO history entry, NO dirty (test set_track_height_clamps_without_history_or_dirty).
-- ui::timeline::track_header::show(ui, editor, header_rect, lane_rect, scroll_y): one HEADER_W-wide header per track offset by scroll_y, culled offscreen; 10 px grip (drag reorders: insertion line drawn across header+lanes, Esc cancels, on release ONE MoveTrack - target boundary j from pointer content-y, new_index = j>i ? j-1 : j); double-click name -> inline TextEdit (state.renaming), Enter applies RenameTrack (non-empty + changed), Esc/click-away cancels; 4 px bottom resize strip (CursorIcon::ResizeVertical) calls set_track_height per frame (snapshot height + drag_delta); right-click menu Rename / Delete Track / Add Track Above (index=i) / Below (i+1) attached to host+grip+resize responses. State{renaming, reorder} carried via ctx data_mut get_temp_mut_or_default/insert_temp keyed "track_header_state" (clone each frame, write back at end).
-- lane::draw(painter, rect, is_even, even_bg, odd_bg, separator): alternating shade + 1 px bottom separator; timeline mod.rs delegates per track.
-- timeline draw() now takes &mut Ui and calls track_header::show last (insertion line above lanes). Ruler fixed; headers+lanes share scroll_y. Toolbar panel in app.rs now calls ui::toolbar::show (140 px transport-reserved space + Add Track append); Ctrl+Shift+T added in the app.rs shortcut chain. Empty space below last track already set the playhead in 4.1 (lane_rect click). Heights/order persist via Track serde in project.json.
-- Task 4.1 (still true): timeline frame per SPEC - Geom/zoom/ticks, hand-drawn ruler, playhead, h-scrollbar, wheel/zoom input, wave_scale, status bar.
-cargo test 194 passed; clippy -D warnings clean; fmt applied.
+Task 4.3 DONE (2026-10-13). Clips drawn + drag from bin.
+- ops::clip::place_clip_on_new_track(project, media_id, start): appends Track::new("Track N") with one full-length clip (src_in 0, src_out = media length); Action::PlaceClipOnNewTrack, label "Add Clip", ONE undo step (test place_clip_on_new_track_roundtrip in editor.rs).
+- editor::drop_media(media_id, track_index: Option<usize>, start, insert): Some -> Action::PlaceClip (src_in 0, src_out = media len); None -> PlaceClipOnNewTrack. Errors leave the project unchanged (NotFound media / Overflow bad index).
+- ui::timeline::clip_view::draw(painter, clip, name, offline, g, track_rect, visuals): clip = lane minus 2 px top/bottom, culled to visible_range, <3 px clips draw as 1 px line; 18 px header (darker, darken() 0.7 of body) with name + gain "+3.0 dB"/"-6.0 dB" (only when != 0), text clipped via painter.with_clip_rect; body visuals.widgets.hovered.bg_fill; offline: red fill + "Media offline"; rect_stroke(..., StrokeKind::Inside) border.
+- bin_panel: online rows are click_and_drag; drag_started sets egui::DragAndDrop::set_payload(MediaDrag{media_id}) (payload type lives in ui::timeline::interaction). Offline rows click only.
+- ui::timeline::interaction: handle_bin_drag (Esc clears payload; on any_released: over a lane -> drop Some(index), below last track inside lanes -> drop_media None, anywhere else nothing; returns error messages). draw_drop_ghost: translucent ghost at x_to_sample(ptr), media-length wide on target track; below last track -> dashed new-track row (hand-rolled dashed_rect/dashed_line, 6/4 dash/gap); Ctrl -> bright vertical insert line at start.
+- timeline::show now returns Vec<String>; app.rs msgs.extend(timeline::show(...)) -> modal. Clips drawn per lane in draw(); ghost drawn after lanes, before ruler/track headers.
+- Tasks 4.1/4.2 still true (timeline frame; track headers + lanes + toolbar).
+- cargo test 195 passed; clippy -D warnings clean; fmt applied.
 ## Key learnings
-- egui 0.36 InputState: Ctrl(zoom_modifier)+wheel goes ONLY into zoom_delta(); SHIFT converts wheel delta to horizontal (smooth_scroll_delta().x = x+y); ALT is the vertical_scroll_modifier. InputState is in egui-0.36.2/src/input_state/mod.rs (not data/input).
-- egui 0.36: Context has no .style(); use ui.visuals(); ctx.options_mut works.
-- egui 0.36 gotchas hit this task: CursorIcon has ResizeVertical/ResizeHorizontal (NO ResizeNorthSouth); Response::on_hover_cursor takes self (rebind result); TextEdit::frame takes egui::Frame (use Frame::NONE), no desired_size (use desired_rows/desired_width); Memory::data_mut -> get_temp_mut_or_default::<T>/insert_temp works for arbitrary Clone+Default state.
-- editor tool (replace mode + insert_line) worked fine this session on src files; verify each file by reading back as usual (old INSERT-mode corruption warning may be stale).
+- egui 0.36 DragAndDrop::set_payload/payload::<T>()->Option<Arc<T>>/clear_payload (auto-cleans on Esc/release too; payload() is Some on the release frame). Response::drag_started() exists.
+- egui 0.36 Color32::from_rgba_unmultiplied is NOT a const fn — use helper fns, not consts.
+- Painter::rect_stroke/rect take (rect, impl Into<CornerRadius>, stroke, StrokeKind).
+- The editor tool can insert a stray BOM mid-file on large inserts (hit again); PowerShell fix: [IO.File]::ReadAllText / .Replace([string][char]0xFEFF + text, text) / WriteAllText UTF8-BOM. Mid-file EF BB BF decodes as U+FEFF char.
+- egui 0.36 InputState: Ctrl(zoom_modifier)+wheel goes ONLY into zoom_delta(); SHIFT converts wheel delta to horizontal; ALT is the vertical_scroll_modifier. InputState is in egui-0.36.2/src/input_state/mod.rs.
+- egui 0.36: Context has no .style(); use ui.visuals(); CursorIcon has ResizeVertical/ResizeHorizontal (NO ResizeNorthSouth); TextEdit::frame takes egui::Frame; Memory::data_mut -> get_temp_mut_or_default/insert_temp.
 - PeakLevel has no channels field; Peaks is NOT Default. Symphonia 0.6 / rubato 5.0.1 API rewrites; verify in registry source.
 - hound WavWriter::finalize takes self by value.
 - clippy 1.99: as_chunks, is_multiple_of; let-chains available and used.
 - PowerShell cargo exit code 1 whenever stderr is written; judge by output text.
 - cargo not on default PATH (prepend $env:USERPROFILE\.cargo\bin).
 ## Next steps
-- Await next task prompt (4.3+: clips drawing / drag from bin per SPEC).
+- Await next task prompt (4.4: waveforms in clips per SPEC).
 ## Active considerations
 - Do NOT build ahead into later phases (clinerules).

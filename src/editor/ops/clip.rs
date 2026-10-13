@@ -377,6 +377,37 @@ fn locate_clip(project: &Project, clip_id: Uuid) -> Option<(usize, usize)> {
     }
     None
 }
+
+/// Appends a new track named "Track N" holding one new clip of `media_id` at `start`.
+///
+/// The clip spans the full source media (`src_in` 0, `src_out` = media length),
+/// gain 0 and no fades. One undo step covers both the track and the clip.
+/// Returns [`OpError::NotFound`] for an unknown media id.
+pub fn place_clip_on_new_track(
+    project: &mut Project,
+    media_id: Uuid,
+    start: u64,
+) -> Result<(), OpError> {
+    let media_len = project
+        .media
+        .iter()
+        .find(|media| media.id == media_id)
+        .ok_or(OpError::NotFound(media_id))?
+        .length;
+    let mut track = Track::new(format!("Track {}", project.tracks.len() + 1));
+    track.clips.push(Clip {
+        id: Uuid::new_v4(),
+        media_id,
+        start,
+        src_in: 0,
+        src_out: media_len,
+        gain_db: 0.0,
+        fade_in: 0,
+        fade_out: 0,
+    });
+    project.tracks.push(track);
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;

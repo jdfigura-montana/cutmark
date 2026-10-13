@@ -139,7 +139,7 @@ impl App {
 
         // Center: timeline, filling the remainder.
         egui::CentralPanel::default().show(ui, |ui| {
-            timeline::show(ui, editor);
+            msgs.extend(timeline::show(ui, editor));
         });
 
         // Files dropped anywhere on the window go to the importer.
