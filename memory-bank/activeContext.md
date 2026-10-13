@@ -1,22 +1,21 @@
 ﻿# Active Context
 
 ## Current state
-**Task 2.1 is DONE (2026-10-12).** Task 2.1 (model helpers + invariants): Clip{len,end,clamp_fades}; Track::new/sort_clips; invariants.rs InvariantError a-g + check (duplicates first, Uuid::nil()=master in LevelRange); model/fixtures.rs project_with_clips/spans/srcs (cfg(test)); 15 new tests; test 44 passed, clippy clean.
+**Task 2.2 is DONE (2026-10-12).** Undo/redo engine + track ops: ops/mod.rs OpError{NotFound(Uuid),Invalid(String),Overflow}; ops/track.rs all 10 track ops (clamps -60..+12 dB, pan -1..+1, Overflow for index past end, Invalid for empty names); action.rs Action enum (10 variants) + label() + run() dispatch; history.rs HistoryEntry{label,before:Arc<Project>} + History (undo/redo stacks, MAX 1,000, push_undo clears redo); editor.rs Editor gains history/gesture_base/gesture_label + with_project, apply/apply_labeled (SPEC 5 steps, `// publish to audio: phase 5` left in place), undo/redo/undo_label/redo_label, begin_gesture/preview/end_gesture/cancel_gesture; EditorError += Op/Invariant. roundtrip() test helper; 18 new tests. cargo test 62 passed; clippy -D warnings clean; fmt applied.
 
-Previous state (task 1.6): ui/dialogs/save_as.rs SaveAsDialog::new_open(current_name, current_root) — name prefilled, parent prefilled with current root's parent, Browse via rfd::pick_folder, red inline errors, Save disabled until name+parent; ProjectMenu holds save_as_dialog and open_save_as(editor), menu item "Save As... (Ctrl+Shift+S)". app.rs shortcut ctrl+shift+s checked BEFORE ctrl+s.
-
-Previous state (task 1.6): ui/menu.rs: ProjectMenu.show(ui, editor) -> ProjectMenuAction{None,New,Open,Close}; Save calls Editor::save, failures open ConfirmDialog modal (ui/dialogs/confirm.rs, centered fixed Window, message + OK). app.rs: App{screen, menu, title}; ui() mem::replaces the screen out each frame so editor/menu/screen borrow disjointly; Project shortcuts Ctrl+N/O/S via ui.input key_pressed, guarded by ctx.egui_wants_keyboard_input() (+ dialog_is_open on the start screen); title via ViewportCommand::Title sent only when changed: "Audio Editor" / "[*]{name} - Audio Editor". status_bar.rs: show(ui, &project) right-aligned "{rate} Hz". ui/start_screen.rs: with_new_dialog()/with_open_request()/dialog_is_open(); pending_open triggers the file picker on first show. ui/dialogs/new_project.rs: new_open().
+Previous state (task 2.1): model helpers + invariants complete (see progress.md).
 
 ## Key learnings
-- egui 0.36.2: CentralPanel::show (show_inside deprecated); Window::show(ctx: &Context); Window::open(&mut bool) borrows, so Cancel/OK must set a separate local bool inside the closure; Ui::close() closes menus (no close_menu); Context::egui_wants_keyboard_input(); ViewportCommand::Title via ctx.send_viewport_cmd; Ui::menu_button exists, closure gets a Ui.
-- clippy -D warnings catches module_inception, ptr_arg, deprecated, unused imports - all target-blocking.
-- mod.rs files may still be corrupted single-line (literal backtick-r backtick-n) elsewhere; check Get-Content when a module unexpectedly fails to resolve.
-- Memory-bank .md files carry a BOM; editor old_text matches may fail - rewrite via Set-Content.
+- PowerShell here-string + Set-Content -Encoding UTF8 is the reliable way to rewrite BOM-carrying files (editor tool old_text fails on them and on CRLF multi-line matches unpredictably).
+- Editor tool multi-line old_text sometimes fails on CRLF files written by PowerShell; single-line matches always work.
+- clippy 1.99: collapsible_if now suggests let-chains (`if let X = y && cond`); Rust 2021 supports let-chains (1.88+).
+- `pub fn f(&mut v, v.field)` is an E0502 in tests: bind `let id = v.field;` first.
+- Binary crate: unused pub enum variants DO trigger dead_code; construct every variant somewhere (Overflow = index past end, Invalid = empty track name).
+- Arc<Project> != Arc<Project> uses inner PartialEq; EditorError has no PartialEq (IoError), so test failures with matches!.
 
-## Next steps (rest of SPEC phase 1)
-- Phase 1 check by hand: create a project, Ctrl+S, Save As to a new name (both folders open from Recent with their own names), Project > Close, reopen from Recent; delete folder, restart, greyed entry + Remove.
-- No more phase-1 tasks known; await next task prompt (phase 2: model invariants + undo core).
+## Next steps
+- Await next task prompt (phase 2 continues: clip/range/paste/marker ops per SPEC "Undo and redo" testing note).
 
 ## Active considerations
-- Do NOT build ahead into later phases (clinerules). Remove #![allow(dead_code)] in main.rs in phase 10.
-- Before any new egui/eframe/cpal/symphonia API use, verify docs.rs for the exact locked version.
+- Do NOT build ahead into later phases (clinerules).
+- `// publish to audio: phase 5` marker sits in Editor::apply_labeled where the snapshot handoff goes.
