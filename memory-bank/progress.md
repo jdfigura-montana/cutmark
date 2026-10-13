@@ -1,5 +1,6 @@
-# Progress
-## What works - Task 4.4 complete (2026-10-13)
+﻿# Progress
+## What works - Task 4.5 complete (2026-10-13)
+- Task 4.5: vertical wave scale + zoom to fit + view restore. ui::timeline: ViewMenuAction enum, pure zoom_to_fit (span = max(project_length, 10 s) * 1.05 / lane_width, clamped MIN..MAX_SPP, scroll 0; 3 tests), timeline::show takes view_menu (View menu In/Out anchored lane center, Fit), backslash zooms to fit even off-hover, out-of-range/0 saved spp falls back to zoom_to_fit on first draw. Alt+wheel scales waveforms 1.25 per notch, replaces scrolling. ui::menu View menu (Zoom In (+), Zoom Out (-), Zoom to Fit (\\)); ProjectMenu::show returns (ProjectMenuAction, ViewMenuAction). ui::toolbar Wave slider (log2 0..=4, "{:.1}x" format, double-click resets 1x). View restore: open already applies saved ViewState; only spp validity fallback added. cargo test 206 passed; clippy clean; fmt applied.
 - Task 4.4: waveforms in clips (ui::timeline::waveform: choose_level/level_minmax/samples_minmax/envelope + draw; per-pixel min/max columns from the coarsest fitting peak level, raw samples below 256 spp, polyline+dots below 1.0/0.125 spp, stereo L/R lanes, gain+fades applied, wave_scale, single Shape::Vec per clip). 8 new tests. cargo test 203 passed; clippy clean; fmt applied.
 - Task 4.3: clips drawn (header strip with name + gain dB, body, offline red, <3 px = 1 px line, culled to view) in ui::timeline::clip_view; drag from bin via egui DragAndDrop payload (online rows only), ghost preview over lanes incl. dashed new-track row below the last track, Ctrl insert line, Esc cancel, drop -> editor::drop_media (PlaceClip overwrite/insert or PlaceClipOnNewTrack, label "Add Clip", one undo step). timeline::show returns Vec<String> surfaced through the app message modal. 1 new test (place_clip_on_new_track_roundtrip).
 - Task 4.2: track headers (grip reorder with insertion line + Esc cancel + one MoveTrack on release, inline rename Enter/Esc, right-click Rename/Delete/Add Above/Below, 4 px bottom resize calling set_track_height), editor::set_track_height (40..=400 clamp, UI-only: no history, no dirty), lane.rs alternating shades + separators, headers+lanes scroll together (ruler fixed), toolbar row with Add Track button + Ctrl+Shift+T. Heights/order persist in project.json. 1 new test. cargo test 194 passed; clippy clean; fmt applied.
@@ -14,7 +15,7 @@
 - Phase 2 complete: model/undo core, editor ops, io (paths, project_file, recent), start screen, menus, dialogs (1.1-2.8).
 
 ## What is left (SPEC Build phases)
-3. Media import complete. 4. Timeline view. 5. Playback. 6. Editing. 7. Levels/processing. 8. Markers/scrub UI. 9. Export. 10. Safety net/polish.
+3. Media import complete. 4. Timeline view (complete through 4.5). 5. Playback. 6. Editing. 7. Levels/processing. 8. Markers/scrub UI. 9. Export. 10. Safety net/polish.
 
 ## Known issues / environment notes
 - cargo not on default PATH; append $env:USERPROFILE\.cargo\bin each session.

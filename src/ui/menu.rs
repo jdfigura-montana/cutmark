@@ -1,4 +1,4 @@
-//! ui::menu: the top Project and Edit menus.
+//! ui::menu: the top Project, Edit and View menus.
 
 use eframe::egui;
 
@@ -6,6 +6,7 @@ use crate::editor::Editor;
 use crate::ui::dialogs::confirm::ConfirmDialog;
 use crate::ui::dialogs::project_settings::ProjectSettingsDialog;
 use crate::ui::dialogs::save_as::SaveAsDialog;
+use crate::ui::timeline::ViewMenuAction;
 
 /// What the user chose in the Project menu this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,7 +23,7 @@ pub enum ProjectMenuAction {
     Import,
 }
 
-/// The Project and Edit menus plus their modals (save error, Save As).
+/// The Project, Edit and View menus plus their modals (save error, Save As).
 #[derive(Default)]
 pub struct ProjectMenu {
     /// Modal error dialog for a failed save, when shown.
@@ -34,9 +35,14 @@ pub struct ProjectMenu {
 }
 
 impl ProjectMenu {
-    /// Shows the menus; returns the action the user chose.
-    pub fn show(&mut self, ui: &mut egui::Ui, editor: &mut Editor) -> ProjectMenuAction {
+    /// Shows the menus; returns the Project and View actions the user chose.
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        editor: &mut Editor,
+    ) -> (ProjectMenuAction, ViewMenuAction) {
         let mut action = ProjectMenuAction::None;
+        let mut view_action = ViewMenuAction::None;
         ui.menu_button("Project", |menu| {
             if menu.button("New (Ctrl+N)").clicked() {
                 action = ProjectMenuAction::New;
@@ -91,6 +97,20 @@ impl ProjectMenu {
                 }
             }
         });
+        ui.menu_button("View", |menu| {
+            if menu.button("Zoom In (+)").clicked() {
+                view_action = ViewMenuAction::ZoomIn;
+                menu.close();
+            }
+            if menu.button("Zoom Out (-)").clicked() {
+                view_action = ViewMenuAction::ZoomOut;
+                menu.close();
+            }
+            if menu.button("Zoom to Fit (\\)").clicked() {
+                view_action = ViewMenuAction::ZoomToFit;
+                menu.close();
+            }
+        });
         let ctx = ui.ctx().clone();
         if let Some(dialog) = &mut self.save_as_dialog {
             dialog.show(&ctx, editor);
@@ -107,7 +127,7 @@ impl ProjectMenu {
         if let Some(dialog) = &mut self.error_dialog {
             dialog.show(&ctx);
         }
-        action
+        (action, view_action)
     }
 
     /// Saves the project; on failure shows the error modal.

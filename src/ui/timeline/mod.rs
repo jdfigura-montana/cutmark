@@ -1,4 +1,4 @@
-//! ui::timeline: the central timeline view (ruler, lanes, playhead, zoom, scroll).
+﻿//! ui::timeline: the central timeline view (ruler, lanes, playhead, zoom, scroll).
 
 use eframe::egui;
 use uuid::Uuid;
@@ -23,6 +23,20 @@ pub const SCROLLBAR_H: f32 = 12.0;
 pub const MIN_SPP: f64 = 1.0 / 32.0;
 /// Largest zoom: 4 194 304 samples per pixel.
 pub const MAX_SPP: f64 = 4_194_304.0;
+
+/// Zoom command from the View menu, applied by `timeline::show`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewMenuAction {
+    /// Nothing chosen.
+    #[default]
+    None,
+    /// Zoom in, anchored at the lane center.
+    ZoomIn,
+    /// Zoom out, anchored at the lane center.
+    ZoomOut,
+    /// Zoom so the whole project fits.
+    ZoomToFit,
+}
 
 /// Ruler tick step, in seconds, from the coarsest-fitting list.
 const TICK_STEPS: [f64; 21] = [
@@ -75,6 +89,20 @@ pub fn zoom_at(spp: f64, scroll_x: u64, factor: f64, anchor_offset_px: f32) -> (
     (new_spp, new_scroll.round().max(0.0) as u64)
 }
 
+/// Samples per pixel and scroll that fit the whole project with a small margin.
+///
+/// The span is the larger of the project length and 10 seconds of samples,
+/// times 1.05, spread over `lane_width`. Clamped to MIN_SPP..=MAX_SPP; the
+/// scroll starts at 0.
+pub fn zoom_to_fit(project_length: u64, sample_rate: u32, lane_width: f32) -> (f64, u64) {
+    if lane_width <= 0.0 {
+        return (MAX_SPP, 0);
+    }
+    let span = project_length.max(seconds_to_samples(10.0, sample_rate)) as f64;
+    let spp = (span / f64::from(lane_width) * 1.05).clamp(MIN_SPP, MAX_SPP);
+    (spp, 0)
+}
+
 /// Smallest ruler tick step (in samples) that is at least `min_px` wide at
 /// the given zoom and sample rate. Uses the largest step when none fit.
 pub fn tick_step(spp: f64, rate: u32, min_px: f32) -> u64 {
@@ -97,7 +125,7 @@ fn scroll_extent(project_length: u64, visible: u64) -> u64 {
 /// Draws the whole timeline into the remaining center space and handles its
 /// input (zoom, scroll, playhead clicks). Not a ScrollArea: everything is
 /// painted by hand over one allocated rect.
-pub fn show(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<String> {
+pub fn show(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction) -> Vec<String> {
     // The timeline owns horizontal zoom; egui's own keyboard and Ctrl+wheel
     // UI zoom must not fire here.
     ui.ctx().options_mut(|o| o.zoom_with_keyboard = false);
@@ -127,6 +155,16 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<String> {
 
     let content_h: f32 = editor.project.tracks.iter().map(|t| t.height).sum();
     let max_scroll_y = (content_h - lane_rect.height()).max(0.0);
+
+    // Old project files may carry an out-of-range zoom (or 0); fit instead.
+    if !(MIN_SPP..=MAX_SPP).contains(&editor.view.samples_per_pixel) {
+        apply_fit(editor, lane_width);
+    }
+    // \ zooms to fit, even when the pointer is not over the timeline.
+    if !ui.ctx().egui_wants_keyboard_input() && ui.input(|i| i.key_pressed(egui::Key::Backslash)) {
+        apply_fit(editor, lane_width);
+    }
+    apply_view_menu(editor, view_menu, lane_width);
 
     // Input first: it may change spp, scroll_x, scroll_y and the playhead.
     handle_input(
@@ -165,6 +203,38 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<String> {
         max_scroll_x,
     );
     messages
+}
+
+/// Zooms so the whole project fits, scroll at the start.
+fn apply_fit(editor: &mut Editor, lane_width: f32) {
+    let (spp, scroll_x) = zoom_to_fit(
+        editor.project_length(),
+        editor.project.sample_rate,
+        lane_width,
+    );
+    editor.set_view_x(spp, scroll_x);
+}
+
+/// Applies a View menu zoom command, anchored at the lane center.
+fn apply_view_menu(editor: &mut Editor, action: ViewMenuAction, lane_width: f32) {
+    match action {
+        ViewMenuAction::None => {}
+        ViewMenuAction::ZoomToFit => apply_fit(editor, lane_width),
+        ViewMenuAction::ZoomIn | ViewMenuAction::ZoomOut => {
+            let factor = if action == ViewMenuAction::ZoomIn {
+                1.5
+            } else {
+                1.0 / 1.5
+            };
+            let (spp, scroll_x) = zoom_at(
+                editor.view.samples_per_pixel,
+                editor.view.scroll_x,
+                factor,
+                lane_width / 2.0,
+            );
+            editor.set_view_x(spp, clamp_scroll_x(editor, spp, lane_width, scroll_x));
+        }
+    }
 }
 
 /// Wheel, keyboard and click input over the timeline.
@@ -219,6 +289,15 @@ fn handle_input(
                     offset,
                 );
                 editor.set_view_x(spp, clamp_scroll_x(editor, spp, lane_width, scroll_x));
+            }
+        } else if i.modifiers.alt {
+            // Alt + wheel: vertical waveform scale, 1.25 per notch. This
+            // branch replaces the scroll branches, so Alt + wheel never
+            // scrolls.
+            let d = i.smooth_scroll_delta().y;
+            if d != 0.0 {
+                let factor = if d > 0.0 { 1.25_f32 } else { 1.0_f32 / 1.25 };
+                editor.set_wave_scale(editor.wave_scale * factor);
             }
         } else if i.modifiers.shift {
             // Shift + wheel: egui already folds the wheel delta into the
@@ -561,5 +640,35 @@ mod tests {
         assert_eq!(tick_step(0.1, 48_000, 90.0), 48);
         // Extremely zoomed out: 3600 s is the last step.
         assert_eq!(tick_step(4_194_304.0, 48_000, 90.0), 172_800_000);
+    }
+
+    #[test]
+    fn zoom_to_fit_fits_the_project_with_a_margin() {
+        // 1 000 000 samples over 1 000 px: 1000 spp * 1.05, scroll at 0.
+        let (spp, scroll_x) = zoom_to_fit(1_000_000, 48_000, 1_000.0);
+        assert!((spp - 1_050.0).abs() < 1e-9);
+        assert_eq!(scroll_x, 0);
+    }
+
+    #[test]
+    fn zoom_to_fit_uses_ten_seconds_for_short_projects() {
+        // Empty project: 10 s at 48 kHz over 1 000 px * 1.05.
+        let (spp, _) = zoom_to_fit(0, 48_000, 1_000.0);
+        let expected = 480_000.0 / 1_000.0 * 1.05;
+        assert!((spp - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn zoom_to_fit_clamps_to_min_and_max_spp() {
+        // Far too small a span for the width: clamps at MIN_SPP.
+        let (spp, _) = zoom_to_fit(1, 48_000, 100_000_000.0);
+        assert_eq!(spp, MIN_SPP);
+        // Far too large: clamps at MAX_SPP.
+        let (spp, _) = zoom_to_fit(u64::MAX, 48_000, 1.0);
+        assert_eq!(spp, MAX_SPP);
+        // Zero-width lane area: the largest zoom.
+        let (spp, scroll_x) = zoom_to_fit(1_000, 48_000, 0.0);
+        assert_eq!(spp, MAX_SPP);
+        assert_eq!(scroll_x, 0);
     }
 }

@@ -1,4 +1,4 @@
-//! app: the eframe::App; start screen vs editor.
+﻿//! app: the eframe::App; start screen vs editor.
 
 use std::path::PathBuf;
 
@@ -104,9 +104,9 @@ impl App {
         }
 
         let mut msgs: Vec<String> = Vec::new();
+        // Top: menu bar with the Project, Edit and View menus, then the toolbar row.
+        let (mut action, view_action) = menu.show(ui, editor);
 
-        // Top: menu bar with the Project and Edit menus, then the toolbar row.
-        let mut action = menu.show(ui, editor);
         if action == ProjectMenuAction::Import {
             msgs.extend(bin_panel::pick_and_import(editor));
             action = ProjectMenuAction::None;
@@ -139,7 +139,7 @@ impl App {
 
         // Center: timeline, filling the remainder.
         egui::CentralPanel::default().show(ui, |ui| {
-            msgs.extend(timeline::show(ui, editor));
+            msgs.extend(timeline::show(ui, editor, view_action));
         });
 
         // Files dropped anywhere on the window go to the importer.

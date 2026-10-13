@@ -1,17 +1,13 @@
 ﻿## Current state
-Task 4.4 DONE (2026-10-13). Waveforms in clips.
-- ui::timeline::waveform: pure fns choose_level (None iff spp<256; coarsest level with block_size<=spp), level_minmax (blocks covering frames from..to, (0,0) on empty/past end/bad channel), samples_minmax (raw interleaved), envelope (gain_db * min(fade_in, fade_out), saturating len-fade_out). draw(painter, clip, &Loaded, g, body_rect, wave_scale): stereo = 2 lanes L/R, mono 1, faint white center line each; spp>=1 -> one vertical line per pixel column (x_to_sample(x)..(x+1), +src_in-start mapping, env at column center sample * wave_scale, clamped to lane); spp<1 -> polyline per lane, dots when spp<0.125; whole clip added as ONE Shape::Vec.
-- clip_view::draw gained media: Option<&Loaded> + wave_scale params (#[allow(too_many_arguments)]); waveform drawn after header fill when !offline && Some. timeline mod.rs passes editor.media(id) (None when offline) and editor.wave_scale().
-- track volume does not affect drawing; offline media never gets a waveform.
-- 8 new tests in waveform.rs (choose_level 100/256/1000/1024/20000 -> None/0/0/1/3, level_minmax ramp + zero cases, samples_minmax channel pick, envelope 1.0 / 2.0 @ +6.0206 dB / 0.5 fades). cargo test 203 passed; clippy -D warnings clean; fmt applied.
-- ops::clip::place_clip_on_new_track(project, media_id, start): appends Track::new("Track N") with one full-length clip (src_in 0, src_out = media length); Action::PlaceClipOnNewTrack, label "Add Clip", ONE undo step (test place_clip_on_new_track_roundtrip in editor.rs).
-- editor::drop_media(media_id, track_index: Option<usize>, start, insert): Some -> Action::PlaceClip (src_in 0, src_out = media len); None -> PlaceClipOnNewTrack. Errors leave the project unchanged (NotFound media / Overflow bad index).
-- ui::timeline::clip_view::draw(painter, clip, name, offline, g, track_rect, visuals): clip = lane minus 2 px top/bottom, culled to visible_range, <3 px clips draw as 1 px line; 18 px header (darker, darken() 0.7 of body) with name + gain "+3.0 dB"/"-6.0 dB" (only when != 0), text clipped via painter.with_clip_rect; body visuals.widgets.hovered.bg_fill; offline: red fill + "Media offline"; rect_stroke(..., StrokeKind::Inside) border.
-- bin_panel: online rows are click_and_drag; drag_started sets egui::DragAndDrop::set_payload(MediaDrag{media_id}) (payload type lives in ui::timeline::interaction). Offline rows click only.
-- ui::timeline::interaction: handle_bin_drag (Esc clears payload; on any_released: over a lane -> drop Some(index), below last track inside lanes -> drop_media None, anywhere else nothing; returns error messages). draw_drop_ghost: translucent ghost at x_to_sample(ptr), media-length wide on target track; below last track -> dashed new-track row (hand-rolled dashed_rect/dashed_line, 6/4 dash/gap); Ctrl -> bright vertical insert line at start.
-- timeline::show now returns Vec<String>; app.rs msgs.extend(timeline::show(...)) -> modal. Clips drawn per lane in draw(); ghost drawn after lanes, before ruler/track headers.
-- Tasks 4.1/4.2 still true (timeline frame; track headers + lanes + toolbar).
-- cargo test 195 passed; clippy -D warnings clean; fmt applied.
+Task 4.5 DONE (2026-10-13). Vertical wave scale, zoom to fit, view restore.
+- ui::timeline: new ViewMenuAction enum (None/ZoomIn/ZoomOut/ZoomToFit); pure zoom_to_fit(project_length, sample_rate, lane_width) -> (spp, scroll_x=0): span = max(len, 10 s samples) * 1.05 / lane_width, clamped MIN_SPP..=MAX_SPP (MAX,0 on zero-width lane). 3 new tests.
+- timeline::show now takes view_menu: ViewMenuAction; before input: out-of-range/0 saved spp -> zoom_to_fit fallback (old project files); `\` (Key::Backslash, not while egui wants keyboard) -> apply_fit; apply_view_menu: In/Out = zoom_at factor 1.5 anchored lane_width/2, Fit = apply_fit. Backslash works even when pointer not over timeline (checked before handle_input's hover gate).
+- handle_input input chain: zoom (Ctrl) -> ALT branch (Alt+wheel: wave_scale *= 1.25 per notch via editor.set_wave_scale, replaces scroll so Alt+wheel never scrolls) -> shift h-scroll -> plain v-scroll.
+- ui::menu: added View menu (Zoom In (+), Zoom Out (-), Zoom to Fit (\)); ProjectMenu::show now returns (ProjectMenuAction, ViewMenuAction); app.rs threads view_action into timeline::show.
+- ui::toolbar: Wave slider — log2 encoding (0..=4) with custom_formatter "{:.1}x"; on change set_wave_scale(2^log); double_clicked resets to 1.0. 140 px space reserved left for future transport buttons.
+- View restore: Editor::open already stores the loaded ViewState (spp/scroll_x/scroll_y/playhead applied on next draw); only the spp validity fallback was needed.
+- cargo test 206 passed (3 new zoom_to_fit tests); clippy -D warnings clean; fmt applied.
+- Tasks 4.1-4.4 still true (timeline frame; headers/lanes/toolbar; clips + drop; waveforms).
 ## Key learnings
 - egui 0.36 DragAndDrop::set_payload/payload::<T>()->Option<Arc<T>>/clear_payload (auto-cleans on Esc/release too; payload() is Some on the release frame). Response::drag_started() exists.
 - egui 0.36 Color32::from_rgba_unmultiplied is NOT a const fn — use helper fns, not consts.
@@ -25,6 +21,6 @@ Task 4.4 DONE (2026-10-13). Waveforms in clips.
 - PowerShell cargo exit code 1 whenever stderr is written; judge by output text.
 - cargo not on default PATH (prepend $env:USERPROFILE\.cargo\bin).
 ## Next steps
-- Await next task prompt (4.5 per SPEC build phase 4 is done through waveforms; check next task number when it arrives).
+- Await next task prompt (Phase 4 complete with 4.5).
 ## Active considerations
 - Do NOT build ahead into later phases (clinerules).
