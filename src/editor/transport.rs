@@ -16,6 +16,8 @@ pub enum TransportState {
     Paused,
     /// Rendering bin preview material.
     Previewing,
+    /// Rendering the scrub reader (audible scrubbing).
+    Scrubbing,
 }
 
 /// Maps a `Shared::state` code to a [`TransportState`].
@@ -24,6 +26,7 @@ fn code_to_state(code: u8) -> TransportState {
         1 => TransportState::Playing,
         2 => TransportState::Paused,
         3 => TransportState::Previewing,
+        4 => TransportState::Scrubbing,
         _ => TransportState::Stopped,
     }
 }
@@ -49,6 +52,8 @@ impl Editor {
             }
             TransportState::Playing => engine.send(Command::Stop),
             TransportState::Previewing => engine.send(Command::StopPreview),
+            // A scrub owns the mouse; Space does not fight it.
+            TransportState::Scrubbing => {}
         }
     }
 
@@ -63,7 +68,7 @@ impl Editor {
                 let from = engine.shared().playhead.load(Ordering::Relaxed);
                 engine.send(Command::Play { from });
             }
-            TransportState::Stopped | TransportState::Previewing => {}
+            TransportState::Stopped | TransportState::Previewing | TransportState::Scrubbing => {}
         }
     }
 
@@ -93,6 +98,33 @@ impl Editor {
         }
     }
 
+    /// Starts a scrub at `pos`: playback stops and the scrub reader takes
+    /// over. The playhead jumps to `pos`.
+    pub fn scrub_start(&mut self, pos: u64) {
+        self.view.playhead = pos;
+        if let Some(engine) = &self.audio {
+            engine.send(Command::ScrubStart(pos));
+        }
+    }
+
+    /// Moves the scrub target to `pos` and the playhead with it. The audio
+    /// speed follows the mouse (clamped to 4x); with no audio only the
+    /// playhead moves.
+    pub fn scrub_to(&mut self, pos: u64) {
+        self.view.playhead = pos;
+        if let Some(engine) = &self.audio {
+            engine.send(Command::ScrubTarget(pos));
+        }
+    }
+
+    /// Ends the scrub: the gain fades out and the playhead stays at the last
+    /// scrub position.
+    pub fn scrub_end(&mut self) {
+        if let Some(engine) = &self.audio {
+            engine.send(Command::ScrubEnd);
+        }
+    }
+
     /// Home: playhead to 0.
     pub fn jump_start(&mut self) {
         self.seek(0);
@@ -112,9 +144,12 @@ impl Editor {
         };
         let shared = engine.shared();
         let state = code_to_state(shared.state.load(Ordering::Relaxed));
-        if state == TransportState::Playing
-            || (self.transport_prev == Some(TransportState::Playing)
-                && state == TransportState::Stopped)
+        // While scrubbing the mouse drives the playhead; the audio position
+        // must not overwrite it.
+        if state != TransportState::Scrubbing
+            && (state == TransportState::Playing
+                || (self.transport_prev == Some(TransportState::Playing)
+                    && state == TransportState::Stopped))
         {
             self.view.playhead = shared.playhead.load(Ordering::Relaxed);
         }
@@ -163,6 +198,30 @@ mod tests {
         editor.play_range(0, 1_000);
         editor.poll_transport();
         assert_eq!(editor.view.playhead, 5_000);
+    }
+
+    #[test]
+    fn scrub_methods_move_the_playhead_without_audio() {
+        let mut editor = editor();
+        editor.scrub_start(1_000);
+        assert_eq!(editor.view.playhead, 1_000);
+        editor.scrub_to(2_000);
+        assert_eq!(editor.view.playhead, 2_000);
+        editor.scrub_end();
+        assert_eq!(editor.view.playhead, 2_000);
+        // Polling never moves the playhead without audio.
+        editor.poll_transport();
+        assert_eq!(editor.view.playhead, 2_000);
+    }
+
+    #[test]
+    fn scrub_end_keeps_the_last_scrub_position() {
+        let mut editor = editor();
+        editor.scrub_start(500);
+        editor.scrub_to(900);
+        editor.scrub_to(700);
+        editor.scrub_end();
+        assert_eq!(editor.view.playhead, 700);
     }
 
     #[test]

@@ -208,6 +208,144 @@ pub fn handle_markers(
     blocked
 }
 
+/// Key under which the scrub drag state is carried between frames.
+const SCRUB_STATE_KEY: &str = "timeline_scrub_state";
+
+/// Distance from a lane edge (in points) inside which the view auto-scrolls
+/// while scrubbing.
+const SCRUB_EDGE_PX: f32 = 20.0;
+
+/// Auto-scroll speed at the very edge while scrubbing, in points per second.
+const SCRUB_EDGE_SPEED_PX: f32 = 600.0;
+
+/// A scrub drag in progress: whether the pointer is down on the ruler and the
+/// last target sample sent to the engine.
+#[derive(Clone, Copy, Default)]
+struct ScrubState {
+    /// Scrubbing is active (pointer pressed on the ruler).
+    active: bool,
+    /// Last sample sent with `scrub_to`.
+    last: u64,
+}
+
+/// Reads the scrub state from egui's temp storage.
+fn scrub_state(ctx: &egui::Context) -> ScrubState {
+    ctx.data(|d| {
+        d.get_temp(egui::Id::new(SCRUB_STATE_KEY))
+            .unwrap_or_default()
+    })
+}
+
+/// Writes the scrub state back to egui's temp storage.
+fn save_scrub_state(ctx: &egui::Context, state: ScrubState) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(SCRUB_STATE_KEY), state));
+}
+
+/// Handles audible scrubbing on the ruler (and on the playhead handle, which
+/// is just a ruler press).
+///
+/// A press on the ruler anywhere except a marker triangle starts a scrub at
+/// the pointer's sample; every frame while the button is down the target
+/// follows the pointer (no snapping); release ends the scrub with the playhead
+/// at the last target. When the pointer comes within [`SCRUB_EDGE_PX`] of a
+/// lane edge the view scrolls in that direction, faster the closer it gets.
+/// Requests a repaint every frame while scrubbing.
+pub fn handle_scrub(
+    ui: &egui::Ui,
+    editor: &mut Editor,
+    ruler_rect: egui::Rect,
+    markers_taken: bool,
+) {
+    let mut scrub = scrub_state(ui.ctx());
+    let (pressed, down, released, pos) = ui.input(|i| {
+        (
+            i.pointer.primary_pressed(),
+            i.pointer.primary_down(),
+            i.pointer.any_released(),
+            i.pointer.latest_pos(),
+        )
+    });
+    let g = Geom {
+        lane_left: ruler_rect.left(),
+        lane_width: ruler_rect.width(),
+        spp: editor.view.samples_per_pixel,
+        scroll_x: editor.view.scroll_x,
+    };
+
+    if released {
+        if scrub.active {
+            editor.scrub_end();
+            scrub = ScrubState::default();
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
+        }
+    } else if scrub.active && down {
+        // Auto-scroll when the pointer nears a lane edge; the speed grows the
+        // closer it gets (quadratic ramp from 0 at 20 px to full at the edge).
+        if let Some(p) = pos {
+            let dist_l = p.x - ruler_rect.left();
+            let dist_r = ruler_rect.right() - p.x;
+            let (dir, t) = if dist_l < SCRUB_EDGE_PX {
+                (-1.0, 1.0 - (dist_l / SCRUB_EDGE_PX).max(0.0))
+            } else if dist_r < SCRUB_EDGE_PX {
+                (1.0, 1.0 - (dist_r / SCRUB_EDGE_PX).max(0.0))
+            } else {
+                (0.0, 0.0)
+            };
+            if dir != 0.0 {
+                let dt = ui.input(|i| {
+                    if i.stable_dt > 0.0 {
+                        i.stable_dt
+                    } else {
+                        1.0 / 60.0
+                    }
+                });
+                let spp = editor.view.samples_per_pixel;
+                let delta = (SCRUB_EDGE_SPEED_PX * t * t * dt * spp as f32) as u64;
+                let new_x = if dir < 0.0 {
+                    editor.view.scroll_x.saturating_sub(delta)
+                } else {
+                    editor.view.scroll_x.saturating_add(delta)
+                };
+                editor.set_view_x(
+                    spp,
+                    super::clamp_scroll_x(editor, spp, ruler_rect.width(), new_x),
+                );
+            }
+            // The target follows the pointer, so a scroll also scrubs on.
+            let target = g.x_to_sample(p.x);
+            if target != scrub.last {
+                editor.scrub_to(target);
+                scrub.last = target;
+            }
+        }
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        ui.ctx().request_repaint();
+    } else if pressed
+        && !markers_taken
+        && !ui.ctx().egui_wants_keyboard_input()
+        && let Some(p) = pos
+        && ruler_rect.contains(p)
+        && marker_hit(&editor.project.markers, &g, ruler_rect, p).is_none()
+    {
+        let pos_sample = g.x_to_sample(p.x);
+        editor.scrub_start(pos_sample);
+        scrub = ScrubState {
+            active: true,
+            last: pos_sample,
+        };
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        ui.ctx().request_repaint();
+    } else if !down
+        && let Some(p) = pos
+        && ruler_rect.contains(p)
+        && marker_hit(&editor.project.markers, &g, ruler_rect, p).is_none()
+    {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+
+    save_scrub_state(ui.ctx(), scrub);
+}
+
 /// Draws the marker context menu and runs its action.
 ///
 /// Closes on Esc, on a click outside the menu, or after the action.

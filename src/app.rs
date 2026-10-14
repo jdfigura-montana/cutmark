@@ -117,7 +117,7 @@ impl App {
         editor.poll_transport();
         let transport_active = matches!(
             editor.transport_state(),
-            TransportState::Playing | TransportState::Previewing
+            TransportState::Playing | TransportState::Previewing | TransportState::Scrubbing
         );
         if editor.has_pending_jobs() || transport_active {
             ui.ctx().request_repaint();

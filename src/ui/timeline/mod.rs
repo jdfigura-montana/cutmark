@@ -199,16 +199,10 @@ pub fn show(
         scroll_x: editor.view.scroll_x,
     };
     let ruler_taken = ruler::handle_markers(ui, editor, &marker_g, ruler_rect);
-    handle_input(
-        ui,
-        editor,
-        lane_left,
-        lane_width,
-        ruler_rect,
-        max_scroll_y,
-        &resp,
-        ruler_taken,
-    );
+    handle_input(ui, editor, lane_left, lane_width, max_scroll_y, &resp);
+    // Audible scrubbing on the ruler (and the playhead handle): press starts,
+    // drag scrubs, release ends. Marker interaction wins.
+    ruler::handle_scrub(ui, editor, ruler_rect, ruler_taken);
 
     // Follow the playhead while playing: when it leaves the visible lanes on
     // either side, page so it sits 5 percent in from the left edge. Never
@@ -313,39 +307,16 @@ fn handle_input(
     editor: &mut Editor,
     lane_left: f32,
     lane_width: f32,
-    ruler_rect: egui::Rect,
     max_scroll_y: f32,
     resp: &egui::Response,
-    ruler_click_taken: bool,
 ) {
     if !resp.hovered() {
         return;
     }
 
-    // Clicking the ruler sets the playhead (scrubbing comes in task 8).
-    // Marker interaction on the ruler wins, so it suppresses this click.
-    // Lane clicks are handled by interaction::handle_lane_input.
-    if resp.clicked()
-        && !ruler_click_taken
-        && !ui.ctx().egui_wants_keyboard_input()
-        && let Some(p) = resp.interact_pointer_pos()
-        && ruler_rect.contains(p)
-    {
-        let g = Geom {
-            lane_left,
-            lane_width,
-            spp: editor.view.samples_per_pixel,
-            scroll_x: editor.view.scroll_x,
-        };
-        let pos = g.x_to_sample(p.x);
-        if editor.transport_state() == TransportState::Playing {
-            // While playing a click seeks: playback jumps and continues.
-            editor.seek(pos);
-        } else {
-            editor.set_playhead(pos);
-        }
-    }
-
+    // Ruler clicks are handled by ruler::handle_scrub (audible scrubbing);
+    // lane clicks keep their seek-while-playing behavior in
+    // interaction::handle_lane_input.
     if ui.ctx().egui_wants_keyboard_input() {
         return;
     }
@@ -431,7 +402,7 @@ fn handle_input(
 
 /// Largest legal scroll_x for the given zoom, so the view cannot scroll past
 /// the (10 percent padded) end of the project.
-fn clamp_scroll_x(editor: &Editor, spp: f64, lane_width: f32, scroll_x: u64) -> u64 {
+pub(crate) fn clamp_scroll_x(editor: &Editor, spp: f64, lane_width: f32, scroll_x: u64) -> u64 {
     let visible = (lane_width as f64 * spp).ceil() as u64;
     let length = editor.project_length();
     scroll_x.min(scroll_extent(length, visible).saturating_sub(visible))
