@@ -2,6 +2,7 @@
 
 pub mod autosave;
 pub mod decode;
+pub mod export;
 pub mod import;
 pub mod mp3;
 pub mod paths;
@@ -53,6 +54,9 @@ pub enum IoError {
     /// A media file referenced by the bin is missing from the project's media/ folder.
     #[error("media file is missing: {0}")]
     MediaOffline(uuid::Uuid),
+    /// An export sink could not be opened or written (bad format settings, encoder failure).
+    #[error("export failed: {0}")]
+    Export(String),
 }
 
 /// Returns true if the path is an existing file named project.json.

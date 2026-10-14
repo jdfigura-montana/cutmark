@@ -24,7 +24,7 @@
 - cpal 0.18.2 - WASAPI output engine (0.18 is an API rewrite: u32 SampleRate alias, by-value StreamConfig, Device Display instead of name(); see activeContext)
 - assert_no_alloc 1.1.2 (feature warn_debug) - no-alloc guard for the audio callback, debug builds only
 - crossbeam-channel 0.5 - editor-to-audio command queue and job channels
-- NOT YET ADDED (later phases): mp3lame-encoder
+- mp3lame-encoder 0.2.5 - CBR MP3 export (LAME 3.100 compiled from source by mp3lame-sys with cc/MSVC; LGPL-3.0; API: Builder -> Encoder, encode_to_vec(MonoPcm/InterleavedPcm<f32>), flush_to_vec::<FlushGap>, lame_tag_encode_to_vec)
 
 ## Commands
 - Validate per task, in order: `cargo fmt`; `cargo clippy --all-targets -- -D warnings`; `cargo test`
