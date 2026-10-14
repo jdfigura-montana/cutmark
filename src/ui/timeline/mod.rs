@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::editor::Editor;
 use crate::editor::transport::TransportState;
+use crate::ui::widgets::meter;
 use crate::util::time::seconds_to_samples;
 
 pub mod clip_view;
@@ -143,7 +144,12 @@ fn scroll_extent(project_length: u64, visible: u64) -> u64 {
 /// Draws the whole timeline into the remaining center space and handles its
 /// input (zoom, scroll, playhead clicks). Not a ScrollArea: everything is
 /// painted by hand over one allocated rect.
-pub fn show(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction) -> Vec<String> {
+pub fn show(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    view_menu: ViewMenuAction,
+    meters: &mut meter::MeterState,
+) -> Vec<String> {
     // The timeline owns horizontal zoom; egui's own keyboard and Ctrl+wheel
     // UI zoom must not fire here.
     ui.ctx().options_mut(|o| o.zoom_with_keyboard = false);
@@ -243,6 +249,7 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction) -
         scroll_rect,
         visible,
         max_scroll_x,
+        meters,
     );
     // Clip drag snap line (over the clips) and the open clip context menu.
     interaction::draw_clip_snap_line(ui, &g, lane_rect);
@@ -430,6 +437,7 @@ fn draw(
     scroll_rect: egui::Rect,
     visible: u64,
     max_scroll_x: u64,
+    meters: &mut meter::MeterState,
 ) {
     let all = ruler_rect
         .union(header_rect)
@@ -567,8 +575,15 @@ fn draw(
         }
     }
 
-    // Track headers: grip, rename, menu, resize, reorder (with lanes scrolled).
-    track_header::show(ui, editor, header_rect, lane_rect, view.scroll_y);
+    // Track headers: grip, rename, menu, resize, controls, meter, reorder.
+    track_header::show(
+        ui,
+        editor,
+        header_rect,
+        lane_rect,
+        view.scroll_y,
+        &mut meters.tracks,
+    );
 }
 
 /// Display name and offline flag of a media item, for clip drawing.

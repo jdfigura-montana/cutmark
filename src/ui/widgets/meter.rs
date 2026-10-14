@@ -1,8 +1,11 @@
-//! ui::widgets::meter: peak/RMS meter widget with clip light.
+//! ui::widgets::meter: peak/RMS meter widget with clip light, plus the UI-side
+//! meter ballistics state fed from `Editor::read_meters` every frame.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::time::{Duration, Instant};
 
-use eframe::egui::Color32;
+use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
+use uuid::Uuid;
 
 use crate::util::db::linear_to_db;
 
@@ -110,6 +113,185 @@ impl Default for ChannelBallistics {
     fn default() -> ChannelBallistics {
         ChannelBallistics::new()
     }
+}
+
+/// Scale tick values printed on the meter, in dBFS.
+const TICKS: [f32; 8] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0, -48.0, -60.0];
+/// Height of the clip-light strip above the bars.
+const LIGHT_H: f32 = 8.0;
+/// Width of the tick-label gutter when labels are drawn.
+const LABEL_W: f32 = 24.0;
+/// Minimum bar-area height (in points) at which tick labels are drawn.
+const LABEL_ROOM: f32 = 90.0;
+/// Gap between the L and R bars.
+const BAR_GAP: f32 = 2.0;
+
+/// One channel's raw meter reading from the audio thread: peak, sum of
+/// squares, frames and clip flag (the same tuple `Editor::read_meters` yields).
+pub type ChannelReading = (f32, f32, u32, bool);
+
+/// UI-side meter state: ballistics for every track and the master, the master
+/// peak-hold readout and the keep-repainting tail after playback stops.
+#[derive(Default)]
+pub struct MeterState {
+    /// Ballistics per track id (L and R).
+    pub tracks: HashMap<Uuid, [ChannelBallistics; 2]>,
+    /// Master ballistics (L and R).
+    pub master: [ChannelBallistics; 2],
+    /// Highest master peak since the last reset, in dBFS; None before any.
+    pub master_peak_db: Option<f32>,
+    /// Repaint the meters for one more second after playback stopped.
+    hold_until: Option<Instant>,
+}
+
+impl MeterState {
+    /// Marks the meters active (playing or previewing): repaint for 1 s more.
+    pub fn mark_active(&mut self) {
+        self.hold_until = Some(Instant::now() + Duration::from_secs(1));
+    }
+
+    /// True while the meters should keep repainting after playback stopped.
+    pub fn meter_tail(&self) -> bool {
+        self.hold_until.is_some_and(|t| Instant::now() < t)
+    }
+
+    /// Feeds one frame of readings from `Editor::read_meters` into the
+    /// ballistics, advancing them by `dt` seconds at egui time `now`.
+    pub fn update(
+        &mut self,
+        track_readings: &[(Uuid, [ChannelReading; 2])],
+        master: &[ChannelReading; 2],
+        now: f64,
+        dt: f32,
+    ) {
+        for (id, [l, r]) in track_readings {
+            let entry = self.tracks.entry(*id).or_default();
+            entry[0].update(now, dt, l.0, l.1, l.2, l.3);
+            entry[1].update(now, dt, r.0, r.1, r.2, r.3);
+        }
+        self.tracks
+            .retain(|id, _| track_readings.iter().any(|(tid, _)| tid == id));
+        self.master[0].update(now, dt, master[0].0, master[0].1, master[0].2, master[0].3);
+        self.master[1].update(now, dt, master[1].0, master[1].1, master[1].2, master[1].3);
+        // Master peak readout: the highest finite peak since the last reset.
+        for (peak, _, _, _) in master {
+            let db = linear_to_db(*peak);
+            if db.is_finite() && self.master_peak_db.is_none_or(|p| db > p) {
+                self.master_peak_db = Some(db);
+            }
+        }
+    }
+}
+
+/// Maps a dBFS value to a y position inside a bar area (bottom = -60 dB).
+fn db_y(area: Rect, db: f32) -> f32 {
+    let t = ((db - FLOOR) / -FLOOR).clamp(0.0, 1.0);
+    area.bottom() - t * area.height()
+}
+
+/// Draws one channel's bar: solid RMS, thin peak line and hold marker.
+fn draw_bar(painter: &egui::Painter, area: Rect, ch: &ChannelBallistics) {
+    painter.rect_filled(area, 0.0, Color32::from_rgb(22, 24, 28));
+    let rms = ch.rms_db();
+    if rms > FLOOR {
+        let bar = Rect::from_min_max(
+            Pos2::new(area.left(), db_y(area, rms)),
+            Pos2::new(area.right(), area.bottom()),
+        );
+        painter.rect_filled(bar, 0.0, ChannelBallistics::color_for(rms));
+    }
+    if ch.peak_db > FLOOR {
+        let y = db_y(area, ch.peak_db);
+        painter.line_segment(
+            [Pos2::new(area.left(), y), Pos2::new(area.right(), y)],
+            Stroke::new(1.5, ChannelBallistics::color_for(ch.peak_db)),
+        );
+    }
+    if ch.hold_db > FLOOR {
+        let y = db_y(area, ch.hold_db);
+        painter.line_segment(
+            [Pos2::new(area.left(), y), Pos2::new(area.right(), y)],
+            Stroke::new(2.0, Color32::from_rgb(240, 240, 240)),
+        );
+    }
+}
+
+/// Draws a stereo (L and R side by side) meter with ballistics into `rect`.
+///
+/// Ticks always draw; tick labels draw only when `labels` is set and the meter
+/// is tall enough (used by the master strip). A clip light sits on top of each
+/// bar; clicking the meter clears both clip lights. Returns true when clicked.
+pub fn stereo_meter(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    rect: Rect,
+    channels: &mut [ChannelBallistics; 2],
+    labels: bool,
+) -> bool {
+    let painter = ui.painter_at(rect);
+    let resp = ui.interact(rect, id, egui::Sense::click());
+    let clicked = resp.clicked();
+    if clicked {
+        for ch in channels.iter_mut() {
+            ch.clear_clip();
+        }
+    }
+
+    // Clip lights on top, one per channel.
+    let light_rect = Rect::from_min_size(rect.left_top(), Vec2::new(rect.width(), LIGHT_H));
+    let bars_top = rect.top() + LIGHT_H + 2.0;
+    let bar_area = Rect::from_min_max(
+        Pos2::new(rect.left(), bars_top),
+        Pos2::new(rect.right(), rect.bottom()),
+    );
+    let label_gutter = if labels { LABEL_W } else { 0.0 };
+    let bars_w = (bar_area.width() - label_gutter).max(2.0);
+    let bar_w = ((bars_w - BAR_GAP) * 0.5).max(1.0);
+    let l_rect = Rect::from_min_max(
+        bar_area.left_top(),
+        Pos2::new(bar_area.left() + bar_w, bar_area.bottom()),
+    );
+    let r_rect = Rect::from_min_max(
+        Pos2::new(bar_area.left() + bars_w - bar_w, bar_area.top()),
+        Pos2::new(bar_area.left() + bars_w, bar_area.bottom()),
+    );
+    for (bar, ch) in [(l_rect, &channels[0]), (r_rect, &channels[1])] {
+        let light = Rect::from_min_max(
+            Pos2::new(bar.left(), light_rect.top()),
+            Pos2::new(bar.right(), light_rect.bottom()),
+        );
+        let color = if ch.clip {
+            Color32::from_rgb(220, 50, 50)
+        } else {
+            Color32::from_rgb(50, 40, 40)
+        };
+        painter.rect_filled(light, 2.0, color);
+    }
+    draw_bar(&painter, l_rect, &channels[0]);
+    draw_bar(&painter, r_rect, &channels[1]);
+
+    // Ticks across both bars; labels in the gutter when there is room.
+    let show_labels = labels && bar_area.height() >= LABEL_ROOM;
+    for &t in &TICKS {
+        let y = db_y(bar_area, t);
+        painter.line_segment(
+            [
+                Pos2::new(bar_area.left(), y),
+                Pos2::new(bar_area.left() + bars_w, y),
+            ],
+            Stroke::new(1.0, Color32::from_rgb(58, 62, 68)),
+        );
+        if show_labels {
+            painter.text(
+                Pos2::new(bar_area.left() + bars_w + 3.0, y),
+                egui::Align2::LEFT_CENTER,
+                format!("{}", t as i32),
+                egui::FontId::proportional(9.0),
+                Color32::from_rgb(150, 155, 160),
+            );
+        }
+    }
+    clicked
 }
 
 #[cfg(test)]

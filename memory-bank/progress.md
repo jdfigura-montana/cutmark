@@ -1,4 +1,9 @@
 ﻿# Progress
+## What works - Task 7.3 complete (2026-10-13)
+- Task 7.3: drawn stereo meters (ui::widgets::meter stereo_meter + MeterState UI ballistics), fader widget (ui::widgets::fader, linear slider + gesture outcomes), track header row 2 (volume/pan faders, M/S buttons, Ctrl+click exclusive solo, narrow stereo meter, compact <64 px layout), master strip (vertical fader, labeled meter, clip-light-clears-all, clickable peak readout), app.rs meter updates each frame + repaint tail. Track header/timeline signatures gained &mut MeterState. cargo test 300 passed; clippy clean; fmt applied.
+
+## What works - Task 7.2 complete (2026-10-13)
+- audio::meters ChannelMeter/StereoMeter/MeterBank atomics; MixPlan meters+master; mixer::render meter flag; Editor read_meters(); ChannelBallistics in ui::widgets::meter (300 ms RMS window, 20 dB/s peak falloff, 2 s hold, clip latch, color_for).
 ## What works - fade_gain refactor (2026-10-13)
 - util::fade::fade_gain replaces the duplicated fade rule in mixer, waveform envelope and measure_peak. 5 tests in util::fade (2 moved from waveform). cargo test 290 passed; clippy clean; fmt applied.
 ## What works - Task 7.1 complete (2026-10-13)
@@ -35,7 +40,7 @@
 - Phase 2 complete: model/undo core, editor ops, io (paths, project_file, recent), start screen, menus, dialogs (1.1-2.8).
 
 ## What is left (SPEC Build phases)
-3. Media import complete. 4. Timeline view (complete through 4.5). 5. Playback. 6. Editing. 7. Levels/processing: 7.1 amplitude ops DONE, 7.2 meters DONE (meter drawing in UI pending, 7.3). 8. Markers/scrub UI. 9. Export. 10. Safety net/polish.
+3. Media import complete. 4. Timeline view (complete through 4.5). 5. Playback. 6. Editing. 7. Levels/processing: 7.1 amplitude ops DONE, 7.2 meters DONE, 7.3 header controls/master strip/meter drawing DONE (clip gain line + fade handles UI pending). 8. Markers/scrub UI. 9. Export. 10. Safety net/polish.
 
 ## Known issues / environment notes
 - cargo not on default PATH; append $env:USERPROFILE\.cargo\bin each session.

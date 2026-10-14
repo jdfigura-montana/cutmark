@@ -1,4 +1,4 @@
-﻿//! app: the eframe::App; start screen vs editor.
+//! app: the eframe::App; start screen vs editor.
 
 use std::path::PathBuf;
 
@@ -10,11 +10,13 @@ use crate::editor::action::Action;
 use crate::editor::transport::TransportState;
 use crate::ui::bin_panel::{self, BinPanel};
 use crate::ui::dialogs::confirm::ConfirmDialog;
+use crate::ui::master_strip;
 use crate::ui::menu::{ProjectMenu, ProjectMenuAction};
 use crate::ui::start_screen::StartScreen;
 use crate::ui::status_bar;
 use crate::ui::timeline;
 use crate::ui::toolbar;
+use crate::ui::widgets::meter::MeterState;
 
 /// The currently shown screen.
 enum Screen {
@@ -34,6 +36,8 @@ pub struct App {
     bin: BinPanel,
     /// Modal message dialog (import rejections, job errors), when shown.
     messages: Option<ConfirmDialog>,
+    /// UI-side meter ballistics: tracks, master and peak readout.
+    meters: MeterState,
     /// Last window title sent to the OS, to avoid resending every frame.
     title: String,
 }
@@ -45,6 +49,7 @@ impl Default for App {
             menu: ProjectMenu::default(),
             bin: BinPanel::default(),
             messages: None,
+            meters: MeterState::default(),
             title: "Audio Editor".to_string(),
         }
     }
@@ -72,6 +77,7 @@ impl eframe::App for App {
                     &mut self.menu,
                     &mut self.bin,
                     &mut self.messages,
+                    &mut self.meters,
                 );
             }
         }
@@ -98,6 +104,7 @@ impl App {
         menu: &mut ProjectMenu,
         bin: &mut BinPanel,
         messages: &mut Option<ConfirmDialog>,
+        meters: &mut MeterState,
     ) -> ProjectMenuAction {
         // Pump background jobs and keep repainting while any are running.
         editor.poll_jobs();
@@ -105,12 +112,32 @@ impl App {
         // audio playhead into the view.
         editor.tick();
         editor.poll_transport();
-        if editor.has_pending_jobs()
-            || matches!(
-                editor.transport_state(),
-                TransportState::Playing | TransportState::Previewing
+        let transport_active = matches!(
+            editor.transport_state(),
+            TransportState::Playing | TransportState::Previewing
+        );
+        if editor.has_pending_jobs() || transport_active {
+            ui.ctx().request_repaint();
+        }
+
+        // Meter ballistics advance with egui's frame time; keep repainting
+        // for one more second after playback stops so meters fall to empty.
+        if transport_active {
+            meters.mark_active();
+        }
+        let (now, dt) = ui.input(|i| {
+            (
+                i.time,
+                if i.stable_dt > 0.0 {
+                    i.stable_dt
+                } else {
+                    1.0 / 60.0
+                },
             )
-        {
+        });
+        let (track_readings, master_readings) = editor.read_meters();
+        meters.update(&track_readings, &master_readings, now, dt);
+        if meters.meter_tail() {
             ui.ctx().request_repaint();
         }
 
@@ -136,7 +163,7 @@ impl App {
             .resizable(false)
             .exact_size(90.0)
             .show(ui, |ui| {
-                grey_label(ui, "Master");
+                master_strip::show(ui, editor, meters);
             });
 
         // Left: resizable Media Bin panel.
@@ -150,7 +177,7 @@ impl App {
 
         // Center: timeline, filling the remainder.
         egui::CentralPanel::default().show(ui, |ui| {
-            msgs.extend(timeline::show(ui, editor, view_action));
+            msgs.extend(timeline::show(ui, editor, view_action, meters));
         });
 
         // Files dropped anywhere on the window go to the importer.
@@ -334,9 +361,4 @@ impl App {
             ui.ctx().send_viewport_cmd(ViewportCommand::Title(title));
         }
     }
-}
-
-/// Draws a label in grey, naming a panel region.
-fn grey_label(ui: &mut egui::Ui, text: &str) {
-    ui.label(egui::RichText::new(text).color(egui::Color32::GRAY));
 }
