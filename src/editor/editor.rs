@@ -1,6 +1,6 @@
 //! editor::editor: the Editor struct owning the Project, view, paths and dirty flag.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -17,6 +17,7 @@ use crate::editor::history::{History, HistoryEntry};
 use crate::editor::jobs::{JobChannels, JobMessage};
 use crate::editor::media_store::MediaStore;
 use crate::editor::ops::OpError;
+use crate::editor::ops::amplitude::{self, Target};
 use crate::editor::ops::paste;
 use crate::editor::selection::Selection;
 use crate::editor::transport::TransportState;
@@ -26,6 +27,7 @@ use crate::io::project_file;
 use crate::io::recent::{RecentEntry, RecentList};
 use crate::model::invariants::{self, InvariantError};
 use crate::model::project::{BitDepth, Project, ViewState};
+use crate::util::db::{db_to_linear, linear_to_db};
 use uuid::Uuid;
 
 /// Errors from creating, opening, saving or editing a project.
@@ -541,6 +543,139 @@ impl Editor {
             _ => Ok(()),
         }
     }
+
+    /// What amplitude processing applies to: the range if any, else the
+    /// selected clips, else `None`.
+    pub fn process_target(&self) -> Option<Target> {
+        match &self.selection {
+            Selection::Range { start, end, tracks } => Some(Target::Range {
+                start: *start,
+                end: *end,
+                tracks: tracks.clone(),
+            }),
+            Selection::Clips(ids) => Some(Target::Clips(ids.clone())),
+            Selection::None => None,
+        }
+    }
+
+    /// Highest absolute sample per track id across the fragments, after clip
+    /// gain and fades. Offline or missing media counts as silence.
+    pub fn measure_peak(&self, project: &Project, frags: &[(Uuid, Uuid)]) -> HashMap<Uuid, f32> {
+        let mut peaks: HashMap<Uuid, f32> = HashMap::new();
+        for (track_id, clip_id) in frags {
+            let entry = peaks.entry(*track_id).or_insert(0.0);
+            let Some(clip) = project
+                .tracks
+                .iter()
+                .flat_map(|track| track.clips.iter())
+                .find(|clip| clip.id == *clip_id)
+            else {
+                continue;
+            };
+            if self.media_store.is_offline(clip.media_id) {
+                continue;
+            }
+            let (Some(loaded), Some(item)) = (
+                self.media_store.get(clip.media_id),
+                project.media.iter().find(|item| item.id == clip.media_id),
+            ) else {
+                continue;
+            };
+            let channels = usize::from(item.channels).max(1);
+            let len = clip.len();
+            for local in 0..len {
+                let frame = (clip.src_in + local) as usize;
+                let mut env = db_to_linear(clip.gain_db);
+                if clip.fade_in > 0 && local < clip.fade_in {
+                    env *= (local as f32 / clip.fade_in as f32).min(1.0);
+                }
+                if clip.fade_out > 0 && local >= len.saturating_sub(clip.fade_out) {
+                    env *= ((len - local) as f32 / clip.fade_out as f32).min(1.0);
+                }
+                for ch in 0..channels {
+                    if let Some(sample) = loaded.samples.get(frame * channels + ch) {
+                        *entry = entry.max(sample.abs() * env);
+                    }
+                }
+            }
+        }
+        peaks
+    }
+
+    /// Normalizes the selection so its peak hits `target_dbfs`; with
+    /// `per_track` each track gets its own gain change.
+    pub fn normalize(&mut self, target_dbfs: f32, per_track: bool) -> Result<(), EditorError> {
+        let Some(target) = self.process_target() else {
+            return Ok(());
+        };
+        let mut scratch = (*self.project).clone();
+        if let Target::Range { start, end, tracks } = &target {
+            amplitude::split_edges(&mut scratch, *start, *end, tracks)?;
+        }
+        let frags = amplitude::fragments(&scratch, &target);
+        let peaks = self.measure_peak(&scratch, &frags);
+        let highest = peaks.values().copied().fold(0.0f32, f32::max);
+        if highest <= 0.0 {
+            return Err(OpError::Invalid(
+                "Nothing to normalize: the selection is silent".to_string(),
+            )
+            .into());
+        }
+        let deltas: Vec<(Uuid, f32)> = if per_track {
+            peaks
+                .iter()
+                .map(|(id, peak)| {
+                    let delta = if *peak > 0.0 {
+                        target_dbfs - linear_to_db(*peak)
+                    } else {
+                        0.0
+                    };
+                    (*id, delta)
+                })
+                .collect()
+        } else {
+            let delta = target_dbfs - linear_to_db(highest);
+            peaks.keys().map(|id| (*id, delta)).collect()
+        };
+        self.apply(Action::Normalize { target, deltas })
+    }
+
+    /// Adds `delta_db` of gain to the selected range or clips.
+    pub fn apply_gain(&mut self, delta_db: f32) -> Result<(), EditorError> {
+        match self.process_target() {
+            Some(target) => self.apply(Action::ApplyGain { target, delta_db }),
+            None => Ok(()),
+        }
+    }
+
+    /// Fades in over the selected range or whole selected clips.
+    pub fn fade_in(&mut self) -> Result<(), EditorError> {
+        match self.process_target() {
+            Some(target) => self.apply(Action::FadeIn { target }),
+            None => Ok(()),
+        }
+    }
+
+    /// Fades out over the selected range or whole selected clips.
+    pub fn fade_out(&mut self) -> Result<(), EditorError> {
+        match self.process_target() {
+            Some(target) => self.apply(Action::FadeOut { target }),
+            None => Ok(()),
+        }
+    }
+
+    /// Silences the selected range on its tracks; needs a range selection.
+    pub fn silence(&mut self) -> Result<(), EditorError> {
+        match self.selection.clone() {
+            Selection::Range { start, end, tracks } => self.apply(Action::Silence {
+                s: start,
+                e: end,
+                track_ids: tracks,
+            }),
+            _ => Ok(()),
+        }
+    }
+
     /// Applies one action: clone, run the op, check invariants, push undo, swap in.
     pub fn apply(&mut self, action: Action) -> Result<(), EditorError> {
         let label = action.label();
@@ -1135,6 +1270,213 @@ mod tests {
         assert_eq!(*editor.project, original, "undo must restore the original");
         assert!(editor.redo(), "redo after undo");
         (*editor.project).clone()
+    }
+
+    fn range_target(project: &Project, start: u64, end: u64, tracks: &[usize]) -> Target {
+        Target::Range {
+            start,
+            end,
+            tracks: tracks.iter().map(|&i| project.tracks[i].id).collect(),
+        }
+    }
+
+    fn test_editor(project: Project) -> Editor {
+        Editor::with_project(
+            project,
+            ViewState::default(),
+            ProjectPaths {
+                root: PathBuf::from("unused"),
+            },
+        )
+    }
+
+    /// Stores `frames` stereo frames of constant `value` for the media id.
+    fn put_constant(editor: &mut Editor, media_id: Uuid, value: f32, frames: usize) {
+        editor.media_store.insert(
+            media_id,
+            crate::io::import::Loaded {
+                samples: vec![value; frames * 2].into(),
+                peaks: crate::model::media::Peaks {
+                    channels: 2,
+                    frames: frames as u64,
+                    levels: Vec::new(),
+                }
+                .into(),
+            },
+        );
+    }
+
+    #[test]
+    fn apply_gain_range_splits_and_gains_only_the_middle() {
+        let project = project_with_clips(&[&[(100, 200)]]);
+        let target = range_target(&project, 150, 250, &[0]);
+        let result = roundtrip(
+            project,
+            Action::ApplyGain {
+                target,
+                delta_db: 6.0,
+            },
+        );
+        assert_eq!(spans(&result, 0), [(100, 150), (150, 250), (250, 300)]);
+        let gains: Vec<f32> = result.tracks[0].clips.iter().map(|c| c.gain_db).collect();
+        assert_eq!(gains, [0.0, 6.0, 0.0]);
+    }
+
+    #[test]
+    fn apply_gain_clamps_at_plus_24() {
+        let project = project_with_clips(&[&[(100, 200)]]);
+        let clip = project.tracks[0].clips[0].id;
+        let result = roundtrip(
+            project,
+            Action::ApplyGain {
+                target: Target::Clips(vec![clip]),
+                delta_db: 30.0,
+            },
+        );
+        assert_eq!(result.tracks[0].clips[0].gain_db, 24.0);
+    }
+
+    #[test]
+    fn apply_gain_clips_target_changes_whole_clips_without_splitting() {
+        let project = project_with_clips(&[&[(100, 100), (300, 100)]]);
+        let ids: Vec<Uuid> = project.tracks[0].clips.iter().map(|c| c.id).collect();
+        let result = roundtrip(
+            project,
+            Action::ApplyGain {
+                target: Target::Clips(ids),
+                delta_db: -3.0,
+            },
+        );
+        assert_eq!(spans(&result, 0), [(100, 200), (300, 400)]);
+        assert!(result.tracks[0].clips.iter().all(|c| c.gain_db == -3.0));
+    }
+
+    #[test]
+    fn fade_in_inside_one_clip_sets_fragment_fade() {
+        let project = project_with_clips(&[&[(100, 100)]]);
+        let target = range_target(&project, 120, 180, &[0]);
+        let result = roundtrip(project, Action::FadeIn { target });
+        assert_eq!(spans(&result, 0), [(100, 120), (120, 180), (180, 200)]);
+        let mid = &result.tracks[0].clips[1];
+        assert_eq!((mid.fade_in, mid.fade_out), (60, 0));
+    }
+
+    #[test]
+    fn fade_out_inside_one_clip_sets_fragment_fade() {
+        let project = project_with_clips(&[&[(100, 100)]]);
+        let target = range_target(&project, 120, 180, &[0]);
+        let result = roundtrip(project, Action::FadeOut { target });
+        let mid = &result.tracks[0].clips[1];
+        assert_eq!((mid.fade_in, mid.fade_out), (0, 60));
+    }
+
+    #[test]
+    fn fade_in_across_two_clips_errors_and_changes_nothing() {
+        let project = project_with_clips(&[&[(100, 50), (150, 50)]]);
+        let target = range_target(&project, 120, 180, &[0]);
+        let mut editor = test_editor(project.clone());
+        let result = editor.apply(Action::FadeIn { target });
+        assert!(matches!(
+            result,
+            Err(EditorError::Op(OpError::Invalid(ref m)))
+                if m == "Fade range must be inside a single clip on each track"
+        ));
+        assert_eq!(*editor.project, project);
+    }
+
+    #[test]
+    fn fade_in_skips_track_with_no_clip_in_range() {
+        let project = project_with_clips(&[&[(100, 100)], &[(500, 100)]]);
+        let target = range_target(&project, 120, 180, &[0, 1]);
+        let result = roundtrip(project, Action::FadeIn { target });
+        assert_eq!(spans(&result, 1), [(500, 600)]);
+        assert_eq!(result.tracks[1].clips[0].fade_in, 0);
+        assert_eq!(result.tracks[0].clips[1].fade_in, 60);
+    }
+
+    #[test]
+    fn silence_leaves_a_gap_and_moves_nothing_with_ripple_on() {
+        let project = project_with_clips(&[&[(100, 100), (300, 50)]]);
+        let track = project.tracks[0].id;
+        let mut editor = test_editor(project);
+        editor.view.ripple = true;
+        editor.set_range(120, 180, vec![track]);
+        editor.silence().unwrap();
+        assert_eq!(
+            spans(&editor.project, 0),
+            [(100, 120), (180, 200), (300, 350)]
+        );
+        assert!(editor.undo());
+        assert_eq!(spans(&editor.project, 0), [(100, 200), (300, 350)]);
+    }
+
+    #[test]
+    fn normalize_constant_quarter_to_minus_one_dbfs() {
+        let project = project_with_clips(&[&[(0, 100)]]);
+        let track = project.tracks[0].id;
+        let media = project.media[0].id;
+        let mut editor = test_editor(project);
+        put_constant(&mut editor, media, 0.25, 100);
+        editor.set_range(0, 100, vec![track]);
+        editor.normalize(-1.0, false).unwrap();
+        let gain = editor.project.tracks[0].clips[0].gain_db;
+        assert!((gain - 11.04).abs() < 0.01, "gain was {gain}");
+        assert!(editor.undo());
+        assert_eq!(editor.project.tracks[0].clips[0].gain_db, 0.0);
+    }
+
+    /// Two tracks with constant media peaking at 0.25 and 0.5, both selected.
+    fn two_track_editor() -> Editor {
+        let mut project = project_with_clips(&[&[(0, 100)], &[(0, 100)]]);
+        let quiet = project.media[0].id;
+        let loud = Uuid::new_v4();
+        let mut item = project.media[0].clone();
+        item.id = loud;
+        project.media.push(item);
+        project.tracks[1].clips[0].media_id = loud;
+        let tracks = vec![project.tracks[0].id, project.tracks[1].id];
+        let mut editor = test_editor(project);
+        put_constant(&mut editor, quiet, 0.25, 100);
+        put_constant(&mut editor, loud, 0.5, 100);
+        editor.set_range(0, 100, tracks);
+        editor
+    }
+
+    #[test]
+    fn normalize_together_gives_both_tracks_the_same_delta() {
+        let mut editor = two_track_editor();
+        editor.normalize(-1.0, false).unwrap();
+        let g0 = editor.project.tracks[0].clips[0].gain_db;
+        let g1 = editor.project.tracks[1].clips[0].gain_db;
+        assert!((g0 - g1).abs() < 1e-4);
+        // Target comes from the 0.5 peak: -1 - (-6.0206) = 5.0206.
+        assert!((g0 - 5.0206).abs() < 0.01, "gain was {g0}");
+    }
+
+    #[test]
+    fn normalize_per_track_gives_different_deltas() {
+        let mut editor = two_track_editor();
+        editor.normalize(-1.0, true).unwrap();
+        let g0 = editor.project.tracks[0].clips[0].gain_db;
+        let g1 = editor.project.tracks[1].clips[0].gain_db;
+        assert!((g0 - 11.04).abs() < 0.01, "gain was {g0}");
+        assert!((g1 - 5.02).abs() < 0.01, "gain was {g1}");
+    }
+
+    #[test]
+    fn normalize_on_silence_errors() {
+        let project = project_with_clips(&[&[(0, 100)]]);
+        let track = project.tracks[0].id;
+        let media = project.media[0].id;
+        let mut editor = test_editor(project);
+        put_constant(&mut editor, media, 0.0, 100);
+        editor.set_range(0, 100, vec![track]);
+        let result = editor.normalize(-1.0, false);
+        assert!(matches!(
+            result,
+            Err(EditorError::Op(OpError::Invalid(ref m)))
+                if m == "Nothing to normalize: the selection is silent"
+        ));
     }
 
     #[test]

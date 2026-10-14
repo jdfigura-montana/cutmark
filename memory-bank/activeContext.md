@@ -1,4 +1,8 @@
 ﻿## Current state
+Task 7.1 DONE (2026-10-13). Amplitude ops (editor only, no UI yet).
+- ops::amplitude: Target{Range,Clips}, split_edges, fragments, apply_gain, normalize (deltas per track id), fade_in/fade_out (Range must sit inside one clip per track else OpError::Invalid; tracks with no clip skipped), silence (clear_range, never ripples). Actions ApplyGain/Normalize/FadeIn/FadeOut/Silence.
+- Editor: process_target, measure_peak(project, frags) (clip gain x linear fades; offline/missing media = 0), normalize(target_dbfs, per_track) (measures on a cloned+split project; all-silent -> OpError::Invalid), apply_gain, fade_in, fade_out, silence (Range only). All no-op without a selection.
+- 16 new tests. cargo test 287 passed; clippy clean; fmt applied.
 Task 6.4 DONE (2026-10-13). Edit commands + Edit menu.
 - clipboard::copy_clips(project, clip_ids): clipboard tracks span the topmost..bottommost project tracks holding a selected clip (empty in-between tracks kept as empty Vecs, so track offsets survive paste); whole clips, new ids, starts relative to the earliest selected start; length = latest end - earliest start; empty Clipboard when no clips.
 - editor: copy_selection (Range->copy, Clips->copy_clips, None->nothing); cut_selection (Range: cut(ripple) then clear_selection + playhead=start; Clips: copy_clips + apply_labeled DeleteClips "Cut"); paste (empty clipboard -> Ok(()); Range -> paste_replace_range at target_track with view.ripple then clear + playhead=start; else paste_insert_at(playhead, target_track())); split (SplitAt playhead, track_ids Some(range tracks) else None); trim_to_selection (Range only, keeps selection).

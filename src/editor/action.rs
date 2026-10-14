@@ -1,7 +1,7 @@
 //! editor::action: Action, the single undoable edit path applied to the Project.
 
 use crate::editor::ops::OpError;
-use crate::editor::ops::{clip, marker, range, track};
+use crate::editor::ops::{amplitude, clip, marker, range, track};
 use crate::model::project::{BitDepth, Project};
 
 /// One user-facing edit, dispatched to a pure function in `editor::ops`.
@@ -161,6 +161,39 @@ pub enum Action {
         /// New display name (must not be empty).
         name: String,
     },
+    /// Adds gain in dB to a range's fragments or whole clips, clamped to -60..+24.
+    ApplyGain {
+        /// What the gain change applies to.
+        target: amplitude::Target,
+        /// Gain change in dB.
+        delta_db: f32,
+    },
+    /// Adds each track's per-fragment gain delta to hit a normalize target peak.
+    Normalize {
+        /// What the normalize applies to.
+        target: amplitude::Target,
+        /// Per track id gain delta in dB.
+        deltas: Vec<(uuid::Uuid, f32)>,
+    },
+    /// Sets a fade-in over the target range, or over the whole clips.
+    FadeIn {
+        /// What the fade applies to.
+        target: amplitude::Target,
+    },
+    /// Sets a fade-out over the target range, or over the whole clips.
+    FadeOut {
+        /// What the fade applies to.
+        target: amplitude::Target,
+    },
+    /// Removes clip content from `s..e` on the listed tracks; nothing moves.
+    Silence {
+        /// Range start in samples.
+        s: u64,
+        /// Exclusive range end in samples.
+        e: u64,
+        /// Track ids to silence.
+        track_ids: Vec<uuid::Uuid>,
+    },
 }
 
 impl Action {
@@ -194,6 +227,11 @@ impl Action {
             Action::ImportMedia { .. } => "Import",
             Action::RemoveMedia { .. } => "Remove Media",
             Action::RenameMedia { .. } => "Rename Media",
+            Action::ApplyGain { .. } => "Gain",
+            Action::Normalize { .. } => "Normalize",
+            Action::FadeIn { .. } => "Fade In",
+            Action::FadeOut { .. } => "Fade Out",
+            Action::Silence { .. } => "Silence",
         }
     }
 
@@ -267,6 +305,13 @@ impl Action {
             Action::RenameMedia { id, name } => {
                 crate::editor::ops::media::rename_media(project, *id, name)
             }
+            Action::ApplyGain { target, delta_db } => {
+                amplitude::apply_gain(project, target, *delta_db)
+            }
+            Action::Normalize { target, deltas } => amplitude::normalize(project, target, deltas),
+            Action::FadeIn { target } => amplitude::fade_in(project, target),
+            Action::FadeOut { target } => amplitude::fade_out(project, target),
+            Action::Silence { s, e, track_ids } => amplitude::silence(project, *s, *e, track_ids),
         }
     }
 }

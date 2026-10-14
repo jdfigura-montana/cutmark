@@ -1,4 +1,6 @@
 ﻿# Progress
+## What works - Task 7.1 complete (2026-10-13)
+- Task 7.1: ops::amplitude (Target, split_edges, fragments, apply_gain, normalize, fade_in/out, silence) + 5 Action variants + Editor process_target/measure_peak/normalize/apply_gain/fade_in/fade_out/silence. 16 new tests. cargo test 287 passed; clippy clean; fmt applied.
 ## What works - Task 6.4 complete (2026-10-13)
 - Task 6.4: clipboard::copy_clips (track offsets kept, empty in-between clipboard tracks), editor copy_selection/cut_selection/paste/split/trim_to_selection, keys S/Ctrl+C/X/V/T, Edit menu reordered with shortcuts, greyed items and Ripple/Snap checkmarks. 8 new tests. cargo test 271 passed; clippy clean; fmt applied.
 ## What works - Task 6.3 complete (2026-10-13)
