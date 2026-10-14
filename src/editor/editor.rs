@@ -1225,6 +1225,11 @@ impl Editor {
         }
     }
 
+    /// Reveals any file on disk (e.g. a finished export) in Windows Explorer.
+    pub fn reveal_file(&self, path: &std::path::Path) {
+        paths::reveal_in_explorer(path);
+    }
+
     /// Places a clip of the given media item at `start` (drop from the bin).
     ///
     /// `Some(track_index)` places on that track, overwriting what it covers, or

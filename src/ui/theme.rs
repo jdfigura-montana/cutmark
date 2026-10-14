@@ -298,6 +298,8 @@ pub struct Theme {
     pub hover_overlay: egui::Color32,
     /// Default (and minimum) width of every modal dialog.
     pub dialog_w: f32,
+    /// Translucent shade drawn over the UI behind modal windows.
+    pub modal_shade: egui::Color32,
 }
 
 impl Theme {
@@ -455,6 +457,7 @@ impl Default for Theme {
             accent: egui::Color32::from_rgb(94, 158, 214),
             hover_overlay: egui::Color32::from_rgba_unmultiplied(94, 158, 214, 26),
             dialog_w: 360.0,
+            modal_shade: egui::Color32::from_black_alpha(110),
         }
     }
 }

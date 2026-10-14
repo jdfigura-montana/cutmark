@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::editor::Editor;
 use crate::ui::dialogs::confirm::ConfirmDialog;
+use crate::ui::dialogs::export::ExportDialog;
 use crate::ui::dialogs::project_settings::ProjectSettingsDialog;
 use crate::ui::dialogs::save_as::SaveAsDialog;
 use crate::ui::timeline::ViewMenuAction;
@@ -33,6 +34,9 @@ pub struct ProjectMenu {
     save_as_dialog: Option<SaveAsDialog>,
     /// Project Settings dialog, when open.
     settings_dialog: Option<ProjectSettingsDialog>,
+    /// Export dialog; kept for the whole session so the last choices are
+    /// remembered between opens.
+    export_dialog: Option<ExportDialog>,
 }
 
 impl ProjectMenu {
@@ -64,6 +68,14 @@ impl ProjectMenu {
             if menu.button("Import Media... (Ctrl+I)").clicked() {
                 action = ProjectMenuAction::Import;
                 menu.close();
+            }
+            if !editor.is_locked() {
+                if menu.button("Export... (Ctrl+E)").clicked() {
+                    self.open_export(editor);
+                    menu.close();
+                }
+            } else {
+                menu.add_enabled(false, egui::Button::new("Export... (Ctrl+E)"));
             }
             if menu.button("Close").clicked() {
                 action = ProjectMenuAction::Close;
@@ -336,6 +348,9 @@ impl ProjectMenu {
                 self.settings_dialog = None;
             }
         }
+        if let Some(dialog) = &mut self.export_dialog {
+            dialog.show(&ctx, editor);
+        }
         if let Some(dialog) = &mut self.error_dialog {
             dialog.show(&ctx);
         }
@@ -375,5 +390,16 @@ impl ProjectMenu {
             &editor.project.name,
             editor.project.export_bit_depth,
         ));
+    }
+
+    /// Opens the Export dialog; created once per session, afterwards it
+    /// reopens with the last choices.
+    pub fn open_export(&mut self, editor: &Editor) {
+        if self.export_dialog.is_none() {
+            self.export_dialog = Some(ExportDialog::new_open(editor));
+        }
+        if let Some(dialog) = &mut self.export_dialog {
+            dialog.reopen();
+        }
     }
 }

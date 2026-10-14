@@ -10,6 +10,7 @@ use crate::editor::action::Action;
 use crate::editor::transport::TransportState;
 use crate::ui::bin_panel::{self, BinPanel};
 use crate::ui::dialogs::confirm::ConfirmDialog;
+use crate::ui::dialogs::export::{BANNER_SECONDS, ExportBanner};
 use crate::ui::master_strip;
 use crate::ui::menu::{ProjectMenu, ProjectMenuAction};
 use crate::ui::start_screen::StartScreen;
@@ -36,6 +37,8 @@ pub struct App {
     bin: BinPanel,
     /// Modal message dialog (import rejections, job errors), when shown.
     messages: Option<ConfirmDialog>,
+    /// Status-bar banner for the last finished export, when shown.
+    export_banner: Option<ExportBanner>,
     /// UI-side meter ballistics: tracks, master and peak readout.
     meters: MeterState,
     /// Last window title sent to the OS, to avoid resending every frame.
@@ -49,6 +52,7 @@ impl Default for App {
             menu: ProjectMenu::default(),
             bin: BinPanel::default(),
             messages: None,
+            export_banner: None,
             meters: MeterState::default(),
             title: "Audio Editor".to_string(),
         }
@@ -81,6 +85,7 @@ impl eframe::App for App {
                     &mut self.bin,
                     &mut self.messages,
                     &mut self.meters,
+                    &mut self.export_banner,
                 );
             }
         }
@@ -108,6 +113,7 @@ impl App {
         bin: &mut BinPanel,
         messages: &mut Option<ConfirmDialog>,
         meters: &mut MeterState,
+        banner: &mut Option<ExportBanner>,
     ) -> ProjectMenuAction {
         // Pump background jobs and keep repainting while any are running.
         editor.poll_jobs();
@@ -144,6 +150,36 @@ impl App {
             ui.ctx().request_repaint();
         }
 
+        // Finished export: success starts the status-bar banner, failure
+        // shows in a modal; a plain cancel shows nothing.
+        if let Some(result) = editor.take_export_result() {
+            match result {
+                Ok(path) => {
+                    *banner = Some(ExportBanner {
+                        name: path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string()),
+                        path,
+                        at: now,
+                    });
+                }
+                Err(message) if message != "Cancelled" => {
+                    *messages = Some(ConfirmDialog::new("Export", message));
+                }
+                Err(_) => {}
+            }
+        }
+        // Expire the banner after ten seconds; keep repainting while visible.
+        if let Some(export) = banner
+            && now - export.at > BANNER_SECONDS
+        {
+            *banner = None;
+        }
+        if banner.is_some() {
+            ui.ctx().request_repaint();
+        }
+
         let mut msgs: Vec<String> = Vec::new();
         // Top: menu bar with the Project, Edit and View menus, then the toolbar row.
         let (mut action, view_action) = menu.show(ui, editor);
@@ -158,7 +194,7 @@ impl App {
 
         // Bottom: status bar.
         egui::Panel::bottom("status_bar").show(ui, |ui| {
-            status_bar::show(ui, editor);
+            status_bar::show(ui, editor, banner.as_ref());
         });
 
         // Right: Master strip, fixed width.
@@ -195,14 +231,20 @@ impl App {
             msgs.extend(editor.import_files(dropped));
         }
 
-        // Editor shortcuts, only when no text field has keyboard focus.
-        if !ui.ctx().egui_wants_keyboard_input() {
+        // While an export job runs: click blocker, progress window and clip
+        // warning. Drawn last so the blocker sits above every panel.
+        crate::ui::dialogs::export::show_progress(&ui.ctx().clone(), editor);
+
+        // Editor shortcuts, only when no text field has keyboard focus, and
+        // never while an export locks the project.
+        if !ui.ctx().egui_wants_keyboard_input() && !editor.is_locked() {
             let (
                 ctrl,
                 shift,
                 n,
                 o,
                 s,
+                e,
                 i,
                 z,
                 y,
@@ -227,6 +269,7 @@ impl App {
                     i.key_pressed(egui::Key::N),
                     i.key_pressed(egui::Key::O),
                     i.key_pressed(egui::Key::S),
+                    i.key_pressed(egui::Key::E),
                     i.key_pressed(egui::Key::I),
                     i.key_pressed(egui::Key::Z),
                     i.key_pressed(egui::Key::Y),
@@ -266,6 +309,8 @@ impl App {
                 action = ProjectMenuAction::Open;
             } else if ctrl && shift && s {
                 menu.open_save_as(editor);
+            } else if ctrl && e {
+                menu.open_export(editor);
             } else if ctrl && shift && t {
                 let _ = editor.apply(Action::AddTrack {
                     index: None,
