@@ -1,18 +1,12 @@
 //! ui::master_strip: the fixed-width Master fader and meter strip.
 
-use eframe::egui::{self, Color32, Pos2, Rect};
+use eframe::egui::{self, Pos2, Rect};
 
 use crate::editor::Editor;
 use crate::editor::action::Action;
+use crate::ui::theme::{THEME, Theme};
 use crate::ui::widgets::fader;
 use crate::ui::widgets::meter::{self, MeterState};
-
-/// Width of the master meter bars area.
-const METER_W: f32 = 36.0;
-/// Width of the vertical fader.
-const FADER_W: f32 = 26.0;
-/// Height of the peak-readout strip at the bottom.
-const READOUT_H: f32 = 16.0;
 
 /// Draws the master strip: vertical fader, labeled meter with clip lights and
 /// the clickable peak readout.
@@ -21,20 +15,23 @@ const READOUT_H: f32 = 16.0;
 /// track's; clicking the peak readout resets it.
 pub fn show(ui: &mut egui::Ui, editor: &mut Editor, meters: &mut MeterState) {
     ui.label(egui::RichText::new("Master").color(ui.visuals().strong_text_color()));
-    ui.add_space(4.0);
+    ui.add_space(THEME.space_sm);
 
     let avail = ui.available_rect_before_wrap();
-    let pad = 4.0;
+    let pad = THEME.master_pad;
     let meter_rect = Rect::from_min_max(
         Pos2::new(avail.left() + pad, avail.top() + pad),
         Pos2::new(
-            avail.left() + pad + METER_W,
-            avail.bottom() - READOUT_H - pad,
+            avail.left() + pad + THEME.master_meter_w,
+            avail.bottom() - THEME.master_readout_h - pad,
         ),
     );
     let fader_rect = Rect::from_min_max(
         Pos2::new(meter_rect.right() + pad, meter_rect.top()),
-        Pos2::new(meter_rect.right() + pad + FADER_W, meter_rect.bottom()),
+        Pos2::new(
+            meter_rect.right() + pad + THEME.master_fader_w,
+            meter_rect.bottom(),
+        ),
     );
 
     // Tall labeled meter; a click clears every clip light (master + tracks).
@@ -81,7 +78,7 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, meters: &mut MeterState) {
 
     // Peak readout: highest master peak since the last reset.
     let readout_rect = Rect::from_min_max(
-        Pos2::new(avail.left() + pad, avail.bottom() - READOUT_H),
+        Pos2::new(avail.left() + pad, avail.bottom() - THEME.master_readout_h),
         Pos2::new(avail.right() - pad, avail.bottom()),
     );
     let text = match meters.master_peak_db {
@@ -89,16 +86,16 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, meters: &mut MeterState) {
         None => "-inf dBFS".to_string(),
     };
     let color = if meters.master_peak_db.is_some_and(|db| db >= 0.0) {
-        Color32::from_rgb(220, 60, 60)
+        THEME.meter_red
     } else {
-        Color32::from_rgb(170, 175, 180)
+        THEME.fader_text
     };
     let painter = ui.painter_at(readout_rect);
     painter.text(
         Pos2::new(readout_rect.center().x, readout_rect.center().y),
         egui::Align2::CENTER_CENTER,
         text,
-        egui::FontId::proportional(9.0),
+        Theme::mono(THEME.fader_text_size),
         color,
     );
     let resp = ui.interact(
@@ -106,6 +103,10 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, meters: &mut MeterState) {
         egui::Id::new("master_peak"),
         egui::Sense::click(),
     );
+    // Hover highlight for this clickable readout.
+    if resp.hovered() {
+        painter.rect_filled(readout_rect, THEME.corner_r, THEME.hover_overlay);
+    }
     if resp.clicked() {
         meters.master_peak_db = None;
     }

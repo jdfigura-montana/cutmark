@@ -1,4 +1,11 @@
 ﻿# Progress
+## What works - Visual restyle (2026-10-13)
+- Dark neutral greys + one accent (THEME.accent #5E9ED6) across selection/playhead/snap/range/gain/fades/markers; custom dark Visuals in theme::apply (4/8 px spacing, phosphor Fill font registered); toolbar icons via egui-phosphor, toggles lit with accent; monospace ruler/master-readout timecode; hover overlays (meter, fader, M/S, master readout); dialogs THEME.dialog_w wide, Enter confirms, Esc cancels. egui-phosphor 0.14 added (features fill,regular). cargo test 306 passed; clippy clean; fmt applied.
+
+## What works - Theme refactor (2026-10-13)
+- ui::theme: Theme/THEME/apply/F12 debug style window; all src/ui visuals read THEME. snap_pos takes threshold_px. cargo test 306 passed; clippy clean; fmt applied.
+
+
 ## What works - Task 7.5 complete (2026-10-13)
 - Task 7.5: Gain dialog mode (delta dB -24..+24, OK -> apply_gain), Normalize dialog (target dBFS default -1.0, per-track checkbox, red in-dialog errors), Process menu (Gain/Normalize/Fade In/Fade Out/Silence with shortcuts, greyed per process_target()/range), keys Ctrl+G / Ctrl+Shift+N / Ctrl+Shift+I / Ctrl+Shift+O / Ctrl+L when no text focused (shift guards added to Ctrl+N/O/I so they no longer collide), fade errors in the confirm modal verbatim. 1 new test. cargo test 305 passed; clippy clean; fmt applied.
 

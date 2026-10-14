@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
 use uuid::Uuid;
 
+use crate::ui::theme::THEME;
 use crate::util::db::linear_to_db;
 
 /// Duration of the RMS averaging window, in seconds.
@@ -100,11 +101,11 @@ impl ChannelBallistics {
     /// Bar color for a level in dBFS.
     pub fn color_for(db: f32) -> Color32 {
         if db > -6.0 {
-            Color32::from_rgb(220, 60, 60)
+            THEME.meter_red
         } else if db > -18.0 {
-            Color32::from_rgb(220, 200, 60)
+            THEME.meter_yellow
         } else {
-            Color32::from_rgb(60, 200, 90)
+            THEME.meter_green
         }
     }
 }
@@ -117,14 +118,6 @@ impl Default for ChannelBallistics {
 
 /// Scale tick values printed on the meter, in dBFS.
 const TICKS: [f32; 8] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0, -48.0, -60.0];
-/// Height of the clip-light strip above the bars.
-const LIGHT_H: f32 = 8.0;
-/// Width of the tick-label gutter when labels are drawn.
-const LABEL_W: f32 = 24.0;
-/// Minimum bar-area height (in points) at which tick labels are drawn.
-const LABEL_ROOM: f32 = 90.0;
-/// Gap between the L and R bars.
-const BAR_GAP: f32 = 2.0;
 
 /// One channel's raw meter reading from the audio thread: peak, sum of
 /// squares, frames and clip flag (the same tuple `Editor::read_meters` yields).
@@ -191,7 +184,7 @@ fn db_y(area: Rect, db: f32) -> f32 {
 
 /// Draws one channel's bar: solid RMS, thin peak line and hold marker.
 fn draw_bar(painter: &egui::Painter, area: Rect, ch: &ChannelBallistics) {
-    painter.rect_filled(area, 0.0, Color32::from_rgb(22, 24, 28));
+    painter.rect_filled(area, 0.0, THEME.meter_bar_bg);
     let rms = ch.rms_db();
     if rms > FLOOR {
         let bar = Rect::from_min_max(
@@ -204,14 +197,14 @@ fn draw_bar(painter: &egui::Painter, area: Rect, ch: &ChannelBallistics) {
         let y = db_y(area, ch.peak_db);
         painter.line_segment(
             [Pos2::new(area.left(), y), Pos2::new(area.right(), y)],
-            Stroke::new(1.5, ChannelBallistics::color_for(ch.peak_db)),
+            Stroke::new(THEME.meter_peak_w, ChannelBallistics::color_for(ch.peak_db)),
         );
     }
     if ch.hold_db > FLOOR {
         let y = db_y(area, ch.hold_db);
         painter.line_segment(
             [Pos2::new(area.left(), y), Pos2::new(area.right(), y)],
-            Stroke::new(2.0, Color32::from_rgb(240, 240, 240)),
+            Stroke::new(THEME.meter_hold_w, THEME.meter_hold),
         );
     }
 }
@@ -238,15 +231,16 @@ pub fn stereo_meter(
     }
 
     // Clip lights on top, one per channel.
-    let light_rect = Rect::from_min_size(rect.left_top(), Vec2::new(rect.width(), LIGHT_H));
-    let bars_top = rect.top() + LIGHT_H + 2.0;
+    let light_rect =
+        Rect::from_min_size(rect.left_top(), Vec2::new(rect.width(), THEME.clip_light_h));
+    let bars_top = rect.top() + THEME.clip_light_h + THEME.space_xs;
     let bar_area = Rect::from_min_max(
         Pos2::new(rect.left(), bars_top),
         Pos2::new(rect.right(), rect.bottom()),
     );
-    let label_gutter = if labels { LABEL_W } else { 0.0 };
-    let bars_w = (bar_area.width() - label_gutter).max(2.0);
-    let bar_w = ((bars_w - BAR_GAP) * 0.5).max(1.0);
+    let label_gutter = if labels { THEME.meter_label_w } else { 0.0 };
+    let bars_w = (bar_area.width() - label_gutter).max(THEME.space_xs);
+    let bar_w = ((bars_w - THEME.meter_bar_gap) * 0.5).max(THEME.hairline);
     let l_rect = Rect::from_min_max(
         bar_area.left_top(),
         Pos2::new(bar_area.left() + bar_w, bar_area.bottom()),
@@ -261,17 +255,17 @@ pub fn stereo_meter(
             Pos2::new(bar.right(), light_rect.bottom()),
         );
         let color = if ch.clip {
-            Color32::from_rgb(220, 50, 50)
+            THEME.clip_light_on
         } else {
-            Color32::from_rgb(50, 40, 40)
+            THEME.clip_light_off
         };
-        painter.rect_filled(light, 2.0, color);
+        painter.rect_filled(light, THEME.corner_r, color);
     }
     draw_bar(&painter, l_rect, &channels[0]);
     draw_bar(&painter, r_rect, &channels[1]);
 
     // Ticks across both bars; labels in the gutter when there is room.
-    let show_labels = labels && bar_area.height() >= LABEL_ROOM;
+    let show_labels = labels && bar_area.height() >= THEME.meter_label_room;
     for &t in &TICKS {
         let y = db_y(bar_area, t);
         painter.line_segment(
@@ -279,17 +273,21 @@ pub fn stereo_meter(
                 Pos2::new(bar_area.left(), y),
                 Pos2::new(bar_area.left() + bars_w, y),
             ],
-            Stroke::new(1.0, Color32::from_rgb(58, 62, 68)),
+            Stroke::new(THEME.hairline, THEME.meter_tick),
         );
         if show_labels {
             painter.text(
-                Pos2::new(bar_area.left() + bars_w + 3.0, y),
+                Pos2::new(bar_area.left() + bars_w + THEME.meter_label_pad_x, y),
                 egui::Align2::LEFT_CENTER,
                 format!("{}", t as i32),
-                egui::FontId::proportional(9.0),
-                Color32::from_rgb(150, 155, 160),
+                egui::FontId::proportional(THEME.meter_label_size),
+                THEME.meter_label,
             );
         }
+    }
+    // Hover highlight for this clickable control.
+    if resp.hovered() && !clicked {
+        painter.rect_filled(rect, THEME.corner_r, THEME.hover_overlay);
     }
     clicked
 }
@@ -377,17 +375,8 @@ mod tests {
 
     #[test]
     fn colors_split_at_minus_eighteen_and_minus_six() {
-        assert_eq!(
-            ChannelBallistics::color_for(-30.0),
-            Color32::from_rgb(60, 200, 90)
-        );
-        assert_eq!(
-            ChannelBallistics::color_for(-12.0),
-            Color32::from_rgb(220, 200, 60)
-        );
-        assert_eq!(
-            ChannelBallistics::color_for(-1.0),
-            Color32::from_rgb(220, 60, 60)
-        );
+        assert_eq!(ChannelBallistics::color_for(-30.0), THEME.meter_green);
+        assert_eq!(ChannelBallistics::color_for(-12.0), THEME.meter_yellow);
+        assert_eq!(ChannelBallistics::color_for(-1.0), THEME.meter_red);
     }
 }

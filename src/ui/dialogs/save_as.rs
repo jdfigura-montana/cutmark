@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use eframe::egui;
 
 use crate::editor::Editor;
+use crate::ui::theme::THEME;
 
 /// Modal dialog for copying the open project to a new location and name.
 pub struct SaveAsDialog {
@@ -36,6 +37,7 @@ impl SaveAsDialog {
         let mut cancel = false;
         egui::Window::new("Save As")
             .open(&mut open)
+            .default_width(THEME.dialog_w)
             .collapsible(false)
             .resizable(false)
             .movable(false)
@@ -43,7 +45,7 @@ impl SaveAsDialog {
             .show(ctx, |ui| {
                 egui::Grid::new("save_as_grid")
                     .num_columns(3)
-                    .spacing([8.0, 6.0])
+                    .spacing([THEME.space_md, THEME.grid_spacing])
                     .show(ui, |ui| {
                         ui.label("Name:");
                         ui.text_edit_singleline(&mut self.name);
@@ -63,14 +65,14 @@ impl SaveAsDialog {
                         ui.end_row();
                     });
 
-                ui.add_space(8.0);
+                ui.add_space(THEME.space_md);
                 if let Some(error) = &self.error {
-                    ui.label(egui::RichText::new(error).color(egui::Color32::LIGHT_RED));
+                    ui.label(egui::RichText::new(error).color(THEME.error_soft));
                 }
-                ui.add_space(4.0);
+                ui.add_space(THEME.space_sm);
 
+                let can_save = !self.name.trim().is_empty() && self.parent.is_some();
                 ui.horizontal(|ui| {
-                    let can_save = !self.name.trim().is_empty() && self.parent.is_some();
                     let save = ui.add_enabled(can_save, egui::Button::new("Save"));
                     if save.clicked() {
                         self.try_save_as(editor);
@@ -79,6 +81,13 @@ impl SaveAsDialog {
                         cancel = true;
                     }
                 });
+                // Enter confirms (when valid), Esc cancels.
+                if ui.input(|i| i.key_pressed(egui::Key::Enter)) && can_save {
+                    self.try_save_as(editor);
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    cancel = true;
+                }
             });
         if !open || cancel {
             *self = SaveAsDialog {

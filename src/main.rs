@@ -26,6 +26,9 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Audio Editor",
         options,
-        Box::new(|_cc| Ok(Box::new(crate::app::App::default()))),
+        Box::new(|cc| {
+            crate::ui::theme::apply(&cc.egui_ctx);
+            Ok(Box::new(crate::app::App::default()))
+        }),
     )
 }

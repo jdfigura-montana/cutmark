@@ -6,6 +6,7 @@ use eframe::egui;
 
 use crate::editor::{Editor, RecentEntry, recent_projects, remove_recent};
 use crate::ui::dialogs::new_project::NewProjectDialog;
+use crate::ui::theme::THEME;
 
 /// Start screen: New Project, Open Project/Folder and the Recent Projects list.
 #[derive(Default)]
@@ -59,9 +60,9 @@ impl StartScreen {
 
         egui::CentralPanel::default().show(ui, |ui| {
             ui.vertical_centered(|ui| {
-                ui.add_space(40.0);
+                ui.add_space(THEME.space_xxl);
                 ui.heading("Audio Editor");
-                ui.add_space(16.0);
+                ui.add_space(THEME.space_lg);
 
                 if ui.button("New Project").clicked() {
                     self.dialog = Some(NewProjectDialog::new_open());
@@ -73,15 +74,15 @@ impl StartScreen {
                     self.open_project_folder(&mut opened);
                 }
                 if let Some(error) = &self.error {
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new(error).color(egui::Color32::LIGHT_RED));
+                    ui.add_space(THEME.space_md);
+                    ui.label(egui::RichText::new(error).color(THEME.error_soft));
                 }
 
-                ui.add_space(24.0);
+                ui.add_space(THEME.space_xl);
                 ui.separator();
-                ui.add_space(8.0);
+                ui.add_space(THEME.space_md);
                 ui.strong("Recent Projects");
-                ui.add_space(4.0);
+                ui.add_space(THEME.space_sm);
                 self.show_recent_list(ui, &mut opened);
             });
         });

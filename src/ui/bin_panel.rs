@@ -1,4 +1,4 @@
-//! ui::bin_panel: the resizable Media Bin panel.
+﻿//! ui::bin_panel: the resizable Media Bin panel.
 
 use eframe::egui;
 use uuid::Uuid;
@@ -6,6 +6,7 @@ use uuid::Uuid;
 use crate::editor::Editor;
 use crate::editor::action::Action;
 use crate::model::media::MediaItem;
+use crate::ui::theme::THEME;
 use crate::ui::timeline::interaction::MediaDrag;
 use crate::util::time;
 
@@ -75,7 +76,7 @@ impl BinPanel {
                     ui.selectable_value(&mut self.sort, BinSort::Name, "Name");
                 });
         });
-        ui.add_space(4.0);
+        ui.add_space(THEME.space_sm);
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             for item in sorted_items(&editor.project.media, self.sort) {
@@ -84,7 +85,7 @@ impl BinPanel {
         });
 
         for (label, frac) in editor.pending_jobs() {
-            ui.add_space(4.0);
+            ui.add_space(THEME.space_sm);
             ui.label(&label);
             ui.add(egui::ProgressBar::new(frac).show_percentage());
         }
@@ -112,11 +113,11 @@ impl BinPanel {
             self.reveal = None;
         }
 
-        let inner = ui.allocate_ui(egui::vec2(ui.available_width(), 38.0), |ui| {
+        let inner = ui.allocate_ui(egui::vec2(ui.available_width(), THEME.bin_row_h), |ui| {
             ui.horizontal(|ui| {
                 if !offline
                     && ui
-                        .small_button(if previewing_this { "⏹" } else { "▶" })
+                        .small_button(if previewing_this { "â¹" } else { "â–¶" })
                         .clicked()
                 {
                     if previewing_this {
@@ -126,10 +127,12 @@ impl BinPanel {
                     }
                 }
                 if selected {
-                    let (bar, _) =
-                        ui.allocate_exact_size(egui::vec2(3.0, 30.0), egui::Sense::hover());
+                    let (bar, _) = ui.allocate_exact_size(
+                        egui::vec2(THEME.bin_sel_bar_w, THEME.bin_sel_bar_h),
+                        egui::Sense::hover(),
+                    );
                     ui.painter()
-                        .rect_filled(bar, 1.0, ui.visuals().selection.bg_fill);
+                        .rect_filled(bar, THEME.corner_xs, ui.visuals().selection.bg_fill);
                 }
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
@@ -142,7 +145,7 @@ impl BinPanel {
                             }
                             let text = egui::RichText::new(name);
                             let text = if offline {
-                                text.color(egui::Color32::RED)
+                                text.color(THEME.bin_offline)
                             } else if selected {
                                 text.strong()
                             } else {
@@ -164,7 +167,7 @@ impl BinPanel {
                     ui.label(
                         egui::RichText::new(details_line(editor, item))
                             .small()
-                            .color(egui::Color32::GRAY),
+                            .color(THEME.bin_details),
                     );
                 });
             });
@@ -172,13 +175,15 @@ impl BinPanel {
             if previewing_this {
                 let frac = editor.preview_progress();
                 let (bar, _) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), 2.0),
+                    egui::vec2(ui.available_width(), THEME.bin_progress_h),
                     egui::Sense::hover(),
                 );
-                let filled =
-                    egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * frac, 2.0));
+                let filled = egui::Rect::from_min_size(
+                    bar.min,
+                    egui::vec2(bar.width() * frac, THEME.bin_progress_h),
+                );
                 ui.painter()
-                    .rect_filled(filled, 1.0, ui.visuals().selection.bg_fill);
+                    .rect_filled(filled, THEME.corner_xs, ui.visuals().selection.bg_fill);
             }
         });
         let row = ui.interact(
@@ -252,7 +257,7 @@ impl BinPanel {
             self.renaming = None;
             return;
         }
-        let width = (ui.available_width() - 40.0).max(60.0);
+        let width = (ui.available_width() - THEME.bin_rename_pad).max(THEME.bin_rename_min_w);
         let response =
             ui.add(egui::TextEdit::singleline(&mut self.rename_text).desired_width(width));
         if !self.rename_focused_once {
@@ -309,7 +314,7 @@ impl BinPanel {
                 ui.label(format!(
                     "Remove \"{name}\"? This item is used by {usage} clips. Removing it also removes those clips."
                 ));
-                ui.add_space(8.0);
+                ui.add_space(THEME.space_md);
                 ui.horizontal(|ui| {
                     if ui.button("Remove").clicked() {
                         remove = true;

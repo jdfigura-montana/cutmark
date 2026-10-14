@@ -1,6 +1,8 @@
 //! ui::widgets::fader: linear slider for dB and pan, with gesture events.
 
-use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
+use eframe::egui::{self, Pos2, Rect, Stroke, Vec2};
+
+use crate::ui::theme::THEME;
 
 /// Outcome of one frame of the slider widget.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -80,7 +82,12 @@ pub fn slider(
     let shown = out.value.unwrap_or(value);
     let t = ((shown - min) / (max - min)).clamp(0.0, 1.0);
     let visuals = ui.visuals().clone();
-    painter.rect_filled(rect, 2.0, visuals.extreme_bg_color);
+    painter.rect_filled(rect, THEME.corner_r, visuals.extreme_bg_color);
+
+    // Hover highlight for this clickable/draggable control.
+    if resp.hovered() && !dragging {
+        painter.rect_filled(rect, THEME.corner_r, THEME.hover_overlay);
+    }
 
     // Slot along the drag axis and the handle across it.
     let handle_pos = if vertical {
@@ -88,40 +95,49 @@ pub fn slider(
     } else {
         Pos2::new(rect.left() + t * rect.width(), rect.center().y)
     };
-    let slot = Stroke::new(2.0, visuals.widgets.inactive.bg_stroke.color);
+    let slot = Stroke::new(THEME.fader_slot_w, visuals.widgets.inactive.bg_stroke.color);
     if vertical {
         painter.line_segment(
             [
-                Pos2::new(rect.center().x, rect.top() + 3.0),
-                Pos2::new(rect.center().x, rect.bottom() - 3.0),
+                Pos2::new(rect.center().x, rect.top() + THEME.fader_inset),
+                Pos2::new(rect.center().x, rect.bottom() - THEME.fader_inset),
             ],
             slot,
         );
         painter.rect_filled(
-            Rect::from_center_size(handle_pos, Vec2::new(rect.width() - 4.0, 4.0)),
-            1.0,
+            Rect::from_center_size(
+                handle_pos,
+                Vec2::new(rect.width() - THEME.fader_handle_w, THEME.fader_handle_w),
+            ),
+            THEME.corner_xs,
             visuals.strong_text_color(),
         );
     } else {
         painter.line_segment(
             [
-                Pos2::new(rect.left() + 3.0, rect.center().y),
-                Pos2::new(rect.right() - 3.0, rect.center().y),
+                Pos2::new(rect.left() + THEME.fader_inset, rect.center().y),
+                Pos2::new(rect.right() - THEME.fader_inset, rect.center().y),
             ],
             slot,
         );
         painter.rect_filled(
-            Rect::from_center_size(handle_pos, Vec2::new(4.0, rect.height() - 4.0)),
-            1.0,
+            Rect::from_center_size(
+                handle_pos,
+                Vec2::new(THEME.fader_handle_w, rect.height() - THEME.fader_handle_w),
+            ),
+            THEME.corner_xs,
             visuals.strong_text_color(),
         );
     }
 
     // Value text next to the handle.
     let text_pos = if vertical {
-        Pos2::new(rect.left() + 2.0, handle_pos.y - 7.0)
+        Pos2::new(
+            rect.left() + THEME.fader_text_pad_x,
+            handle_pos.y - THEME.fader_text_dy,
+        )
     } else {
-        Pos2::new(handle_pos.x, rect.top() + 1.0)
+        Pos2::new(handle_pos.x, rect.top() + THEME.fader_text_pad_y)
     };
     let anchor = if vertical {
         egui::Align2::LEFT_BOTTOM
@@ -132,8 +148,8 @@ pub fn slider(
         text_pos,
         anchor,
         fmt(shown),
-        egui::FontId::proportional(9.0),
-        Color32::from_rgb(170, 175, 180),
+        egui::FontId::proportional(THEME.fader_text_size),
+        THEME.fader_text,
     );
 
     if out.reset {

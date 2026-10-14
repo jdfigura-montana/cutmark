@@ -48,13 +48,20 @@ impl Editor {
 
     /// Applies snapping to `pos`: returns the final position and the snap point
     /// when it snapped. No snapping when the view's snap toggle is off or
-    /// `bypass` is true (Alt during a drag). Threshold is 8 px at the current spp.
-    pub fn snap_pos(&self, pos: u64, exclude_clips: &[Uuid], bypass: bool) -> (u64, Option<u64>) {
+    /// `bypass` is true (Alt during a drag). The threshold in points comes from
+    /// the caller (the UI passes its theme snap distance).
+    pub fn snap_pos(
+        &self,
+        pos: u64,
+        exclude_clips: &[Uuid],
+        bypass: bool,
+        threshold_px: f32,
+    ) -> (u64, Option<u64>) {
         if !self.view.snap || bypass {
             return (pos, None);
         }
         let candidates = self.snap_candidates(exclude_clips);
-        match snap(pos, &candidates, self.view.samples_per_pixel, 8.0) {
+        match snap(pos, &candidates, self.view.samples_per_pixel, threshold_px) {
             Some(snapped) => (snapped, Some(snapped)),
             None => (pos, None),
         }
@@ -109,9 +116,9 @@ mod tests {
         let mut editor = editor();
         editor.view.playhead = 1004;
         editor.view.snap = false;
-        assert_eq!(editor.snap_pos(1000, &[], false), (1000, None));
+        assert_eq!(editor.snap_pos(1000, &[], false, 8.0), (1000, None));
         editor.view.snap = true;
-        assert_eq!(editor.snap_pos(1000, &[], true), (1000, None));
-        assert_eq!(editor.snap_pos(1000, &[], false), (1004, Some(1004)));
+        assert_eq!(editor.snap_pos(1000, &[], true, 8.0), (1000, None));
+        assert_eq!(editor.snap_pos(1000, &[], false, 8.0), (1004, Some(1004)));
     }
 }

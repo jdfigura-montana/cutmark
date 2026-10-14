@@ -5,6 +5,8 @@ use eframe::egui;
 use crate::model::marker::Marker;
 use crate::util::time::samples_to_timecode;
 
+use crate::ui::theme::{THEME, Theme};
+
 use super::{Geom, tick_step};
 
 /// Draws the ruler strip, its ticks and labels, marker triangles with faint
@@ -21,7 +23,7 @@ pub fn draw(
     stroke: egui::Stroke,
 ) {
     // Major ticks with timecode labels, plus minor ticks between them.
-    let step = tick_step(g.spp, rate, 90.0);
+    let step = tick_step(g.spp, rate, THEME.ruler_min_tick_px);
     let (start, end) = g.visible_range();
     let first = start / step * step;
     let minor = step / 5;
@@ -37,17 +39,20 @@ pub fn draw(
             }
             painter.line_segment(
                 [
-                    egui::pos2(x, ruler_rect.bottom() - 12.0),
+                    egui::pos2(x, ruler_rect.bottom() - THEME.ruler_tick_h),
                     egui::pos2(x, ruler_rect.bottom()),
                 ],
                 stroke,
             );
             let tc = samples_to_timecode(m, rate);
             painter.text(
-                egui::pos2(x + 4.0, ruler_rect.top() + 3.0),
+                egui::pos2(
+                    x + THEME.ruler_label_pad_x,
+                    ruler_rect.top() + THEME.ruler_label_pad_y,
+                ),
                 egui::Align2::LEFT_TOP,
                 tc,
-                egui::FontId::proportional(11.0),
+                Theme::mono(THEME.ruler_label_size),
                 text,
             );
             if show_minor {
@@ -60,7 +65,7 @@ pub fn draw(
                     }
                     painter.line_segment(
                         [
-                            egui::pos2(mx, ruler_rect.bottom() - 5.0),
+                            egui::pos2(mx, ruler_rect.bottom() - THEME.ruler_minor_tick_h),
                             egui::pos2(mx, ruler_rect.bottom()),
                         ],
                         stroke,
@@ -73,7 +78,7 @@ pub fn draw(
 
     // Markers: a small downward triangle on the ruler and a faint vertical
     // line down through the lane area.
-    let marker_color = egui::Color32::from_rgb(120, 200, 255);
+    let marker_color = THEME.marker_color;
     for marker in markers {
         let x = g.sample_to_x(marker.position);
         if x < g.lane_left - 1.0 || x > ruler_rect.right() + 1.0 {
@@ -81,8 +86,14 @@ pub fn draw(
         }
         painter.add(egui::Shape::convex_polygon(
             vec![
-                egui::pos2(x - 4.0, ruler_rect.bottom() - 7.0),
-                egui::pos2(x + 4.0, ruler_rect.bottom() - 7.0),
+                egui::pos2(
+                    x - THEME.marker_tri_w,
+                    ruler_rect.bottom() - THEME.marker_tri_h,
+                ),
+                egui::pos2(
+                    x + THEME.marker_tri_w,
+                    ruler_rect.bottom() - THEME.marker_tri_h,
+                ),
                 egui::pos2(x, ruler_rect.bottom()),
             ],
             marker_color,
@@ -94,7 +105,7 @@ pub fn draw(
                 egui::pos2(x, lane_rect.bottom()),
             ],
             egui::Stroke::new(
-                1.0,
+                THEME.hairline,
                 egui::Color32::from_rgba_premultiplied(
                     marker_color.r() / 4,
                     marker_color.g() / 4,

@@ -5,6 +5,7 @@ use eframe::egui;
 use crate::editor::Editor;
 use crate::editor::action::Action;
 use crate::model::project::BitDepth;
+use crate::ui::theme::THEME;
 
 /// Modal dialog for editing the project name and default export bit depth.
 pub struct ProjectSettingsDialog {
@@ -36,6 +37,7 @@ impl ProjectSettingsDialog {
         let mut cancel = false;
         egui::Window::new("Project Settings")
             .open(&mut open)
+            .default_width(THEME.dialog_w)
             .collapsible(false)
             .resizable(false)
             .movable(false)
@@ -43,7 +45,7 @@ impl ProjectSettingsDialog {
             .show(ctx, |ui| {
                 egui::Grid::new("project_settings_grid")
                     .num_columns(2)
-                    .spacing([8.0, 6.0])
+                    .spacing([THEME.space_md, THEME.grid_spacing])
                     .show(ui, |ui| {
                         ui.label("Name:");
                         ui.text_edit_singleline(&mut self.name);
@@ -64,14 +66,14 @@ impl ProjectSettingsDialog {
                         ui.end_row();
                     });
 
-                ui.add_space(8.0);
+                ui.add_space(THEME.space_md);
                 if let Some(error) = &self.error {
-                    ui.label(egui::RichText::new(error).color(egui::Color32::LIGHT_RED));
+                    ui.label(egui::RichText::new(error).color(THEME.error_soft));
                 }
-                ui.add_space(4.0);
+                ui.add_space(THEME.space_sm);
 
+                let can_apply = !self.name.trim().is_empty();
                 ui.horizontal(|ui| {
-                    let can_apply = !self.name.trim().is_empty();
                     let apply = ui.add_enabled(can_apply, egui::Button::new("OK"));
                     if apply.clicked() {
                         self.try_apply(editor);
@@ -80,6 +82,13 @@ impl ProjectSettingsDialog {
                         cancel = true;
                     }
                 });
+                // Enter confirms (when valid), Esc cancels.
+                if ui.input(|i| i.key_pressed(egui::Key::Enter)) && can_apply {
+                    self.try_apply(editor);
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    cancel = true;
+                }
             });
         if !open || cancel {
             *self = ProjectSettingsDialog {

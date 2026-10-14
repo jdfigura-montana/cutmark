@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::editor::Editor;
 use crate::editor::action::Action;
 use crate::editor::selection::Selection;
+use crate::ui::theme::THEME;
 
 /// Temp-storage key holding the open Clip Gain dialog.
 const DIALOG_KEY: &str = "clip_gain_dialog";
@@ -119,6 +120,7 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor) -> Vec<String> {
             "Clip Gain"
         })
         .open(&mut open)
+        .default_width(THEME.dialog_w)
         .collapsible(false)
         .resizable(false)
         .movable(false)
@@ -134,22 +136,23 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor) -> Vec<String> {
             } else {
                 (-60.0, 24.0)
             };
-            let resp = ui.add(
+            ui.add(
                 egui::DragValue::new(&mut dialog.db)
                     .range(min..=max)
                     .speed(0.1)
                     .suffix(" dB"),
             );
-            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            // Enter confirms, Esc cancels.
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 ok = true;
             }
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 closed = true;
             }
             if let Some(error) = &dialog.error {
-                ui.colored_label(egui::Color32::RED, error);
+                ui.colored_label(THEME.error, error);
             }
-            ui.add_space(8.0);
+            ui.add_space(THEME.space_md);
             ui.vertical_centered(|ui| {
                 ui.horizontal(|ui| {
                     if ui.button("OK").clicked() {

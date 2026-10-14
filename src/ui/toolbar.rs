@@ -1,31 +1,34 @@
 //! ui::toolbar: the toolbar with transport buttons, toggles and Add Track.
 
 use eframe::egui;
+use egui_phosphor::fill;
 
 use crate::editor::Editor;
 use crate::editor::action::Action;
 use crate::editor::transport::TransportState;
+use crate::ui::theme::THEME;
 
 /// Draws the toolbar row under the menu.
 ///
-/// Left: transport buttons (jump start, play/stop, pause, stop, jump end) as
-/// text glyphs. Then the Add Track button (Ctrl+Shift+T) and the Wave slider,
-/// a logarithmic vertical waveform scale from 1x to 16x (double-click resets
-/// to 1x).
+/// Left: phosphor-icon transport buttons (jump start, play/stop, pause, stop,
+/// jump end) with shortcuts in the tooltips. Then the Add Track button
+/// (Ctrl+Shift+T), the Ripple/Snap toggles (lit with the accent when on) and
+/// the Wave slider, a logarithmic vertical waveform scale from 1x to 16x
+/// (double-click resets to 1x).
 pub fn show(ui: &mut egui::Ui, editor: &mut Editor) {
-    ui.add_space(4.0);
+    ui.add_space(THEME.space_sm);
     ui.horizontal(|ui| {
         // Transport: Home jumps to 0, the play button toggles play/stop and
         // its glyph follows the transport state, then pause, stop and End.
         if ui
-            .button("|◀")
+            .button(fill::SKIP_BACK)
             .on_hover_text("Jump to start (Home)")
             .clicked()
         {
             editor.jump_start();
         }
         let playing = editor.transport_state() == TransportState::Playing;
-        let play_resp = ui.button(if playing { "■" } else { "▶" });
+        let play_resp = ui.button(if playing { fill::STOP } else { fill::PLAY });
         let play_resp = if playing {
             play_resp.on_hover_text("Stop (Space)")
         } else {
@@ -34,34 +37,40 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor) {
         if play_resp.clicked() {
             editor.toggle_play();
         }
-        if ui.button("‖").on_hover_text("Pause (P)").clicked() {
+        if ui.button(fill::PAUSE).on_hover_text("Pause (P)").clicked() {
             editor.toggle_pause();
         }
-        if ui.button("■").on_hover_text("Stop").clicked() {
+        if ui.button(fill::STOP).on_hover_text("Stop").clicked() {
             editor.stop();
         }
-        if ui.button("▶|").on_hover_text("Jump to end (End)").clicked() {
+        if ui
+            .button(fill::SKIP_FORWARD)
+            .on_hover_text("Jump to end (End)")
+            .clicked()
+        {
             editor.jump_end();
         }
-        ui.add_space(8.0);
-        // Ripple and Snap toggles: selected look when on.
-        if ui
-            .selectable_label(editor.view.ripple, "Ripple")
-            .on_hover_text("Ripple edit (R)")
-            .clicked()
-        {
+        ui.add_space(THEME.space_md);
+        // Ripple and Snap toggles: lit with the accent while on.
+        let ripple = if editor.view.ripple {
+            egui::Button::new(format!("{} Ripple", fill::SCISSORS)).fill(THEME.accent)
+        } else {
+            egui::Button::new(format!("{} Ripple", fill::SCISSORS))
+        };
+        if ui.add(ripple).on_hover_text("Ripple edit (R)").clicked() {
             editor.toggle_ripple();
         }
-        if ui
-            .selectable_label(editor.view.snap, "Snap")
-            .on_hover_text("Snapping (N)")
-            .clicked()
-        {
+        let snap = if editor.view.snap {
+            egui::Button::new(format!("{} Snap", fill::MAGNET)).fill(THEME.accent)
+        } else {
+            egui::Button::new(format!("{} Snap", fill::MAGNET))
+        };
+        if ui.add(snap).on_hover_text("Snapping (N)").clicked() {
             editor.toggle_snap();
         }
-        ui.add_space(8.0);
+        ui.add_space(THEME.space_md);
         if ui
-            .button("Add Track")
+            .button(format!("{} Add Track", fill::PLUS))
             .on_hover_text("Add a new track (Ctrl+Shift+T)")
             .clicked()
         {
@@ -83,5 +92,5 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor) {
             editor.set_wave_scale(1.0);
         }
     });
-    ui.add_space(2.0);
+    ui.add_space(THEME.space_xs);
 }

@@ -6,6 +6,7 @@ use eframe::egui;
 
 use crate::editor::Editor;
 use crate::model::project::BitDepth;
+use crate::ui::theme::THEME;
 
 /// Sample rates offered when creating a project, in kHz.
 const SAMPLE_RATES_KHZ: [u32; 4] = [44, 48, 88, 96];
@@ -54,6 +55,7 @@ impl NewProjectDialog {
         let mut cancel = false;
         egui::Window::new("New Project")
             .open(&mut open)
+            .default_width(THEME.dialog_w)
             .collapsible(false)
             .resizable(false)
             .movable(false)
@@ -61,7 +63,7 @@ impl NewProjectDialog {
             .show(ctx, |ui| {
                 egui::Grid::new("new_project_grid")
                     .num_columns(3)
-                    .spacing([8.0, 6.0])
+                    .spacing([THEME.space_md, THEME.grid_spacing])
                     .show(ui, |ui| {
                         ui.label("Name:");
                         ui.text_edit_singleline(&mut self.name);
@@ -109,14 +111,14 @@ impl NewProjectDialog {
                         ui.end_row();
                     });
 
-                ui.add_space(8.0);
+                ui.add_space(THEME.space_md);
                 if let Some(error) = &self.error {
-                    ui.label(egui::RichText::new(error).color(egui::Color32::LIGHT_RED));
+                    ui.label(egui::RichText::new(error).color(THEME.error_soft));
                 }
-                ui.add_space(4.0);
+                ui.add_space(THEME.space_sm);
 
+                let can_create = !self.name.trim().is_empty() && self.parent.is_some();
                 ui.horizontal(|ui| {
-                    let can_create = !self.name.trim().is_empty() && self.parent.is_some();
                     let create = ui.add_enabled(can_create, egui::Button::new("Create"));
                     if create.clicked() {
                         self.try_create(&mut created);
@@ -125,6 +127,13 @@ impl NewProjectDialog {
                         cancel = true;
                     }
                 });
+                // Enter confirms (when valid), Esc cancels.
+                if ui.input(|i| i.key_pressed(egui::Key::Enter)) && can_create {
+                    self.try_create(&mut created);
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    cancel = true;
+                }
             });
         if !open || cancel {
             *self = NewProjectDialog {

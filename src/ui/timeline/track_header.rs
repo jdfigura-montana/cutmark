@@ -9,25 +9,12 @@ use uuid::Uuid;
 
 use crate::editor::Editor;
 use crate::editor::action::Action;
+use crate::ui::theme::THEME;
 use crate::ui::widgets::fader;
 use crate::ui::widgets::meter;
 
-/// Width of the reorder grip at the header's left edge.
-const GRIP_W: f32 = 10.0;
-/// Height of the resize strip at the header's bottom edge.
-const RESIZE_H: f32 = 4.0;
-/// Width of the stereo meter at the header's right edge.
-const METER_W: f32 = 14.0;
-/// Height of the name row.
-const NAME_H: f32 = 18.0;
-/// Height of one control row (fader or pan).
-const CTRL_H: f32 = 14.0;
-/// Width of an M / S toggle button.
-const MS_W: f32 = 16.0;
 /// Key under which the interaction state is carried between frames.
 const STATE_KEY: &str = "track_header_state";
-/// Color of the reorder insertion line.
-const INSERTION_COLOR: egui::Color32 = egui::Color32::from_rgb(120, 200, 255);
 
 /// Snapshot of one track's header-relevant data for one frame.
 struct HeaderTrack {
@@ -126,69 +113,86 @@ pub fn show(
 
         // Layout: meter on the right edge, controls to its left.
         let meter_rect = egui::Rect::from_min_max(
-            egui::pos2(rect.right() - METER_W, rect.top()),
-            egui::pos2(rect.right(), rect.bottom() - RESIZE_H),
+            egui::pos2(rect.right() - THEME.track_meter_w, rect.top()),
+            egui::pos2(rect.right(), rect.bottom() - THEME.track_resize_h),
         );
-        let compact = rect.height() < 64.0;
-        let ctrl_left = rect.left() + GRIP_W + 4.0;
-        let ctrl_right = meter_rect.left() - 4.0;
+        let compact = rect.height() < THEME.compact_track_h;
+        let ctrl_left = rect.left() + THEME.track_grip_w + THEME.space_sm;
+        let ctrl_right = meter_rect.left() - THEME.space_sm;
         let name_rect = egui::Rect::from_min_max(
-            egui::pos2(ctrl_left, rect.top() + 2.0),
-            egui::pos2(ctrl_right, rect.top() + 2.0 + NAME_H),
+            egui::pos2(ctrl_left, rect.top() + THEME.space_xs),
+            egui::pos2(ctrl_right, rect.top() + THEME.space_xs + THEME.track_name_h),
         );
         let (m_rect, s_rect, vol_rect, pan_rect) = if compact {
-            let row_y = name_rect.bottom() + 2.0;
+            let row_y = name_rect.bottom() + THEME.space_xs;
             (
-                egui::Rect::from_min_size(egui::pos2(ctrl_left, row_y), egui::vec2(MS_W, CTRL_H)),
                 egui::Rect::from_min_size(
-                    egui::pos2(ctrl_left + MS_W + 4.0, row_y),
-                    egui::vec2(MS_W, CTRL_H),
+                    egui::pos2(ctrl_left, row_y),
+                    egui::vec2(THEME.track_ms_w, THEME.track_ctrl_h),
+                ),
+                egui::Rect::from_min_size(
+                    egui::pos2(ctrl_left + THEME.track_ms_w + THEME.space_sm, row_y),
+                    egui::vec2(THEME.track_ms_w, THEME.track_ctrl_h),
                 ),
                 name_rect,
                 name_rect,
             )
         } else {
-            let top = name_rect.top() + 2.0;
+            let top = name_rect.top() + THEME.space_xs;
             (
                 egui::Rect::from_min_size(
-                    egui::pos2(ctrl_right - 2.0 * MS_W - 4.0, top),
-                    egui::vec2(MS_W, NAME_H - 4.0),
+                    egui::pos2(ctrl_right - 2.0 * THEME.track_ms_w - THEME.space_sm, top),
+                    egui::vec2(THEME.track_ms_w, THEME.track_name_h - THEME.space_sm),
                 ),
                 egui::Rect::from_min_size(
-                    egui::pos2(ctrl_right - MS_W, top),
-                    egui::vec2(MS_W, NAME_H - 4.0),
+                    egui::pos2(ctrl_right - THEME.track_ms_w, top),
+                    egui::vec2(THEME.track_ms_w, THEME.track_name_h - THEME.space_sm),
                 ),
                 egui::Rect::from_min_max(
-                    egui::pos2(ctrl_left, name_rect.bottom() + 4.0),
-                    egui::pos2(ctrl_right, name_rect.bottom() + 4.0 + CTRL_H),
+                    egui::pos2(ctrl_left, name_rect.bottom() + THEME.space_sm),
+                    egui::pos2(
+                        ctrl_right,
+                        name_rect.bottom() + THEME.space_sm + THEME.track_ctrl_h,
+                    ),
                 ),
                 egui::Rect::from_min_max(
-                    egui::pos2(ctrl_left, name_rect.bottom() + 8.0 + CTRL_H),
-                    egui::pos2(ctrl_right, name_rect.bottom() + 8.0 + 2.0 * CTRL_H),
+                    egui::pos2(
+                        ctrl_left,
+                        name_rect.bottom() + THEME.space_md + THEME.track_ctrl_h,
+                    ),
+                    egui::pos2(
+                        ctrl_right,
+                        name_rect.bottom() + THEME.space_md + 2.0 * THEME.track_ctrl_h,
+                    ),
                 ),
             )
         };
 
         // Reorder grip on the left edge.
-        let grip_rect =
-            egui::Rect::from_min_size(rect.left_top(), egui::vec2(GRIP_W, rect.height()));
+        let grip_rect = egui::Rect::from_min_size(
+            rect.left_top(),
+            egui::vec2(THEME.track_grip_w, rect.height()),
+        );
         let grip = ui.interact(
             grip_rect,
             egui::Id::new(("track_grip", ht.id)),
             egui::Sense::drag(),
         );
         let grip = grip.on_hover_cursor(egui::CursorIcon::Grab);
-        let cx = rect.left() + GRIP_W * 0.5;
+        let cx = rect.left() + THEME.track_grip_w * 0.5;
         let cy = rect.center().y;
-        for dy in [-4.0, 0.0, 4.0] {
+        for dy in [-THEME.track_grip_dots, 0.0, THEME.track_grip_dots] {
             painter.line_segment(
-                [egui::pos2(cx - 3.0, cy + dy), egui::pos2(cx + 3.0, cy + dy)],
+                [
+                    egui::pos2(cx - THEME.track_grip_dot_len, cy + dy),
+                    egui::pos2(cx + THEME.track_grip_dot_len, cy + dy),
+                ],
                 visuals.widgets.noninteractive.fg_stroke,
             );
         }
         // Resize strip at the bottom edge.
         let resize_rect = egui::Rect::from_min_max(
-            egui::pos2(rect.left(), rect.bottom() - RESIZE_H),
+            egui::pos2(rect.left(), rect.bottom() - THEME.track_resize_h),
             egui::pos2(rect.right(), rect.bottom()),
         );
         let resize = ui.interact(
@@ -262,7 +266,10 @@ pub fn show(
                 .desired_rows(1)
                 .desired_width(name_rect.width())
                 .frame(egui::Frame::NONE);
-            let resp = ui.put(name_rect.shrink2(egui::vec2(4.0, 2.0)), edit);
+            let resp = ui.put(
+                name_rect.shrink2(egui::vec2(THEME.space_sm, THEME.space_xs)),
+                edit,
+            );
             if !resp.has_focus() && !resp.lost_focus() {
                 resp.request_focus();
             }
@@ -280,10 +287,10 @@ pub fn show(
             state.renaming = Some((ht.id, ht.name.clone()));
         } else {
             painter.text(
-                egui::pos2(name_rect.left() + 4.0, name_rect.center().y),
+                egui::pos2(name_rect.left() + THEME.space_sm, name_rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 &ht.name,
-                egui::FontId::proportional(13.0),
+                egui::FontId::proportional(THEME.track_name_size),
                 visuals.strong_text_color(),
             );
         }
@@ -378,7 +385,7 @@ pub fn show(
                     egui::pos2(header_rect.left(), line_y),
                     egui::pos2(lane_rect.right(), line_y),
                 ],
-                egui::Stroke::new(2.0, INSERTION_COLOR),
+                egui::Stroke::new(THEME.reorder_line_w, THEME.reorder_line_color),
             );
         }
     }
@@ -435,23 +442,26 @@ fn toggle_button(
     let visuals = ui.visuals().clone();
     let (bg, fg) = if active {
         let bg = if label == "S" {
-            egui::Color32::from_rgb(70, 130, 220)
+            THEME.solo_color
         } else {
-            egui::Color32::from_rgb(200, 140, 50)
+            THEME.mute_color
         };
-        (bg, egui::Color32::from_rgb(20, 22, 26))
+        (bg, THEME.toggle_fg)
+    } else if resp.hovered() {
+        // Hover highlight on the toggle.
+        (visuals.widgets.hovered.bg_fill, visuals.strong_text_color())
     } else {
         (
             visuals.widgets.inactive.bg_fill,
             visuals.strong_text_color(),
         )
     };
-    painter.rect_filled(rect, 3.0, bg);
+    painter.rect_filled(rect, THEME.corner_round, bg);
     painter.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         label,
-        egui::FontId::proportional(10.0),
+        egui::FontId::proportional(THEME.toggle_size),
         fg,
     );
     resp.clicked()

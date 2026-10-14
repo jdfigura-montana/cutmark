@@ -1,4 +1,15 @@
 ## Current state
+Visual restyle DONE (2026-10-13). Dark neutral greys + single accent #5E9ED6 (THEME.accent) used for selection/playhead/snap/range/gain/fades/markers/solo/pressed widgets. theme::apply now builds custom dark Visuals (lane shades via extreme/faint_bg_color, clip body fill = widgets.hovered.bg_fill, accent selection stroke) + 4/8 px spacing (space_xs=4, space_xl=32, grid_spacing=8) + registers egui-phosphor Fill font (new dep egui-phosphor 0.14, features fill,regular; FontDefinitions::default + ctx.set_fonts; spacing via ctx.all_styles_mut). THEME gained accent/hover_overlay/dialog_w (360) and Theme::mono(size) associated fn. Ruler + master readout use mono; status bar was already monospace. Toolbar uses phosphor icons (SKIP_BACK/PLAY/PAUSE/STOP/SKIP_FORWARD, SCISSORS Ripple, MAGNET Snap, PLUS Add Track), toggles lit with .fill(accent) when on; tooltips already carry shortcuts. Hover overlay (THEME.hover_overlay) added to master peak readout, meter widget, fader widget, M/S toggles. Dialogs: .default_width(THEME.dialog_w), Enter confirms (gain/normalize global Enter; confirm/new_project/save_as/project_settings guarded), Esc cancels. Cursors already existed (trim edges/fade handles/gain line/header). cargo test 306 passed; clippy clean; fmt applied.
+
+## Current state
+Theme refactor DONE (2026-10-13). src/ui/theme.rs = single source of visual constants: `Theme` struct, `THEME` LazyLock static, `apply(ctx)` (called in main.rs eframe creator), debug-only `debug_window(ctx)` (F12, egui 0.36 `ctx.style_ui(ui, ctx.theme())` takes 2 args) called from App::ui.
+- All colors/sizes/fonts/spacing in src/ui read THEME.*. Left literal on purpose: computed colors (darken/lighten, marker faint line), pixel-step math (x + 1.0), pan/dB ranges.
+- Editor::snap_pos gained a 4th arg `threshold_px` (editor must not import ui); UI passes THEME.snap_px.
+- Removed consts RULER_H/HEADER_W/SCROLLBAR_H (timeline), HEADER_H/EDGE_W/FADE_HANDLE_SZ/GAIN_HIT_PX (clip_view).
+- cargo test 306 passed; clippy clean.
+
+
+## Current state
 Task 7.5 DONE (2026-10-13). Gain/Normalize/Fade In/Fade Out/Silence UI.
 - dialogs::gain gained GainMode{ClipGain,Gain}: request_process(ctx) opens mode Gain (delta dB, default 0, range -24..24); OK calls Editor::apply_gain(delta) (one undo step via apply); errors show red inside the dialog (error field). ClipGain mode unchanged.
 - dialogs::normalize (was stub): request(ctx) opens target -1.0 dBFS (range -60..0) + "Normalize each track separately" checkbox (off); OK calls Editor::normalize(target, per_track); errors red inside, dialog stays open; shown from timeline::show next to gain::show.

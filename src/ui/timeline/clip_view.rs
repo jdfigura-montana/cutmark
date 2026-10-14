@@ -1,26 +1,13 @@
-﻿//! ui::timeline::clip_view: drawing and hit-testing a single clip.
+//! ui::timeline::clip_view: drawing and hit-testing a single clip.
 
 use eframe::egui;
 
 use crate::io::import::Loaded;
 use crate::model::clip::Clip;
 
+use crate::ui::theme::THEME;
+
 use super::Geom;
-
-/// Height of the clip header strip in points.
-pub const HEADER_H: f32 = 18.0;
-
-/// Width of the trimmable edge zones in points.
-pub const EDGE_W: f32 = 6.0;
-
-/// Width of a fade handle square in points.
-pub const FADE_HANDLE_SZ: f32 = 8.0;
-
-/// Extra grab margin around a fade handle square, in points.
-const HANDLE_GRAB_PX: f32 = 2.0;
-
-/// Vertical grab distance of the gain line, in points.
-pub const GAIN_HIT_PX: f32 = 4.0;
 
 /// Lowest clip gain in dB.
 pub const GAIN_MIN_DB: f32 = -60.0;
@@ -30,12 +17,6 @@ pub const GAIN_MAX_DB: f32 = 24.0;
 
 /// Full dB span of the gain line, from the body bottom to the body top.
 pub const GAIN_SPAN_DB: f32 = GAIN_MAX_DB - GAIN_MIN_DB;
-
-/// Horizontal padding of the header text.
-const TEXT_PAD: f32 = 4.0;
-
-/// Width of the gain value text area at the right of the header, in points.
-const GAIN_TEXT_W: f32 = 56.0;
 
 /// Which part of a clip a pointer is over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,7 +39,7 @@ pub enum Zone {
 
 /// The clip body: everything below the header strip.
 pub fn body_rect(clip_rect: egui::Rect) -> egui::Rect {
-    let header_h = HEADER_H.min(clip_rect.height());
+    let header_h = THEME.header_strip_h.min(clip_rect.height());
     egui::Rect::from_min_max(
         egui::pos2(clip_rect.left(), clip_rect.top() + header_h),
         egui::pos2(clip_rect.right(), clip_rect.bottom()),
@@ -107,7 +88,7 @@ pub fn fade_handle_rect(
     } else {
         (clip_rect.left() + fade_px).min(clip_rect.right())
     };
-    let half = FADE_HANDLE_SZ * 0.5 + HANDLE_GRAB_PX;
+    let half = THEME.fade_handle_sz * 0.5 + THEME.fade_handle_grab;
     egui::Rect::from_center_size(
         egui::pos2(center_x, body.top()),
         egui::vec2(half * 2.0, half * 2.0),
@@ -117,8 +98,8 @@ pub fn fade_handle_rect(
 /// Screen rect of the gain value text area at the right of the header strip
 /// (the double-click target for typing a gain value).
 pub fn gain_text_rect(clip_rect: egui::Rect) -> egui::Rect {
-    let header_h = HEADER_H.min(clip_rect.height());
-    let width = GAIN_TEXT_W.min(clip_rect.width());
+    let header_h = THEME.header_strip_h.min(clip_rect.height());
+    let width = THEME.gain_text_w.min(clip_rect.width());
     egui::Rect::from_min_max(
         egui::pos2(clip_rect.right() - width, clip_rect.top()),
         egui::pos2(clip_rect.right(), clip_rect.top() + header_h),
@@ -128,8 +109,14 @@ pub fn gain_text_rect(clip_rect: egui::Rect) -> egui::Rect {
 /// On-screen rectangle of a clip over its track lane (the lane minus 2 px margins).
 pub fn clip_rect(clip: &Clip, g: &Geom, track_rect: egui::Rect) -> egui::Rect {
     egui::Rect::from_min_max(
-        egui::pos2(g.sample_to_x(clip.start), track_rect.top() + 2.0),
-        egui::pos2(g.sample_to_x(clip.end()), track_rect.bottom() - 2.0),
+        egui::pos2(
+            g.sample_to_x(clip.start),
+            track_rect.top() + THEME.clip_margin,
+        ),
+        egui::pos2(
+            g.sample_to_x(clip.end()),
+            track_rect.bottom() - THEME.clip_margin,
+        ),
     )
 }
 
@@ -148,11 +135,11 @@ pub fn hit_test(clip: &Clip, clip_rect: egui::Rect, spp: f64, pos: egui::Pos2) -
     if !clip_rect.contains(pos) {
         return None;
     }
-    if clip_rect.width() >= 18.0 {
-        if pos.x <= clip_rect.left() + EDGE_W {
+    if clip_rect.width() >= THEME.header_strip_h {
+        if pos.x <= clip_rect.left() + THEME.trim_edge_w {
             return Some(Zone::LeftEdge);
         }
-        if pos.x >= clip_rect.right() - EDGE_W {
+        if pos.x >= clip_rect.right() - THEME.trim_edge_w {
             return Some(Zone::RightEdge);
         }
     }
@@ -160,26 +147,17 @@ pub fn hit_test(clip: &Clip, clip_rect: egui::Rect, spp: f64, pos: egui::Pos2) -
     let gy = gain_line_y(clip, clip_rect);
     if pos.x >= body.left()
         && pos.x <= body.right()
-        && pos.y >= body.top() - GAIN_HIT_PX
-        && pos.y <= body.bottom() + GAIN_HIT_PX
-        && (pos.y - gy).abs() <= GAIN_HIT_PX
+        && pos.y >= body.top() - THEME.gain_hit_px
+        && pos.y <= body.bottom() + THEME.gain_hit_px
+        && (pos.y - gy).abs() <= THEME.gain_hit_px
     {
         return Some(Zone::GainLine);
     }
-    if pos.y <= clip_rect.top() + HEADER_H.min(clip_rect.height()) {
+    if pos.y <= clip_rect.top() + THEME.header_strip_h.min(clip_rect.height()) {
         Some(Zone::Header)
     } else {
         Some(Zone::Body)
     }
-}
-
-/// Fill of an offline clip's body.
-fn offline_body() -> egui::Color32 {
-    egui::Color32::from_rgba_unmultiplied(170, 45, 45, 220)
-}
-/// Fill of an offline clip's header strip.
-fn offline_header() -> egui::Color32 {
-    egui::Color32::from_rgba_unmultiplied(120, 25, 25, 230)
 }
 
 /// Draws one clip over its track lane.
@@ -213,36 +191,36 @@ pub fn draw(
     let rect = clip_rect(clip, g, track_rect);
 
     // Extremely narrow clip: a single 1 px line, no text.
-    if rect.width() < 3.0 {
+    if rect.width() < THEME.thin_clip_w {
         painter.line_segment(
             [
                 egui::pos2(rect.left(), rect.top()),
                 egui::pos2(rect.left(), rect.bottom()),
             ],
-            egui::Stroke::new(1.0, body_fill(visuals)),
+            egui::Stroke::new(THEME.hairline, body_fill(visuals)),
         );
         return;
     }
 
-    let header_h = HEADER_H.min(rect.height());
+    let header_h = THEME.header_strip_h.min(rect.height());
     let header_rect =
         egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.min.y + header_h));
     let body = egui::Rect::from_min_max(egui::pos2(rect.min.x, header_rect.max.y), rect.max);
 
     painter.rect_filled(
         body,
-        2.0,
+        THEME.corner_r,
         if offline {
-            offline_body()
+            THEME.offline_body
         } else {
             body_fill(visuals)
         },
     );
     painter.rect_filled(
         header_rect,
-        2.0,
+        THEME.corner_r,
         if offline {
-            offline_header()
+            THEME.offline_header
         } else if selected {
             lighten(body_fill(visuals), 0.45)
         } else {
@@ -261,31 +239,31 @@ pub fn draw(
     }
 
     let border = if selected {
-        egui::Stroke::new(2.0, selection_border())
+        egui::Stroke::new(THEME.selection_border_w, THEME.selection_border)
     } else {
         visuals.widgets.noninteractive.bg_stroke
     };
-    painter.rect_stroke(rect, 2.0, border, egui::StrokeKind::Inside);
+    painter.rect_stroke(rect, THEME.corner_r, border, egui::StrokeKind::Inside);
 
     let text_color = if offline {
-        egui::Color32::WHITE
+        THEME.offline_text
     } else {
         visuals.strong_text_color()
     };
     let clipped = painter.with_clip_rect(rect);
     clipped.text(
-        egui::pos2(rect.left() + TEXT_PAD, header_rect.center().y),
+        egui::pos2(rect.left() + THEME.clip_text_pad, header_rect.center().y),
         egui::Align2::LEFT_CENTER,
         media_name,
-        egui::FontId::proportional(12.0),
+        egui::FontId::proportional(THEME.clip_name_size),
         text_color,
     );
     // The gain value at the right of the header is the double-click target.
     clipped.text(
-        egui::pos2(rect.right() - TEXT_PAD, header_rect.center().y),
+        egui::pos2(rect.right() - THEME.clip_text_pad, header_rect.center().y),
         egui::Align2::RIGHT_CENTER,
         format!("{:+.1} dB", clip.gain_db),
-        egui::FontId::proportional(11.0),
+        egui::FontId::proportional(THEME.clip_gain_size),
         text_color,
     );
     if offline {
@@ -293,8 +271,8 @@ pub fn draw(
             body.center(),
             egui::Align2::CENTER_CENTER,
             "Media offline",
-            egui::FontId::proportional(12.0),
-            egui::Color32::WHITE,
+            egui::FontId::proportional(THEME.clip_name_size),
+            THEME.offline_text,
         );
     }
 }
@@ -320,23 +298,17 @@ fn draw_gain_and_fades(
     if gy >= body.top() - 0.5 && gy <= body.bottom() + 0.5 {
         clipped.line_segment(
             [egui::pos2(body.left(), gy), egui::pos2(body.right(), gy)],
-            egui::Stroke::new(3.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 110)),
+            egui::Stroke::new(THEME.gain_shadow_w, THEME.gain_shadow),
         );
         clipped.line_segment(
             [egui::pos2(body.left(), gy), egui::pos2(body.right(), gy)],
-            egui::Stroke::new(
-                1.0,
-                egui::Color32::from_rgba_unmultiplied(255, 200, 90, 255),
-            ),
+            egui::Stroke::new(THEME.hairline, THEME.gain_line),
         );
     }
 
     let shade = egui::Stroke::NONE;
-    let shade_fill = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 90);
-    let curve = egui::Stroke::new(
-        1.0,
-        egui::Color32::from_rgba_unmultiplied(255, 200, 90, 210),
-    );
+    let shade_fill = THEME.fade_shade;
+    let curve = egui::Stroke::new(THEME.hairline, THEME.gain_curve);
     if clip.fade_in > 0 {
         let fx = (rect.left() + (clip.fade_in as f64 / g.spp.max(f64::EPSILON)) as f32)
             .min(rect.right());
@@ -381,18 +353,20 @@ fn draw_gain_and_fades(
 
     for (zone, fade_out) in [(Zone::FadeInHandle, false), (Zone::FadeOutHandle, true)] {
         let grab = fade_handle_rect(clip, rect, g.spp, fade_out);
-        let square =
-            egui::Rect::from_center_size(grab.center(), egui::vec2(FADE_HANDLE_SZ, FADE_HANDLE_SZ));
+        let square = egui::Rect::from_center_size(
+            grab.center(),
+            egui::vec2(THEME.fade_handle_sz, THEME.fade_handle_sz),
+        );
         let fill = if hover == Some(zone) {
-            egui::Color32::from_rgba_unmultiplied(255, 210, 90, 255)
+            THEME.fade_handle_hover
         } else {
-            egui::Color32::from_rgba_unmultiplied(230, 232, 235, 230)
+            THEME.fade_handle_fill
         };
-        clipped.rect_filled(square, 1.0, fill);
+        clipped.rect_filled(square, THEME.corner_xs, fill);
         clipped.rect_stroke(
             square,
-            1.0,
-            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(40, 40, 40, 255)),
+            THEME.corner_xs,
+            egui::Stroke::new(THEME.hairline, THEME.fade_handle_stroke),
             egui::StrokeKind::Inside,
         );
     }
@@ -401,11 +375,6 @@ fn draw_gain_and_fades(
 /// The clip body fill: a lighter shade than the track lane.
 fn body_fill(visuals: &egui::Visuals) -> egui::Color32 {
     visuals.widgets.hovered.bg_fill
-}
-
-/// Bright border of a selected clip.
-fn selection_border() -> egui::Color32 {
-    egui::Color32::from_rgb(120, 170, 255)
 }
 
 /// Darkens a color by the factor `f` (0.0..1.0) per channel.
@@ -493,11 +462,11 @@ mod tests {
         let grab = fade_handle_rect(&clip, rect, 100.0, false);
         let p = grab.center();
         assert!(
-            p.x <= rect.left() + EDGE_W,
+            p.x <= rect.left() + THEME.trim_edge_w,
             "handle must be at the left edge"
         );
         assert!(
-            p.y <= rect.top() + HEADER_H,
+            p.y <= rect.top() + THEME.header_strip_h,
             "handle must be in the header row"
         );
         assert_eq!(hit_test(&clip, rect, 100.0, p), Some(Zone::FadeInHandle));
@@ -519,8 +488,10 @@ mod tests {
     fn gain_line_y_maps_db_across_the_body() {
         // Body height 84 px: +24 dB at the body top, -60 dB at the bottom and
         // 0 dB at 24/84 of the height.
-        let rect =
-            egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(200.0, 84.0 + HEADER_H));
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(200.0, 84.0 + THEME.header_strip_h),
+        );
         let body = body_rect(rect);
         assert!((body.height() - 84.0).abs() < 1e-4);
         let top = gain_line_y(&test_clip(24.0, 0, 0), rect);
@@ -537,8 +508,10 @@ mod tests {
     #[test]
     fn gain_line_hit_zone_around_the_line() {
         let clip = test_clip(-36.0, 0, 0);
-        let rect =
-            egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(200.0, 84.0 + HEADER_H));
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(200.0, 84.0 + THEME.header_strip_h),
+        );
         let gy = gain_line_y(&clip, rect);
         assert_eq!(
             hit_test(&clip, rect, 100.0, egui::pos2(100.0, gy)),
@@ -549,7 +522,7 @@ mod tests {
                 &clip,
                 rect,
                 100.0,
-                egui::pos2(100.0, gy + GAIN_HIT_PX + 0.5)
+                egui::pos2(100.0, gy + THEME.gain_hit_px + 0.5)
             ),
             Some(Zone::Body)
         );

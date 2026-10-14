@@ -11,6 +11,7 @@ cpal = "0.18.2"
 crossbeam-channel = "0.5.17"
 directories = "6.0.0"
 eframe = "0.36.2"
+egui-phosphor = { version = "0.14.0", features = ["fill"] }
 hound = "3.5.1"
 rfd = "0.17.2"
 rubato = "5.0.1"

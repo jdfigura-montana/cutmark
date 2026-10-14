@@ -58,6 +58,9 @@ impl Default for App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.update_title(ui);
+        // Debug-only F12 window showing the egui style.
+        #[cfg(debug_assertions)]
+        crate::ui::theme::debug_window(ui.ctx());
         // Work on the screen outside self so menu, editor and screen can be
         // borrowed separately within one frame.
         let mut screen = std::mem::replace(&mut self.screen, Screen::Start(StartScreen::default()));

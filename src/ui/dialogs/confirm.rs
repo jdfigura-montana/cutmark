@@ -2,6 +2,8 @@
 
 use eframe::egui;
 
+use crate::ui::theme::THEME;
+
 /// Modal dialog showing a message with an OK button, e.g. for save errors.
 pub struct ConfirmDialog {
     /// Whether the dialog is shown.
@@ -31,22 +33,27 @@ impl ConfirmDialog {
         let mut ok = false;
         egui::Window::new(self.title.as_str())
             .open(&mut open)
+            .default_width(THEME.dialog_w)
             .collapsible(false)
             .resizable(false)
             .movable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 ui.label(&self.message);
-                ui.add_space(8.0);
+                ui.add_space(THEME.space_md);
                 ui.vertical_centered(|ui| {
                     if ui.button("OK").clicked() {
                         ok = true;
                     }
                 });
+                // Enter confirms, Esc cancels.
+                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    ok = true;
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    ok = true;
+                }
             });
-        if ok {
-            open = false;
-        }
         self.open = open;
     }
 }

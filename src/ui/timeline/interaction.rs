@@ -1,4 +1,4 @@
-﻿//! ui::timeline::interaction: mouse actions over the timeline, including bin
+//! ui::timeline::interaction: mouse actions over the timeline, including bin
 //! drags and range selection.
 //! ui::timeline::interaction: mouse actions over the timeline, including bin drags.
 
@@ -11,6 +11,7 @@ use crate::editor::ops::clip::Edge as TrimEdge;
 use crate::model::clip::Clip;
 use crate::ui::bin_panel;
 use crate::ui::dialogs;
+use crate::ui::theme::THEME;
 
 use super::Geom;
 use super::clip_view::{self, Zone};
@@ -20,21 +21,6 @@ use super::clip_view::{self, Zone};
 pub struct MediaDrag {
     /// Id of the media item being dragged from the bin.
     pub media_id: Uuid,
-}
-
-/// Height of the dashed "new track" row shown while hovering below the last track.
-const NEW_TRACK_H: f32 = 80.0;
-/// Translucent fill of the ghost clip.
-fn ghost_fill() -> egui::Color32 {
-    egui::Color32::from_rgba_unmultiplied(120, 160, 220, 90)
-}
-/// Border of the ghost clip.
-fn ghost_stroke() -> egui::Color32 {
-    egui::Color32::from_rgba_unmultiplied(140, 180, 240, 220)
-}
-/// Bright vertical insert line shown on Ctrl while hovering.
-fn insert_line_color() -> egui::Color32 {
-    egui::Color32::from_rgba_unmultiplied(255, 210, 90, 230)
 }
 
 /// Where a bin drag would land over the lanes.
@@ -136,8 +122,11 @@ pub fn draw_drop_ghost(
         DropTarget::Track(index) => {
             let top = lane_rect.top() - scroll_y + heights_before(editor, index);
             let rect = egui::Rect::from_min_max(
-                egui::pos2(left, top + 2.0),
-                egui::pos2(right, top + editor.project.tracks[index].height - 2.0),
+                egui::pos2(left, top + THEME.clip_margin),
+                egui::pos2(
+                    right,
+                    top + editor.project.tracks[index].height - THEME.clip_margin,
+                ),
             );
             ghost_rect(&painter, rect);
         }
@@ -146,13 +135,17 @@ pub fn draw_drop_ghost(
             let top = lane_rect.top() - scroll_y + heights_before(editor, count);
             let row = egui::Rect::from_min_max(
                 egui::pos2(g.lane_left, top),
-                egui::pos2(lane_rect.right(), top + NEW_TRACK_H),
+                egui::pos2(lane_rect.right(), top + THEME.new_track_h),
             );
-            painter.rect_filled(row, 2.0, ghost_fill());
-            dashed_rect(&painter, row, egui::Stroke::new(1.0, ghost_stroke()));
+            painter.rect_filled(row, THEME.corner_r, THEME.ghost_fill);
+            dashed_rect(
+                &painter,
+                row,
+                egui::Stroke::new(THEME.hairline, THEME.ghost_stroke),
+            );
             let ghost = egui::Rect::from_min_max(
-                egui::pos2(left, top + 2.0),
-                egui::pos2(right, top + NEW_TRACK_H - 2.0),
+                egui::pos2(left, top + THEME.clip_margin),
+                egui::pos2(right, top + THEME.new_track_h - THEME.clip_margin),
             );
             ghost_rect(&painter, ghost);
         }
@@ -165,18 +158,18 @@ pub fn draw_drop_ghost(
                 egui::pos2(left, lane_rect.top()),
                 egui::pos2(left, lane_rect.bottom()),
             ],
-            egui::Stroke::new(2.0, insert_line_color()),
+            egui::Stroke::new(THEME.insert_line_w, THEME.insert_line_color),
         );
     }
 }
 
 /// Fills and strokes one ghost clip rect.
 fn ghost_rect(painter: &egui::Painter, rect: egui::Rect) {
-    painter.rect_filled(rect, 2.0, ghost_fill());
+    painter.rect_filled(rect, THEME.corner_r, THEME.ghost_fill);
     painter.rect_stroke(
         rect,
-        2.0,
-        egui::Stroke::new(1.0, ghost_stroke()),
+        THEME.corner_r,
+        egui::Stroke::new(THEME.hairline, THEME.ghost_stroke),
         egui::StrokeKind::Inside,
     );
 }
@@ -236,8 +229,6 @@ fn dashed_rect(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) 
 
 /// Draws one dashed line between two points.
 fn dashed_line(painter: &egui::Painter, a: egui::Pos2, b: egui::Pos2, stroke: egui::Stroke) {
-    const DASH: f32 = 6.0;
-    const GAP: f32 = 4.0;
     let vec = b - a;
     let len = vec.length();
     if len <= 0.0 {
@@ -246,31 +237,14 @@ fn dashed_line(painter: &egui::Painter, a: egui::Pos2, b: egui::Pos2, stroke: eg
     let dir = vec / len;
     let mut d = 0.0;
     while d < len {
-        let seg_end = (d + DASH).min(len);
+        let seg_end = (d + THEME.ghost_dash).min(len);
         painter.line_segment([a + dir * d, a + dir * seg_end], stroke);
-        d = seg_end + GAP;
+        d = seg_end + THEME.ghost_gap;
     }
 }
 
-/// Dragging starts once the pointer moves this many points from the press.
-const DRAG_START_PX: f32 = 3.0;
-/// A range boundary line is grabbable within this many points of its x.
-const BOUNDARY_GRAB_PX: f32 = 4.0;
 /// Key under which the lane interaction state is carried between frames.
 const LANE_STATE_KEY: &str = "timeline_lane_state";
-
-/// Tint drawn over the selected part of each selected track.
-fn range_tint() -> egui::Color32 {
-    egui::Color32::from_rgba_unmultiplied(120, 170, 255, 40)
-}
-/// Solid vertical boundary lines at the range start and end.
-fn range_line() -> egui::Color32 {
-    egui::Color32::from_rgb(90, 160, 255)
-}
-/// Bright vertical line drawn at the snap point while a drag is snapping.
-fn snap_line_color() -> egui::Color32 {
-    egui::Color32::from_rgb(255, 230, 80)
-}
 
 /// A press on the lanes, kept until release to tell click from drag.
 #[derive(Clone, Copy)]
@@ -341,7 +315,7 @@ pub fn handle_lane_input(
         }
     } else if let (true, Some(p), Some(press)) = (down, pos, state.press) {
         let dist = ((p.x - press.pos.x).powi(2) + (p.y - press.pos.y).powi(2)).sqrt();
-        if dist >= DRAG_START_PX {
+        if dist >= THEME.drag_start_px {
             state.range_drag = true;
             drag_range(editor, g, lane_rect, scroll_y, press, p, alt, &mut state);
         }
@@ -349,7 +323,7 @@ pub fn handle_lane_input(
         && let Some(drag) = state.boundary.clone()
         && let Some(p) = pos
     {
-        let (snapped, snap_point) = editor.snap_pos(g.x_to_sample(p.x), &[], alt);
+        let (snapped, snap_point) = editor.snap_pos(g.x_to_sample(p.x), &[], alt, THEME.snap_px);
         let (a, b) = if drag.start_edge {
             (snapped, drag.other)
         } else {
@@ -420,10 +394,10 @@ fn finish_click(
     // Clicks that moved 3 px or more, or with no track under the press,
     // are not lane clicks.
     let dist = ((p.x - press.pos.x).powi(2) + (p.y - press.pos.y).powi(2)).sqrt();
-    if editor.project.tracks.get(press.track).is_none() || dist >= DRAG_START_PX {
+    if editor.project.tracks.get(press.track).is_none() || dist >= THEME.drag_start_px {
         return;
     }
-    let (snapped, _) = editor.snap_pos(g.x_to_sample(p.x), &[], alt);
+    let (snapped, _) = editor.snap_pos(g.x_to_sample(p.x), &[], alt, THEME.snap_px);
     if shift {
         // Shift+click: extend the existing range, or start one at the playhead.
         if let crate::editor::selection::Selection::Range { start, end, tracks } =
@@ -462,8 +436,8 @@ fn drag_range(
     alt: bool,
     state: &mut LaneState,
 ) {
-    let (press_sample, snap_a) = editor.snap_pos(press.sample, &[], alt);
-    let (cur_sample, snap_b) = editor.snap_pos(g.x_to_sample(p.x), &[], alt);
+    let (press_sample, snap_a) = editor.snap_pos(press.sample, &[], alt, THEME.snap_px);
+    let (cur_sample, snap_b) = editor.snap_pos(g.x_to_sample(p.x), &[], alt, THEME.snap_px);
     let tracks = match track_index_at(editor, lane_rect, scroll_y, p.y, true) {
         Some(index) => {
             let (lo, hi) = if index < press.track {
@@ -529,10 +503,10 @@ fn boundary_press(
     if let crate::editor::selection::Selection::Range { start, end, tracks } = editor.selection() {
         let start_x = g.sample_to_x(*start);
         let end_x = g.sample_to_x(*end);
-        if (p.x - start_x).abs() <= BOUNDARY_GRAB_PX {
+        if (p.x - start_x).abs() <= THEME.boundary_grab_px {
             return Some((true, *end, tracks.clone()));
         }
-        if (p.x - end_x).abs() <= BOUNDARY_GRAB_PX {
+        if (p.x - end_x).abs() <= THEME.boundary_grab_px {
             return Some((false, *start, tracks.clone()));
         }
     }
@@ -573,11 +547,11 @@ pub fn draw_range(ui: &egui::Ui, editor: &Editor, g: &Geom, lane_rect: egui::Rec
                     egui::pos2(x0, y.max(lane_rect.top())),
                     egui::pos2(x1, bottom.min(lane_rect.bottom())),
                 );
-                painter.rect_filled(rect, 0.0, range_tint());
+                painter.rect_filled(rect, 0.0, THEME.range_tint);
             }
             y = bottom;
         }
-        let stroke = egui::Stroke::new(1.5, range_line());
+        let stroke = egui::Stroke::new(THEME.range_line_w, THEME.range_line);
         for x in [x0, x1] {
             painter.line_segment(
                 [
@@ -595,7 +569,7 @@ pub fn draw_range(ui: &egui::Ui, editor: &Editor, g: &Geom, lane_rect: egui::Rec
                 egui::pos2(x, lane_rect.top()),
                 egui::pos2(x, lane_rect.bottom()),
             ],
-            egui::Stroke::new(2.0, snap_line_color()),
+            egui::Stroke::new(THEME.snap_line_w, THEME.snap_line_color),
         );
     }
 }
@@ -872,13 +846,13 @@ fn run_clip_drag(
             let cand_start = base_start as i64 + delta;
             let cand_end = base_end as i64 + delta;
             if cand_start >= 0 {
-                let (snapped, _) = editor.snap_pos(cand_start as u64, &ids, alt);
+                let (snapped, _) = editor.snap_pos(cand_start as u64, &ids, alt, THEME.snap_px);
                 if snapped != cand_start as u64 {
                     options.push((snapped as i64 - cand_start, snapped));
                 }
             }
             if cand_end >= 0 {
-                let (snapped, _) = editor.snap_pos(cand_end as u64, &ids, alt);
+                let (snapped, _) = editor.snap_pos(cand_end as u64, &ids, alt, THEME.snap_px);
                 if snapped != cand_end as u64 {
                     options.push((snapped as i64 - cand_end, snapped));
                 }
@@ -909,7 +883,8 @@ fn run_clip_drag(
             }
         }
         ClipDrag::Trim { clip_id, edge } => {
-            let (new_pos, snap_point) = editor.snap_pos(g.x_to_sample(p.x), &[clip_id], alt);
+            let (new_pos, snap_point) =
+                editor.snap_pos(g.x_to_sample(p.x), &[clip_id], alt, THEME.snap_px);
             if editor
                 .preview(Action::TrimClip {
                     clip_id,
@@ -927,7 +902,8 @@ fn run_clip_drag(
             let Some((clip, _rect)) = clip_by_id(editor, g, lane_rect, scroll_y, clip_id) else {
                 return;
             };
-            let (snapped, snap_point) = editor.snap_pos(g.x_to_sample(p.x), &[clip_id], alt);
+            let (snapped, snap_point) =
+                editor.snap_pos(g.x_to_sample(p.x), &[clip_id], alt, THEME.snap_px);
             let value = if out {
                 clip.end().saturating_sub(snapped)
             } else {
@@ -1034,7 +1010,7 @@ pub fn handle_clip_input(
             } else if let Some(p) = pos {
                 // A click on the header: select, or toggle with Ctrl.
                 let dist = ((p.x - press.pos.x).powi(2) + (p.y - press.pos.y).powi(2)).sqrt();
-                if dist < DRAG_START_PX {
+                if dist < THEME.drag_start_px {
                     if ctrl {
                         editor.toggle_clip(press.clip_id);
                     } else {
@@ -1046,7 +1022,7 @@ pub fn handle_clip_input(
     } else if down && let (Some(press), Some(p)) = (state.press, pos) {
         handled = true;
         let dist = ((p.x - press.pos.x).powi(2) + (p.y - press.pos.y).powi(2)).sqrt();
-        if dist >= DRAG_START_PX {
+        if dist >= THEME.drag_start_px {
             if state.drag.is_none()
                 && let Some(drag) = begin_clip_drag(editor, &press)
             {
@@ -1144,7 +1120,7 @@ pub fn draw_clip_snap_line(ui: &egui::Ui, g: &Geom, lane_rect: egui::Rect) {
             egui::pos2(x, lane_rect.top()),
             egui::pos2(x, lane_rect.bottom()),
         ],
-        egui::Stroke::new(2.0, snap_line_color()),
+        egui::Stroke::new(THEME.snap_line_w, THEME.snap_line_color),
     );
 }
 
@@ -1202,7 +1178,7 @@ pub fn draw_clip_menu(ui: &egui::Ui, editor: &mut Editor) -> Vec<String> {
         .fixed_pos(menu.pos)
         .show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.set_min_width(150.0);
+                ui.set_min_width(THEME.clip_menu_min_w);
                 if ui
                     .add_enabled(splittable, egui::Button::new("Split"))
                     .clicked()
@@ -1282,8 +1258,8 @@ pub fn draw_gain_edit(ui: &egui::Ui, editor: &mut Editor) -> Vec<String> {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut edit.text)
-                        .desired_width(52.0)
-                        .font(egui::FontId::proportional(11.0)),
+                        .desired_width(THEME.gain_edit_w)
+                        .font(egui::FontId::proportional(THEME.gain_edit_size)),
                 );
                 if !resp.has_focus() {
                     resp.request_focus();

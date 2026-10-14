@@ -8,6 +8,8 @@ use crate::model::media::{PeakLevel, Peaks};
 use crate::util::db::db_to_linear;
 use crate::util::fade::fade_gain;
 
+use crate::ui::theme::THEME;
+
 use super::Geom;
 
 /// Samples per pixel below which the conformed samples are read directly.
@@ -15,12 +17,7 @@ const DIRECT_READ_SPP: f64 = 256.0;
 
 /// Stroke of the waveform lines.
 fn wave_stroke() -> egui::Stroke {
-    egui::Stroke::new(1.0, egui::Color32::from_rgb(70, 180, 90))
-}
-
-/// Faint center line color of each lane.
-fn center_color() -> egui::Color32 {
-    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 40)
+    egui::Stroke::new(THEME.wave_width, THEME.wave_color)
 }
 
 /// Index of the coarsest peak level whose block size fits within `spp`.
@@ -129,7 +126,7 @@ pub fn draw(
         let cy = body.top() + lane_h * (lane as f32 + 0.5);
         shapes.push(egui::Shape::line_segment(
             [egui::pos2(x_left, cy), egui::pos2(x_right, cy)],
-            egui::Stroke::new(1.0, center_color()),
+            egui::Stroke::new(THEME.hairline, THEME.wave_center),
         ));
     }
 
@@ -264,13 +261,21 @@ fn draw_samples(
         if points.len() > 1 {
             if g.spp < 0.125 {
                 for &p in &points {
-                    shapes.push(egui::Shape::circle_filled(p, 1.5, stroke.color));
+                    shapes.push(egui::Shape::circle_filled(
+                        p,
+                        THEME.wave_dot_r,
+                        stroke.color,
+                    ));
                 }
             }
             shapes.push(egui::Shape::line(points, stroke));
         } else if g.spp < 0.125 {
             for &p in &points {
-                shapes.push(egui::Shape::circle_filled(p, 1.5, stroke.color));
+                shapes.push(egui::Shape::circle_filled(
+                    p,
+                    THEME.wave_dot_r,
+                    stroke.color,
+                ));
             }
         }
     }

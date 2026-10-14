@@ -1,10 +1,11 @@
-﻿//! ui::timeline: the central timeline view (ruler, lanes, playhead, zoom, scroll).
+//! ui::timeline: the central timeline view (ruler, lanes, playhead, zoom, scroll).
 
 use eframe::egui;
 use uuid::Uuid;
 
 use crate::editor::Editor;
 use crate::editor::transport::TransportState;
+use crate::ui::theme::THEME;
 use crate::ui::widgets::meter;
 use crate::util::time::seconds_to_samples;
 
@@ -15,12 +16,6 @@ pub mod ruler;
 pub mod track_header;
 pub mod waveform;
 
-/// Height of the ruler strip in points.
-pub const RULER_H: f32 = 28.0;
-/// Width of the track header column in points.
-pub const HEADER_W: f32 = 200.0;
-/// Height of the horizontal scrollbar strip in points.
-pub const SCROLLBAR_H: f32 = 12.0;
 /// Smallest zoom: one thirty-second of a sample per pixel.
 pub const MIN_SPP: f64 = 1.0 / 32.0;
 /// Largest zoom: 4 194 304 samples per pixel.
@@ -157,12 +152,12 @@ pub fn show(
     let avail = ui.available_rect_before_wrap();
     let resp = ui.allocate_rect(avail, egui::Sense::click());
 
-    let lane_left = avail.left() + HEADER_W;
+    let lane_left = avail.left() + THEME.header_col_w;
     let lane_right = avail.right();
     let lane_width = lane_right - lane_left;
     let ruler_rect = egui::Rect::from_min_max(
         egui::pos2(lane_left, avail.top()),
-        egui::pos2(lane_right, avail.top() + RULER_H),
+        egui::pos2(lane_right, avail.top() + THEME.ruler_h),
     );
     let header_rect = egui::Rect::from_min_max(
         egui::pos2(avail.left(), ruler_rect.bottom()),
@@ -170,7 +165,7 @@ pub fn show(
     );
     let lane_rect = egui::Rect::from_min_max(
         egui::pos2(lane_left, ruler_rect.bottom()),
-        egui::pos2(lane_right, avail.bottom() - SCROLLBAR_H),
+        egui::pos2(lane_right, avail.bottom() - THEME.scrollbar_h),
     );
     let scroll_rect = egui::Rect::from_min_max(
         egui::pos2(lane_left, lane_rect.bottom()),
@@ -522,7 +517,7 @@ fn draw(
     );
 
     // Playhead: a line through ruler and lanes with a handle in the ruler.
-    let playhead_color = egui::Color32::from_rgb(255, 140, 60);
+    let playhead_color = THEME.playhead_color;
     let ph_x = g.sample_to_x(view.playhead);
     if ph_x >= g.lane_left - 1.0 && ph_x <= lane_rect.right() + 1.0 {
         painter.line_segment(
@@ -530,12 +525,18 @@ fn draw(
                 egui::pos2(ph_x, ruler_rect.top()),
                 egui::pos2(ph_x, lane_rect.bottom()),
             ],
-            egui::Stroke::new(1.5, playhead_color),
+            egui::Stroke::new(THEME.playhead_width, playhead_color),
         );
         let tri = vec![
-            egui::pos2(ph_x - 5.0, ruler_rect.top() + 1.0),
-            egui::pos2(ph_x + 5.0, ruler_rect.top() + 1.0),
-            egui::pos2(ph_x, ruler_rect.top() + 10.0),
+            egui::pos2(
+                ph_x - THEME.playhead_tri_w,
+                ruler_rect.top() + THEME.hairline,
+            ),
+            egui::pos2(
+                ph_x + THEME.playhead_tri_w,
+                ruler_rect.top() + THEME.hairline,
+            ),
+            egui::pos2(ph_x, ruler_rect.top() + THEME.playhead_tri_h),
         ];
         painter.add(egui::Shape::convex_polygon(
             tri,
@@ -545,9 +546,9 @@ fn draw(
     }
 
     // Horizontal scrollbar: trough plus draggable thumb.
-    painter.rect_filled(scroll_rect, 2.0, visuals.faint_bg_color);
+    painter.rect_filled(scroll_rect, THEME.corner_r, visuals.faint_bg_color);
     let frac = (visible as f32 / scroll_extent(editor.project_length(), visible) as f32).min(1.0);
-    let thumb_w = (scroll_rect.width() * frac).max(20.0);
+    let thumb_w = (scroll_rect.width() * frac).max(THEME.scrollbar_thumb_min);
     let scroll_max = max_scroll_x as f32;
     let thumb_x = g.lane_left
         + if scroll_max > 0.0 {
@@ -556,8 +557,8 @@ fn draw(
             0.0
         };
     let thumb_rect = egui::Rect::from_min_max(
-        egui::pos2(thumb_x, scroll_rect.top() + 1.0),
-        egui::pos2(thumb_x + thumb_w, scroll_rect.bottom() - 1.0),
+        egui::pos2(thumb_x, scroll_rect.top() + THEME.hairline),
+        egui::pos2(thumb_x + thumb_w, scroll_rect.bottom() - THEME.hairline),
     );
     let thumb_color = if thumb_held(ui, thumb_rect) {
         visuals.widgets.active.bg_fill
@@ -566,7 +567,7 @@ fn draw(
     } else {
         visuals.widgets.inactive.bg_fill
     };
-    painter.rect_filled(thumb_rect, 3.0, thumb_color);
+    painter.rect_filled(thumb_rect, THEME.corner_round, thumb_color);
     let thumb = ui.interact(
         thumb_rect,
         egui::Id::new("timeline_hscroll_thumb"),
