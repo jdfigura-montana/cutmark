@@ -1,5 +1,6 @@
 ﻿# Progress
 ## Current state
+Task 9.2 DONE (2026-10-13). Editor export job in editor::jobs + editor.rs (see activeContext): two-pass render, clip warning with Continue/Cancel decision channel, cancel flag, editing lock via EditorError::Locked; 9 tests. cargo test 352 passed; clippy clean; fmt applied.
 Task 9.1 DONE (2026-10-13). io::export (ExportKind/ExportFormat/mp3_rate/AudioSink/open_sink), WAV sink (16-bit TPDF dither, 24-bit, float32) and CBR MP3 sink (mp3lame-encoder 0.2.5, LAME/Info tag written so decoders trim delay; streaming rubato for 88.2/96 kHz) via `<path>.part` + rename; io::resample::StreamResampler. See activeContext. cargo test 343 passed; clippy clean; fmt applied.
 Task 8.3 DONE (2026-10-13). Ruler/playhead scrub UI: TransportState::Scrubbing, Editor scrub_start/scrub_to/scrub_end, ruler.rs handle_scrub (press/drag/release, edge auto-scroll, no snapping, per-frame repaint), old ruler click removed, app.rs meters+repaint during scrub. cargo test 317 passed; clippy clean; fmt applied.
 Task 8.2 DONE (2026-10-13). audio::scrub variable-speed reader (see activeContext) + player ScrubStart/ScrubTarget/ScrubEnd + State::Scrubbing; engine state_code 4. cargo test 315 passed; clippy clean; fmt applied.

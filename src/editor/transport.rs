@@ -32,6 +32,11 @@ fn code_to_state(code: u8) -> TransportState {
 }
 
 impl Editor {
+    /// Transport commands are refused while an export is running.
+    fn transport_locked(&self) -> bool {
+        self.is_locked()
+    }
+
     /// Current transport state; `Stopped` when audio did not start.
     pub fn transport_state(&self) -> TransportState {
         match &self.audio {
@@ -42,6 +47,9 @@ impl Editor {
 
     /// Space: play from the playhead, or stop while playing (or previewing).
     pub fn toggle_play(&mut self) {
+        if self.transport_locked() {
+            return;
+        }
         let Some(engine) = &self.audio else {
             return;
         };
@@ -59,6 +67,9 @@ impl Editor {
 
     /// P: pause in place while playing, or resume from the paused position.
     pub fn toggle_pause(&mut self) {
+        if self.transport_locked() {
+            return;
+        }
         let Some(engine) = &self.audio else {
             return;
         };
@@ -74,6 +85,9 @@ impl Editor {
 
     /// Stop button: the same as Space while playing; nothing otherwise.
     pub fn stop(&mut self) {
+        if self.transport_locked() {
+            return;
+        }
         if self.transport_state() == TransportState::Playing
             && let Some(engine) = &self.audio
         {
@@ -85,6 +99,9 @@ impl Editor {
     ///
     /// Used by Shift+Space (phase 6).
     pub fn play_range(&mut self, start: u64, end: u64) {
+        if self.transport_locked() {
+            return;
+        }
         if let Some(engine) = &self.audio {
             engine.send(Command::PlayRange { start, end });
         }
@@ -92,6 +109,9 @@ impl Editor {
 
     /// Moves the playhead to `pos`; while playing, playback continues there.
     pub fn seek(&mut self, pos: u64) {
+        if self.transport_locked() {
+            return;
+        }
         self.view.playhead = pos;
         if let Some(engine) = &self.audio {
             engine.send(Command::Seek(pos));
@@ -101,6 +121,9 @@ impl Editor {
     /// Starts a scrub at `pos`: playback stops and the scrub reader takes
     /// over. The playhead jumps to `pos`.
     pub fn scrub_start(&mut self, pos: u64) {
+        if self.transport_locked() {
+            return;
+        }
         self.view.playhead = pos;
         if let Some(engine) = &self.audio {
             engine.send(Command::ScrubStart(pos));
@@ -111,6 +134,9 @@ impl Editor {
     /// speed follows the mouse (clamped to 4x); with no audio only the
     /// playhead moves.
     pub fn scrub_to(&mut self, pos: u64) {
+        if self.transport_locked() {
+            return;
+        }
         self.view.playhead = pos;
         if let Some(engine) = &self.audio {
             engine.send(Command::ScrubTarget(pos));
@@ -120,6 +146,9 @@ impl Editor {
     /// Ends the scrub: the gain fades out and the playhead stays at the last
     /// scrub position.
     pub fn scrub_end(&mut self) {
+        if self.transport_locked() {
+            return;
+        }
         if let Some(engine) = &self.audio {
             engine.send(Command::ScrubEnd);
         }

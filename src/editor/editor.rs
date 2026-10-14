@@ -3,9 +3,10 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use crossbeam_channel::Sender;
 use thiserror::Error;
 
 use crate::audio::engine::Engine;
@@ -15,7 +16,7 @@ use crate::audio::player::Command;
 use crate::editor::action::Action;
 use crate::editor::clipboard::{Clipboard, copy_clips, copy_range};
 use crate::editor::history::{History, HistoryEntry};
-use crate::editor::jobs::{JobChannels, JobMessage};
+use crate::editor::jobs::{ExportDecision, ExportSettings, JobChannels, JobMessage};
 use crate::editor::media_store::MediaStore;
 use crate::editor::ops::OpError;
 use crate::editor::ops::amplitude::{self, Target};
@@ -24,6 +25,7 @@ use crate::editor::ops::paste;
 use crate::editor::selection::Selection;
 use crate::editor::transport::TransportState;
 use crate::io::IoError;
+use crate::io::export::ExportKind;
 use crate::io::paths::{self, ProjectPaths};
 use crate::io::project_file;
 use crate::io::recent::{RecentEntry, RecentList};
@@ -45,7 +47,13 @@ pub enum EditorError {
     /// The edited project violates a model invariant; the change was discarded.
     #[error(transparent)]
     Invariant(#[from] InvariantError),
+    /// The editor is busy with an export; the operation was refused.
+    #[error("{0}")]
+    Locked(String),
 }
+
+/// Message shown when an operation is refused during an export.
+const EXPORT_LOCKED: &str = "Export in progress";
 
 /// Owns the open project; the only gateway between the UI and project state.
 pub struct Editor {
@@ -98,6 +106,10 @@ pub struct Editor {
     selected_marker: Option<Uuid>,
     /// Track id of the last track clicked, for the target track fallback.
     last_clicked_track: Option<Uuid>,
+    /// State of the running export job, if any.
+    exporting: Option<ExportState>,
+    /// Result of the finished export job, taken by `take_export_result`.
+    export_result: Option<Result<PathBuf, String>>,
 }
 
 impl Editor {
@@ -141,6 +153,8 @@ impl Editor {
             selection: Selection::None,
             selected_marker: None,
             last_clicked_track: None,
+            exporting: None,
+            export_result: None,
         })
     }
 
@@ -176,6 +190,8 @@ impl Editor {
             selection: Selection::None,
             selected_marker: None,
             last_clicked_track: None,
+            exporting: None,
+            export_result: None,
         };
         editor.start_media_loads();
         Ok(editor)
@@ -211,6 +227,8 @@ impl Editor {
             selection: Selection::None,
             selected_marker: None,
             last_clicked_track: None,
+            exporting: None,
+            export_result: None,
         }
     }
 
@@ -752,6 +770,9 @@ impl Editor {
         action: Action,
         label: &'static str,
     ) -> Result<(), EditorError> {
+        if self.exporting.is_some() {
+            return Err(EditorError::Locked(EXPORT_LOCKED.to_string()));
+        }
         self.commit(label, |project| action.run(project))
     }
 
@@ -761,6 +782,9 @@ impl Editor {
         label: &'static str,
         run: impl FnOnce(&mut Project) -> Result<(), OpError>,
     ) -> Result<(), EditorError> {
+        if self.exporting.is_some() {
+            return Err(EditorError::Locked(EXPORT_LOCKED.to_string()));
+        }
         let mut next = (*self.project).clone();
         run(&mut next)?;
         invariants::check(&next)?;
@@ -811,6 +835,9 @@ impl Editor {
 
     /// Restores the top undo entry; returns false when there is nothing to undo.
     pub fn undo(&mut self) -> bool {
+        if self.exporting.is_some() {
+            return false;
+        }
         match self.history.undo_step(Arc::clone(&self.project)) {
             Some(entry) => {
                 self.project = entry.before;
@@ -825,6 +852,9 @@ impl Editor {
 
     /// Restores the top redo entry; returns false when there is nothing to redo.
     pub fn redo(&mut self) -> bool {
+        if self.exporting.is_some() {
+            return false;
+        }
         match self.history.redo_step(Arc::clone(&self.project)) {
             Some(entry) => {
                 self.project = entry.before;
@@ -849,6 +879,9 @@ impl Editor {
 
     /// Starts a continuous gesture: stores the current project as the base snapshot.
     pub fn begin_gesture(&mut self) {
+        if self.exporting.is_some() {
+            return;
+        }
         self.gesture_base = Some(Arc::clone(&self.project));
     }
 
@@ -906,6 +939,17 @@ impl Editor {
     /// Publishes a fresh MixPlan to the audio engine; a no-op without audio.
     /// Reuses the meter bank while the track id list is unchanged.
     pub fn publish(&mut self) {
+        self.ensure_meters();
+        let Some(engine) = &self.audio else {
+            return;
+        };
+        let plan = self.build_plan();
+        let old = engine.publish_timeline(plan);
+        self.retired.push((Instant::now(), old));
+    }
+
+    /// Recreates the meter bank when the track list changed.
+    fn ensure_meters(&mut self) {
         let ids: Vec<Uuid> = self.project.tracks.iter().map(|t| t.id).collect();
         if self.meters.track_ids != ids {
             self.meters = Arc::new(MeterBank {
@@ -918,20 +962,17 @@ impl Editor {
                     .collect(),
             });
         }
-        let engine = match &self.audio {
-            Some(engine) => engine,
-            None => return,
-        };
+    }
+
+    /// Builds a fresh MixPlan snapshot from the project and the media store.
+    fn build_plan(&self) -> Arc<MixPlan> {
         let media = &self.media_store;
-        let project = &self.project;
-        let plan = MixPlan::build(
-            project,
+        Arc::new(MixPlan::build(
+            &self.project,
             &|id| media.get(id).map(|l| Arc::clone(&l.samples)),
             Arc::clone(&self.meters),
             Arc::clone(&self.master_meter),
-        );
-        let old = engine.publish_timeline(Arc::new(plan));
-        self.retired.push((Instant::now(), old));
+        ))
     }
 
     /// Drops retired mix plans older than 2 s; called every frame.
@@ -968,6 +1009,9 @@ impl Editor {
     /// Previews a bin item on its own: publishes a preview MixPlan, starts it
     /// and stops timeline playback. A no-op without audio or unloaded media.
     pub fn preview_media(&mut self, id: Uuid) {
+        if self.exporting.is_some() {
+            return;
+        }
         let engine = match &self.audio {
             Some(engine) => engine,
             None => return,
@@ -1037,6 +1081,9 @@ impl Editor {
     /// Returns the file names that were rejected because their extension is
     /// not supported; one import job is started per supported file.
     pub fn import_files(&mut self, files: Vec<PathBuf>) -> Vec<String> {
+        if self.exporting.is_some() {
+            return Vec::new();
+        }
         let mut rejected = Vec::new();
         for file in files {
             if crate::io::decode::is_supported(&file) {
@@ -1102,6 +1149,25 @@ impl Editor {
                             self.job_errors.push(error.to_string());
                         }
                     }
+                }
+                JobMessage::ExportProgress { job, pass, frac } => {
+                    if let Some(entry) = self.pending.get_mut(&job) {
+                        entry.1 = frac;
+                    }
+                    if let Some(state) = &mut self.exporting {
+                        state.pass = pass;
+                        state.frac = frac;
+                    }
+                }
+                JobMessage::ExportPeak { job: _, peak_db } => {
+                    if let Some(state) = &mut self.exporting {
+                        state.peak_warning = Some(peak_db);
+                    }
+                }
+                JobMessage::ExportDone { job, result } => {
+                    self.pending.remove(&job);
+                    self.exporting = None;
+                    self.export_result = Some(result);
                 }
             }
         }
@@ -1207,6 +1273,131 @@ impl Editor {
             list.touch(name.to_string(), root.to_path_buf());
             let _ = list.save(&list_path);
         }
+    }
+}
+
+/// Progress of the running export, read by the UI.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExportStatus {
+    /// Render pass, 1 (peak scan) or 2 (write).
+    pub pass: u8,
+    /// Fraction of the current pass done, 0.0..=1.0.
+    pub frac: f32,
+    /// Peak level in dBFS when pass 1 found the mix above 0 dBFS.
+    pub peak_warning: Option<f32>,
+}
+
+/// Bookkeeping for the running export job.
+struct ExportState {
+    /// Current render pass.
+    pass: u8,
+    /// Fraction of the current pass done.
+    frac: f32,
+    /// Peak level in dBFS reported by pass 1, if it found clipping.
+    peak_warning: Option<f32>,
+    /// Sends the Editor's clip-warning decision to the job.
+    decision_tx: Sender<ExportDecision>,
+    /// Set to abort the job within one render block.
+    cancel: Arc<AtomicBool>,
+}
+
+impl Editor {
+    /// True while an export job runs: editing, undo and transport are locked.
+    pub fn is_locked(&self) -> bool {
+        self.exporting.is_some()
+    }
+
+    /// Starts an export job on its own worker thread; stops playback first.
+    ///
+    /// `settings.end` is clamped to the project length. When `settings.tracks`
+    /// is given, every other track becomes inaudible for the export (mute and
+    /// solo still apply to the rest). The job reports progress, an optional
+    /// clip warning and its result back through `poll_jobs`.
+    pub fn start_export(&mut self, settings: ExportSettings) -> Result<(), EditorError> {
+        if self.exporting.is_some() {
+            return Err(EditorError::Locked(EXPORT_LOCKED.to_string()));
+        }
+        self.stop();
+        self.stop_preview();
+        let end = settings.end.min(self.project_length());
+        if settings.start >= end {
+            return Err(EditorError::Io(IoError::Export(
+                "empty export range".to_string(),
+            )));
+        }
+        let mut settings = settings;
+        settings.end = end;
+        self.ensure_meters();
+        let mut plan = self.build_plan();
+        if let Some(keep) = &settings.tracks {
+            let mut scoped = (*plan).clone();
+            for (index, track) in scoped.tracks.iter_mut().enumerate() {
+                track.audible = self
+                    .project
+                    .tracks
+                    .get(index)
+                    .is_some_and(|t| keep.contains(&t.id));
+            }
+            plan = Arc::new(scoped);
+        }
+        if let Some(parent) = settings.path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let job = self.next_job;
+        self.next_job += 1;
+        self.pending.insert(job, ("Export".to_string(), 0.0));
+        let (decision_tx, decision_rx) = crossbeam_channel::bounded(1);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.jobs
+            .spawn_export(job, plan, settings, decision_rx, Arc::clone(&cancel));
+        self.exporting = Some(ExportState {
+            pass: 1,
+            frac: 0.0,
+            peak_warning: None,
+            decision_tx,
+            cancel,
+        });
+        Ok(())
+    }
+
+    /// Progress of the running export, if any.
+    pub fn export_status(&self) -> Option<ExportStatus> {
+        self.exporting.as_ref().map(|state| ExportStatus {
+            pass: state.pass,
+            frac: state.frac,
+            peak_warning: state.peak_warning,
+        })
+    }
+
+    /// Export Anyway on the clip warning; harmless when there is no warning.
+    pub fn export_continue(&mut self) {
+        if let Some(state) = &self.exporting {
+            let _ = state.decision_tx.send(ExportDecision::Continue);
+        }
+    }
+
+    /// Cancels the running export; its result becomes Err("Cancelled").
+    pub fn export_cancel(&mut self) {
+        if let Some(state) = &self.exporting {
+            state.cancel.store(true, Ordering::Relaxed);
+            let _ = state.decision_tx.send(ExportDecision::Cancel);
+        }
+    }
+
+    /// Takes the finished export's result, if poll_jobs has received one.
+    pub fn take_export_result(&mut self) -> Option<Result<PathBuf, String>> {
+        self.export_result.take()
+    }
+
+    /// Default export file: exports/<project name>.wav or .mp3.
+    pub fn default_export_path(&self, kind: ExportKind) -> PathBuf {
+        let extension = match kind {
+            ExportKind::Wav(_) => "wav",
+            ExportKind::Mp3 { .. } => "mp3",
+        };
+        self.paths
+            .exports()
+            .join(format!("{}.{}", self.project.name, extension))
     }
 }
 
