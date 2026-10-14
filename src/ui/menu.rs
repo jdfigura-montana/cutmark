@@ -1,4 +1,4 @@
-﻿//! ui::menu: the top Project, Edit, Process and View menus.
+//! ui::menu: the top Project, Edit, Process and View menus.
 
 use eframe::egui;
 use uuid::Uuid;
@@ -222,6 +222,29 @@ impl ProjectMenu {
                 .changed()
             {
                 editor.toggle_snap();
+            }
+        });
+        ui.menu_button("Markers", |menu| {
+            if menu.button("Add Marker (M)").clicked() {
+                let _ = editor.add_marker_at_playhead();
+                menu.close();
+            }
+            if menu.button("Previous Marker (,)").clicked() {
+                editor.jump_prev_marker();
+                menu.close();
+            }
+            if menu.button("Next Marker (.)").clicked() {
+                editor.jump_next_marker();
+                menu.close();
+            }
+            if let Some(id) = editor.selected_marker() {
+                if menu.button("Delete Marker (Del)").clicked() {
+                    let _ = editor
+                        .apply(crate::editor::action::Action::DeleteMarkers { ids: vec![id] });
+                    menu.close();
+                }
+            } else {
+                menu.add_enabled(false, egui::Button::new("Delete Marker (Del)"));
             }
         });
         ui.menu_button("Process", |menu| {

@@ -323,7 +323,8 @@ pub fn handle_lane_input(
         && let Some(drag) = state.boundary.clone()
         && let Some(p) = pos
     {
-        let (snapped, snap_point) = editor.snap_pos(g.x_to_sample(p.x), &[], alt, THEME.snap_px);
+        let (snapped, snap_point) =
+            editor.snap_pos(g.x_to_sample(p.x), &[], None, alt, THEME.snap_px);
         let (a, b) = if drag.start_edge {
             (snapped, drag.other)
         } else {
@@ -356,6 +357,8 @@ fn press_started(
     ctrl: bool,
     state: &mut LaneState,
 ) {
+    // Any click on a lane clears a marker selection.
+    editor.select_marker(None);
     // Ctrl+click on the lanes is left for clip selection (task 6.3).
     if ctrl {
         return;
@@ -397,7 +400,7 @@ fn finish_click(
     if editor.project.tracks.get(press.track).is_none() || dist >= THEME.drag_start_px {
         return;
     }
-    let (snapped, _) = editor.snap_pos(g.x_to_sample(p.x), &[], alt, THEME.snap_px);
+    let (snapped, _) = editor.snap_pos(g.x_to_sample(p.x), &[], None, alt, THEME.snap_px);
     if shift {
         // Shift+click: extend the existing range, or start one at the playhead.
         if let crate::editor::selection::Selection::Range { start, end, tracks } =
@@ -436,8 +439,8 @@ fn drag_range(
     alt: bool,
     state: &mut LaneState,
 ) {
-    let (press_sample, snap_a) = editor.snap_pos(press.sample, &[], alt, THEME.snap_px);
-    let (cur_sample, snap_b) = editor.snap_pos(g.x_to_sample(p.x), &[], alt, THEME.snap_px);
+    let (press_sample, snap_a) = editor.snap_pos(press.sample, &[], None, alt, THEME.snap_px);
+    let (cur_sample, snap_b) = editor.snap_pos(g.x_to_sample(p.x), &[], None, alt, THEME.snap_px);
     let tracks = match track_index_at(editor, lane_rect, scroll_y, p.y, true) {
         Some(index) => {
             let (lo, hi) = if index < press.track {
@@ -846,13 +849,14 @@ fn run_clip_drag(
             let cand_start = base_start as i64 + delta;
             let cand_end = base_end as i64 + delta;
             if cand_start >= 0 {
-                let (snapped, _) = editor.snap_pos(cand_start as u64, &ids, alt, THEME.snap_px);
+                let (snapped, _) =
+                    editor.snap_pos(cand_start as u64, &ids, None, alt, THEME.snap_px);
                 if snapped != cand_start as u64 {
                     options.push((snapped as i64 - cand_start, snapped));
                 }
             }
             if cand_end >= 0 {
-                let (snapped, _) = editor.snap_pos(cand_end as u64, &ids, alt, THEME.snap_px);
+                let (snapped, _) = editor.snap_pos(cand_end as u64, &ids, None, alt, THEME.snap_px);
                 if snapped != cand_end as u64 {
                     options.push((snapped as i64 - cand_end, snapped));
                 }
@@ -884,7 +888,7 @@ fn run_clip_drag(
         }
         ClipDrag::Trim { clip_id, edge } => {
             let (new_pos, snap_point) =
-                editor.snap_pos(g.x_to_sample(p.x), &[clip_id], alt, THEME.snap_px);
+                editor.snap_pos(g.x_to_sample(p.x), &[clip_id], None, alt, THEME.snap_px);
             if editor
                 .preview(Action::TrimClip {
                     clip_id,
@@ -903,7 +907,7 @@ fn run_clip_drag(
                 return;
             };
             let (snapped, snap_point) =
-                editor.snap_pos(g.x_to_sample(p.x), &[clip_id], alt, THEME.snap_px);
+                editor.snap_pos(g.x_to_sample(p.x), &[clip_id], None, alt, THEME.snap_px);
             let value = if out {
                 clip.end().saturating_sub(snapped)
             } else {
@@ -1045,6 +1049,8 @@ pub fn handle_clip_input(
             None => {}
         }
     } else if pressed && let Some(p) = pos {
+        // Any click on a clip clears a marker selection.
+        editor.select_marker(None);
         if secondary {
             if let Some((clip_id, index, _zone)) = clip_hit(editor, g, lane_rect, scroll_y, p) {
                 let track_id = editor.project.tracks[index].id;

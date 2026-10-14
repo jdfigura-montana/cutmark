@@ -190,6 +190,15 @@ pub fn show(
     apply_view_menu(editor, view_menu, lane_width);
 
     // Input first: it may change spp, scroll_x, scroll_y and the playhead.
+    // Marker interaction on the ruler comes first and wins over the plain
+    // ruler click (playhead), so the flag suppresses that click this frame.
+    let marker_g = Geom {
+        lane_left,
+        lane_width,
+        spp: editor.view.samples_per_pixel,
+        scroll_x: editor.view.scroll_x,
+    };
+    let ruler_taken = ruler::handle_markers(ui, editor, &marker_g, ruler_rect);
     handle_input(
         ui,
         editor,
@@ -198,6 +207,7 @@ pub fn show(
         ruler_rect,
         max_scroll_y,
         &resp,
+        ruler_taken,
     );
 
     // Follow the playhead while playing: when it leaves the visible lanes on
@@ -249,6 +259,7 @@ pub fn show(
     // Clip drag snap line (over the clips) and the open clip context menu.
     interaction::draw_clip_snap_line(ui, &g, lane_rect);
     messages.extend(interaction::draw_clip_menu(ui, editor));
+    ruler::draw_marker_menu(ui, editor);
     messages.extend(interaction::draw_gain_edit(ui, editor));
     messages.extend(crate::ui::dialogs::gain::show(ui.ctx(), editor));
     messages.extend(crate::ui::dialogs::normalize::show(ui.ctx(), editor));
@@ -305,14 +316,17 @@ fn handle_input(
     ruler_rect: egui::Rect,
     max_scroll_y: f32,
     resp: &egui::Response,
+    ruler_click_taken: bool,
 ) {
     if !resp.hovered() {
         return;
     }
 
     // Clicking the ruler sets the playhead (scrubbing comes in task 8).
+    // Marker interaction on the ruler wins, so it suppresses this click.
     // Lane clicks are handled by interaction::handle_lane_input.
     if resp.clicked()
+        && !ruler_click_taken
         && !ui.ctx().egui_wants_keyboard_input()
         && let Some(p) = resp.interact_pointer_pos()
         && ruler_rect.contains(p)
@@ -512,6 +526,7 @@ fn draw(
         g,
         editor.project.sample_rate,
         &editor.project.markers,
+        editor.selected_marker(),
         visuals.text_color(),
         visuals.widgets.noninteractive.bg_stroke,
     );

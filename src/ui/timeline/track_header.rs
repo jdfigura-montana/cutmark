@@ -68,6 +68,15 @@ pub fn show(
         state.reorder = None;
     }
 
+    // Any click on a track header clears a marker selection.
+    if ui.input(|i| i.pointer.any_click())
+        && ui
+            .input(|i| i.pointer.latest_pos())
+            .is_some_and(|p| header_rect.contains(p))
+    {
+        editor.select_marker(None);
+    }
+
     // Snapshot the track list so the project can be mutated while drawing.
     let tracks: Vec<HeaderTrack> = editor
         .project

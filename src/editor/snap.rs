@@ -26,13 +26,24 @@ pub fn snap(pos: u64, candidates: &[u64], spp: f64, threshold_px: f32) -> Option
 }
 
 impl Editor {
-    /// Sorted, duplicate-free snap positions: 0, the playhead, every marker,
-    /// and the start and end of every clip not in `exclude_clips`.
-    pub fn snap_candidates(&self, exclude_clips: &[Uuid]) -> Vec<u64> {
+    /// Sorted, duplicate-free snap positions: 0, the playhead, every marker
+    /// except `exclude_marker`, and the start and end of every clip not in
+    /// `exclude_clips`.
+    pub fn snap_candidates(
+        &self,
+        exclude_clips: &[Uuid],
+        exclude_marker: Option<Uuid>,
+    ) -> Vec<u64> {
         let mut out: Vec<u64> = Vec::new();
         out.push(0);
         out.push(self.view.playhead);
-        out.extend(self.project.markers.iter().map(|m| m.position));
+        out.extend(
+            self.project
+                .markers
+                .iter()
+                .filter(|m| Some(m.id) != exclude_marker)
+                .map(|m| m.position),
+        );
         for track in &self.project.tracks {
             for clip in &track.clips {
                 if !exclude_clips.contains(&clip.id) {
@@ -54,13 +65,14 @@ impl Editor {
         &self,
         pos: u64,
         exclude_clips: &[Uuid],
+        exclude_marker: Option<Uuid>,
         bypass: bool,
         threshold_px: f32,
     ) -> (u64, Option<u64>) {
         if !self.view.snap || bypass {
             return (pos, None);
         }
-        let candidates = self.snap_candidates(exclude_clips);
+        let candidates = self.snap_candidates(exclude_clips, exclude_marker);
         match snap(pos, &candidates, self.view.samples_per_pixel, threshold_px) {
             Some(snapped) => (snapped, Some(snapped)),
             None => (pos, None),
@@ -71,6 +83,7 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     use super::*;
     use crate::io::paths::ProjectPaths;
@@ -106,9 +119,26 @@ mod tests {
         let mut editor = editor();
         editor.view.playhead = 500;
         let clip = editor.project.tracks[0].clips[0].id;
-        let candidates = editor.snap_candidates(&[]);
+        let candidates = editor.snap_candidates(&[], None);
         assert_eq!(candidates, vec![0, 100, 200, 400, 500]);
-        assert_eq!(editor.snap_candidates(&[clip]), vec![0, 200, 400, 500]);
+        assert_eq!(
+            editor.snap_candidates(&[clip], None),
+            vec![0, 200, 400, 500]
+        );
+    }
+
+    #[test]
+    fn snap_candidates_leaves_out_the_excluded_marker() {
+        let mut editor = editor();
+        editor.view.playhead = 500;
+        let mut project = (*editor.project).clone();
+        crate::editor::ops::marker::add_marker(&mut project, 300).unwrap();
+        let id = project.markers[0].id;
+        editor.project = Arc::new(project);
+        let candidates = editor.snap_candidates(&[], Some(id));
+        assert_eq!(candidates, vec![0, 100, 200, 400, 500]);
+        // With nothing excluded the marker comes back.
+        assert!(editor.snap_candidates(&[], None).contains(&300));
     }
 
     #[test]
@@ -116,9 +146,12 @@ mod tests {
         let mut editor = editor();
         editor.view.playhead = 1004;
         editor.view.snap = false;
-        assert_eq!(editor.snap_pos(1000, &[], false, 8.0), (1000, None));
+        assert_eq!(editor.snap_pos(1000, &[], None, false, 8.0), (1000, None));
         editor.view.snap = true;
-        assert_eq!(editor.snap_pos(1000, &[], true, 8.0), (1000, None));
-        assert_eq!(editor.snap_pos(1000, &[], false, 8.0), (1004, Some(1004)));
+        assert_eq!(editor.snap_pos(1000, &[], None, true, 8.0), (1000, None));
+        assert_eq!(
+            editor.snap_pos(1000, &[], None, false, 8.0),
+            (1004, Some(1004))
+        );
     }
 }

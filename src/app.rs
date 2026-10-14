@@ -1,4 +1,4 @@
-﻿//! app: the eframe::App; start screen vs editor.
+//! app: the eframe::App; start screen vs editor.
 
 use std::path::PathBuf;
 
@@ -197,30 +197,55 @@ impl App {
 
         // Editor shortcuts, only when no text field has keyboard focus.
         if !ui.ctx().egui_wants_keyboard_input() {
-            let (ctrl, shift, n, o, s, i, z, y, t, r, a, c, x, v, escape, del, back, g, l) = ui
-                .input(|i| {
-                    (
-                        i.modifiers.ctrl,
-                        i.modifiers.shift,
-                        i.key_pressed(egui::Key::N),
-                        i.key_pressed(egui::Key::O),
-                        i.key_pressed(egui::Key::S),
-                        i.key_pressed(egui::Key::I),
-                        i.key_pressed(egui::Key::Z),
-                        i.key_pressed(egui::Key::Y),
-                        i.key_pressed(egui::Key::T),
-                        i.key_pressed(egui::Key::R),
-                        i.key_pressed(egui::Key::A),
-                        i.key_pressed(egui::Key::C),
-                        i.key_pressed(egui::Key::X),
-                        i.key_pressed(egui::Key::V),
-                        i.key_pressed(egui::Key::Escape),
-                        i.key_pressed(egui::Key::Delete),
-                        i.key_pressed(egui::Key::Backspace),
-                        i.key_pressed(egui::Key::G),
-                        i.key_pressed(egui::Key::L),
-                    )
-                });
+            let (
+                ctrl,
+                shift,
+                n,
+                o,
+                s,
+                i,
+                z,
+                y,
+                t,
+                r,
+                a,
+                c,
+                x,
+                v,
+                escape,
+                del,
+                back,
+                g,
+                l,
+                m,
+                comma,
+                period,
+            ) = ui.input(|i| {
+                (
+                    i.modifiers.ctrl,
+                    i.modifiers.shift,
+                    i.key_pressed(egui::Key::N),
+                    i.key_pressed(egui::Key::O),
+                    i.key_pressed(egui::Key::S),
+                    i.key_pressed(egui::Key::I),
+                    i.key_pressed(egui::Key::Z),
+                    i.key_pressed(egui::Key::Y),
+                    i.key_pressed(egui::Key::T),
+                    i.key_pressed(egui::Key::R),
+                    i.key_pressed(egui::Key::A),
+                    i.key_pressed(egui::Key::C),
+                    i.key_pressed(egui::Key::X),
+                    i.key_pressed(egui::Key::V),
+                    i.key_pressed(egui::Key::Escape),
+                    i.key_pressed(egui::Key::Delete),
+                    i.key_pressed(egui::Key::Backspace),
+                    i.key_pressed(egui::Key::G),
+                    i.key_pressed(egui::Key::L),
+                    i.key_pressed(egui::Key::M),
+                    i.key_pressed(egui::Key::Comma),
+                    i.key_pressed(egui::Key::Period),
+                )
+            });
             // A continuous gesture is active: undo/redo keys are ignored.
             let gesture_active = editor.gesture_base.is_some();
             if ctrl && a {
@@ -266,6 +291,12 @@ impl App {
                 let _ = editor.paste();
             } else if ctrl && t {
                 let _ = editor.trim_to_selection();
+            } else if m && !ctrl {
+                let _ = editor.add_marker_at_playhead();
+            } else if comma && !ctrl {
+                editor.jump_prev_marker();
+            } else if period && !ctrl {
+                editor.jump_next_marker();
             } else if ctrl && g && !shift {
                 // Process keys. egui itself binds none of Ctrl+G / Ctrl+Shift+N
                 // / Ctrl+Shift+I / Ctrl+Shift+O / Ctrl+L, so nothing else
@@ -340,9 +371,15 @@ impl App {
             .to_string()
     }
 
-    /// Delete / Backspace: removes the clip selection (with the ripple
-    /// setting), or the range selection and moves the playhead to its start.
+    /// Delete / Backspace: removes a selected marker, else the clip selection
+    /// (with the ripple setting), or the range selection and moves the
+    /// playhead to its start.
     fn delete_selection(editor: &mut Editor) {
+        if let Some(id) = editor.selected_marker() {
+            let _ = editor.apply(Action::DeleteMarkers { ids: vec![id] });
+            editor.select_marker(None);
+            return;
+        }
         match editor.selection().clone() {
             crate::editor::selection::Selection::Clips(ids) => {
                 let _ = editor.apply(Action::DeleteClips {

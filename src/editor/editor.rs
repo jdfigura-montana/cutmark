@@ -19,6 +19,7 @@ use crate::editor::jobs::{JobChannels, JobMessage};
 use crate::editor::media_store::MediaStore;
 use crate::editor::ops::OpError;
 use crate::editor::ops::amplitude::{self, Target};
+use crate::editor::ops::marker;
 use crate::editor::ops::paste;
 use crate::editor::selection::Selection;
 use crate::editor::transport::TransportState;
@@ -93,6 +94,8 @@ pub struct Editor {
     preview_item: Option<Uuid>,
     /// Current range or clip selection; not undoable.
     selection: Selection,
+    /// Currently selected marker, if any; not undoable.
+    selected_marker: Option<Uuid>,
     /// Track id of the last track clicked, for the target track fallback.
     last_clicked_track: Option<Uuid>,
 }
@@ -136,6 +139,7 @@ impl Editor {
             transport_prev: None,
             preview_item: None,
             selection: Selection::None,
+            selected_marker: None,
             last_clicked_track: None,
         })
     }
@@ -170,6 +174,7 @@ impl Editor {
             transport_prev: None,
             preview_item: None,
             selection: Selection::None,
+            selected_marker: None,
             last_clicked_track: None,
         };
         editor.start_media_loads();
@@ -204,6 +209,7 @@ impl Editor {
             transport_prev: None,
             preview_item: None,
             selection: Selection::None,
+            selected_marker: None,
             last_clicked_track: None,
         }
     }
@@ -386,6 +392,43 @@ impl Editor {
         self.selection = Selection::None;
     }
 
+    /// The selected marker, if any.
+    pub fn selected_marker(&self) -> Option<Uuid> {
+        self.selected_marker
+    }
+
+    /// Selects a marker. Not undoable, never dirty, and it does not touch
+    /// the range or clip selection.
+    pub fn select_marker(&mut self, id: Option<Uuid>) {
+        self.selected_marker = id;
+    }
+
+    /// M: adds a marker at the playhead. Does nothing (without an error)
+    /// when a marker already sits exactly at the playhead.
+    pub fn add_marker_at_playhead(&mut self) -> Result<(), EditorError> {
+        let pos = self.view.playhead;
+        if self.project.markers.iter().any(|m| m.position == pos) {
+            return Ok(());
+        }
+        self.apply(Action::AddMarker { pos })
+    }
+
+    /// `,`: seeks to the last marker strictly before the playhead.
+    /// Nothing happens when there is none.
+    pub fn jump_prev_marker(&mut self) {
+        if let Some(pos) = marker::prev_marker(&self.project, self.view.playhead) {
+            self.seek(pos);
+        }
+    }
+
+    /// `.`: seeks to the first marker strictly after the playhead.
+    /// Nothing happens when there is none.
+    pub fn jump_next_marker(&mut self) {
+        if let Some(pos) = marker::next_marker(&self.project, self.view.playhead) {
+            self.seek(pos);
+        }
+    }
+
     /// Selects everything: range 0..project_length on all tracks, or `None`
     /// when the project is empty.
     pub fn select_all(&mut self) {
@@ -444,6 +487,11 @@ impl Editor {
     /// Drops selection ids that no longer exist after a project change.
     fn tidy_selection(&mut self) {
         self.selection = std::mem::take(&mut self.selection).tidy(&self.project);
+        if let Some(id) = self.selected_marker
+            && !self.project.markers.iter().any(|m| m.id == id)
+        {
+            self.selected_marker = None;
+        }
     }
 
     /// Copies the range `s..e` on the listed tracks to the clipboard.
@@ -2571,6 +2619,70 @@ mod tests {
         ));
         assert_eq!(*editor.project, *before, "failed add must change nothing");
         assert_eq!(*editor.project, *before, "failed add must change nothing");
+    }
+
+    #[test]
+    fn add_marker_at_playhead_twice_adds_one_and_no_error() {
+        let mut editor = Editor::with_project(
+            project_with_clips(&[&[]]),
+            ViewState::default(),
+            ProjectPaths {
+                root: PathBuf::from("unused"),
+            },
+        );
+        editor.set_playhead(250);
+        editor.add_marker_at_playhead().unwrap();
+        editor.add_marker_at_playhead().unwrap();
+        assert_eq!(editor.project.markers.len(), 1, "still one marker");
+        assert_eq!(editor.project.markers[0].position, 250);
+    }
+
+    #[test]
+    fn jump_next_and_prev_markers_seek_strictly() {
+        let mut editor = Editor::with_project(
+            project_with_clips(&[&[]]),
+            ViewState::default(),
+            ProjectPaths {
+                root: PathBuf::from("unused"),
+            },
+        );
+        editor.apply(Action::AddMarker { pos: 100 }).unwrap();
+        editor.apply(Action::AddMarker { pos: 500 }).unwrap();
+
+        editor.set_playhead(100);
+        editor.jump_next_marker();
+        assert_eq!(editor.view.playhead, 500);
+        editor.jump_next_marker();
+        assert_eq!(editor.view.playhead, 500, "no marker after 500");
+        editor.jump_prev_marker();
+        assert_eq!(editor.view.playhead, 100);
+        editor.jump_prev_marker();
+        assert_eq!(editor.view.playhead, 100, "no marker strictly before 100");
+    }
+
+    #[test]
+    fn delete_selected_marker_clears_selection_and_undo_restores() {
+        let mut editor = Editor::with_project(
+            project_with_clips(&[&[]]),
+            ViewState::default(),
+            ProjectPaths {
+                root: PathBuf::from("unused"),
+            },
+        );
+        editor.set_playhead(100);
+        editor.add_marker_at_playhead().unwrap();
+        let id = editor.project.markers[0].id;
+        editor.select_marker(Some(id));
+
+        editor
+            .apply(Action::DeleteMarkers { ids: vec![id] })
+            .unwrap();
+        assert_eq!(editor.selected_marker(), None, "selection tidied");
+        assert!(editor.project.markers.is_empty());
+
+        assert!(editor.undo());
+        assert_eq!(editor.project.markers.len(), 1, "marker restored");
+        assert_eq!(editor.project.markers[0].position, 100);
     }
 
     #[test]
