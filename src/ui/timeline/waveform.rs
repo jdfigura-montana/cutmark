@@ -6,6 +6,7 @@ use crate::io::import::Loaded;
 use crate::model::clip::Clip;
 use crate::model::media::{PeakLevel, Peaks};
 use crate::util::db::db_to_linear;
+use crate::util::fade::fade_gain;
 
 use super::Geom;
 
@@ -94,15 +95,7 @@ pub fn samples_minmax(samples: &[f32], channels: u16, ch: u16, from: u64, to: u6
 /// Linear amplitude of a clip at `local` samples into the clip: clip gain
 /// times the linear fade-in and fade-out (the smaller when both apply).
 pub fn envelope(clip: &Clip, local: u64) -> f32 {
-    let len = clip.len();
-    let mut e = 1.0f32;
-    if clip.fade_in > 0 && local < clip.fade_in {
-        e = e.min(local as f32 / clip.fade_in as f32);
-    }
-    if clip.fade_out > 0 && local >= len.saturating_sub(clip.fade_out) {
-        e = e.min((len - local) as f32 / clip.fade_out as f32);
-    }
-    db_to_linear(clip.gain_db) * e
+    db_to_linear(clip.gain_db) * fade_gain(local, clip.len(), clip.fade_in, clip.fade_out)
 }
 
 /// Draws the waveform of one clip inside its body rect.
@@ -344,18 +337,6 @@ mod tests {
     fn envelope_plus_six_db_doubles() {
         let clip = test_clip(6.0206, 0, 0);
         assert!((envelope(&clip, 500) - 2.0).abs() < 1e-3);
-    }
-
-    #[test]
-    fn envelope_fade_in_halfway() {
-        let clip = test_clip(0.0, 100, 0);
-        assert!((envelope(&clip, 50) - 0.5).abs() < 1e-6);
-    }
-
-    #[test]
-    fn envelope_fade_out_halfway() {
-        let clip = test_clip(0.0, 0, 100);
-        assert!((envelope(&clip, 950) - 0.5).abs() < 1e-6);
     }
 
     fn test_clip(gain_db: f32, fade_in: u64, fade_out: u64) -> Clip {

@@ -1,10 +1,29 @@
 //! audio::mixer: render(plan, start, frames) producing stereo f32; shared with export.
 
 use crate::audio::mix_plan::{ClipPlan, MixPlan};
+use crate::util::fade::fade_gain;
+
+/// Local per-track meter accumulators for one render call.
+#[derive(Default)]
+struct TrackAccum {
+    /// Largest absolute left sample.
+    peak_l: f32,
+    /// Largest absolute right sample.
+    peak_r: f32,
+    /// Sum of squared left samples.
+    sq_l: f32,
+    /// Sum of squared right samples.
+    sq_r: f32,
+    /// Frames rendered.
+    frames: u32,
+    /// True when any accumulated sample reached 0 dBFS.
+    clipped: bool,
+}
 
 /// Renders `out.len() / 2` stereo interleaved frames starting at timeline position `start`.
+/// When `meter` is true, writes per-track and master peak / RMS values to the plan's meters.
 /// No allocation, no locks, no panics: safe for the audio thread.
-pub fn render(plan: &MixPlan, start: u64, out: &mut [f32]) {
+pub fn render(plan: &MixPlan, start: u64, out: &mut [f32], meter: bool) {
     for s in out.iter_mut() {
         *s = 0.0;
     }
@@ -13,10 +32,12 @@ pub fn render(plan: &MixPlan, start: u64, out: &mut [f32]) {
     }
     let frames = out.len() / 2;
     let block_end = start + frames as u64;
-    for track in &plan.tracks {
+    for (index, track) in plan.tracks.iter().enumerate() {
         if !track.audible {
             continue;
         }
+        // Clips on one track never overlap, so one accumulator spans all clips.
+        let mut acc = TrackAccum::default();
         // First clip whose end is past `start`; clips are sorted by start.
         let first = track
             .clips
@@ -25,17 +46,52 @@ pub fn render(plan: &MixPlan, start: u64, out: &mut [f32]) {
             if clip.start >= block_end {
                 break;
             }
-            mix_clip(clip, start, track.gain_l, track.gain_r, out);
+            mix_clip(
+                clip,
+                start,
+                track.gain_l,
+                track.gain_r,
+                out,
+                meter,
+                &mut acc,
+            );
+        }
+        if meter
+            && acc.frames > 0
+            && let Some(m) = plan.meters.tracks.get(index)
+        {
+            m.l.add(acc.peak_l, acc.sq_l, acc.frames, acc.clipped);
+            m.r.add(acc.peak_r, acc.sq_r, acc.frames, acc.clipped);
         }
     }
     let master = plan.master_gain;
     for s in out.iter_mut() {
         *s *= master;
     }
+    if meter {
+        let mut acc = TrackAccum::default();
+        for [l, r] in out.as_chunks::<2>().0 {
+            accumulate(&mut acc, *l, *r);
+        }
+        plan.master
+            .l
+            .add(acc.peak_l, acc.sq_l, frames as u32, acc.clipped);
+        plan.master
+            .r
+            .add(acc.peak_r, acc.sq_r, frames as u32, acc.clipped);
+    }
 }
 
 /// Adds one clip's contribution to the output block, reading safely past the buffer end as 0.0.
-fn mix_clip(clip: &ClipPlan, start: u64, gain_l: f32, gain_r: f32, out: &mut [f32]) {
+fn mix_clip(
+    clip: &ClipPlan,
+    start: u64,
+    gain_l: f32,
+    gain_r: f32,
+    out: &mut [f32],
+    meter: bool,
+    acc: &mut TrackAccum,
+) {
     let samples: Option<&[f32]> = clip.samples.as_deref();
     let clip_end = clip.start.saturating_add(clip.len);
     let last = clip_end.min(start + (out.len() / 2) as u64);
@@ -50,7 +106,7 @@ fn mix_clip(clip: &ClipPlan, start: u64, gain_l: f32, gain_r: f32, out: &mut [f3
     for i in 0..count {
         let t = first_t + i as u64; // block-local frame index
         let local = base_local + i as u64; // offset from clip.start
-        let env = clip.gain * fade_factor(clip, local);
+        let env = clip.gain * fade_gain(local, clip.len, clip.fade_in, clip.fade_out);
         let src = clip.src_in + local;
         let (l, r) = match clip.channels {
             2 => {
@@ -66,22 +122,28 @@ fn mix_clip(clip: &ClipPlan, start: u64, gain_l: f32, gain_r: f32, out: &mut [f3
         let o = (t as usize) * 2;
         out[o] += l * gain_l;
         out[o + 1] += r * gain_r;
+        if meter {
+            accumulate(acc, out[o], out[o + 1]);
+        }
     }
 }
 
-/// Linear fade factor at `local` samples from the clip start, 1.0 outside fades.
-fn fade_factor(clip: &ClipPlan, local: u64) -> f32 {
-    let mut f = 1.0f32;
-    if clip.fade_in > 0 && local < clip.fade_in {
-        f = f.min(local as f32 / clip.fade_in as f32);
+/// Folds one post-track-gain frame into the local meter accumulators.
+#[inline]
+fn accumulate(acc: &mut TrackAccum, l: f32, r: f32) {
+    let (al, ar) = (l.abs(), r.abs());
+    if al > acc.peak_l {
+        acc.peak_l = al;
     }
-    if clip.fade_out > 0 {
-        let from_end = clip.len.saturating_sub(local);
-        if from_end < clip.fade_out {
-            f = f.min(from_end as f32 / clip.fade_out as f32);
-        }
+    if ar > acc.peak_r {
+        acc.peak_r = ar;
     }
-    f
+    acc.sq_l += l * l;
+    acc.sq_r += r * r;
+    acc.frames += 1;
+    if al >= 1.0 || ar >= 1.0 {
+        acc.clipped = true;
+    }
 }
 
 /// Reads one sample, returning 0.0 for any index past the buffer end.
@@ -98,6 +160,9 @@ fn read_sample(samples: Option<&[f32]>, index: u64) -> f32 {
 mod tests {
     use std::sync::Arc;
 
+    use uuid::Uuid;
+
+    use crate::audio::meters::{MeterBank, StereoMeter};
     use crate::audio::mix_plan::{ClipPlan, MixPlan, TrackPlan};
     use crate::util::db::db_to_linear;
 
@@ -115,7 +180,17 @@ mod tests {
                 gain_r,
                 clips: vec![clip],
             }],
+            meters: bank(1),
+            master: Arc::new(StereoMeter::new()),
         }
+    }
+
+    /// A meter bank with `n` anonymous track meters.
+    fn bank(n: usize) -> Arc<MeterBank> {
+        Arc::new(MeterBank {
+            track_ids: (0..n).map(|_| Uuid::new_v4()).collect(),
+            tracks: (0..n).map(|_| StereoMeter::new()).collect(),
+        })
     }
 
     fn mono_clip(
@@ -143,7 +218,7 @@ mod tests {
 
     fn render_all(plan: &MixPlan, from: u64, frames: usize) -> Vec<f32> {
         let mut out = vec![f32::NAN; frames * 2];
-        crate::audio::mixer::render(plan, from, &mut out);
+        crate::audio::mixer::render(plan, from, &mut out, true);
         out
     }
 
@@ -242,6 +317,8 @@ mod tests {
                     clips: vec![clip()],
                 },
             ],
+            meters: bank(2),
+            master: Arc::new(StereoMeter::new()),
         };
         let out = render_all(&plan, 0, 100);
         assert!((out[0] - 1.0).abs() < 1e-5, "{}", out[0]);
@@ -260,6 +337,8 @@ mod tests {
                 gain_r: 1.0,
                 clips: vec![clip],
             }],
+            meters: bank(1),
+            master: Arc::new(StereoMeter::new()),
         };
         let out = render_all(&plan, 0, 100);
         assert!(out.iter().all(|s| *s == 0.0));
@@ -286,6 +365,8 @@ mod tests {
                     clips: vec![mono_clip(0, 100, 0, 1.0, Some(samples()))],
                 },
             ],
+            meters: bank(2),
+            master: Arc::new(StereoMeter::new()),
         };
         let out = render_all(&plan, 0, 100);
         assert!(
@@ -321,9 +402,9 @@ mod tests {
         let plan = one_clip_plan(clip, PAN_CENTER, PAN_CENTER, 0.8);
         let whole = render_all(&plan, 0, 300);
         let mut pieced = vec![0.0f32; 600];
-        crate::audio::mixer::render(&plan, 0, &mut pieced[0..154]);
-        crate::audio::mixer::render(&plan, 77, &mut pieced[154..320]);
-        crate::audio::mixer::render(&plan, 160, &mut pieced[320..600]);
+        crate::audio::mixer::render(&plan, 0, &mut pieced[0..154], true);
+        crate::audio::mixer::render(&plan, 77, &mut pieced[154..320], true);
+        crate::audio::mixer::render(&plan, 160, &mut pieced[320..600], true);
         for (a, b) in whole.iter().zip(pieced.iter()) {
             assert!((a - b).abs() < 1e-6, "{a} vs {b}");
         }
@@ -376,5 +457,67 @@ mod tests {
         let out = render_all(&plan, 0, 50);
         assert!((out[0] - 0.1).abs() < 1e-6);
         assert!((out[1] - 0.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn meters_measure_track_and_master_after_gains() {
+        let plan = one_clip_plan(
+            mono_clip(0, 100, 0, 1.0, Some(const_samples(0.5, 100, 1))),
+            PAN_CENTER,
+            PAN_CENTER,
+            0.5,
+        );
+        let expected = 0.5 * PAN_CENTER;
+        let out = render_all(&plan, 0, 100);
+        let _ = out;
+        for m in [&plan.meters.tracks[0].l, &plan.meters.tracks[0].r] {
+            let (peak, sum_sq, frames, clipped) = m.take();
+            assert!((peak - expected).abs() < 1e-5, "track peak {peak}");
+            assert!((sum_sq - 100.0 * expected * expected).abs() < 1e-3);
+            assert_eq!(frames, 100);
+            assert!(!clipped);
+        }
+        for m in [&plan.master.l, &plan.master.r] {
+            let (peak, _sq, frames, clipped) = m.take();
+            assert!((peak - expected * 0.5).abs() < 1e-5, "master peak {peak}");
+            assert_eq!(frames, 100);
+            assert!(!clipped);
+        }
+    }
+
+    #[test]
+    fn inaudible_track_meter_stays_zero() {
+        let plan = MixPlan {
+            rate: 48_000,
+            length: 100,
+            master_gain: 1.0,
+            tracks: vec![TrackPlan {
+                audible: false,
+                gain_l: 1.0,
+                gain_r: 1.0,
+                clips: vec![mono_clip(0, 100, 0, 1.0, Some(const_samples(0.5, 100, 1)))],
+            }],
+            meters: bank(1),
+            master: Arc::new(StereoMeter::new()),
+        };
+        let _ = render_all(&plan, 0, 100);
+        let (peak, sq, frames, clipped) = plan.meters.tracks[0].l.take();
+        assert_eq!(peak, 0.0);
+        assert_eq!(sq, 0.0);
+        assert_eq!(frames, 0);
+        assert!(!clipped);
+    }
+
+    #[test]
+    fn a_sample_at_unity_sets_clipped() {
+        let plan = one_clip_plan(
+            mono_clip(0, 100, 0, 1.0, Some(const_samples(1.0, 100, 1))),
+            1.0,
+            1.0,
+            1.0,
+        );
+        let _ = render_all(&plan, 0, 100);
+        assert!(plan.meters.tracks[0].l.take().3);
+        assert!(plan.master.r.take().3);
     }
 }

@@ -196,7 +196,7 @@ impl Player {
                 (timeline, self.position)
             };
             let slice = &mut out[cursor..cursor + piece * 2];
-            mixer::render(plan, pos, slice);
+            mixer::render(plan, pos, slice, true);
             self.apply_gain(slice, piece);
             if self.state == State::Previewing {
                 self.preview_pos += piece as u64;
@@ -406,6 +406,7 @@ impl Player {
 mod tests {
     use std::sync::Arc;
 
+    use crate::audio::meters::{MeterBank, StereoMeter};
     use crate::audio::mix_plan::{ClipPlan, MixPlan, TrackPlan};
     use crate::audio::player::{Command, Player, State};
 
@@ -434,6 +435,11 @@ mod tests {
                     samples: Some(samples),
                 }],
             }],
+            meters: Arc::new(MeterBank {
+                track_ids: Vec::new(),
+                tracks: Vec::new(),
+            }),
+            master: Arc::new(StereoMeter::new()),
         }
     }
 
@@ -586,7 +592,14 @@ mod tests {
     fn preview_plays_preview_plan_and_stops() {
         let timeline = const_plan(100_000, 0.5);
         let preview_samples: Arc<[f32]> = Arc::from(vec![0.25f32; 2_000].into_boxed_slice());
-        let preview = MixPlan::preview(1_000, 2, preview_samples, RATE, 0.0);
+        let preview = MixPlan::preview(
+            1_000,
+            2,
+            preview_samples,
+            RATE,
+            0.0,
+            Arc::new(StereoMeter::new()),
+        );
         let mut p = Player::new(RATE);
         p.handle(Command::Seek(1_234));
         assert_eq!(p.position(), 1_234);
@@ -614,7 +627,14 @@ mod tests {
     fn play_while_previewing_ends_the_preview_first() {
         let timeline = const_plan(100_000, 0.5);
         let preview_samples: Arc<[f32]> = Arc::from(vec![0.25f32; 2_000].into_boxed_slice());
-        let preview = MixPlan::preview(1_000, 2, preview_samples, RATE, 0.0);
+        let preview = MixPlan::preview(
+            1_000,
+            2,
+            preview_samples,
+            RATE,
+            0.0,
+            Arc::new(StereoMeter::new()),
+        );
         let mut p = Player::new(RATE);
         p.handle(Command::Preview);
         let mut sink = Vec::new();

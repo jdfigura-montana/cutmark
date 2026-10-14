@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 
 use crate::audio::engine::Engine;
+use crate::audio::meters::{MeterBank, MeterReading, StereoMeter};
 use crate::audio::mix_plan::MixPlan;
 use crate::audio::player::Command;
 use crate::editor::action::Action;
@@ -28,6 +29,7 @@ use crate::io::recent::{RecentEntry, RecentList};
 use crate::model::invariants::{self, InvariantError};
 use crate::model::project::{BitDepth, Project, ViewState};
 use crate::util::db::{db_to_linear, linear_to_db};
+use crate::util::fade::fade_gain;
 use uuid::Uuid;
 
 /// Errors from creating, opening, saving or editing a project.
@@ -81,6 +83,10 @@ pub struct Editor {
     pub retired: Vec<(Instant, Arc<MixPlan>)>,
     /// Message from a failed `Engine::start`, shown by `audio_status`.
     pub audio_error: Option<String>,
+    /// Session master meter, shared with every published mix plan.
+    pub master_meter: Arc<StereoMeter>,
+    /// Current per-track meter bank; reused while the track list is unchanged.
+    pub meters: Arc<MeterBank>,
     /// Transport state from the previous `poll_transport`, to detect a stop.
     pub(crate) transport_prev: Option<TransportState>,
     /// Bin item currently previewed, if the UI started one.
@@ -122,6 +128,11 @@ impl Editor {
             audio: None,
             retired: Vec::new(),
             audio_error: None,
+            master_meter: Arc::new(StereoMeter::new()),
+            meters: Arc::new(MeterBank {
+                track_ids: Vec::new(),
+                tracks: Vec::new(),
+            }),
             transport_prev: None,
             preview_item: None,
             selection: Selection::None,
@@ -151,6 +162,11 @@ impl Editor {
             audio: None,
             retired: Vec::new(),
             audio_error: None,
+            master_meter: Arc::new(StereoMeter::new()),
+            meters: Arc::new(MeterBank {
+                track_ids: Vec::new(),
+                tracks: Vec::new(),
+            }),
             transport_prev: None,
             preview_item: None,
             selection: Selection::None,
@@ -180,6 +196,11 @@ impl Editor {
             audio: None,
             retired: Vec::new(),
             audio_error: None,
+            master_meter: Arc::new(StereoMeter::new()),
+            meters: Arc::new(MeterBank {
+                track_ids: Vec::new(),
+                tracks: Vec::new(),
+            }),
             transport_prev: None,
             preview_item: None,
             selection: Selection::None,
@@ -585,13 +606,8 @@ impl Editor {
             let len = clip.len();
             for local in 0..len {
                 let frame = (clip.src_in + local) as usize;
-                let mut env = db_to_linear(clip.gain_db);
-                if clip.fade_in > 0 && local < clip.fade_in {
-                    env *= (local as f32 / clip.fade_in as f32).min(1.0);
-                }
-                if clip.fade_out > 0 && local >= len.saturating_sub(clip.fade_out) {
-                    env *= ((len - local) as f32 / clip.fade_out as f32).min(1.0);
-                }
+                let env =
+                    db_to_linear(clip.gain_db) * fade_gain(local, len, clip.fade_in, clip.fade_out);
                 for ch in 0..channels {
                     if let Some(sample) = loaded.samples.get(frame * channels + ch) {
                         *entry = entry.max(sample.abs() * env);
@@ -840,14 +856,32 @@ impl Editor {
     }
 
     /// Publishes a fresh MixPlan to the audio engine; a no-op without audio.
+    /// Reuses the meter bank while the track id list is unchanged.
     pub fn publish(&mut self) {
+        let ids: Vec<Uuid> = self.project.tracks.iter().map(|t| t.id).collect();
+        if self.meters.track_ids != ids {
+            self.meters = Arc::new(MeterBank {
+                track_ids: ids,
+                tracks: self
+                    .project
+                    .tracks
+                    .iter()
+                    .map(|_| StereoMeter::new())
+                    .collect(),
+            });
+        }
         let engine = match &self.audio {
             Some(engine) => engine,
             None => return,
         };
         let media = &self.media_store;
         let project = &self.project;
-        let plan = MixPlan::build(project, &|id| media.get(id).map(|l| Arc::clone(&l.samples)));
+        let plan = MixPlan::build(
+            project,
+            &|id| media.get(id).map(|l| Arc::clone(&l.samples)),
+            Arc::clone(&self.meters),
+            Arc::clone(&self.master_meter),
+        );
         let old = engine.publish_timeline(Arc::new(plan));
         self.retired.push((Instant::now(), old));
     }
@@ -856,6 +890,20 @@ impl Editor {
     pub fn tick(&mut self) {
         self.retired
             .retain(|(at, _)| at.elapsed() < Duration::from_secs(2));
+    }
+
+    /// Takes the current meter readings for every track and the master.
+    /// Each value leaves its accumulator zeroed.
+    pub fn read_meters(&self) -> (Vec<(Uuid, [MeterReading; 2])>, [MeterReading; 2]) {
+        let tracks = self
+            .meters
+            .track_ids
+            .iter()
+            .zip(&self.meters.tracks)
+            .map(|(id, m)| (*id, [m.l.take(), m.r.take()]))
+            .collect();
+        let master = [self.master_meter.l.take(), self.master_meter.r.take()];
+        (tracks, master)
     }
 
     /// One-line audio summary for the status bar.
@@ -888,6 +936,7 @@ impl Editor {
             Arc::clone(&loaded.samples),
             self.project.sample_rate,
             self.project.master_volume_db,
+            Arc::clone(&self.master_meter),
         );
         let old = engine.publish_preview(Arc::new(plan));
         self.retired.push((Instant::now(), old));

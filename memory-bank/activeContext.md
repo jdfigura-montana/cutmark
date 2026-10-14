@@ -1,4 +1,13 @@
 ﻿## Current state
+Task 7.2 DONE (2026-10-13). Meter plumbing + ballistics, no drawing yet.
+- audio::meters: ChannelMeter (peak/sum_sq/frames atomics storing f32 bits + clipped AtomicBool; add() uses compare-exchange loops, take() swaps all to zero), StereoMeter, MeterBank with track_ids + tracks, MeterReading type alias.
+- MixPlan gained `meters: Arc<MeterBank>` and `master: Arc<StereoMeter>`; build(project, media, meters, master), preview takes master and gets a no-track bank, empty() makes its own fresh bank/master.
+- mixer::render(plan, start, out, meter: bool): per-track local accumulator across the whole clip span (clips never overlap), one add() per track per call; inaudible tracks write nothing; master measured after master_gain; clipped when any |sample| >= 1.0. Player passes true; export will pass false.
+- Editor owns a session master_meter Arc and the current meters Arc<MeterBank>; publish() reuses the bank while the track id list is unchanged, else rebuilds it (before the audio-engine check); read_meters() takes every track and the master.
+- ui::widgets::meter: ChannelBallistics only (300 ms RMS window VecDeque, peak_db falls 20 dB/s floored at -60, hold latches 2 s then follows the peak, clip latches until clear_clip, color_for green / yellow at -18 / red at -6). Drawing is task 7.3.
+- egui gotcha: egui types come via `eframe::egui::` (egui is not a direct dependency).
+- cargo test 300 passed; clippy clean; fmt applied.
+Refactor (2026-10-13, after 7.1): util::fade::fade_gain(local, len, fade_in, fade_out) is the single linear fade rule (smaller of in/out, else 1.0; clip gain multiplied separately). Used by audio::mixer, ui::timeline::waveform::envelope and Editor::measure_peak; the three copies are gone. cargo test 290 passed.
 Task 7.1 DONE (2026-10-13). Amplitude ops (editor only, no UI yet).
 - ops::amplitude: Target{Range,Clips}, split_edges, fragments, apply_gain, normalize (deltas per track id), fade_in/fade_out (Range must sit inside one clip per track else OpError::Invalid; tracks with no clip skipped), silence (clear_range, never ripples). Actions ApplyGain/Normalize/FadeIn/FadeOut/Silence.
 - Editor: process_target, measure_peak(project, frags) (clip gain x linear fades; offline/missing media = 0), normalize(target_dbfs, per_track) (measures on a cloned+split project; all-silent -> OpError::Invalid), apply_gain, fade_in, fade_out, silence (Range only). All no-op without a selection.
