@@ -1,4 +1,4 @@
-//! app: the eframe::App; start screen vs editor.
+﻿//! app: the eframe::App; start screen vs editor.
 
 use std::path::PathBuf;
 
@@ -194,8 +194,8 @@ impl App {
 
         // Editor shortcuts, only when no text field has keyboard focus.
         if !ui.ctx().egui_wants_keyboard_input() {
-            let (ctrl, shift, n, o, s, i, z, y, t, r, a, c, x, v, escape, del, back) =
-                ui.input(|i| {
+            let (ctrl, shift, n, o, s, i, z, y, t, r, a, c, x, v, escape, del, back, g, l) = ui
+                .input(|i| {
                     (
                         i.modifiers.ctrl,
                         i.modifiers.shift,
@@ -214,13 +214,15 @@ impl App {
                         i.key_pressed(egui::Key::Escape),
                         i.key_pressed(egui::Key::Delete),
                         i.key_pressed(egui::Key::Backspace),
+                        i.key_pressed(egui::Key::G),
+                        i.key_pressed(egui::Key::L),
                     )
                 });
             // A continuous gesture is active: undo/redo keys are ignored.
             let gesture_active = editor.gesture_base.is_some();
             if ctrl && a {
                 editor.select_all();
-            } else if ctrl && i {
+            } else if ctrl && i && !shift {
                 msgs.extend(bin_panel::pick_and_import(editor));
             } else if ctrl && z && !gesture_active {
                 if shift {
@@ -230,9 +232,9 @@ impl App {
                 }
             } else if ctrl && y && !gesture_active {
                 let _ = editor.redo();
-            } else if ctrl && n {
+            } else if ctrl && n && !shift {
                 action = ProjectMenuAction::New;
-            } else if ctrl && o {
+            } else if ctrl && o && !shift {
                 action = ProjectMenuAction::Open;
             } else if ctrl && shift && s {
                 menu.open_save_as(editor);
@@ -261,6 +263,27 @@ impl App {
                 let _ = editor.paste();
             } else if ctrl && t {
                 let _ = editor.trim_to_selection();
+            } else if ctrl && g && !shift {
+                // Process keys. egui itself binds none of Ctrl+G / Ctrl+Shift+N
+                // / Ctrl+Shift+I / Ctrl+Shift+O / Ctrl+L, so nothing else
+                // opens on them.
+                crate::ui::dialogs::gain::request_process(ui.ctx());
+            } else if ctrl && shift && n {
+                crate::ui::dialogs::normalize::request(ui.ctx());
+            } else if ctrl && shift && i {
+                if let Err(error) = editor.fade_in() {
+                    *messages = Some(ConfirmDialog::new("Fade", Self::op_message(&error)));
+                }
+            } else if ctrl && shift && o {
+                if let Err(error) = editor.fade_out() {
+                    *messages = Some(ConfirmDialog::new("Fade", Self::op_message(&error)));
+                }
+            } else if ctrl
+                && l
+                && !shift
+                && let Err(error) = editor.silence()
+            {
+                *messages = Some(ConfirmDialog::new("Silence", Self::op_message(&error)));
             }
         }
 
@@ -303,6 +326,15 @@ impl App {
             dialog.show(&ui.ctx().clone());
         }
         action
+    }
+
+    /// Renders an ops error for a modal: the ops prefix is stripped so the
+    /// SPEC's message shows verbatim.
+    fn op_message(error: &crate::editor::editor::EditorError) -> String {
+        let text = error.to_string();
+        text.strip_prefix("invalid operation: ")
+            .unwrap_or(&text)
+            .to_string()
     }
 
     /// Delete / Backspace: removes the clip selection (with the ripple

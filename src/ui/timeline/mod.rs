@@ -256,6 +256,7 @@ pub fn show(
     messages.extend(interaction::draw_clip_menu(ui, editor));
     messages.extend(interaction::draw_gain_edit(ui, editor));
     messages.extend(crate::ui::dialogs::gain::show(ui.ctx(), editor));
+    messages.extend(crate::ui::dialogs::normalize::show(ui.ctx(), editor));
     messages
 }
 

@@ -1,3 +1,11 @@
+## Current state
+Task 7.5 DONE (2026-10-13). Gain/Normalize/Fade In/Fade Out/Silence UI.
+- dialogs::gain gained GainMode{ClipGain,Gain}: request_process(ctx) opens mode Gain (delta dB, default 0, range -24..24); OK calls Editor::apply_gain(delta) (one undo step via apply); errors show red inside the dialog (error field). ClipGain mode unchanged.
+- dialogs::normalize (was stub): request(ctx) opens target -1.0 dBFS (range -60..0) + "Normalize each track separately" checkbox (off); OK calls Editor::normalize(target, per_track); errors red inside, dialog stays open; shown from timeline::show next to gain::show.
+- menu.rs: new "Process" menu (between Edit/View): Gain... (Ctrl+G), Normalize... (Ctrl+Shift+N), Fade In (Ctrl+Shift+I), Fade Out (Ctrl+Shift+O) greyed unless process_target().is_some(), Silence (Ctrl+L) greyed unless a Range selection; Fade/Silence Err -> error_dialog with the ops "invalid operation: " prefix stripped (show_process_error) so the SPEC's fade message shows verbatim.
+- app.rs shortcut tuple gained g,l; process keys added guarded by egui_wants_keyboard_input; fixed collisions: ctrl+n/o/i now require !shift so Ctrl+Shift+N/O/I don't fire New/Open/Import; ctrl+l branch is a let-chain (clippy collapsible_if). egui 0.36 binds none of these keys itself.
+- Selection is untouched by all five ops (apply() only swaps project). cargo test 305 passed; clippy clean; fmt applied.
+
 ﻿## Current state
 Task 7.4 DONE (2026-10-13). Clip gain line, fade handles, Clip Gain dialog.
 - clip_view: Zone gained FadeInHandle/FadeOutHandle/GainLine. hit_test(clip, rect, spp, pos) priority: fade handles (8 px squares centered on the body top edge, inset by fade length px + 2 px grab, always testable even at fade 0), edges, gain line (4 px), header, body. Helpers: body_rect(rect), gain_line_y(clip, rect) = body_top + (24-gain)/84*body_h, gain_db_at_y (inverse), fade_handle_rect(clip, rect, spp, fade_out), gain_text_rect(rect) (right 56 px of header, double-click target). draw gained `hover: Option<Zone>` (mod.rs computes via hit_test + pointer pos); draws gain line (3 px black shadow + 1 px amber line), fade curves (line bottom-edge-corner to top at fade end, convex_polygon darkening the outside triangle), handle squares brighter on hover; gain value text now ALWAYS drawn in the header.

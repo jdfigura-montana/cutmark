@@ -1,4 +1,4 @@
-//! ui::menu: the top Project, Edit and View menus.
+﻿//! ui::menu: the top Project, Edit, Process and View menus.
 
 use eframe::egui;
 use uuid::Uuid;
@@ -224,6 +224,59 @@ impl ProjectMenu {
                 editor.toggle_snap();
             }
         });
+        ui.menu_button("Process", |menu| {
+            let has_target = editor.process_target().is_some();
+            let has_range = matches!(
+                editor.selection(),
+                crate::editor::selection::Selection::Range { .. }
+            );
+            if has_target {
+                if menu.button("Gain... (Ctrl+G)").clicked() {
+                    crate::ui::dialogs::gain::request_process(menu.ctx());
+                    menu.close();
+                }
+            } else {
+                menu.add_enabled(false, egui::Button::new("Gain... (Ctrl+G)"));
+            }
+            if has_target {
+                if menu.button("Normalize... (Ctrl+Shift+N)").clicked() {
+                    crate::ui::dialogs::normalize::request(menu.ctx());
+                    menu.close();
+                }
+            } else {
+                menu.add_enabled(false, egui::Button::new("Normalize... (Ctrl+Shift+N)"));
+            }
+            if has_target {
+                if menu.button("Fade In (Ctrl+Shift+I)").clicked() {
+                    if let Err(error) = editor.fade_in() {
+                        self.show_process_error(error);
+                    }
+                    menu.close();
+                }
+            } else {
+                menu.add_enabled(false, egui::Button::new("Fade In (Ctrl+Shift+I)"));
+            }
+            if has_target {
+                if menu.button("Fade Out (Ctrl+Shift+O)").clicked() {
+                    if let Err(error) = editor.fade_out() {
+                        self.show_process_error(error);
+                    }
+                    menu.close();
+                }
+            } else {
+                menu.add_enabled(false, egui::Button::new("Fade Out (Ctrl+Shift+O)"));
+            }
+            if has_range {
+                if menu.button("Silence (Ctrl+L)").clicked() {
+                    if let Err(error) = editor.silence() {
+                        self.show_process_error(error);
+                    }
+                    menu.close();
+                }
+            } else {
+                menu.add_enabled(false, egui::Button::new("Silence (Ctrl+L)"));
+            }
+        });
         ui.menu_button("View", |menu| {
             if menu.button("Zoom In (+)").clicked() {
                 view_action = ViewMenuAction::ZoomIn;
@@ -264,6 +317,18 @@ impl ProjectMenu {
             dialog.show(&ctx);
         }
         (action, view_action)
+    }
+
+    /// Shows a failed Process menu operation in the error modal, with the
+    /// ops prefix stripped so the SPEC's message shows verbatim.
+    fn show_process_error(&mut self, error: crate::editor::editor::EditorError) {
+        let text = error.to_string();
+        self.error_dialog = Some(ConfirmDialog::new(
+            "Process",
+            text.strip_prefix("invalid operation: ")
+                .unwrap_or(&text)
+                .to_string(),
+        ));
     }
 
     /// Saves the project; on failure shows the error modal.

@@ -1,4 +1,4 @@
-//! ui::dialogs::gain: the Clip Gain dialog.
+//! ui::dialogs::gain: the Clip Gain and range Gain dialogs.
 
 use std::sync::Arc;
 
@@ -12,17 +12,32 @@ use crate::editor::selection::Selection;
 /// Temp-storage key holding the open Clip Gain dialog.
 const DIALOG_KEY: &str = "clip_gain_dialog";
 
-/// The Clip Gain dialog: type a dB value and apply it to one or more clips.
+/// Which behavior the gain dialog shows.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum GainMode {
+    /// Clip Gain: sets absolute clip gain on the targeted clips.
+    #[default]
+    ClipGain,
+    /// Gain: adds a delta to the selected range or clips (Process menu).
+    Gain,
+}
+
+/// The gain dialog: type a dB value and apply it to one or more clips.
 ///
-/// Lives in egui's temp storage; opened from the clip context menu.
+/// Lives in egui's temp storage; opened from the clip context menu, or in
+/// [`GainMode::Gain`] mode from the Process menu and Ctrl+G.
 #[derive(Clone, Default)]
 pub struct GainDialog {
     /// Whether the dialog is shown.
     pub open: bool,
-    /// The clips the value applies to.
+    /// Which dialog behavior is shown.
+    pub mode: GainMode,
+    /// The clips the value applies to (clip gain mode only).
     clip_ids: Vec<Uuid>,
     /// The dB value being edited.
     pub db: f32,
+    /// Red error text shown inside the dialog, when set.
+    pub error: Option<String>,
 }
 
 /// True when the clip is in the current clip selection.
@@ -58,14 +73,34 @@ pub fn request(ctx: &egui::Context, clip_id: Uuid, editor: &Editor) {
             egui::Id::new(DIALOG_KEY),
             GainDialog {
                 open: true,
+                mode: GainMode::ClipGain,
                 clip_ids,
                 db,
+                error: None,
             },
         )
     });
 }
 
-/// Shows the Clip Gain dialog when open. OK applies SetClipGain to every
+/// Opens the range Gain dialog: OK calls `Editor::apply_gain` on the current
+/// process target with the given delta. Called from the Process menu and
+/// Ctrl+G.
+pub fn request_process(ctx: &egui::Context) {
+    ctx.data_mut(|d| {
+        d.insert_temp(
+            egui::Id::new(DIALOG_KEY),
+            GainDialog {
+                open: true,
+                mode: GainMode::Gain,
+                clip_ids: Vec::new(),
+                db: 0.0,
+                error: None,
+            },
+        )
+    });
+}
+
+/// Shows the gain dialog when open. OK applies SetClipGain to every
 /// target clip as one undo step; Cancel, the close box or Esc dismiss it.
 /// Returns human-readable error messages from failed applies.
 pub fn show(ctx: &egui::Context, editor: &mut Editor) -> Vec<String> {
@@ -78,46 +113,73 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor) -> Vec<String> {
     if dialog.open {
         let mut open = true;
         let mut closed = false;
-        egui::Window::new("Clip Gain")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .movable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.label("Clip gain (-60 to +24 dB):");
-                let resp = ui.add(
-                    egui::DragValue::new(&mut dialog.db)
-                        .range(-60.0..=24.0)
-                        .speed(0.1)
-                        .suffix(" dB"),
-                );
-                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    ok = true;
-                }
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    closed = true;
-                }
-                ui.add_space(8.0);
-                ui.vertical_centered(|ui| {
-                    ui.horizontal(|ui| {
-                        if ui.button("OK").clicked() {
-                            ok = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            closed = true;
-                        }
-                    });
+        egui::Window::new(if dialog.mode == GainMode::Gain {
+            "Gain"
+        } else {
+            "Clip Gain"
+        })
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .movable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(if dialog.mode == GainMode::Gain {
+                "Gain change (-24 to +24 dB):"
+            } else {
+                "Clip gain (-60 to +24 dB):"
+            });
+            let (min, max) = if dialog.mode == GainMode::Gain {
+                (-24.0, 24.0)
+            } else {
+                (-60.0, 24.0)
+            };
+            let resp = ui.add(
+                egui::DragValue::new(&mut dialog.db)
+                    .range(min..=max)
+                    .speed(0.1)
+                    .suffix(" dB"),
+            );
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                ok = true;
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                closed = true;
+            }
+            if let Some(error) = &dialog.error {
+                ui.colored_label(egui::Color32::RED, error);
+            }
+            ui.add_space(8.0);
+            ui.vertical_centered(|ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("OK").clicked() {
+                        ok = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        closed = true;
+                    }
                 });
             });
+        });
         if closed {
             open = false;
         }
         dialog.open = open;
     }
     if ok && dialog.open {
-        messages.extend(apply_gain(editor, &dialog.clip_ids, dialog.db));
-        dialog.open = false;
+        match dialog.mode {
+            GainMode::Gain => {
+                dialog.error = None;
+                match editor.apply_gain(dialog.db) {
+                    Ok(()) => dialog.open = false,
+                    Err(error) => dialog.error = Some(error.to_string()),
+                }
+            }
+            GainMode::ClipGain => {
+                messages.extend(apply_gain(editor, &dialog.clip_ids, dialog.db));
+                dialog.open = false;
+            }
+        }
     }
     if dialog.open {
         ctx.data_mut(|d| d.insert_temp(egui::Id::new(DIALOG_KEY), dialog));

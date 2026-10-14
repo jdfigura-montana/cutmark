@@ -1,4 +1,8 @@
 ﻿# Progress
+## What works - Task 7.5 complete (2026-10-13)
+- Task 7.5: Gain dialog mode (delta dB -24..+24, OK -> apply_gain), Normalize dialog (target dBFS default -1.0, per-track checkbox, red in-dialog errors), Process menu (Gain/Normalize/Fade In/Fade Out/Silence with shortcuts, greyed per process_target()/range), keys Ctrl+G / Ctrl+Shift+N / Ctrl+Shift+I / Ctrl+Shift+O / Ctrl+L when no text focused (shift guards added to Ctrl+N/O/I so they no longer collide), fade errors in the confirm modal verbatim. 1 new test. cargo test 305 passed; clippy clean; fmt applied.
+
+
 ## What works - Task 7.4 complete (2026-10-13)
 - Task 7.4: clip_view gain line + fade handles (Zone/geometry/hit-test priority, curves with darkened outside triangles, hover-bright handle squares, hover param on draw), interaction fade-handle + gain-line drags (snapped previews of SetClipFades/SetClipGain, Shift = 0.1 dB, one undo step per drag, Esc cancels), inline header gain edit on double-click (Enter/Esc, invalid text does nothing), "Clip Gain..." menu entry + dialogs::gain window (targets the whole clip selection, one undo step via gesture rebase). 4 new tests. cargo test 304 passed; clippy clean; fmt applied.
 
@@ -43,7 +47,7 @@
 - Phase 2 complete: model/undo core, editor ops, io (paths, project_file, recent), start screen, menus, dialogs (1.1-2.8).
 
 ## What is left (SPEC Build phases)
-3. Media import complete. 4. Timeline view (complete through 4.5). 5. Playback. 6. Editing. 7. Levels/processing: 7.1 amplitude ops DONE, 7.2 meters DONE, 7.3 header controls DONE, 7.4 clip gain line/fade handles/Clip Gain dialog DONE. 8. Markers/scrub UI. 9. Export. 10. Safety net/polish.
+3. Media import complete. 4. Timeline view (complete through 4.5). 5. Playback. 6. Editing. 7. Levels/processing: 7.1 amplitude ops DONE, 7.2 meters DONE, 7.3 header controls DONE, 7.4 clip gain line/fade handles/Clip Gain dialog DONE; 7.5 Gain/Normalize/Fade/Silence menu+keys DONE. 8. Markers/scrub UI. 9. Export. 10. Safety net/polish.
 
 ## Known issues / environment notes
 - cargo not on default PATH; append $env:USERPROFILE\.cargo\bin each session.
