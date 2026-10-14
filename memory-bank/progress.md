@@ -1,4 +1,7 @@
 ﻿# Progress
+## What works - Task 7.4 complete (2026-10-13)
+- Task 7.4: clip_view gain line + fade handles (Zone/geometry/hit-test priority, curves with darkened outside triangles, hover-bright handle squares, hover param on draw), interaction fade-handle + gain-line drags (snapped previews of SetClipFades/SetClipGain, Shift = 0.1 dB, one undo step per drag, Esc cancels), inline header gain edit on double-click (Enter/Esc, invalid text does nothing), "Clip Gain..." menu entry + dialogs::gain window (targets the whole clip selection, one undo step via gesture rebase). 4 new tests. cargo test 304 passed; clippy clean; fmt applied.
+
 ## What works - Task 7.3 complete (2026-10-13)
 - Task 7.3: drawn stereo meters (ui::widgets::meter stereo_meter + MeterState UI ballistics), fader widget (ui::widgets::fader, linear slider + gesture outcomes), track header row 2 (volume/pan faders, M/S buttons, Ctrl+click exclusive solo, narrow stereo meter, compact <64 px layout), master strip (vertical fader, labeled meter, clip-light-clears-all, clickable peak readout), app.rs meter updates each frame + repaint tail. Track header/timeline signatures gained &mut MeterState. cargo test 300 passed; clippy clean; fmt applied.
 
@@ -40,7 +43,7 @@
 - Phase 2 complete: model/undo core, editor ops, io (paths, project_file, recent), start screen, menus, dialogs (1.1-2.8).
 
 ## What is left (SPEC Build phases)
-3. Media import complete. 4. Timeline view (complete through 4.5). 5. Playback. 6. Editing. 7. Levels/processing: 7.1 amplitude ops DONE, 7.2 meters DONE, 7.3 header controls/master strip/meter drawing DONE (clip gain line + fade handles UI pending). 8. Markers/scrub UI. 9. Export. 10. Safety net/polish.
+3. Media import complete. 4. Timeline view (complete through 4.5). 5. Playback. 6. Editing. 7. Levels/processing: 7.1 amplitude ops DONE, 7.2 meters DONE, 7.3 header controls DONE, 7.4 clip gain line/fade handles/Clip Gain dialog DONE. 8. Markers/scrub UI. 9. Export. 10. Safety net/polish.
 
 ## Known issues / environment notes
 - cargo not on default PATH; append $env:USERPROFILE\.cargo\bin each session.

@@ -1,4 +1,4 @@
-//! ui::timeline::interaction: mouse actions over the timeline, including bin
+﻿//! ui::timeline::interaction: mouse actions over the timeline, including bin
 //! drags and range selection.
 //! ui::timeline::interaction: mouse actions over the timeline, including bin drags.
 
@@ -8,7 +8,9 @@ use uuid::Uuid;
 use crate::editor::Editor;
 use crate::editor::action::Action;
 use crate::editor::ops::clip::Edge as TrimEdge;
+use crate::model::clip::Clip;
 use crate::ui::bin_panel;
+use crate::ui::dialogs;
 
 use super::Geom;
 use super::clip_view::{self, Zone};
@@ -637,6 +639,22 @@ enum ClipDrag {
         /// Which edge is being dragged.
         edge: TrimEdge,
     },
+    /// Dragging a fade handle of the pressed clip.
+    Fade {
+        /// The clip whose fade is dragged.
+        clip_id: Uuid,
+        /// True for the fade-out (right) handle.
+        out: bool,
+    },
+    /// Dragging the gain line of the pressed clip.
+    Gain {
+        /// The clip whose gain line is dragged.
+        clip_id: Uuid,
+        /// Clip gain at press time, in dB.
+        base_db: f32,
+        /// Pointer y at press time.
+        press_y: f32,
+    },
 }
 
 /// A clip context menu shown at a fixed screen position.
@@ -647,6 +665,17 @@ struct ClipMenu {
     /// The clip's track.
     track_id: Uuid,
     /// Screen position of the menu's top left corner.
+    pos: egui::Pos2,
+}
+
+/// Inline gain value editor opened by double-clicking the header gain text.
+#[derive(Clone)]
+struct GainEdit {
+    /// The clip whose gain is edited.
+    clip_id: Uuid,
+    /// Current field text.
+    text: String,
+    /// Screen position of the edit field.
     pos: egui::Pos2,
 }
 
@@ -661,6 +690,8 @@ struct ClipState {
     snap_line: Option<u64>,
     /// Open clip context menu, if any.
     menu: Option<ClipMenu>,
+    /// Inline gain value editor, if any.
+    gain_edit: Option<GainEdit>,
 }
 
 /// Reads the clip interaction state from egui's temp storage.
@@ -707,13 +738,36 @@ fn clip_hit(
         );
         for clip in &track.clips {
             let rect = clip_view::clip_rect(clip, g, track_rect);
-            if let Some(zone) = clip_view::hit_test(rect, p) {
+            if let Some(zone) = clip_view::hit_test(clip, rect, g.spp, p) {
                 found = Some((clip.id, index, zone));
             }
         }
         y = bottom;
     }
     found
+}
+
+/// Finds a clip and its on-screen rect by id anywhere in the project.
+fn clip_by_id(
+    editor: &Editor,
+    g: &Geom,
+    lane_rect: egui::Rect,
+    scroll_y: f32,
+    clip_id: Uuid,
+) -> Option<(Clip, egui::Rect)> {
+    let mut y = lane_rect.top() - scroll_y;
+    for track in &editor.project.tracks {
+        let bottom = y + track.height;
+        let track_rect = egui::Rect::from_min_max(
+            egui::pos2(g.lane_left, y),
+            egui::pos2(lane_rect.right(), bottom),
+        );
+        if let Some(clip) = track.clips.iter().find(|clip| clip.id == clip_id) {
+            return Some((clip.clone(), clip_view::clip_rect(clip, g, track_rect)));
+        }
+        y = bottom;
+    }
+    None
 }
 
 /// Starts a move or trim gesture for the pressed clip, selecting it alone
@@ -754,6 +808,36 @@ fn begin_clip_drag(editor: &mut Editor, press: &ClipPress) -> Option<ClipDrag> {
                 press_track: press.track_index,
             })
         }
+        Zone::FadeInHandle => {
+            editor.begin_gesture();
+            Some(ClipDrag::Fade {
+                clip_id: press.clip_id,
+                out: false,
+            })
+        }
+        Zone::FadeOutHandle => {
+            editor.begin_gesture();
+            Some(ClipDrag::Fade {
+                clip_id: press.clip_id,
+                out: true,
+            })
+        }
+        Zone::GainLine => {
+            let base_db = editor
+                .project
+                .tracks
+                .iter()
+                .flat_map(|track| track.clips.iter())
+                .find(|clip| clip.id == press.clip_id)
+                .map(|clip| clip.gain_db)
+                .unwrap_or(0.0);
+            editor.begin_gesture();
+            Some(ClipDrag::Gain {
+                clip_id: press.clip_id,
+                base_db,
+                press_y: press.pos.y,
+            })
+        }
         Zone::Body => None,
     }
 }
@@ -768,6 +852,7 @@ fn run_clip_drag(
     press: &ClipPress,
     p: egui::Pos2,
     alt: bool,
+    shift: bool,
     state: &mut ClipState,
 ) {
     let Some(drag) = state.drag.clone() else {
@@ -838,6 +923,55 @@ fn run_clip_drag(
                 state.snap_line = None;
             }
         }
+        ClipDrag::Fade { clip_id, out } => {
+            let Some((clip, _rect)) = clip_by_id(editor, g, lane_rect, scroll_y, clip_id) else {
+                return;
+            };
+            let (snapped, snap_point) = editor.snap_pos(g.x_to_sample(p.x), &[clip_id], alt);
+            let value = if out {
+                clip.end().saturating_sub(snapped)
+            } else {
+                snapped.saturating_sub(clip.start)
+            }
+            .min(clip.len());
+            let fade_in = if out { clip.fade_in } else { value };
+            let fade_out = if out { value } else { clip.fade_out };
+            if editor
+                .preview(Action::SetClipFades {
+                    clip_id,
+                    fade_in,
+                    fade_out,
+                })
+                .is_ok()
+            {
+                state.snap_line = snap_point;
+            } else {
+                state.snap_line = None;
+            }
+        }
+        ClipDrag::Gain {
+            clip_id,
+            base_db,
+            press_y,
+        } => {
+            let Some((_clip, rect)) = clip_by_id(editor, g, lane_rect, scroll_y, clip_id) else {
+                return;
+            };
+            let body = clip_view::body_rect(rect);
+            if body.height() <= 0.0 {
+                return;
+            }
+            // Same px-to-dB mapping as the gain line drawing, inverted.
+            let delta_db = -(p.y - press_y) * clip_view::GAIN_SPAN_DB / body.height();
+            let mut db = base_db + delta_db;
+            if shift {
+                db = (db * 10.0).round() / 10.0;
+            }
+            let _ = editor.preview(Action::SetClipGain {
+                clip_id,
+                db: db.clamp(clip_view::GAIN_MIN_DB, clip_view::GAIN_MAX_DB),
+            });
+        }
     }
 }
 
@@ -855,7 +989,7 @@ pub fn handle_clip_input(
     scroll_y: f32,
 ) -> bool {
     let mut state = clip_state(ui.ctx());
-    let (pressed, down, released, secondary, pos, ctrl, alt, esc) = ui.input(|i| {
+    let (pressed, down, released, secondary, pos, ctrl, alt, shift, esc) = ui.input(|i| {
         (
             i.pointer.primary_pressed(),
             i.pointer.primary_down(),
@@ -864,9 +998,18 @@ pub fn handle_clip_input(
             i.pointer.latest_pos(),
             i.modifiers.ctrl,
             i.modifiers.alt,
+            i.modifiers.shift,
             i.key_pressed(egui::Key::Escape),
         )
     });
+
+    // Esc while the inline gain editor is open closes it; consumed so the
+    // global Esc handler does not also clear the selection.
+    if esc && state.drag.is_none() && state.gain_edit.take().is_some() {
+        save_clip_state(ui.ctx(), &state);
+        ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        return true;
+    }
 
     // Esc during a drag cancels the gesture; the key is consumed so the
     // global Esc handler does not also clear the selection.
@@ -875,6 +1018,7 @@ pub fn handle_clip_input(
         state.drag = None;
         state.snap_line = None;
         state.press = None;
+        state.gain_edit = None;
         save_clip_state(ui.ctx(), &state);
         ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         return true;
@@ -909,13 +1053,18 @@ pub fn handle_clip_input(
                 state.drag = Some(drag);
             }
             if state.drag.is_some() {
-                run_clip_drag(editor, g, lane_rect, scroll_y, &press, p, alt, &mut state);
+                run_clip_drag(
+                    editor, g, lane_rect, scroll_y, &press, p, alt, shift, &mut state,
+                );
             }
         }
         match &state.drag {
             Some(ClipDrag::Move { .. }) => ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing),
-            Some(ClipDrag::Trim { .. }) => {
+            Some(ClipDrag::Trim { .. } | ClipDrag::Fade { .. }) => {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal)
+            }
+            Some(ClipDrag::Gain { .. }) => {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical)
             }
             None => {}
         }
@@ -931,16 +1080,34 @@ pub fn handle_clip_input(
                 handled = true;
             }
         } else if let Some((clip_id, index, zone)) = clip_hit(editor, g, lane_rect, scroll_y, p) {
-            match zone {
-                Zone::Body => {}
-                _ => {
-                    state.press = Some(ClipPress {
-                        clip_id,
-                        track_index: index,
-                        pos: p,
-                        zone,
-                    });
-                    handled = true;
+            let double_clicked = ui.input(|i| {
+                i.pointer
+                    .button_double_clicked(egui::PointerButton::Primary)
+            });
+            if double_clicked
+                && zone == Zone::Header
+                && let Some((clip, rect)) = clip_by_id(editor, g, lane_rect, scroll_y, clip_id)
+                && clip_view::gain_text_rect(rect).contains(p)
+            {
+                // Double-click on the header gain value: inline edit.
+                state.gain_edit = Some(GainEdit {
+                    clip_id,
+                    text: format!("{:.1}", clip.gain_db),
+                    pos: clip_view::gain_text_rect(rect).min,
+                });
+                handled = true;
+            } else {
+                match zone {
+                    Zone::Body => {}
+                    _ => {
+                        state.press = Some(ClipPress {
+                            clip_id,
+                            track_index: index,
+                            pos: p,
+                            zone,
+                        });
+                        handled = true;
+                    }
                 }
             }
         }
@@ -949,7 +1116,10 @@ pub fn handle_clip_input(
         if let Some((_id, _index, zone)) = clip_hit(editor, g, lane_rect, scroll_y, p) {
             let icon = match zone {
                 Zone::Header => Some(egui::CursorIcon::Grab),
-                Zone::LeftEdge | Zone::RightEdge => Some(egui::CursorIcon::ResizeHorizontal),
+                Zone::LeftEdge | Zone::RightEdge | Zone::FadeInHandle | Zone::FadeOutHandle => {
+                    Some(egui::CursorIcon::ResizeHorizontal)
+                }
+                Zone::GainLine => Some(egui::CursorIcon::ResizeVertical),
                 Zone::Body => None,
             };
             if let Some(icon) = icon {
@@ -1054,6 +1224,10 @@ pub fn draw_clip_menu(ui: &egui::Ui, editor: &mut Editor) -> Vec<String> {
                     }
                     close = true;
                 }
+                if ui.button("Clip Gain...").clicked() {
+                    dialogs::gain::request(ui.ctx(), clip.id, editor);
+                    close = true;
+                }
                 if ui.button("Reset Fades").clicked() {
                     if let Err(error) = editor.apply(Action::SetClipFades {
                         clip_id: clip.id,
@@ -1076,6 +1250,69 @@ pub fn draw_clip_menu(ui: &egui::Ui, editor: &mut Editor) -> Vec<String> {
     }
     if close {
         state.menu = None;
+    }
+    save_clip_state(ui.ctx(), &state);
+    messages
+}
+
+/// Draws the inline gain editor opened by double-clicking the header gain
+/// value. Enter applies SetClipGain, Esc or a click elsewhere cancels; text
+/// that does not parse does nothing. Returns action error messages.
+pub fn draw_gain_edit(ui: &egui::Ui, editor: &mut Editor) -> Vec<String> {
+    let mut state = clip_state(ui.ctx());
+    let mut messages = Vec::new();
+    let Some(mut edit) = state.gain_edit.take() else {
+        return messages;
+    };
+    if !editor
+        .project
+        .tracks
+        .iter()
+        .any(|track| track.clips.iter().any(|clip| clip.id == edit.clip_id))
+    {
+        save_clip_state(ui.ctx(), &state);
+        return messages;
+    }
+    let mut apply = None;
+    let mut cancel = false;
+    egui::Area::new(egui::Id::new("clip_gain_edit"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(edit.pos)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut edit.text)
+                        .desired_width(52.0)
+                        .font(egui::FontId::proportional(11.0)),
+                );
+                if !resp.has_focus() {
+                    resp.request_focus();
+                }
+                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if enter {
+                    if let Ok(db) = edit.text.trim().parse::<f32>() {
+                        apply = Some(db);
+                    }
+                } else if resp.lost_focus() && !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    // Focus lost to anything else: close without a change.
+                    cancel = true;
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    cancel = true;
+                    ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+                }
+            });
+        });
+    if let Some(db) = apply
+        && let Err(error) = editor.apply(Action::SetClipGain {
+            clip_id: edit.clip_id,
+            db,
+        })
+    {
+        messages.push(error.to_string());
+    }
+    if apply.is_none() && !cancel {
+        state.gain_edit = Some(edit);
     }
     save_clip_state(ui.ctx(), &state);
     messages

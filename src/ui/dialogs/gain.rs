@@ -1,1 +1,145 @@
-﻿//! ui::dialogs::gain: the Clip Gain dialog.
+//! ui::dialogs::gain: the Clip Gain dialog.
+
+use std::sync::Arc;
+
+use eframe::egui;
+use uuid::Uuid;
+
+use crate::editor::Editor;
+use crate::editor::action::Action;
+use crate::editor::selection::Selection;
+
+/// Temp-storage key holding the open Clip Gain dialog.
+const DIALOG_KEY: &str = "clip_gain_dialog";
+
+/// The Clip Gain dialog: type a dB value and apply it to one or more clips.
+///
+/// Lives in egui's temp storage; opened from the clip context menu.
+#[derive(Clone, Default)]
+pub struct GainDialog {
+    /// Whether the dialog is shown.
+    pub open: bool,
+    /// The clips the value applies to.
+    clip_ids: Vec<Uuid>,
+    /// The dB value being edited.
+    pub db: f32,
+}
+
+/// True when the clip is in the current clip selection.
+fn clip_selected(editor: &Editor, id: Uuid) -> bool {
+    matches!(
+        editor.selection(),
+        Selection::Clips(ids) if ids.contains(&id)
+    )
+}
+
+/// Opens the Clip Gain dialog for a clip; when the clip is in the clip
+/// selection the value applies to all selected clips. Called from the clip
+/// context menu's "Clip Gain..." entry.
+pub fn request(ctx: &egui::Context, clip_id: Uuid, editor: &Editor) {
+    let clip_ids: Vec<Uuid> = if clip_selected(editor, clip_id) {
+        match editor.selection() {
+            Selection::Clips(ids) => ids.clone(),
+            _ => vec![clip_id],
+        }
+    } else {
+        vec![clip_id]
+    };
+    let db = editor
+        .project
+        .tracks
+        .iter()
+        .flat_map(|track| track.clips.iter())
+        .find(|clip| clip.id == clip_id)
+        .map(|clip| clip.gain_db)
+        .unwrap_or(0.0);
+    ctx.data_mut(|d| {
+        d.insert_temp(
+            egui::Id::new(DIALOG_KEY),
+            GainDialog {
+                open: true,
+                clip_ids,
+                db,
+            },
+        )
+    });
+}
+
+/// Shows the Clip Gain dialog when open. OK applies SetClipGain to every
+/// target clip as one undo step; Cancel, the close box or Esc dismiss it.
+/// Returns human-readable error messages from failed applies.
+pub fn show(ctx: &egui::Context, editor: &mut Editor) -> Vec<String> {
+    let Some(mut dialog) = ctx.data_mut(|d| d.remove_temp::<GainDialog>(egui::Id::new(DIALOG_KEY)))
+    else {
+        return Vec::new();
+    };
+    let mut messages = Vec::new();
+    let mut ok = false;
+    if dialog.open {
+        let mut open = true;
+        let mut closed = false;
+        egui::Window::new("Clip Gain")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .movable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label("Clip gain (-60 to +24 dB):");
+                let resp = ui.add(
+                    egui::DragValue::new(&mut dialog.db)
+                        .range(-60.0..=24.0)
+                        .speed(0.1)
+                        .suffix(" dB"),
+                );
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    ok = true;
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    closed = true;
+                }
+                ui.add_space(8.0);
+                ui.vertical_centered(|ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button("OK").clicked() {
+                            ok = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            closed = true;
+                        }
+                    });
+                });
+            });
+        if closed {
+            open = false;
+        }
+        dialog.open = open;
+    }
+    if ok && dialog.open {
+        messages.extend(apply_gain(editor, &dialog.clip_ids, dialog.db));
+        dialog.open = false;
+    }
+    if dialog.open {
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new(DIALOG_KEY), dialog));
+    }
+    messages
+}
+
+/// Applies the gain to every target clip, recording one undo step in total.
+fn apply_gain(editor: &mut Editor, clip_ids: &[Uuid], db: f32) -> Vec<String> {
+    editor.begin_gesture();
+    let mut messages = Vec::new();
+    for id in clip_ids {
+        if editor
+            .preview(Action::SetClipGain { clip_id: *id, db })
+            .is_ok()
+        {
+            // Rebase so the next clip's preview stacks on this change.
+            editor.gesture_base = Some(Arc::clone(&editor.project));
+        } else {
+            messages.push(format!("Could not set gain on clip {id}"));
+        }
+    }
+    editor.end_gesture();
+    messages
+}

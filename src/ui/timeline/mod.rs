@@ -254,6 +254,8 @@ pub fn show(
     // Clip drag snap line (over the clips) and the open clip context menu.
     interaction::draw_clip_snap_line(ui, &g, lane_rect);
     messages.extend(interaction::draw_clip_menu(ui, editor));
+    messages.extend(interaction::draw_gain_edit(ui, editor));
+    messages.extend(crate::ui::dialogs::gain::show(ui.ctx(), editor));
     messages
 }
 
@@ -479,6 +481,9 @@ fn draw(
                     editor.selection(),
                     crate::editor::selection::Selection::Clips(ids) if ids.contains(&clip.id)
                 );
+                let hover = ui.input(|i| i.pointer.latest_pos()).and_then(|p| {
+                    clip_view::hit_test(clip, clip_view::clip_rect(clip, g, track_rect), g.spp, p)
+                });
                 clip_view::draw(
                     &lane_painter,
                     clip,
@@ -490,6 +495,7 @@ fn draw(
                     &visuals,
                     wave_scale,
                     selected,
+                    hover,
                 );
             }
         }
