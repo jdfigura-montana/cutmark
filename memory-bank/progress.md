@@ -1,4 +1,7 @@
 ﻿# Progress
+## Current state
+Task 8.2 DONE (2026-10-13). audio::scrub variable-speed reader (see activeContext) + player ScrubStart/ScrubTarget/ScrubEnd + State::Scrubbing; engine state_code 4. No UI wiring yet (ruler scrub drag comes with the scrub UI task). cargo test 315 passed; clippy clean; fmt applied.
+
 ## What works - Visual restyle (2026-10-13)
 - Dark neutral greys + one accent (THEME.accent #5E9ED6) across selection/playhead/snap/range/gain/fades/markers; custom dark Visuals in theme::apply (4/8 px spacing, phosphor Fill font registered); toolbar icons via egui-phosphor, toggles lit with accent; monospace ruler/master-readout timecode; hover overlays (meter, fader, M/S, master readout); dialogs THEME.dialog_w wide, Enter confirms, Esc cancels. egui-phosphor 0.14 added (features fill,regular). cargo test 306 passed; clippy clean; fmt applied.
 

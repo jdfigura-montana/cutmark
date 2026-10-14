@@ -46,7 +46,7 @@ pub struct Shared {
     pub playhead: AtomicU64,
     /// Preview playhead in preview samples.
     pub preview_pos: AtomicU64,
-    /// Transport state code: 0 stopped, 1 playing, 2 paused, 3 previewing.
+    /// Transport state code: 0 stopped, 1 playing, 2 paused, 3 previewing, 4 scrubbing.
     pub state: AtomicU8,
 }
 
@@ -250,6 +250,7 @@ fn state_code(state: State) -> u8 {
         State::Playing => 1,
         State::Paused => 2,
         State::Previewing => 3,
+        State::Scrubbing => 4,
     }
 }
 

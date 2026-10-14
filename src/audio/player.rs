@@ -1,7 +1,8 @@
-//! audio::player: transport state machine with declick ramps; pure code, no cpal.
+﻿//! audio::player: transport state machine with declick ramps; pure code, no cpal.
 
 use crate::audio::mix_plan::MixPlan;
 use crate::audio::mixer;
+use crate::audio::scrub::Scrub;
 
 /// Transport command sent from the editor to the player.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +21,12 @@ pub enum Command {
     Preview,
     /// End preview playback.
     StopPreview,
+    /// Start scrubbing at ``pos``; stops any playback or preview immediately.
+    ScrubStart(u64),
+    /// Move the scrub target; the last target in one callback wins.
+    ScrubTarget(u64),
+    /// End scrubbing; the gain fades out and the state becomes Stopped.
+    ScrubEnd,
 }
 
 /// Transport state of the player.
@@ -33,6 +40,8 @@ pub enum State {
     Paused,
     /// Rendering the preview material instead of the timeline.
     Previewing,
+    /// Rendering the scrub reader.
+    Scrubbing,
 }
 
 /// Change applied once the declick ramp-down reaches zero gain.
@@ -87,6 +96,12 @@ pub struct Player {
     ramp_dir: RampDir,
     /// Change waiting for the ramp-down to finish.
     pending: Option<Pending>,
+    /// The scrub reader, owned by the player.
+    scrub: Scrub,
+    /// Last scrub target; where the playhead lands after a scrub ends.
+    last_target: u64,
+    /// Frames left in the scrub fade-out countdown, if ending.
+    scrub_stop: Option<u64>,
 }
 
 impl Player {
@@ -104,6 +119,9 @@ impl Player {
             ramp_from: 0.0,
             ramp_dir: RampDir::Up,
             pending: None,
+            scrub: Scrub::new(rate),
+            last_target: 0,
+            scrub_stop: None,
         }
     }
 
@@ -126,14 +144,20 @@ impl Player {
                 }
                 State::Playing => self.ramp_to(Pending::Stop),
                 State::Previewing => self.ramp_to(Pending::StopPreview),
+                State::Scrubbing => {
+                    self.state = State::Stopped;
+                    self.position = self.last_target;
+                    self.scrub_stop = None;
+                }
             },
             Command::Seek(p) => match self.state {
                 State::Playing => self.ramp_to(Pending::Seek { to: p }),
                 State::Stopped | State::Paused => self.position = p,
                 State::Previewing => {}
+                State::Scrubbing => {}
             },
             Command::Preview => match self.state {
-                State::Stopped | State::Paused => {
+                State::Stopped | State::Paused | State::Scrubbing => {
                     self.state = State::Previewing;
                     self.preview_pos = 0;
                     self.start_ramp_up();
@@ -143,6 +167,28 @@ impl Player {
             Command::StopPreview => {
                 if self.state == State::Previewing {
                     self.ramp_to(Pending::StopPreview);
+                }
+            }
+            Command::ScrubStart(pos) => {
+                self.pending = None;
+                self.ramp_total = 0;
+                self.scrub_stop = None;
+                self.last_target = pos;
+                self.scrub.start(pos);
+                self.state = State::Scrubbing;
+            }
+            Command::ScrubTarget(pos) => {
+                self.last_target = pos;
+                if self.state == State::Scrubbing {
+                    self.scrub.set_target(pos);
+                    self.scrub_stop = None;
+                }
+            }
+            Command::ScrubEnd => {
+                if self.state == State::Scrubbing {
+                    let at = self.scrub.position();
+                    self.scrub.set_target(at.round() as u64);
+                    self.scrub_stop = Some(u64::from(self.ramp_len) * 2);
                 }
             }
         }
@@ -286,7 +332,8 @@ impl Player {
     /// Begins timeline playback, declicking out of any current sound first.
     fn start_play(&mut self, from: u64, range_end: Option<u64>) {
         match self.state {
-            State::Stopped | State::Paused => {
+            State::Stopped | State::Paused | State::Scrubbing => {
+                self.scrub_stop = None;
                 self.state = State::Playing;
                 self.position = from;
                 self.return_to = from;
