@@ -146,19 +146,23 @@ pub fn show(
             ),
         );
 
-        // Meter bars: two 4 px bars, 2 px gap, at the inner right edge. The
-        // 4 px clip lights sit above them, inside the top padding band.
+        // Meter bars: two 4 px bars, 2 px gap, taking the rightmost 10 px of
+        // the inner rect. The 4 px clip lights sit above them, inside the top
+        // padding band.
         let bars_w = 2.0 * THEME.track_meter_bar_w + THEME.track_meter_gap;
         let bars_top = inner.top() + THEME.track_clip_light + THEME.track_meter_gap;
         let meter_rect = egui::Rect::from_min_max(
             egui::pos2(inner.right() - bars_w, bars_top),
             egui::pos2(inner.right(), inner.bottom()),
         );
+        // Everything to the left of the meters stops a 6 px gap before them,
+        // so no control or value text can ever reach the meter bars.
+        let ctrl_right = inner.right() - bars_w - 6.0;
 
         // Row 1: drag handle, name, M and S buttons.
         let row1 = egui::Rect::from_min_max(
             egui::pos2(inner.left(), inner.top()),
-            egui::pos2(inner.right(), inner.top() + THEME.track_ms_h),
+            egui::pos2(ctrl_right, inner.top() + THEME.track_ms_h),
         );
         let s_rect = egui::Rect::from_min_size(
             egui::pos2(row1.right() - THEME.track_ms_w, row1.top()),
@@ -188,24 +192,23 @@ pub fn show(
             .clamp(10.0, THEME.track_ms_h);
         let vol_row = egui::Rect::from_min_max(
             egui::pos2(inner.left(), row1.bottom() + THEME.track_row_gap),
-            egui::pos2(inner.right(), row1.bottom() + THEME.track_row_gap + row_h),
+            egui::pos2(ctrl_right, row1.bottom() + THEME.track_row_gap + row_h),
         );
         let pan_row = egui::Rect::from_min_max(
             egui::pos2(inner.left(), vol_row.bottom() + THEME.track_row_gap),
-            egui::pos2(
-                inner.right(),
-                vol_row.bottom() + THEME.track_row_gap + row_h,
-            ),
+            egui::pos2(ctrl_right, vol_row.bottom() + THEME.track_row_gap + row_h),
         );
         let label_col = THEME.track_label_col_w;
         let value_col = THEME.track_value_col_w;
+        // The slider track starts 6 px after the label column and ends 6 px
+        // before the value column, so the thumb never overlaps either text.
         let vol_rect = egui::Rect::from_min_max(
-            egui::pos2(vol_row.left() + label_col + 2.0, vol_row.top()),
-            egui::pos2(vol_row.right() - value_col - 2.0, vol_row.bottom()),
+            egui::pos2(vol_row.left() + label_col + 6.0, vol_row.top()),
+            egui::pos2(vol_row.right() - value_col - 6.0, vol_row.bottom()),
         );
         let pan_rect = egui::Rect::from_min_max(
-            egui::pos2(pan_row.left() + label_col + 2.0, pan_row.top()),
-            egui::pos2(pan_row.right() - value_col - 2.0, pan_row.bottom()),
+            egui::pos2(pan_row.left() + label_col + 6.0, pan_row.top()),
+            egui::pos2(pan_row.right() - value_col - 6.0, pan_row.bottom()),
         );
 
         // Reorder by dragging the grip; the phosphor dots show on hover.

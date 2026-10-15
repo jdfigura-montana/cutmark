@@ -75,8 +75,9 @@ impl BinPanel {
         self.header(ui, editor, &mut messages);
         ui.add_space(THEME.space_md);
 
-        // The scroll area leaves room for the fixed drop zone at the bottom.
-        let scroll_h = (ui.available_height() - THEME.bin_drop_h - THEME.space_md).max(80.0);
+        // The scroll area leaves room for the fixed drop zone (10 px above
+        // it, 44 px tall, 10 px off the panel bottom).
+        let scroll_h = (ui.available_height() - 10.0 - THEME.bin_drop_h - 10.0).max(80.0);
         egui::ScrollArea::vertical()
             .max_height(scroll_h)
             .auto_shrink([false, false])
@@ -92,7 +93,6 @@ impl BinPanel {
                 }
             });
 
-        ui.add_space(THEME.space_md);
         drop_zone(ui);
 
         self.show_remove_confirm(ui.ctx(), editor, &mut messages);
@@ -178,6 +178,10 @@ impl BinPanel {
             ui.next_widget_position(),
             egui::vec2(row_w, THEME.bin_row_h),
         );
+        // Center of the NAME text line, for the usage pill; falls back to the
+        // first content line when the rename field replaces the name.
+        let mut name_line_center =
+            row_rect.top() + THEME.space_md + THEME.bin_tile_sz.max(THEME.bin_name_size) * 0.5;
         let active = selected || ui.rect_contains_pointer(row_rect);
 
         let inner = egui::Frame::new()
@@ -247,6 +251,7 @@ impl BinPanel {
                                 if name_response.double_clicked() {
                                     self.begin_rename(item);
                                 }
+                                name_line_center = name_response.rect.center().y;
                             });
                             ui.add_space(THEME.space_xs);
                             // The meta line spans the full row width under
@@ -261,9 +266,10 @@ impl BinPanel {
             });
         let row = inner.response.rect;
 
-        // Usage pill on the right edge of the row.
+        // Usage pill on the right edge of the row, centered on the NAME line
+        // only so it never touches the meta line below it.
         let pill_galley = pill_galley(ui, usage_text(usage));
-        draw_pill(ui.painter(), row, pill_galley);
+        draw_pill(ui.painter(), row, pill_galley, name_line_center);
 
         // Thin progress bar along the row bottom while this item previews.
         if previewing_this {
@@ -432,19 +438,29 @@ impl BinPanel {
     }
 }
 
-/// The dashed drop zone at the bottom of the panel, 10 px in from the
-/// panel edges.
+/// The dashed drop zone anchored to the bottom of the panel, 10 px in from
+/// the panel's left, right and bottom edges, 44 px tall.
 fn drop_zone(ui: &mut egui::Ui) {
     let margin = 10.0;
-    ui.add_space(margin);
-    let width = (ui.available_width() - margin).max(40.0);
-    let (rect, _) =
-        ui.allocate_exact_size(egui::vec2(width, THEME.bin_drop_h), egui::Sense::hover());
+    let outer = ui.max_rect();
+    let rect = egui::Rect::from_min_max(
+        egui::pos2(
+            outer.left() + margin,
+            outer.bottom() - margin - THEME.bin_drop_h,
+        ),
+        egui::pos2(outer.right() - margin, outer.bottom() - margin),
+    );
+    // Advance the cursor below the zone so later widgets cannot land on it.
+    let pad = (rect.top() - ui.cursor().top()).max(0.0);
+    ui.allocate_exact_size(egui::vec2(1.0, pad), egui::Sense::hover());
+    ui.allocate_exact_size(
+        egui::vec2(rect.width(), rect.height()),
+        egui::Sense::hover(),
+    );
     let painter = ui.painter();
     dashed_rect(
         painter,
         rect,
-        THEME.bin_drop_rounding,
         egui::Stroke::new(THEME.hairline, THEME.control_border),
     );
     painter.text(
@@ -456,34 +472,13 @@ fn drop_zone(ui: &mut egui::Ui) {
     );
 }
 
-/// Draws a dashed 1 px rectangle border with rounded corners approximated
-/// by shortening each straight edge by the corner radius.
-fn dashed_rect(painter: &egui::Painter, rect: egui::Rect, radius: f32, stroke: egui::Stroke) {
-    let r = radius.min(rect.width() * 0.5).min(rect.height() * 0.5);
-    dashed_line(
-        painter,
-        egui::pos2(rect.left() + r, rect.top()),
-        egui::pos2(rect.right() - r, rect.top()),
-        stroke,
-    );
-    dashed_line(
-        painter,
-        egui::pos2(rect.right(), rect.top() + r),
-        egui::pos2(rect.right(), rect.bottom() - r),
-        stroke,
-    );
-    dashed_line(
-        painter,
-        egui::pos2(rect.right() - r, rect.bottom()),
-        egui::pos2(rect.left() + r, rect.bottom()),
-        stroke,
-    );
-    dashed_line(
-        painter,
-        egui::pos2(rect.left(), rect.bottom() - r),
-        egui::pos2(rect.left(), rect.top() + r),
-        stroke,
-    );
+/// Draws a complete dashed 1 px rectangle: all four sides drawn end to end
+/// so no corner gaps are left.
+fn dashed_rect(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
+    dashed_line(painter, rect.left_top(), rect.right_top(), stroke);
+    dashed_line(painter, rect.left_bottom(), rect.right_bottom(), stroke);
+    dashed_line(painter, rect.left_top(), rect.left_bottom(), stroke);
+    dashed_line(painter, rect.right_top(), rect.right_bottom(), stroke);
 }
 
 /// Draws a dashed line segment.
@@ -515,16 +510,22 @@ fn pill_galley(ui: &egui::Ui, text: String) -> std::sync::Arc<egui::Galley> {
     )
 }
 
-/// Draws the usage pill centered vertically on the row's right edge.
-fn draw_pill(painter: &egui::Painter, row: egui::Rect, galley: std::sync::Arc<egui::Galley>) {
+/// Draws the usage pill centered vertically on the given line (the row's
+/// NAME line) at the row's right edge.
+fn draw_pill(
+    painter: &egui::Painter,
+    row: egui::Rect,
+    galley: std::sync::Arc<egui::Galley>,
+    line_center_y: f32,
+) {
     let pill_w = galley.size().x + 12.0;
     let pill_h = THEME.bin_pill_h;
     let pill = egui::Rect::from_min_max(
         egui::pos2(
             row.right() - THEME.space_md - pill_w,
-            row.center().y - pill_h * 0.5,
+            line_center_y - pill_h * 0.5,
         ),
-        egui::pos2(row.right() - THEME.space_md, row.center().y + pill_h * 0.5),
+        egui::pos2(row.right() - THEME.space_md, line_center_y + pill_h * 0.5),
     );
     painter.rect_filled(pill, THEME.bin_pill_rounding, THEME.bin_pill_fill);
     painter.galley(

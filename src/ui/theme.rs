@@ -351,8 +351,6 @@ pub struct Theme {
     pub bin_pill_text_size: f32,
     /// Height of the dashed drop zone.
     pub bin_drop_h: f32,
-    /// Corner radius of the dashed drop zone.
-    pub bin_drop_rounding: f32,
     /// Font size of the drop zone text.
     pub bin_drop_text_size: f32,
     /// Height of the preview progress bar in a bin row.
@@ -594,7 +592,6 @@ impl Default for Theme {
             bin_pill_rounding: 9.0,
             bin_pill_text_size: 10.5,
             bin_drop_h: 44.0,
-            bin_drop_rounding: 8.0,
             bin_drop_text_size: 10.5,
             bin_progress_h: 2.0,
             bin_rename_pad: 40.0,

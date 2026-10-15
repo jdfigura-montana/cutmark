@@ -341,23 +341,33 @@ impl ProjectMenu {
                     menu.close();
                 }
             });
-            // Right side: project name and, when dirty, the unsaved dot.
-            // The 8 px space keeps the name off the right window edge.
+            // Right side: project name and, when dirty, one readout laid out
+            // as a single job so it reads "Test 3 ● unsaved" left to right.
+            // The 8 px space keeps it off the right window edge.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(8.0);
                 if editor.dirty {
-                    Self::unsaved_dot(ui);
+                    let mut job = egui::text::LayoutJob::default();
+                    let format = |color| {
+                        egui::TextFormat::simple(
+                            egui::FontId::proportional(THEME.clip_name_size),
+                            color,
+                        )
+                    };
+                    job.append(&editor.project.name, 0.0, format(THEME.text_muted));
+                    job.append(" ", 0.0, format(THEME.text_muted));
+                    job.append("\u{25CF}", 0.0, format(THEME.marker_color));
+                    job.append(" unsaved", 0.0, format(THEME.text_muted));
+                    let galley = ui.ctx().fonts_mut(|fonts| fonts.layout_job(job));
+                    let (rect, _) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
+                    ui.painter().galley(rect.min, galley, THEME.text_muted);
+                } else {
                     ui.label(
-                        egui::RichText::new("unsaved")
+                        egui::RichText::new(&editor.project.name)
                             .color(THEME.text_muted)
                             .size(THEME.clip_name_size),
                     );
                 }
-                ui.label(
-                    egui::RichText::new(&editor.project.name)
-                        .color(THEME.text_muted)
-                        .size(THEME.clip_name_size),
-                );
             });
         });
         let ctx = ui.ctx().clone();
@@ -380,14 +390,6 @@ impl ProjectMenu {
             dialog.show(&ctx);
         }
         (action, view_action)
-    }
-
-    /// Draws the small amber dot shown next to "unsaved" when the project has
-    /// changes.
-    fn unsaved_dot(ui: &mut egui::Ui) {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-        ui.painter()
-            .circle_filled(rect.center(), 3.0, THEME.marker_color);
     }
 
     /// Shows a failed Process menu operation in the error modal, with the

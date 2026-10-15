@@ -107,25 +107,20 @@ fn on_off(on: bool) -> &'static str {
     if on { "ON" } else { "OFF" }
 }
 
-/// One toggle readout: label and value grouped into a single unit, the two
-/// 4 px apart, the value accent while on and plain primary while off.
+/// One toggle readout: label and value laid out as a single job, so the pair
+/// always reads left to right: the label muted, a space, then the value
+/// accent while on and plain primary while off.
 fn toggle_readout(ui: &mut egui::Ui, label: &str, value: &str, on: bool) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        ui.label(
-            egui::RichText::new(label)
-                .font(Theme::mono(SIZE))
-                .color(THEME.text_muted),
-        );
-        readout_value(ui, value, on);
-    });
-}
-
-/// One toggle readout value: accent while on, plain primary text while off.
-fn readout_value(ui: &mut egui::Ui, text: &str, on: bool) {
-    ui.label(
-        egui::RichText::new(text)
-            .font(Theme::mono(SIZE))
-            .color(if on { THEME.accent } else { THEME.text_primary }),
+    let mut job = egui::text::LayoutJob::default();
+    let format = |color| egui::TextFormat::simple(Theme::mono(SIZE), color);
+    job.append(label, 0.0, format(THEME.text_muted));
+    job.append(" ", 0.0, format(THEME.text_muted));
+    job.append(
+        value,
+        0.0,
+        format(if on { THEME.accent } else { THEME.text_primary }),
     );
+    let galley = ui.ctx().fonts_mut(|fonts| fonts.layout_job(job));
+    let (rect, _) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
+    ui.painter().galley(rect.min, galley, THEME.text_primary);
 }
