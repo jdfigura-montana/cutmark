@@ -15,9 +15,9 @@ use super::Geom;
 /// Samples per pixel below which the conformed samples are read directly.
 const DIRECT_READ_SPP: f64 = 256.0;
 
-/// Stroke of the waveform lines.
-fn wave_stroke() -> egui::Stroke {
-    egui::Stroke::new(THEME.wave_width, THEME.wave_color)
+/// Stroke of the waveform lines, in the clip's track color.
+fn wave_stroke(color: egui::Color32) -> egui::Stroke {
+    egui::Stroke::new(THEME.wave_width, color)
 }
 
 /// Index of the coarsest peak level whose block size fits within `spp`.
@@ -107,6 +107,7 @@ pub fn draw(
     g: &Geom,
     body: egui::Rect,
     wave_scale: f32,
+    color: egui::Color32,
 ) {
     if body.height() < 1.0 {
         return;
@@ -139,6 +140,7 @@ pub fn draw(
             channels,
             lane_h,
             wave_scale,
+            color,
             &mut shapes,
         );
     } else {
@@ -153,6 +155,7 @@ pub fn draw(
             channels,
             lane_h,
             wave_scale,
+            color,
             &mut shapes,
         );
     }
@@ -173,9 +176,10 @@ fn draw_columns(
     channels: usize,
     lane_h: f32,
     wave_scale: f32,
+    color: egui::Color32,
     shapes: &mut Vec<egui::Shape>,
 ) {
-    let stroke = wave_stroke();
+    let stroke = wave_stroke(color);
     let peak_channels = loaded.peaks.channels;
     let first_col = (x_left - g.lane_left) as i64;
     let last_col = (x_right - g.lane_left).ceil() as i64;
@@ -236,11 +240,12 @@ fn draw_samples(
     channels: usize,
     lane_h: f32,
     wave_scale: f32,
+    color: egui::Color32,
     shapes: &mut Vec<egui::Shape>,
 ) {
     let peak_channels = usize::from(loaded.peaks.channels).max(1);
     let frame_count = loaded.samples.len() / peak_channels;
-    let stroke = wave_stroke();
+    let stroke = wave_stroke(color);
     for lane in 0..channels {
         let top = lane_h * lane as f32;
         let cy = top + lane_h * 0.5;

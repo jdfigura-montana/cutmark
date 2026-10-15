@@ -430,6 +430,9 @@ fn draw(
     let visuals = ui.visuals().clone();
     let view = editor.view.clone();
 
+    // The timeline background behind ruler, headers, lanes and scrollbar.
+    painter.rect_filled(all, 0.0, THEME.app_bg);
+
     // Track lanes: alternating shades and separators (ui::timeline::lane),
     // with the clips of each track drawn over its lane.
     let lane_painter = ui.painter_at(lane_rect);
@@ -445,8 +448,8 @@ fn draw(
                 &lane_painter,
                 track_rect,
                 i % 2 == 0,
-                visuals.extreme_bg_color,
-                visuals.faint_bg_color,
+                THEME.lane_a,
+                THEME.lane_b,
                 visuals.widgets.noninteractive.bg_stroke,
             );
             // Clips (no waveforms yet, ui::timeline::clip_view).
@@ -473,6 +476,7 @@ fn draw(
                     loaded,
                     g,
                     track_rect,
+                    i,
                     &visuals,
                     wave_scale,
                     selected,
@@ -490,6 +494,7 @@ fn draw(
     interaction::draw_range(ui, editor, g, lane_rect, view.scroll_y);
 
     // Ruler: ticks, labels, markers and their faint lines.
+    painter.rect_filled(ruler_rect, 0.0, THEME.ruler_bg);
     ruler::draw(
         &painter,
         ruler_rect,

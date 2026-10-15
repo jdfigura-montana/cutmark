@@ -91,6 +91,8 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, meters: &mut MeterState) {
         THEME.fader_text
     };
     let painter = ui.painter_at(readout_rect);
+    // The peak readout is a recessed timecode-style box.
+    painter.rect_filled(readout_rect, THEME.corner_xs, THEME.recessed_b);
     painter.text(
         Pos2::new(readout_rect.center().x, readout_rect.center().y),
         egui::Align2::CENTER_CENTER,

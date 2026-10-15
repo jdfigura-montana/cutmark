@@ -8,6 +8,7 @@ use crate::ui::dialogs::confirm::ConfirmDialog;
 use crate::ui::dialogs::export::ExportDialog;
 use crate::ui::dialogs::project_settings::ProjectSettingsDialog;
 use crate::ui::dialogs::save_as::SaveAsDialog;
+use crate::ui::theme::THEME;
 use crate::ui::timeline::ViewMenuAction;
 
 /// What the user chose in the Project menu this frame.
@@ -48,6 +49,7 @@ impl ProjectMenu {
     ) -> (ProjectMenuAction, ViewMenuAction) {
         let mut action = ProjectMenuAction::None;
         let mut view_action = ViewMenuAction::None;
+        let menu_row_top = ui.cursor().top();
         ui.menu_button("Project", |menu| {
             if menu.button("New (Ctrl+N)").clicked() {
                 action = ProjectMenuAction::New;
@@ -354,6 +356,19 @@ impl ProjectMenu {
         if let Some(dialog) = &mut self.error_dialog {
             dialog.show(&ctx);
         }
+        // The menu bar strip is painted last so it sits under the buttons.
+        let menu_row_bottom = ui.cursor().top();
+        // The top panel spans the full window width, so its max_rect carries
+        // the same left/right edges the screen rect would.
+        let full = ui.max_rect();
+        ui.painter().rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(full.left(), menu_row_top),
+                egui::pos2(full.right(), menu_row_bottom),
+            ),
+            0.0,
+            THEME.bar_bg,
+        );
         (action, view_action)
     }
 

@@ -1,5 +1,7 @@
 ﻿# Progress
 ## Current state
+Theme palette wiring DONE (2026-10-15): all Theme fields consumed, allow(dead_code) gone from src/ui, track-colored clips/waveforms/headers. cargo test 382 passed; clippy clean; fmt applied.
+Theme palette task DONE (2026-10-15): full palette + fonts + track_color in src/ui/theme.rs, egui 0.36 API fixes (see activeContext). cargo test 382 passed; clippy clean; fmt applied.
 Task 10.5 DONE (2026-10-15). Final cleanup: dead_code gate removed from main.rs (one real bug found: Scrub::process was never wired into Player::process — scrubbing was silent, now fixed), windows_subsystem for release, [profile.release] opt-3/thin LTO/1 cg unit, README.md. cargo test 381 passed; clippy clean; release exe at target\release\audio_editor.exe (GUI subsystem verified, launches).
 Task 10.4 DONE (2026-10-15). Unused media cleanup on Save (io::paths::cleanup_unused + trash 5.2.9, editor referenced_media + cleanup_unused_media after save, job-pending skip, 6 new tests). cargo test 381 passed; clippy clean; fmt applied. Phase 10 complete.
 Task 10.2 DONE (2026-10-15). Save/Don't Save/Cancel prompts on close/quit + export-in-progress question; window X and Alt+F4 intercepted via close_requested + CancelClose. cargo test 369 passed; clippy clean; fmt applied.

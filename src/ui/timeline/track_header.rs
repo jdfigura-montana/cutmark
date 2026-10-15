@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::editor::Editor;
 use crate::editor::action::Action;
-use crate::ui::theme::THEME;
+use crate::ui::theme::{THEME, Theme};
 use crate::ui::widgets::fader;
 use crate::ui::widgets::meter;
 
@@ -109,6 +109,9 @@ pub fn show(
     let painter = ui.painter_at(header_rect);
     painter.rect_filled(header_rect, 0.0, visuals.faint_bg_color);
 
+    // A 4 px left stripe in each track's color identifies the track row.
+    let stripe_w = THEME.space_sm;
+
     let mut y = header_rect.top() - scroll_y;
     for (index, ht) in tracks.iter().enumerate() {
         let rect = egui::Rect::from_min_size(
@@ -119,6 +122,16 @@ pub fn show(
         if rect.bottom() < header_rect.top() || rect.top() > header_rect.bottom() {
             continue;
         }
+
+        // 4 px left stripe in the track color.
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                rect.left_top(),
+                egui::pos2(rect.left() + stripe_w, rect.bottom()),
+            ),
+            0.0,
+            THEME.track_color(index),
+        );
 
         // Layout: meter on the right edge, controls to its left.
         let meter_rect = egui::Rect::from_min_max(
@@ -299,7 +312,7 @@ pub fn show(
                 egui::pos2(name_rect.left() + THEME.space_sm, name_rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 &ht.name,
-                egui::FontId::proportional(THEME.track_name_size),
+                Theme::semibold(THEME.track_name_size),
                 visuals.strong_text_color(),
             );
         }

@@ -166,11 +166,12 @@ pub fn hit_test(clip: &Clip, clip_rect: egui::Rect, spp: f64, pos: egui::Pos2) -
 /// `track_rect` is the clip's track lane in window points; the clip body fills
 /// the lane minus 2 px at the top and bottom. Clips outside the visible sample
 /// range are skipped; clips narrower than 3 px draw as a single 1 px line.
-/// Offline media gets a red fill and a "Media offline" label. `media` is the
-/// loaded audio for the clip's bin entry, `None` when offline or not loaded;
-/// its waveform fills the body below the header strip. Selected clips draw
-/// with a bright border and a lighter header strip. The clip gain line and the
-/// fade curves draw over the waveform; `hover` highlights the hovered handle.
+/// The clip takes its body, header and waveform color from the track color of
+/// `track_index`. Offline media gets a red fill and a "Media offline" label.
+/// `media` is the loaded audio for the clip's bin entry, `None` when offline
+/// or not loaded; its waveform fills the body below the header strip. Selected
+/// clips draw with a bright border. The clip gain line and the fade curves
+/// draw over the waveform; `hover` highlights the hovered handle.
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
     painter: &egui::Painter,
@@ -180,6 +181,7 @@ pub fn draw(
     media: Option<&Loaded>,
     g: &Geom,
     track_rect: egui::Rect,
+    track_index: usize,
     visuals: &egui::Visuals,
     wave_scale: f32,
     selected: bool,
@@ -191,6 +193,12 @@ pub fn draw(
     }
     let rect = clip_rect(clip, g, track_rect);
 
+    // Track color of this clip: translucent body, stronger header strip and a
+    // solid waveform stroke.
+    let tc = THEME.track_color(track_index);
+    let body_fill = egui::Color32::from_rgba_unmultiplied(tc.r(), tc.g(), tc.b(), 0x22);
+    let header_fill = egui::Color32::from_rgba_unmultiplied(tc.r(), tc.g(), tc.b(), 0x66);
+
     // Extremely narrow clip: a single 1 px line, no text.
     if rect.width() < THEME.thin_clip_w {
         painter.line_segment(
@@ -198,7 +206,7 @@ pub fn draw(
                 egui::pos2(rect.left(), rect.top()),
                 egui::pos2(rect.left(), rect.bottom()),
             ],
-            egui::Stroke::new(THEME.hairline, body_fill(visuals)),
+            egui::Stroke::new(THEME.hairline, body_fill),
         );
         return;
     }
@@ -214,7 +222,7 @@ pub fn draw(
         if offline {
             THEME.offline_body
         } else {
-            body_fill(visuals)
+            body_fill
         },
     );
     painter.rect_filled(
@@ -222,16 +230,14 @@ pub fn draw(
         THEME.corner_r,
         if offline {
             THEME.offline_header
-        } else if selected {
-            lighten(body_fill(visuals), 0.45)
         } else {
-            darken(body_fill(visuals), 0.7)
+            header_fill
         },
     );
 
     // Waveform in the body (below the header), for online, loaded media.
     if !offline && let Some(loaded) = media {
-        super::waveform::draw(painter, clip, loaded, g, body, wave_scale);
+        super::waveform::draw(painter, clip, loaded, g, body, wave_scale, tc);
     }
 
     // Clip gain line and fade curves, over the waveform.
@@ -371,26 +377,6 @@ fn draw_gain_and_fades(
             egui::StrokeKind::Inside,
         );
     }
-}
-
-/// The clip body fill: a lighter shade than the track lane.
-fn body_fill(visuals: &egui::Visuals) -> egui::Color32 {
-    visuals.widgets.hovered.bg_fill
-}
-
-/// Darkens a color by the factor `f` (0.0..1.0) per channel.
-fn darken(color: egui::Color32, f: f32) -> egui::Color32 {
-    egui::Color32::from_rgb(
-        (color.r() as f32 * f) as u8,
-        (color.g() as f32 * f) as u8,
-        (color.b() as f32 * f) as u8,
-    )
-}
-
-/// Lightens a color toward white by the fraction `f` (0.0..1.0) per channel.
-fn lighten(color: egui::Color32, f: f32) -> egui::Color32 {
-    let mix = |c: u8| (c as f32 + (255.0 - c as f32) * f) as u8;
-    egui::Color32::from_rgb(mix(color.r()), mix(color.g()), mix(color.b()))
 }
 
 #[cfg(test)]

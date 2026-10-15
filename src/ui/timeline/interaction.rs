@@ -550,7 +550,7 @@ pub fn draw_range(ui: &egui::Ui, editor: &Editor, g: &Geom, lane_rect: egui::Rec
                     egui::pos2(x0, y.max(lane_rect.top())),
                     egui::pos2(x1, bottom.min(lane_rect.bottom())),
                 );
-                painter.rect_filled(rect, 0.0, THEME.range_tint);
+                painter.rect_filled(rect, 0.0, THEME.accent_soft);
             }
             y = bottom;
         }

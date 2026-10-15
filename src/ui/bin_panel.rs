@@ -167,7 +167,7 @@ impl BinPanel {
                     ui.label(
                         egui::RichText::new(details_line(editor, item))
                             .small()
-                            .color(THEME.bin_details),
+                            .color(THEME.text_faint),
                     );
                 });
             });

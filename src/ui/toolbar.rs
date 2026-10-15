@@ -86,6 +86,14 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor) {
         let slider = egui::Slider::new(&mut log_scale, 0.0..=4.0)
             .text("Wave")
             .custom_formatter(|value, _| format!("{:.1}x", 2.0_f32.powf(value as f32)));
+        // Palette slider colors for this control: track, filled part, thumb.
+        {
+            let style = ui.style_mut();
+            style.visuals.slider_trailing_fill = true;
+            style.visuals.widgets.inactive.bg_fill = THEME.slider_track;
+            style.visuals.selection.bg_fill = THEME.slider_fill;
+            style.visuals.widgets.hovered.bg_fill = THEME.slider_thumb;
+        }
         let resp = ui.add(slider);
         editor.set_wave_scale(2.0_f32.powf(log_scale));
         if resp.double_clicked() {
