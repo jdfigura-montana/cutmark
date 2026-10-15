@@ -9,7 +9,9 @@ use crate::editor::Editor;
 use crate::editor::action::Action;
 use crate::editor::transport::TransportState;
 use crate::ui::bin_panel::{self, BinPanel};
-use crate::ui::dialogs::confirm::ConfirmDialog;
+use crate::ui::dialogs::confirm::{
+    CloseChoice, CloseConfirmDialog, ConfirmDialog, ExportCloseChoice, ExportCloseDialog,
+};
 use crate::ui::dialogs::export::{BANNER_SECONDS, ExportBanner};
 use crate::ui::master_strip;
 use crate::ui::menu::{ProjectMenu, ProjectMenuAction};
@@ -25,6 +27,19 @@ enum Screen {
     Start(StartScreen),
     /// An open project being edited.
     Editing(Box<Editor>),
+}
+
+/// What to do once the close prompts are answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingClose {
+    /// Quit the application.
+    Quit,
+    /// Return to the start screen with the New Project dialog.
+    New,
+    /// Return to the start screen with the project picker.
+    Open,
+    /// Return to the start screen.
+    Close,
 }
 
 /// Root application state shown in the main window.
@@ -43,6 +58,9 @@ pub struct App {
     meters: MeterState,
     /// Last window title sent to the OS, to avoid resending every frame.
     title: String,
+    /// A close (quit / New / Open / Close) waiting for the export and
+    /// unsaved-changes prompts, when shown.
+    pending_close: Option<PendingClose>,
 }
 
 impl Default for App {
@@ -55,6 +73,7 @@ impl Default for App {
             export_banner: None,
             meters: MeterState::default(),
             title: "Audio Editor".to_string(),
+            pending_close: None,
         }
     }
 }
@@ -70,6 +89,8 @@ impl eframe::App for App {
         let mut screen = std::mem::replace(&mut self.screen, Screen::Start(StartScreen::default()));
         let mut opened: Option<Editor> = None;
         let mut action = ProjectMenuAction::None;
+        // A close that survived the prompts this frame, applied below.
+        let mut resolved: Option<PendingClose> = None;
         match &mut screen {
             Screen::Start(start) => {
                 if !ui.ctx().egui_wants_keyboard_input() && !start.dialog_is_open() {
@@ -87,6 +108,21 @@ impl eframe::App for App {
                     &mut self.meters,
                     &mut self.export_banner,
                 );
+                // The window X and Alt+F4 go through the same prompts as the
+                // Project menu while an export runs or changes are unsaved.
+                let wants_close = ui.ctx().input(|i| i.viewport().close_requested());
+                if wants_close && Self::needs_prompt(editor) {
+                    ui.ctx().send_viewport_cmd(ViewportCommand::CancelClose);
+                    if self.pending_close.is_none() {
+                        self.pending_close = Some(PendingClose::Quit);
+                    }
+                }
+                resolved = Self::run_close_prompts(
+                    &ui.ctx().clone(),
+                    editor,
+                    &mut self.messages,
+                    &mut self.pending_close,
+                );
             }
         }
         if let Some(mut editor) = opened {
@@ -95,16 +131,95 @@ impl eframe::App for App {
         }
         match action {
             ProjectMenuAction::None => {}
-            ProjectMenuAction::New => screen = Screen::Start(StartScreen::with_new_dialog()),
-            ProjectMenuAction::Open => screen = Screen::Start(StartScreen::with_open_request()),
-            ProjectMenuAction::Close => screen = Screen::Start(StartScreen::default()),
+            ProjectMenuAction::New => self.request_close(&mut screen, PendingClose::New),
+            ProjectMenuAction::Open => self.request_close(&mut screen, PendingClose::Open),
+            ProjectMenuAction::Close => self.request_close(&mut screen, PendingClose::Close),
             ProjectMenuAction::Import => {}
+        }
+        if let Some(pending) = resolved {
+            if pending == PendingClose::Quit {
+                ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+            } else {
+                self.apply_pending(&mut screen, pending);
+            }
         }
         self.screen = screen;
     }
 }
 
 impl App {
+    /// True when leaving the project needs a prompt: an export runs or
+    /// there are unsaved changes.
+    fn needs_prompt(editor: &Editor) -> bool {
+        editor.is_locked() || editor.dirty
+    }
+
+    /// Handles a Project menu action that leaves the project; a prompt is
+    /// queued first when an export runs or there are unsaved changes.
+    fn request_close(&mut self, screen: &mut Screen, pending: PendingClose) {
+        if let Screen::Editing(editor) = screen
+            && Self::needs_prompt(editor)
+        {
+            if self.pending_close.is_none() {
+                self.pending_close = Some(pending);
+            }
+            return;
+        }
+        self.apply_pending(screen, pending);
+    }
+
+    /// Applies an answered close to the screen.
+    fn apply_pending(&mut self, screen: &mut Screen, pending: PendingClose) {
+        match pending {
+            PendingClose::Quit => {}
+            PendingClose::New => *screen = Screen::Start(StartScreen::with_new_dialog()),
+            PendingClose::Open => *screen = Screen::Start(StartScreen::with_open_request()),
+            PendingClose::Close => *screen = Screen::Start(StartScreen::default()),
+        }
+    }
+
+    /// Runs the close-prompt flow for a pending close: the export question
+    /// first, then the unsaved-changes prompt. Returns the close to apply,
+    /// or None while a prompt is up or was cancelled.
+    fn run_close_prompts(
+        ctx: &egui::Context,
+        editor: &mut Editor,
+        messages: &mut Option<ConfirmDialog>,
+        pending_close: &mut Option<PendingClose>,
+    ) -> Option<PendingClose> {
+        let pending = (*pending_close)?;
+        if editor.is_locked() {
+            let dialog = ExportCloseDialog;
+            match dialog.show(ctx) {
+                Some(ExportCloseChoice::CancelExport) => editor.export_cancel(),
+                Some(ExportCloseChoice::KeepExporting) => *pending_close = None,
+                None => {}
+            }
+            return None;
+        }
+        if editor.dirty {
+            let dialog = CloseConfirmDialog::new(&editor.project.name);
+            match dialog.show(ctx) {
+                Some(CloseChoice::Save) => {
+                    if let Err(error) = editor.save() {
+                        // The save failed: show the error and stay put.
+                        *messages = Some(ConfirmDialog::new("Save Error", error.to_string()));
+                        *pending_close = None;
+                        return None;
+                    }
+                }
+                Some(CloseChoice::DontSave) => {}
+                Some(CloseChoice::Cancel) => {
+                    *pending_close = None;
+                    return None;
+                }
+                None => return None,
+            }
+        }
+        *pending_close = None;
+        Some(pending)
+    }
+
     /// Draws the editor layout, handles the menus and the editor shortcuts.
     fn show_editor(
         ui: &mut egui::Ui,
