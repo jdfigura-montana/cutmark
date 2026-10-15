@@ -305,11 +305,39 @@ pub struct Theme {
     // ---- Bin panel ----
     /// Height of one bin item row.
     pub bin_row_h: f32,
-    /// Width of the selected-row accent bar.
-    pub bin_sel_bar_w: f32,
-    /// Height of the selected-row accent bar.
-    pub bin_sel_bar_h: f32,
-    /// Height of the preview progress bar under a bin row.
+    /// Vertical gap between bin rows.
+    pub bin_row_gap: f32,
+    /// Corner radius of the bin row background.
+    pub bin_row_rounding: f32,
+    /// Font size of the MEDIA header caption.
+    pub bin_header_size: f32,
+    /// Height of the header Import / sort buttons.
+    pub bin_btn_h: f32,
+    /// Font size of the header buttons.
+    pub bin_btn_text_size: f32,
+    /// Side length of the square waveform tile.
+    pub bin_tile_sz: f32,
+    /// Font size of the tile's waveform icon.
+    pub bin_tile_icon_size: f32,
+    /// Font size of the item name.
+    pub bin_name_size: f32,
+    /// Font size of the monospace meta line.
+    pub bin_meta_size: f32,
+    /// Fill of the usage pill.
+    pub bin_pill_fill: egui::Color32,
+    /// Height of the usage pill.
+    pub bin_pill_h: f32,
+    /// Corner radius of the usage pill.
+    pub bin_pill_rounding: f32,
+    /// Font size of the usage pill text.
+    pub bin_pill_text_size: f32,
+    /// Height of the dashed drop zone.
+    pub bin_drop_h: f32,
+    /// Corner radius of the dashed drop zone.
+    pub bin_drop_rounding: f32,
+    /// Font size of the drop zone text.
+    pub bin_drop_text_size: f32,
+    /// Height of the preview progress bar in a bin row.
     pub bin_progress_h: f32,
     /// Width taken from the panel before the inline rename field.
     pub bin_rename_pad: f32,
@@ -524,9 +552,23 @@ impl Default for Theme {
             master_readout_h: 16.0,
             master_pad: 4.0,
             // Bin panel
-            bin_row_h: 38.0,
-            bin_sel_bar_w: 3.0,
-            bin_sel_bar_h: 30.0,
+            bin_row_h: 52.0,
+            bin_row_gap: 2.0,
+            bin_row_rounding: 6.0,
+            bin_header_size: 10.5,
+            bin_btn_h: 26.0,
+            bin_btn_text_size: 12.0,
+            bin_tile_sz: 30.0,
+            bin_tile_icon_size: 16.0,
+            bin_name_size: 12.5,
+            bin_meta_size: 10.5,
+            bin_pill_fill: egui::Color32::from_rgb(0x26, 0x2A, 0x31),
+            bin_pill_h: 18.0,
+            bin_pill_rounding: 9.0,
+            bin_pill_text_size: 10.5,
+            bin_drop_h: 44.0,
+            bin_drop_rounding: 8.0,
+            bin_drop_text_size: 10.5,
             bin_progress_h: 2.0,
             bin_rename_pad: 40.0,
             bin_rename_min_w: 60.0,

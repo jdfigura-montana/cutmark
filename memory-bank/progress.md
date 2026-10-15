@@ -14,6 +14,10 @@ Task 9.1 DONE (2026-10-13). io::export (ExportKind/ExportFormat/mp3_rate/AudioSi
 Task 8.3 DONE (2026-10-13). Ruler/playhead scrub UI: TransportState::Scrubbing, Editor scrub_start/scrub_to/scrub_end, ruler.rs handle_scrub (press/drag/release, edge auto-scroll, no snapping, per-frame repaint), old ruler click removed, app.rs meters+repaint during scrub. cargo test 317 passed; clippy clean; fmt applied.
 Task 8.2 DONE (2026-10-13). audio::scrub variable-speed reader (see activeContext) + player ScrubStart/ScrubTarget/ScrubEnd + State::Scrubbing; engine state_code 4. cargo test 315 passed; clippy clean; fmt applied.
 
+## What works - Bin panel restyle (2026-10-15)
+- Bin panel matches docs/ui-target.png: exact 236 px non-resizable panel (panel_bg, 1 px right border), MEDIA caption header with phosphor Import + sort buttons (both 26 px, sort popup via egui::Popup::menu), rows with 30x30 phosphor-waveform tile, truncated 12.5 px name, JetBrains Mono 10.5 meta line "m:ss.mmm · 48k · Mo/St · MP3", #262A31 usage pill, control-fill hover/selected row bg (radius 6, 8 px padding, 2 px row gap), dashed-border drop zone at the bottom. All bin visuals are THEME fields (bin_*). No behavior change except the removed inline play button (Preview stays in the context menu). 382 tests pass; fmt/clippy clean.
+
+
 ## What works - Visual restyle (2026-10-13)
 - Dark neutral greys + one accent (THEME.accent #5E9ED6) across selection/playhead/snap/range/gain/fades/markers; custom dark Visuals in theme::apply (4/8 px spacing, phosphor Fill font registered); toolbar icons via egui-phosphor, toggles lit with accent; monospace ruler/master-readout timecode; hover overlays (meter, fader, M/S, master readout); dialogs THEME.dialog_w wide, Enter confirms, Esc cancels. egui-phosphor 0.14 added (features fill,regular). cargo test 306 passed; clippy clean; fmt applied.
 
