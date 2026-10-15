@@ -1,5 +1,6 @@
 ﻿//! io::paths: project folder layout (media/, cache/, autosave/, exports/).
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -107,6 +108,100 @@ pub fn peaks_path(paths: &ProjectPaths, media_id: Uuid) -> PathBuf {
     paths.cache().join(format!("{}.peaks", media_id))
 }
 
+/// Removes media and cache files that nothing in the project or its history references.
+///
+/// `keep_files` holds the media/ file names that must stay, `keep_ids` the media
+/// ids whose `<id>.f32.wav` and `<id>.peaks` cache files must stay. Unreferenced
+/// media/ files go to the Recycle Bin (or are deleted directly when `recycle` is
+/// false, used by tests so they never touch the real bin), unreferenced cache
+/// files are deleted. `.part` files, non-regular files and cache names that do
+/// not match the two patterns are left alone, and autosave/ and exports/ are
+/// never touched. Returns one message per removed file and, for individual
+/// failures, an error message; failures never make the caller's Save fail.
+pub fn cleanup_unused(
+    paths: &ProjectPaths,
+    keep_ids: &HashSet<Uuid>,
+    keep_files: &HashSet<String>,
+    recycle: bool,
+) -> Vec<String> {
+    let mut messages = Vec::new();
+    cleanup_media(paths, keep_files, recycle, &mut messages);
+    cleanup_cache(paths, keep_ids, &mut messages);
+    messages
+}
+
+/// Removes unreferenced regular files from media/, skipping *.part names.
+fn cleanup_media(
+    paths: &ProjectPaths,
+    keep_files: &HashSet<String>,
+    recycle: bool,
+    messages: &mut Vec<String>,
+) {
+    let Ok(entries) = fs::read_dir(paths.media()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".part") || keep_files.contains(&name) {
+            continue;
+        }
+        remove_unused(&entry.path(), &name, recycle, messages);
+    }
+}
+
+/// Deletes unreferenced `<id>.f32.wav` and `<id>.peaks` files from cache/.
+/// Names that do not match either pattern are left alone.
+fn cleanup_cache(paths: &ProjectPaths, keep_ids: &HashSet<Uuid>, messages: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(paths.cache()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(id) = cache_id(&name) else {
+            continue;
+        };
+        if keep_ids.contains(&id) {
+            continue;
+        }
+        remove_unused(&entry.path(), &name, false, messages);
+    }
+}
+
+/// The media id of a cache name `<uuid>.f32.wav` or `<uuid>.peaks`, if it matches.
+fn cache_id(name: &str) -> Option<Uuid> {
+    let stem = if let Some(stem) = name.strip_suffix(".f32.wav") {
+        stem
+    } else {
+        name.strip_suffix(".peaks")?
+    };
+    Uuid::parse_str(stem).ok()
+}
+
+/// Removes one unused file, collecting the name or a failure message.
+fn remove_unused(path: &Path, name: &str, recycle: bool, messages: &mut Vec<String>) {
+    let result = if recycle {
+        trash::delete(path).map_err(|error| error.to_string())
+    } else {
+        fs::remove_file(path).map_err(|error| error.to_string())
+    };
+    match result {
+        Ok(()) => messages.push(format!("Removed unused file: {name}")),
+        Err(error) => messages.push(format!("Cleanup could not remove {name}: {error}")),
+    }
+}
+
 /// Opens Windows Explorer with `path` pre-selected. Paths with spaces and
 /// commas are passed safely via a raw argument. Errors are ignored.
 pub fn reveal_in_explorer(path: &Path) {
@@ -181,6 +276,81 @@ mod tests {
         assert_eq!(
             peaks_path(&paths, id),
             paths.cache().join(format!("{}.peaks", id))
+        );
+    }
+
+    /// Writes `content` to `dir/name` and asserts nothing else.
+    fn put(dir: &Path, name: &str, content: &[u8]) {
+        fs::write(dir.join(name), content).unwrap();
+    }
+
+    #[test]
+    fn cleanup_unused_removes_only_unreferenced_files() {
+        let parent = tempdir().unwrap();
+        let paths = create_layout(parent.path(), "C1").unwrap();
+        let keep_id = Uuid::new_v4();
+        let gone_id = Uuid::new_v4();
+        let mut keep_files = HashSet::new();
+        keep_files.insert("kept.wav".to_string());
+        let mut keep_ids = HashSet::new();
+        keep_ids.insert(keep_id);
+
+        // media/: kept, unreferenced, a .part file and a directory.
+        put(&paths.media(), "kept.wav", b"x");
+        put(&paths.media(), "gone.wav", b"x");
+        put(&paths.media(), "gone.wav.part", b"x");
+        fs::create_dir(paths.media().join("subdir")).unwrap();
+
+        // cache/: kept pair, unreferenced pair, stray notes.txt and junk.bin.
+        put(&paths.cache(), &format!("{keep_id}.f32.wav"), b"x");
+        put(&paths.cache(), &format!("{keep_id}.peaks"), b"x");
+        put(&paths.cache(), &format!("{gone_id}.f32.wav"), b"x");
+        put(&paths.cache(), &format!("{gone_id}.peaks"), b"x");
+        put(&paths.cache(), "notes.txt", b"x");
+        put(&paths.cache(), "junk.bin", b"x");
+
+        let messages = cleanup_unused(&paths, &keep_ids, &keep_files, false);
+
+        // Unreferenced media and cache files are gone; everything else stays.
+        assert!(paths.media().join("kept.wav").is_file());
+        assert!(!paths.media().join("gone.wav").exists());
+        assert!(paths.media().join("gone.wav.part").is_file());
+        assert!(paths.media().join("subdir").is_dir());
+        assert!(paths.cache().join(format!("{keep_id}.f32.wav")).is_file());
+        assert!(paths.cache().join(format!("{keep_id}.peaks")).is_file());
+        assert!(!paths.cache().join(format!("{gone_id}.f32.wav")).exists());
+        assert!(!paths.cache().join(format!("{gone_id}.peaks")).exists());
+        assert!(paths.cache().join("notes.txt").is_file());
+        assert!(paths.cache().join("junk.bin").is_file());
+
+        // One message per removed file, none for files left alone.
+        let joined = messages.join("\n");
+        assert!(joined.contains("gone.wav"), "got: {joined}");
+        assert!(joined.contains(&gone_id.to_string()), "got: {joined}");
+        assert_eq!(messages.len(), 3);
+    }
+
+    #[test]
+    fn cleanup_unused_collects_errors_without_failing() {
+        let parent = tempdir().unwrap();
+        let paths = create_layout(parent.path(), "C2").unwrap();
+        put(&paths.media(), "locked.wav", b"x");
+        // Holding the file open without share-delete makes removal fail.
+        use std::os::windows::fs::OpenOptionsExt;
+        let _handle = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0x1 | 0x2) // read + write, no share-delete
+            .open(paths.media().join("locked.wav"))
+            .unwrap();
+
+        let messages = cleanup_unused(&paths, &HashSet::new(), &HashSet::new(), false);
+
+        // The failure is reported as a message, not an error of the call.
+        assert!(paths.media().join("locked.wav").is_file());
+        let joined = messages.join("\n");
+        assert!(
+            joined.contains("Cleanup could not remove locked.wav"),
+            "got: {joined}"
         );
     }
 }

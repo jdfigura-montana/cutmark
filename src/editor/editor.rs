@@ -1,6 +1,6 @@
 //! editor::editor: the Editor struct owning the Project, view, paths and dirty flag.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -267,6 +267,7 @@ impl Editor {
         self.dirty = false;
         // A successful manual save makes the autosave obsolete.
         let _ = autosave::delete(&self.paths);
+        self.cleanup_unused_media();
         Ok(())
     }
 
@@ -287,6 +288,44 @@ impl Editor {
     /// Read-only access to the view state.
     pub fn view(&self) -> &ViewState {
         &self.view
+    }
+
+    /// Ids and file names of every MediaItem in the project and in every
+    /// snapshot of the undo and redo stacks.
+    ///
+    /// Cleanup keeps media that a single undo (or redo) could bring back.
+    pub fn referenced_media(&self) -> (HashSet<Uuid>, HashSet<String>) {
+        let mut ids = HashSet::new();
+        let mut files = HashSet::new();
+        let mut add = |project: &Project| {
+            for item in &project.media {
+                ids.insert(item.id);
+                files.insert(item.file_name.clone());
+            }
+        };
+        add(&self.project);
+        for entry in self.history.undo.iter().chain(self.history.redo.iter()) {
+            add(&entry.before);
+        }
+        (ids, files)
+    }
+
+    /// Removes media and cache files that nothing references, after a Save.
+    ///
+    /// Skipped while any background job (import, load, relink or export) is
+    /// still running, so a file a just-started job writes is never mistaken
+    /// for junk. Messages about removed files and failures go into the job
+    /// error list; failures never fail the Save. Tests delete directly
+    /// instead of using the real Recycle Bin.
+    fn cleanup_unused_media(&mut self) {
+        if self.has_pending_jobs() {
+            return;
+        }
+        let (keep_ids, keep_files) = self.referenced_media();
+        let recycle = !cfg!(test);
+        for message in paths::cleanup_unused(&self.paths, &keep_ids, &keep_files, recycle) {
+            self.job_errors.push(message);
+        }
     }
 
     /// Moves the playhead. Not undoable and does not mark the project dirty,
@@ -1696,6 +1735,140 @@ mod tests {
         assert_eq!(old_paths.root, parent.path().join("Original"));
         drop_from_recent(&editor.paths.root);
         drop_from_recent(&old_paths.root);
+    }
+
+    /// Builds a real project layout holding one bin item ("test.wav") with a
+    /// clip, writes its media file and returns the editor and the media id.
+    fn cleanup_editor() -> (tempfile::TempDir, Editor, Uuid) {
+        let parent = tempdir().unwrap();
+        let paths = crate::io::paths::create_layout(parent.path(), "Cleanup").unwrap();
+        let project = project_with_clips(&[&[(0, 100)]]);
+        let id = project.media[0].id;
+        std::fs::write(paths.media().join("test.wav"), b"x").unwrap();
+        let editor = Editor::with_project(project, ViewState::default(), paths);
+        (parent, editor, id)
+    }
+
+    #[test]
+    fn save_removes_unreferenced_media_and_cache_files() {
+        let (_parent, mut editor, id) = cleanup_editor();
+        let gone_id = Uuid::new_v4();
+        std::fs::write(editor.paths.media().join("gone.wav"), b"x").unwrap();
+        std::fs::write(editor.paths.cache().join(format!("{id}.f32.wav")), b"x").unwrap();
+        std::fs::write(editor.paths.cache().join(format!("{id}.peaks")), b"x").unwrap();
+        std::fs::write(
+            editor.paths.cache().join(format!("{gone_id}.f32.wav")),
+            b"x",
+        )
+        .unwrap();
+        std::fs::write(editor.paths.cache().join(format!("{gone_id}.peaks")), b"x").unwrap();
+
+        editor.save().unwrap();
+
+        // Referenced files stay, unreferenced ones are removed and reported.
+        assert!(editor.paths.media().join("test.wav").is_file());
+        assert!(!editor.paths.media().join("gone.wav").exists());
+        assert!(editor.paths.cache().join(format!("{id}.f32.wav")).is_file());
+        assert!(editor.paths.cache().join(format!("{id}.peaks")).is_file());
+        assert!(
+            !editor
+                .paths
+                .cache()
+                .join(format!("{gone_id}.f32.wav"))
+                .exists()
+        );
+        assert!(
+            !editor
+                .paths
+                .cache()
+                .join(format!("{gone_id}.peaks"))
+                .exists()
+        );
+        let messages = editor.take_job_errors().join("\n");
+        assert!(messages.contains("gone.wav"), "got: {messages}");
+        assert!(messages.contains(&gone_id.to_string()), "got: {messages}");
+    }
+
+    #[test]
+    fn save_keeps_media_that_undo_can_restore() {
+        let (_parent, mut editor, id) = cleanup_editor();
+
+        // Remove the bin item; the file must survive the next Save because
+        // the undo history still holds it.
+        editor.apply(Action::RemoveMedia { id }).unwrap();
+        assert!(editor.project.media.is_empty());
+        editor.save().unwrap();
+        assert!(
+            editor.paths.media().join("test.wav").is_file(),
+            "undo history must keep the media file"
+        );
+
+        // Once the history no longer holds it (as after closing the project),
+        // the same Save cleans it up.
+        editor.history = History::new();
+        editor.save().unwrap();
+        assert!(!editor.paths.media().join("test.wav").exists());
+        assert!(!editor.paths.cache().join(format!("{id}.f32.wav")).exists());
+        assert!(!editor.paths.cache().join(format!("{id}.peaks")).exists());
+    }
+
+    #[test]
+    fn save_skips_cleanup_while_a_job_is_pending() {
+        let (_parent, mut editor, _id) = cleanup_editor();
+        std::fs::write(editor.paths.media().join("gone.wav"), b"x").unwrap();
+
+        editor.pending.insert(99, ("Import".to_string(), 0.5));
+        editor.save().unwrap();
+        assert!(
+            editor.paths.media().join("gone.wav").is_file(),
+            "cleanup must be skipped while a job is running"
+        );
+
+        editor.pending.clear();
+        editor.save().unwrap();
+        assert!(!editor.paths.media().join("gone.wav").exists());
+    }
+
+    #[test]
+    fn referenced_media_includes_undo_and_redo_history() {
+        let (_parent, mut editor, id) = cleanup_editor();
+        let extra = crate::model::media::MediaItem {
+            id: Uuid::new_v4(),
+            display_name: "Extra".to_string(),
+            file_name: "extra.wav".to_string(),
+            original_rate: 48_000,
+            channels: 2,
+            length: 100,
+        };
+
+        // A snapshot holding the extra item sits on the redo stack.
+        let mut redo_project = (*editor.project).clone();
+        redo_project.media.push(extra.clone());
+        editor
+            .history
+            .redo
+            .push(crate::editor::history::HistoryEntry {
+                label: "Import",
+                before: std::sync::Arc::new(redo_project),
+            });
+        let (ids, files) = editor.referenced_media();
+        assert!(ids.contains(&id));
+        assert!(files.contains("test.wav"));
+        assert!(ids.contains(&extra.id), "redo snapshot media must be kept");
+        assert!(
+            files.contains("extra.wav"),
+            "redo snapshot media must be kept"
+        );
+
+        // Removing the item leaves it only on the undo stack, but it is kept.
+        editor.history.redo.clear();
+        editor.apply(Action::RemoveMedia { id }).unwrap();
+        let (ids, files) = editor.referenced_media();
+        assert!(ids.contains(&id), "undo snapshot media must be kept");
+        assert!(
+            files.contains("test.wav"),
+            "undo snapshot media must be kept"
+        );
     }
 
     #[test]

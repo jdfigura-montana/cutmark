@@ -1,6 +1,6 @@
 ﻿# Progress
 ## Current state
-Task 10.3 DONE (2026-10-15). Missing-media notice + Relink (ops::media::relink_media + Action::RelinkMedia, io::import::relink_file over shared import_core, editor relink job/finish_relink/offline_count, one-time notice in tick, bin "Relink..." menu). 6 new tests; cargo test 375 passed; clippy clean; fmt applied. 10 remains: unused media cleanup.
+Task 10.4 DONE (2026-10-15). Unused media cleanup on Save (io::paths::cleanup_unused + trash 5.2.9, editor referenced_media + cleanup_unused_media after save, job-pending skip, 6 new tests). cargo test 381 passed; clippy clean; fmt applied. Phase 10 complete.
 Task 10.2 DONE (2026-10-15). Save/Don't Save/Cancel prompts on close/quit + export-in-progress question; window X and Alt+F4 intercepted via close_requested + CancelClose. cargo test 369 passed; clippy clean; fmt applied.
 Task 10.1 DONE (2026-10-15). Autosave every 2 min + recovery prompt on open (io::autosave, editor autosave_tick/open_with_recovery_check/open_recovered/open_discarding_autosave, start-screen recovery modal). 12 new tests; filetime added as dev dep.
 Task 9.3 DONE (2026-10-13). Export dialog UI (Project menu + Ctrl+E), progress window with click blocker, clipping warning modal, status-bar success banner with Reveal, overwrite asked exactly once. See activeContext. cargo test 356 passed; clippy clean; fmt applied.

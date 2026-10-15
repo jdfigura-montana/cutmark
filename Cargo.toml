@@ -20,6 +20,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 symphonia = { version = "0.6.1", features = ["wav", "mp3", "pcm"] }
 thiserror = "2.0.21"
+trash = "5.2.9"
 uuid = { version = "1.28.0", features = ["v4", "serde"] }
 
 [dev-dependencies]
