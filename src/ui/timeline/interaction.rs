@@ -682,6 +682,13 @@ fn save_clip_state(ctx: &egui::Context, state: &ClipState) {
     ctx.data_mut(|d| d.insert_temp(egui::Id::new(CLIP_STATE_KEY), state.clone()));
 }
 
+/// True while a clip gain line is being dragged (for its brighter stroke).
+pub fn gain_line_active(ctx: &egui::Context) -> bool {
+    clip_state(ctx)
+        .drag
+        .is_some_and(|drag| matches!(drag, ClipDrag::Gain { .. }))
+}
+
 /// True when the clip is in the current clip selection.
 fn clip_selected(editor: &Editor, id: Uuid) -> bool {
     matches!(

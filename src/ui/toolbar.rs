@@ -8,6 +8,7 @@ use crate::editor::Editor;
 use crate::editor::action::Action;
 use crate::editor::transport::TransportState;
 use crate::ui::theme::{THEME, Theme};
+use crate::ui::widgets::fader;
 use crate::util::time::samples_to_timecode;
 
 /// Horizontal gap between the toolbar groups.
@@ -78,21 +79,22 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor) {
                 ),
             );
             let mut log_scale = scale.log2();
-            let slider = egui::Slider::new(&mut log_scale, 0.0..=4.0)
-                .custom_formatter(|v, _| format!("{:.1}x", 2.0_f32.powf(v as f32)))
-                .show_value(false);
-            {
-                let style = ui.style_mut();
-                style.visuals.slider_trailing_fill = true;
-                style.visuals.widgets.inactive.bg_fill = THEME.slider_track;
-                style.visuals.selection.bg_fill = THEME.slider_fill;
-                style.visuals.widgets.hovered.bg_fill = THEME.slider_thumb;
+            let (slider_rect, _) =
+                ui.allocate_exact_size(egui::vec2(110.0, 18.0), egui::Sense::click_and_drag());
+            let out = fader::slider_bare(
+                ui,
+                egui::Id::new("wave_scale_slider"),
+                slider_rect,
+                log_scale,
+                (0.0, 4.0),
+                false,
+            );
+            if out.reset {
+                log_scale = 0.0;
+            } else if let Some(v) = out.value {
+                log_scale = v;
             }
-            let resp = ui.add_sized(egui::vec2(110.0, 18.0), slider);
             editor.set_wave_scale(2.0_f32.powf(log_scale));
-            if resp.double_clicked() {
-                editor.set_wave_scale(1.0);
-            }
             ui.label(
                 egui::RichText::new("WAVE SCALE")
                     .color(THEME.text_faint)

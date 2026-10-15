@@ -125,19 +125,17 @@ pub fn slider_bare(
     out
 }
 
-/// Draws a linear slider in `rect` (vertical when `vertical`, else horizontal).
+/// Draws a bare vertical fader in `rect`: a thin centered track and a wide,
+/// short cap with a center line, no value text (the caller shows the value).
 ///
-/// The value maps linearly over `min..max` along the drag axis. Shows the
-/// value text next to the handle. Double-click reports `reset`; Esc during a
-/// drag reports `cancelled`.
-pub fn slider(
+/// The value maps linearly over `min..max`, top = max. Double-click reports
+/// `reset`; Esc during a drag reports `cancelled`.
+pub fn fader_bare(
     ui: &mut egui::Ui,
     id: egui::Id,
     rect: Rect,
     value: f32,
     range: (f32, f32),
-    vertical: bool,
-    fmt: impl Fn(f32) -> String,
 ) -> SliderOutcome {
     let (min, max) = range;
     let painter = ui.painter_at(rect);
@@ -158,87 +156,45 @@ pub fn slider(
         out.cancelled = true;
     }
 
-    // New value from the pointer position along the drag axis.
+    // New value from the pointer position along the fader height.
     if dragging && let Some(p) = resp.interact_pointer_pos() {
-        let t = if vertical {
-            (p.y - rect.top()) / rect.height()
-        } else {
-            (p.x - rect.left()) / rect.width()
-        };
-        out.value = Some(min + t.clamp(0.0, 1.0) * (max - min));
+        let t = (p.y - rect.top()) / rect.height();
+        out.value = Some(max - t.clamp(0.0, 1.0) * (max - min));
     }
 
     let shown = out.value.unwrap_or(value);
-    let t = ((shown - min) / (max - min)).clamp(0.0, 1.0);
-    let visuals = ui.visuals().clone();
-    painter.rect_filled(rect, THEME.corner_r, visuals.extreme_bg_color);
+    let t = ((max - shown) / (max - min)).clamp(0.0, 1.0);
+    let cx = rect.center().x;
+    let half_track = THEME.track_slider_track_w * 0.5;
 
-    // Hover highlight for this clickable/draggable control.
-    if resp.hovered() && !dragging {
-        painter.rect_filled(rect, THEME.corner_r, THEME.hover_overlay);
-    }
+    // Track: a thin line down the center of the fader.
+    painter.rect_filled(
+        Rect::from_min_max(
+            Pos2::new(cx - half_track, rect.top()),
+            Pos2::new(cx + half_track, rect.bottom()),
+        ),
+        half_track,
+        THEME.slider_track,
+    );
 
-    // Slot along the drag axis and the handle across it.
-    let handle_pos = if vertical {
-        Pos2::new(rect.center().x, rect.top() + t * rect.height())
-    } else {
-        Pos2::new(rect.left() + t * rect.width(), rect.center().y)
-    };
-    let slot = Stroke::new(THEME.fader_slot_w, visuals.widgets.inactive.bg_stroke.color);
-    if vertical {
-        painter.line_segment(
-            [
-                Pos2::new(rect.center().x, rect.top() + THEME.fader_inset),
-                Pos2::new(rect.center().x, rect.bottom() - THEME.fader_inset),
-            ],
-            slot,
-        );
-        painter.rect_filled(
-            Rect::from_center_size(
-                handle_pos,
-                Vec2::new(rect.width() - THEME.fader_handle_w, THEME.fader_handle_w),
-            ),
-            THEME.corner_xs,
-            visuals.strong_text_color(),
-        );
-    } else {
-        painter.line_segment(
-            [
-                Pos2::new(rect.left() + THEME.fader_inset, rect.center().y),
-                Pos2::new(rect.right() - THEME.fader_inset, rect.center().y),
-            ],
-            slot,
-        );
-        painter.rect_filled(
-            Rect::from_center_size(
-                handle_pos,
-                Vec2::new(THEME.fader_handle_w, rect.height() - THEME.fader_handle_w),
-            ),
-            THEME.corner_xs,
-            visuals.strong_text_color(),
-        );
-    }
-
-    // Value text next to the handle.
-    let text_pos = if vertical {
-        Pos2::new(
-            rect.left() + THEME.fader_text_pad_x,
-            handle_pos.y - THEME.fader_text_dy,
-        )
-    } else {
-        Pos2::new(handle_pos.x, rect.top() + THEME.fader_text_pad_y)
-    };
-    let anchor = if vertical {
-        egui::Align2::LEFT_BOTTOM
-    } else {
-        egui::Align2::CENTER_TOP
-    };
-    painter.text(
-        text_pos,
-        anchor,
-        fmt(shown),
-        egui::FontId::proportional(THEME.fader_text_size),
-        THEME.fader_text,
+    // Cap: stays fully inside the rect as it travels.
+    let cap_h = 12.0;
+    let cap_y = rect.top() + t * (rect.height() - cap_h) + cap_h * 0.5;
+    let cap = Rect::from_center_size(Pos2::new(cx, cap_y), Vec2::new(rect.width(), cap_h));
+    // Small shadow under the cap.
+    painter.rect_filled(
+        cap.translate(egui::vec2(0.0, 1.0)),
+        THEME.corner_r,
+        egui::Color32::from_black_alpha(60),
+    );
+    painter.rect_filled(cap, THEME.corner_r, THEME.slider_thumb);
+    // 1 px center line across the cap.
+    painter.line_segment(
+        [
+            Pos2::new(cap.left() + 3.0, cap.center().y),
+            Pos2::new(cap.right() - 3.0, cap.center().y),
+        ],
+        Stroke::new(THEME.hairline, THEME.slider_fill),
     );
 
     if out.reset {

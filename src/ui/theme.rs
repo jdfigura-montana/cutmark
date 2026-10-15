@@ -49,8 +49,6 @@ pub struct Theme {
     pub bar_bg: egui::Color32,
     /// Recessed surface of the meter bars (unlit).
     pub recessed_a: egui::Color32,
-    /// Recessed surface of the timecode / peak readout box.
-    pub recessed_b: egui::Color32,
     /// Timecode ruler background.
     pub ruler_bg: egui::Color32,
     /// Even track lane background.
@@ -113,11 +111,7 @@ pub struct Theme {
     pub offline_header: egui::Color32,
     /// Text color inside an offline clip.
     pub offline_text: egui::Color32,
-    /// Width of the dark under-shadow of the clip gain line.
-    pub gain_shadow_w: f32,
-    /// Dark under-shadow color of the clip gain line.
-    pub gain_shadow: egui::Color32,
-    /// Bright amber line color of the clip gain line.
+    /// Bright white line color of the clip gain line.
     pub gain_line: egui::Color32,
     /// Amber curve color of the fade lines.
     pub gain_curve: egui::Color32,
@@ -273,56 +267,10 @@ pub struct Theme {
     pub meter_green: egui::Color32,
     /// Peak-hold marker color.
     pub meter_hold: egui::Color32,
-    /// Peak-hold marker width.
-    pub meter_hold_w: f32,
-    /// Peak line width.
-    pub meter_peak_w: f32,
     /// Clip light color while latched.
     pub clip_light_on: egui::Color32,
     /// Clip light color while clear.
     pub clip_light_off: egui::Color32,
-    /// Height of the clip-light strip above the bars.
-    pub clip_light_h: f32,
-    /// Meter scale tick color.
-    pub meter_tick: egui::Color32,
-    /// Meter tick label color.
-    pub meter_label: egui::Color32,
-    /// Width of the tick-label gutter.
-    pub meter_label_w: f32,
-    /// Minimum bar-area height at which tick labels are drawn.
-    pub meter_label_room: f32,
-    /// Gap between the L and R bars.
-    pub meter_bar_gap: f32,
-    /// Font size of the meter tick labels.
-    pub meter_label_size: f32,
-    /// Horizontal padding of the meter tick labels.
-    pub meter_label_pad_x: f32,
-
-    // ---- Fader / master strip ----
-    /// Width of the fader slot stroke.
-    pub fader_slot_w: f32,
-    /// Thickness of the fader handle across the slot.
-    pub fader_handle_w: f32,
-    /// Inset of the fader slot ends from the rect corners.
-    pub fader_inset: f32,
-    /// Fader value text color.
-    pub fader_text: egui::Color32,
-    /// Font size of the fader value text.
-    pub fader_text_size: f32,
-    /// Horizontal padding of the fader value text.
-    pub fader_text_pad_x: f32,
-    /// Vertical offset of the fader value text above the handle.
-    pub fader_text_dy: f32,
-    /// Vertical padding of the fader value text.
-    pub fader_text_pad_y: f32,
-    /// Width of the master meter bars area.
-    pub master_meter_w: f32,
-    /// Width of the vertical master fader.
-    pub master_fader_w: f32,
-    /// Height of the master peak-readout strip.
-    pub master_readout_h: f32,
-    /// Padding inside the master strip.
-    pub master_pad: f32,
 
     // ---- Bin panel ----
     /// Height of one bin item row.
@@ -444,7 +392,6 @@ impl Default for Theme {
             panel_bg: egui::Color32::from_rgb(0x1A, 0x1D, 0x22),
             bar_bg: egui::Color32::from_rgb(0x12, 0x14, 0x18),
             recessed_a: egui::Color32::from_rgb(0x0E, 0x10, 0x13),
-            recessed_b: egui::Color32::from_rgb(0x10, 0x12, 0x16),
             ruler_bg: egui::Color32::from_rgb(0x16, 0x19, 0x1D),
             lane_a: egui::Color32::from_rgb(0x1B, 0x1E, 0x23),
             lane_b: egui::Color32::from_rgb(0x1E, 0x21, 0x27),
@@ -476,8 +423,6 @@ impl Default for Theme {
             offline_body: egui::Color32::from_rgba_unmultiplied(150, 62, 62, 220),
             offline_header: egui::Color32::from_rgba_unmultiplied(110, 42, 42, 230),
             offline_text: egui::Color32::WHITE,
-            gain_shadow_w: 3.0,
-            gain_shadow: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 110),
             gain_line: egui::Color32::from_rgb(0xF2, 0xF4, 0xF7),
             gain_curve: egui::Color32::from_rgba_unmultiplied(0xF2, 0xF4, 0xF7, 178),
             fade_shade: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 90),
@@ -556,32 +501,9 @@ impl Default for Theme {
             meter_yellow: egui::Color32::from_rgb(0xE3, 0xC0, 0x4A),
             meter_green: egui::Color32::from_rgb(0x3D, 0xBE, 0x6B),
             meter_hold: egui::Color32::from_rgb(230, 234, 240),
-            meter_hold_w: 2.0,
-            meter_peak_w: 1.5,
             clip_light_on: egui::Color32::from_rgb(0xE5, 0x54, 0x4B),
             clip_light_off: egui::Color32::from_rgb(0x3A, 0x22, 0x24),
-            clip_light_h: 8.0,
-            meter_tick: egui::Color32::from_rgb(0x2B, 0x30, 0x38),
-            meter_label: egui::Color32::from_rgb(0x8A, 0x90, 0x9A),
-            meter_label_w: 24.0,
-            meter_label_room: 90.0,
-            meter_bar_gap: 2.0,
-            meter_label_size: 9.0,
-            meter_label_pad_x: 3.0,
 
-            // Fader / master strip
-            fader_slot_w: 2.0,
-            fader_handle_w: 4.0,
-            fader_inset: 3.0,
-            fader_text: egui::Color32::from_rgb(170, 175, 180),
-            fader_text_size: 9.0,
-            fader_text_pad_x: 2.0,
-            fader_text_dy: 7.0,
-            fader_text_pad_y: 1.0,
-            master_meter_w: 36.0,
-            master_fader_w: 26.0,
-            master_readout_h: 16.0,
-            master_pad: 4.0,
             // Bin panel
             bin_row_h: 52.0,
             bin_row_gap: 2.0,

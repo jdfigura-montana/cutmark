@@ -453,6 +453,7 @@ fn draw(
                 egui::Stroke::new(THEME.hairline, THEME.border),
             );
             // Clips (no waveforms yet, ui::timeline::clip_view).
+            let gain_active = interaction::gain_line_active(ui.ctx());
             for clip in &track.clips {
                 let (name, offline) = media_info(editor, clip.media_id);
                 let loaded = if offline {
@@ -481,6 +482,7 @@ fn draw(
                     selected,
                     hover,
                     track.mute,
+                    gain_active,
                 );
             }
         }

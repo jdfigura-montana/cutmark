@@ -4,7 +4,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
+use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use uuid::Uuid;
 
 use crate::ui::theme::THEME;
@@ -15,7 +15,7 @@ const RMS_WINDOW: f64 = 0.3;
 /// Peak falloff, in dB per second.
 const PEAK_FALL: f32 = 20.0;
 /// Floor for peak and RMS readings, in dB.
-const FLOOR: f32 = -60.0;
+pub const FLOOR: f32 = -60.0;
 /// How long the peak-hold marker stays, in seconds.
 const HOLD_TIME: f32 = 2.0;
 
@@ -99,6 +99,9 @@ impl ChannelBallistics {
     }
 
     /// Bar color for a level in dBFS.
+    ///
+    /// Only the tests read it directly; the widgets fill zones instead.
+    #[allow(dead_code)]
     pub fn color_for(db: f32) -> Color32 {
         if db > -6.0 {
             THEME.meter_red
@@ -117,7 +120,7 @@ impl Default for ChannelBallistics {
 }
 
 /// Scale tick values printed on the meter, in dBFS.
-const TICKS: [f32; 8] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0, -48.0, -60.0];
+pub const TICKS: [f32; 8] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0, -48.0, -60.0];
 
 /// One channel's raw meter reading from the audio thread: peak, sum of
 /// squares, frames and clip flag (the same tuple `Editor::read_meters` yields).
@@ -177,119 +180,9 @@ impl MeterState {
 }
 
 /// Maps a dBFS value to a y position inside a bar area (bottom = -60 dB).
-fn db_y(area: Rect, db: f32) -> f32 {
+pub fn db_y(area: Rect, db: f32) -> f32 {
     let t = ((db - FLOOR) / -FLOOR).clamp(0.0, 1.0);
     area.bottom() - t * area.height()
-}
-
-/// Draws one channel's bar: solid RMS, thin peak line and hold marker.
-fn draw_bar(painter: &egui::Painter, area: Rect, ch: &ChannelBallistics) {
-    painter.rect_filled(area, 0.0, THEME.meter_bar_bg);
-    let rms = ch.rms_db();
-    if rms > FLOOR {
-        let bar = Rect::from_min_max(
-            Pos2::new(area.left(), db_y(area, rms)),
-            Pos2::new(area.right(), area.bottom()),
-        );
-        painter.rect_filled(bar, 0.0, ChannelBallistics::color_for(rms));
-    }
-    if ch.peak_db > FLOOR {
-        let y = db_y(area, ch.peak_db);
-        painter.line_segment(
-            [Pos2::new(area.left(), y), Pos2::new(area.right(), y)],
-            Stroke::new(THEME.meter_peak_w, ChannelBallistics::color_for(ch.peak_db)),
-        );
-    }
-    if ch.hold_db > FLOOR {
-        let y = db_y(area, ch.hold_db);
-        painter.line_segment(
-            [Pos2::new(area.left(), y), Pos2::new(area.right(), y)],
-            Stroke::new(THEME.meter_hold_w, THEME.meter_hold),
-        );
-    }
-}
-
-/// Draws a stereo (L and R side by side) meter with ballistics into `rect`.
-///
-/// Ticks always draw; tick labels draw only when `labels` is set and the meter
-/// is tall enough (used by the master strip). A clip light sits on top of each
-/// bar; clicking the meter clears both clip lights. Returns true when clicked.
-pub fn stereo_meter(
-    ui: &mut egui::Ui,
-    id: egui::Id,
-    rect: Rect,
-    channels: &mut [ChannelBallistics; 2],
-    labels: bool,
-) -> bool {
-    let painter = ui.painter_at(rect);
-    let resp = ui.interact(rect, id, egui::Sense::click());
-    let clicked = resp.clicked();
-    if clicked {
-        for ch in channels.iter_mut() {
-            ch.clear_clip();
-        }
-    }
-
-    // Clip lights on top, one per channel.
-    let light_rect =
-        Rect::from_min_size(rect.left_top(), Vec2::new(rect.width(), THEME.clip_light_h));
-    let bars_top = rect.top() + THEME.clip_light_h + THEME.space_xs;
-    let bar_area = Rect::from_min_max(
-        Pos2::new(rect.left(), bars_top),
-        Pos2::new(rect.right(), rect.bottom()),
-    );
-    let label_gutter = if labels { THEME.meter_label_w } else { 0.0 };
-    let bars_w = (bar_area.width() - label_gutter).max(THEME.space_xs);
-    let bar_w = ((bars_w - THEME.meter_bar_gap) * 0.5).max(THEME.hairline);
-    let l_rect = Rect::from_min_max(
-        bar_area.left_top(),
-        Pos2::new(bar_area.left() + bar_w, bar_area.bottom()),
-    );
-    let r_rect = Rect::from_min_max(
-        Pos2::new(bar_area.left() + bars_w - bar_w, bar_area.top()),
-        Pos2::new(bar_area.left() + bars_w, bar_area.bottom()),
-    );
-    for (bar, ch) in [(l_rect, &channels[0]), (r_rect, &channels[1])] {
-        let light = Rect::from_min_max(
-            Pos2::new(bar.left(), light_rect.top()),
-            Pos2::new(bar.right(), light_rect.bottom()),
-        );
-        let color = if ch.clip {
-            THEME.clip_light_on
-        } else {
-            THEME.clip_light_off
-        };
-        painter.rect_filled(light, THEME.corner_r, color);
-    }
-    draw_bar(&painter, l_rect, &channels[0]);
-    draw_bar(&painter, r_rect, &channels[1]);
-
-    // Ticks across both bars; labels in the gutter when there is room.
-    let show_labels = labels && bar_area.height() >= THEME.meter_label_room;
-    for &t in &TICKS {
-        let y = db_y(bar_area, t);
-        painter.line_segment(
-            [
-                Pos2::new(bar_area.left(), y),
-                Pos2::new(bar_area.left() + bars_w, y),
-            ],
-            Stroke::new(THEME.hairline, THEME.meter_tick),
-        );
-        if show_labels {
-            painter.text(
-                Pos2::new(bar_area.left() + bars_w + THEME.meter_label_pad_x, y),
-                egui::Align2::LEFT_CENTER,
-                format!("{}", t as i32),
-                egui::FontId::proportional(THEME.meter_label_size),
-                THEME.meter_label,
-            );
-        }
-    }
-    // Hover highlight for this clickable control.
-    if resp.hovered() && !clicked {
-        painter.rect_filled(rect, THEME.corner_r, THEME.hover_overlay);
-    }
-    clicked
 }
 
 /// Draws the compact track-header meter: two thin bars with a 4 px clip light
@@ -345,7 +238,7 @@ pub fn header_meter(
 }
 
 /// Fills the part of `bar` between two dBFS values with `color`.
-fn fill_zone(painter: &egui::Painter, bar: Rect, lo: f32, hi: f32, color: Color32) {
+pub fn fill_zone(painter: &egui::Painter, bar: Rect, lo: f32, hi: f32, color: Color32) {
     if hi <= lo {
         return;
     }

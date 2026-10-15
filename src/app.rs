@@ -310,7 +310,14 @@ impl App {
         let mut view_action = ViewMenuAction::None;
         egui::Panel::top("menu_bar")
             .exact_size(MENU_BAR_H)
-            .frame(egui::Frame::new().fill(THEME.bar_bg))
+            .frame(
+                egui::Frame::new()
+                    .fill(THEME.bar_bg)
+                    .inner_margin(egui::Margin {
+                        left: 8,
+                        ..Default::default()
+                    }),
+            )
             .show(ui, |ui| {
                 (action, view_action) = menu.show(ui, editor);
             });
@@ -321,7 +328,14 @@ impl App {
         }
         egui::Panel::top("toolbar")
             .exact_size(TOOLBAR_H)
-            .frame(egui::Frame::new().fill(THEME.panel_bg))
+            .frame(
+                egui::Frame::new()
+                    .fill(THEME.panel_bg)
+                    .inner_margin(egui::Margin {
+                        left: 8,
+                        ..Default::default()
+                    }),
+            )
             .show(ui, |ui| {
                 toolbar::show(ui, editor);
             });
@@ -329,7 +343,14 @@ impl App {
         // Bottom: status bar.
         egui::Panel::bottom("status_bar")
             .exact_size(STATUS_BAR_H)
-            .frame(egui::Frame::new().fill(THEME.bar_bg))
+            .frame(
+                egui::Frame::new()
+                    .fill(THEME.bar_bg)
+                    .inner_margin(egui::Margin {
+                        left: 8,
+                        ..Default::default()
+                    }),
+            )
             .show(ui, |ui| {
                 status_bar::show(ui, editor, banner.as_ref());
             });
@@ -338,6 +359,7 @@ impl App {
         egui::Panel::right("master_strip")
             .resizable(false)
             .exact_size(116.0)
+            .frame(egui::Frame::new().fill(THEME.panel_bg))
             .show(ui, |ui| {
                 master_strip::show(ui, editor, meters);
             });

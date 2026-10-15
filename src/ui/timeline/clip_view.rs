@@ -1,6 +1,6 @@
 //! ui::timeline::clip_view: drawing and hit-testing a single clip.
 
-use eframe::egui;
+use eframe::egui::{self, Stroke};
 
 use crate::io::import::Loaded;
 use crate::model::clip::Clip;
@@ -186,6 +186,7 @@ pub fn draw(
     selected: bool,
     hover: Option<Zone>,
     muted: bool,
+    gain_active: bool,
 ) {
     let (vis_start, vis_end) = g.visible_range();
     if clip.end() <= vis_start || clip.start >= vis_end {
@@ -249,7 +250,7 @@ pub fn draw(
 
     // Clip gain line and fade curves, over the waveform.
     if !offline {
-        draw_gain_and_fades(painter, clip, g, rect, body, hover, muted);
+        draw_gain_and_fades(painter, clip, g, rect, body, hover, muted, gain_active);
     }
 
     // Unselected: 1 px inner border in the track color; selected: 2 px accent.
@@ -375,6 +376,7 @@ fn fit_galley(
 /// (between the curve and the clip edge above it) is darkened. The handles
 /// draw as 8x8 squares at the clip's real top corners, brighter while
 /// hovered. On a muted track everything draws at 45% opacity.
+#[allow(clippy::too_many_arguments)]
 fn draw_gain_and_fades(
     painter: &egui::Painter,
     clip: &Clip,
@@ -383,21 +385,32 @@ fn draw_gain_and_fades(
     body: egui::Rect,
     hover: Option<Zone>,
     muted: bool,
+    gain_active: bool,
 ) {
     let scale = if muted { 0.45 } else { 1.0 };
     let dim = |color: egui::Color32| color.gamma_multiply(scale);
     let clipped = painter.with_clip_rect(body);
-    // Gain line: a dark under-shadow plus a bright line, visible on light and
-    // dark waveforms alike.
+    // Gain line: 1 px at 30% alpha, or 2 px at full alpha while hovered or
+    // dragged.
     let gy = gain_line_y(clip, rect);
     if gy >= body.top() - 0.5 && gy <= body.bottom() + 0.5 {
+        let gain_active = hover == Some(Zone::GainLine) || gain_active;
+        let stroke = if gain_active {
+            Stroke::new(2.0, dim(THEME.gain_line))
+        } else {
+            Stroke::new(
+                THEME.hairline,
+                egui::Color32::from_rgba_unmultiplied(
+                    THEME.gain_line.r(),
+                    THEME.gain_line.g(),
+                    THEME.gain_line.b(),
+                    (76.0 * scale) as u8,
+                ),
+            )
+        };
         clipped.line_segment(
             [egui::pos2(body.left(), gy), egui::pos2(body.right(), gy)],
-            egui::Stroke::new(THEME.gain_shadow_w, dim(THEME.gain_shadow)),
-        );
-        clipped.line_segment(
-            [egui::pos2(body.left(), gy), egui::pos2(body.right(), gy)],
-            egui::Stroke::new(THEME.hairline, dim(THEME.gain_line)),
+            stroke,
         );
     }
 
