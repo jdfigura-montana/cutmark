@@ -5,7 +5,7 @@ use eframe::egui;
 use crate::io::import::Loaded;
 use crate::model::clip::Clip;
 
-use crate::ui::theme::THEME;
+use crate::ui::theme::{THEME, Theme};
 
 use super::Geom;
 
@@ -182,10 +182,10 @@ pub fn draw(
     g: &Geom,
     track_rect: egui::Rect,
     track_index: usize,
-    visuals: &egui::Visuals,
     wave_scale: f32,
     selected: bool,
     hover: Option<Zone>,
+    muted: bool,
 ) {
     let (vis_start, vis_end) = g.visible_range();
     if clip.end() <= vis_start || clip.start >= vis_end {
@@ -193,11 +193,18 @@ pub fn draw(
     }
     let rect = clip_rect(clip, g, track_rect);
 
+    // Clips on muted tracks draw at 45% opacity: every color below is
+    // alpha-scaled through this closure.
+    let scale = if muted { 0.45 } else { 1.0 };
+    let dim = |color: egui::Color32| color.gamma_multiply(scale);
+
     // Track color of this clip: translucent body, stronger header strip and a
     // solid waveform stroke.
-    let tc = THEME.track_color(track_index);
-    let body_fill = egui::Color32::from_rgba_unmultiplied(tc.r(), tc.g(), tc.b(), 0x22);
-    let header_fill = egui::Color32::from_rgba_unmultiplied(tc.r(), tc.g(), tc.b(), 0x66);
+    let tc = dim(THEME.track_color(track_index));
+    let body_fill =
+        egui::Color32::from_rgba_unmultiplied(tc.r(), tc.g(), tc.b(), (0x22 as f32 * scale) as u8);
+    let header_fill =
+        egui::Color32::from_rgba_unmultiplied(tc.r(), tc.g(), tc.b(), (0x66 as f32 * scale) as u8);
 
     // Extremely narrow clip: a single 1 px line, no text.
     if rect.width() < THEME.thin_clip_w {
@@ -218,18 +225,18 @@ pub fn draw(
 
     painter.rect_filled(
         body,
-        THEME.corner_r,
+        THEME.clip_radius,
         if offline {
-            THEME.offline_body
+            dim(THEME.offline_body)
         } else {
             body_fill
         },
     );
     painter.rect_filled(
         header_rect,
-        THEME.corner_r,
+        THEME.clip_radius,
         if offline {
-            THEME.offline_header
+            dim(THEME.offline_header)
         } else {
             header_fill
         },
@@ -237,40 +244,80 @@ pub fn draw(
 
     // Waveform in the body (below the header), for online, loaded media.
     if !offline && let Some(loaded) = media {
-        super::waveform::draw(painter, clip, loaded, g, body, wave_scale, tc);
+        super::waveform::draw(painter, clip, loaded, g, body, wave_scale, tc, muted);
     }
 
     // Clip gain line and fade curves, over the waveform.
     if !offline {
-        draw_gain_and_fades(painter, clip, g, rect, body, hover);
+        draw_gain_and_fades(painter, clip, g, rect, body, hover, muted);
     }
 
+    // Unselected: 1 px inner border in the track color; selected: 2 px accent.
     let border = if selected {
-        egui::Stroke::new(THEME.selection_border_w, THEME.selection_border)
+        egui::Stroke::new(THEME.selection_border_w, dim(THEME.selection_border))
     } else {
-        visuals.widgets.noninteractive.bg_stroke
+        egui::Stroke::new(
+            THEME.hairline,
+            egui::Color32::from_rgba_unmultiplied(
+                tc.r(),
+                tc.g(),
+                tc.b(),
+                (0x55 as f32 * scale) as u8,
+            ),
+        )
     };
-    painter.rect_stroke(rect, THEME.corner_r, border, egui::StrokeKind::Inside);
+    painter.rect_stroke(rect, THEME.clip_radius, border, egui::StrokeKind::Inside);
 
-    let text_color = if offline {
+    // Header text: the name pinned to the visible left edge and the gain
+    // pinned to the visible right edge when the clip runs off the lanes, so
+    // both stay readable; the name truncates with an ellipsis before the gain.
+    let text_color = dim(if offline {
         THEME.offline_text
     } else {
-        visuals.strong_text_color()
-    };
+        THEME.clip_text_color
+    });
     let clipped = painter.with_clip_rect(rect);
-    clipped.text(
-        egui::pos2(rect.left() + THEME.clip_text_pad, header_rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        media_name,
-        egui::FontId::proportional(THEME.clip_name_size),
-        text_color,
-    );
+    let gain_text = format!("{:+.1} dB", clip.gain_db);
+    let gain_font = Theme::mono(THEME.clip_gain_size);
+    let gain_galley = painter.layout_no_wrap(gain_text, gain_font, text_color);
+    // Visible right edge of the lanes: the gain pins here when the clip's
+    // right edge is scrolled out of view.
+    let lane_right = g.lane_left + g.lane_width;
+    let gain_right = if rect.right() > lane_right {
+        lane_right - THEME.clip_text_pad
+    } else {
+        rect.right() - THEME.clip_text_pad
+    };
+    let gain_left = gain_right - gain_galley.size().x;
+    // Visible left edge: the name pins here (16 px in) when the clip's left
+    // edge is scrolled out of view.
+    let name_x = if rect.left() < g.lane_left {
+        g.lane_left + 16.0
+    } else {
+        rect.left() + THEME.clip_text_pad
+    };
+    let name_max_w = gain_left - name_x - 6.0;
+    if name_max_w > 8.0 {
+        let name_galley = fit_galley(
+            painter,
+            media_name,
+            clip_name_font(),
+            text_color,
+            name_max_w,
+        );
+        clipped.galley(
+            egui::pos2(name_x, header_rect.center().y - name_galley.size().y * 0.5),
+            name_galley,
+            text_color,
+        );
+    }
     // The gain value at the right of the header is the double-click target.
-    clipped.text(
-        egui::pos2(rect.right() - THEME.clip_text_pad, header_rect.center().y),
-        egui::Align2::RIGHT_CENTER,
-        format!("{:+.1} dB", clip.gain_db),
-        egui::FontId::proportional(THEME.clip_gain_size),
+    clipped.galley(
+        egui::pos2(
+            gain_left,
+            header_rect.center().y - gain_galley.size().y * 0.5,
+        ),
+        gain_galley,
         text_color,
     );
     if offline {
@@ -279,8 +326,45 @@ pub fn draw(
             egui::Align2::CENTER_CENTER,
             "Media offline",
             egui::FontId::proportional(THEME.clip_name_size),
-            THEME.offline_text,
+            dim(THEME.offline_text),
         );
+    }
+}
+
+/// Font of the clip name in the header strip.
+fn clip_name_font() -> egui::FontId {
+    egui::FontId::proportional(THEME.clip_name_size)
+}
+
+/// Lays out `text` in `font`, truncating with an ellipsis until it fits
+/// `max_w` (or a single character remains).
+fn fit_galley(
+    painter: &egui::Painter,
+    text: &str,
+    font: egui::FontId,
+    color: egui::Color32,
+    max_w: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let full = painter.layout_no_wrap(text.to_owned(), font.clone(), color);
+    if full.size().x <= max_w {
+        return full;
+    }
+    let mut candidate: String = text.to_owned();
+    loop {
+        let char_count = candidate.chars().count();
+        if char_count <= 1 {
+            return full;
+        }
+        candidate = candidate.chars().take(char_count - 1).collect();
+        candidate.push('\u{2026}');
+        let galley = painter.layout_no_wrap(candidate.clone(), font.clone(), color);
+        if galley.size().x <= max_w {
+            return galley;
+        }
+        // Keep trimming; the trailing ellipsis is re-added on the next pass.
+        if candidate.chars().count() <= 2 {
+            return galley;
+        }
     }
 }
 
@@ -289,7 +373,8 @@ pub fn draw(
 /// Each fade curve is a line from the bottom of the body at the clip edge up
 /// to the top of the body at the end of the fade; the area outside the curve
 /// (between the curve and the clip edge above it) is darkened. The handles
-/// draw as small squares, brighter while hovered.
+/// draw as 8x8 squares at the clip's real top corners, brighter while
+/// hovered. On a muted track everything draws at 45% opacity.
 fn draw_gain_and_fades(
     painter: &egui::Painter,
     clip: &Clip,
@@ -297,7 +382,10 @@ fn draw_gain_and_fades(
     rect: egui::Rect,
     body: egui::Rect,
     hover: Option<Zone>,
+    muted: bool,
 ) {
+    let scale = if muted { 0.45 } else { 1.0 };
+    let dim = |color: egui::Color32| color.gamma_multiply(scale);
     let clipped = painter.with_clip_rect(body);
     // Gain line: a dark under-shadow plus a bright line, visible on light and
     // dark waveforms alike.
@@ -305,17 +393,17 @@ fn draw_gain_and_fades(
     if gy >= body.top() - 0.5 && gy <= body.bottom() + 0.5 {
         clipped.line_segment(
             [egui::pos2(body.left(), gy), egui::pos2(body.right(), gy)],
-            egui::Stroke::new(THEME.gain_shadow_w, THEME.gain_shadow),
+            egui::Stroke::new(THEME.gain_shadow_w, dim(THEME.gain_shadow)),
         );
         clipped.line_segment(
             [egui::pos2(body.left(), gy), egui::pos2(body.right(), gy)],
-            egui::Stroke::new(THEME.hairline, THEME.gain_line),
+            egui::Stroke::new(THEME.hairline, dim(THEME.gain_line)),
         );
     }
 
     let shade = egui::Stroke::NONE;
-    let shade_fill = THEME.fade_shade;
-    let curve = egui::Stroke::new(THEME.hairline, THEME.gain_curve);
+    let shade_fill = dim(THEME.fade_shade);
+    let curve = egui::Stroke::new(1.2, dim(THEME.gain_curve));
     if clip.fade_in > 0 {
         let fx = (rect.left() + (clip.fade_in as f64 / g.spp.max(f64::EPSILON)) as f32)
             .min(rect.right());
@@ -359,21 +447,22 @@ fn draw_gain_and_fades(
     }
 
     for (zone, fade_out) in [(Zone::FadeInHandle, false), (Zone::FadeOutHandle, true)] {
-        let grab = fade_handle_rect(clip, rect, g.spp, fade_out);
+        // The square always sits on the clip's real top corner.
+        let corner_x = if fade_out { rect.right() } else { rect.left() };
         let square = egui::Rect::from_center_size(
-            grab.center(),
+            egui::pos2(corner_x, body.top()),
             egui::vec2(THEME.fade_handle_sz, THEME.fade_handle_sz),
         );
         let fill = if hover == Some(zone) {
-            THEME.fade_handle_hover
+            dim(THEME.fade_handle_hover)
         } else {
-            THEME.fade_handle_fill
+            dim(THEME.fade_handle_fill)
         };
-        clipped.rect_filled(square, THEME.corner_xs, fill);
+        clipped.rect_filled(square, THEME.corner_r, fill);
         clipped.rect_stroke(
             square,
-            THEME.corner_xs,
-            egui::Stroke::new(THEME.hairline, THEME.fade_handle_stroke),
+            THEME.corner_r,
+            egui::Stroke::new(THEME.hairline, dim(THEME.fade_handle_stroke)),
             egui::StrokeKind::Inside,
         );
     }

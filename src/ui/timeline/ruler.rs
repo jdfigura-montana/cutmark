@@ -7,7 +7,6 @@ use crate::editor::Editor;
 use crate::editor::action::Action;
 use crate::editor::snap;
 use crate::model::marker::Marker;
-use crate::util::time::samples_to_timecode;
 
 use crate::ui::theme::{THEME, Theme};
 
@@ -405,18 +404,22 @@ pub fn draw(
     lane_rect: egui::Rect,
     g: &Geom,
     rate: u32,
+    project_length: u64,
     markers: &[Marker],
     selected: Option<Uuid>,
-    text: egui::Color32,
-    stroke: egui::Stroke,
 ) {
     // Major ticks with timecode labels, plus minor ticks between them.
+    // The label step is the smallest step whose labels are at least 60 px
+    // apart; the labels adapt their format to that step.
     let step = tick_step(g.spp, rate, THEME.ruler_min_tick_px);
     let (start, end) = g.visible_range();
     let first = start / step * step;
     let minor = step / 5;
     let minor_px = minor as f64 / g.spp;
     let show_minor = minor_px >= 8.0;
+    let stroke = egui::Stroke::new(THEME.hairline, THEME.ruler_tick_color);
+    let text = THEME.text_muted;
+    let over_hour = project_length / u64::from(rate) > 3600;
 
     let mut m = first;
     while m <= end {
@@ -432,7 +435,7 @@ pub fn draw(
                 ],
                 stroke,
             );
-            let tc = samples_to_timecode(m, rate);
+            let tc = ruler_label(step, m, rate, over_hour);
             painter.text(
                 egui::pos2(
                     x + THEME.ruler_label_pad_x,
@@ -502,15 +505,65 @@ pub fn draw(
                 egui::pos2(x, ruler_rect.bottom()),
                 egui::pos2(x, lane_rect.bottom()),
             ],
-            egui::Stroke::new(
-                THEME.hairline,
-                egui::Color32::from_rgba_premultiplied(
-                    line_color.r() / 4,
-                    line_color.g() / 4,
-                    line_color.b() / 4,
-                    line_color.a() / 4,
-                ),
-            ),
+            egui::Stroke::new(THEME.hairline, line_color.gamma_multiply(0.35)),
         );
+    }
+}
+
+/// Adaptive ruler label for a tick at `samples`, formatted for `step_secs`.
+///
+/// Steps of 1 s or more read "m:ss" (or "h:mm:ss" when `over_hour`), 100 ms
+/// steps read "m:ss.d" (or "h:mm:ss.d"), anything finer reads "m:ss.mmm"
+/// (or "h:mm:ss.mmm"). The "h:" prefix appears only when `over_hour`.
+fn ruler_label(step: u64, samples: u64, rate: u32, over_hour: bool) -> String {
+    let step_secs = step as f64 / f64::from(rate);
+    let total_ms = samples * 1000 / u64::from(rate);
+    if over_hour {
+        let hh = total_ms / 3_600_000;
+        let rem = total_ms % 3_600_000;
+        let mm = rem / 60_000;
+        let ss = (rem / 1000) % 60;
+        let ms = rem % 1000;
+        if step_secs >= 1.0 {
+            format!("{hh}:{mm:02}:{ss:02}")
+        } else if (step_secs - 0.1).abs() < f64::EPSILON {
+            format!("{hh}:{mm:02}:{ss:02}.{}", ms / 100)
+        } else {
+            format!("{hh}:{mm:02}:{ss:02}.{ms:03}")
+        }
+    } else {
+        let mm = (total_ms / 60_000) % 60;
+        let ss = (total_ms / 1000) % 60;
+        let ms = total_ms % 1000;
+        if step_secs >= 1.0 {
+            format!("{mm}:{ss:02}")
+        } else if (step_secs - 0.1).abs() < f64::EPSILON {
+            format!("{mm}:{ss:02}.{}", ms / 100)
+        } else {
+            format!("{mm}:{ss:02}.{ms:03}")
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ruler_labels_adapt_to_the_step() {
+        // 1 s step at 48 kHz: m:ss.
+        assert_eq!(ruler_label(48_000, 90_000, 48_000, false), "0:01");
+        // 100 ms step: m:ss.d.
+        assert_eq!(ruler_label(4_800, 90_240, 48_000, false), "0:01.8");
+        // Sub-100 ms step: m:ss.mmm.
+        assert_eq!(ruler_label(480, 90_240, 48_000, false), "0:01.880");
+        // 1 h 2 min 3.5 s with the hour prefix: h:mm:ss.
+        assert_eq!(ruler_label(48_000, 3_723_500, 1_000, true), "1:02:03");
+    }
+
+    #[test]
+    fn ruler_labels_without_hour_prefix_wrap_minutes() {
+        // 2 min 5 s, no hour prefix: minutes are not wrapped past 59.
+        assert_eq!(ruler_label(48_000, 6_000_000, 48_000, false), "2:05");
     }
 }

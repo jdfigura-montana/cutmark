@@ -477,10 +477,10 @@ fn draw(
                     g,
                     track_rect,
                     i,
-                    &visuals,
                     wave_scale,
                     selected,
                     hover,
+                    track.mute,
                 );
             }
         }
@@ -501,11 +501,27 @@ fn draw(
         lane_rect,
         g,
         editor.project.sample_rate,
+        editor.project_length(),
         &editor.project.markers,
         editor.selected_marker(),
-        visuals.text_color(),
-        visuals.widgets.noninteractive.bg_stroke,
     );
+
+    // Range selection: a 3 px accent bar along the ruler bottom across the
+    // range (the tint and boundary lines are drawn by ui::timeline::interaction).
+    if let crate::editor::selection::Selection::Range { start, end, .. } = editor.selection() {
+        let x0 = g.sample_to_x(*start).max(g.lane_left);
+        let x1 = g.sample_to_x(*end).min(lane_rect.right());
+        if x1 > x0 {
+            painter.rect_filled(
+                egui::Rect::from_min_max(
+                    egui::pos2(x0, ruler_rect.bottom() - 3.0),
+                    egui::pos2(x1, ruler_rect.bottom()),
+                ),
+                0.0,
+                THEME.accent,
+            );
+        }
+    }
 
     // Playhead: a line through ruler and lanes with a handle in the ruler.
     let playhead_color = THEME.playhead_color;

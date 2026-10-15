@@ -91,6 +91,10 @@ pub struct Theme {
     pub gain_text_w: f32,
     /// Horizontal padding of the clip header text.
     pub clip_text_pad: f32,
+    /// Corner radius of a clip.
+    pub clip_radius: f32,
+    /// Text color inside a clip header.
+    pub clip_text_color: egui::Color32,
     /// Font size of the clip name in the header strip.
     pub clip_name_size: f32,
     /// Font size of the clip gain value in the header strip.
@@ -129,8 +133,6 @@ pub struct Theme {
     // ---- Waveform ----
     /// Stroke width of the waveform lines.
     pub wave_width: f32,
-    /// Faint center line color of each waveform lane.
-    pub wave_center: egui::Color32,
     /// Radius of the drawn sample dots at extreme zoom-in.
     pub wave_dot_r: f32,
 
@@ -147,6 +149,8 @@ pub struct Theme {
     pub ruler_tick_h: f32,
     /// Minor ruler tick length.
     pub ruler_minor_tick_h: f32,
+    /// Color of the ruler ticks.
+    pub ruler_tick_color: egui::Color32,
     /// Horizontal padding of the ruler timecode labels.
     pub ruler_label_pad_x: f32,
     /// Vertical padding of the ruler timecode labels.
@@ -461,8 +465,10 @@ impl Default for Theme {
             gain_hit_px: 4.0,
             gain_text_w: 56.0,
             clip_text_pad: 4.0,
-            clip_name_size: 12.0,
-            clip_gain_size: 11.0,
+            clip_radius: 5.0,
+            clip_text_color: egui::Color32::from_rgb(0xF2, 0xF4, 0xF7),
+            clip_name_size: 11.0,
+            clip_gain_size: 10.0,
             clip_margin: 2.0,
             thin_clip_w: 3.0,
             selection_border_w: 2.0,
@@ -472,30 +478,30 @@ impl Default for Theme {
             offline_text: egui::Color32::WHITE,
             gain_shadow_w: 3.0,
             gain_shadow: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 110),
-            gain_line: ACCENT,
-            gain_curve: egui::Color32::from_rgba_unmultiplied(0x4C, 0x9B, 0xE8, 210),
+            gain_line: egui::Color32::from_rgb(0xF2, 0xF4, 0xF7),
+            gain_curve: egui::Color32::from_rgba_unmultiplied(0xF2, 0xF4, 0xF7, 178),
             fade_shade: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 90),
-            fade_handle_fill: egui::Color32::from_rgba_unmultiplied(208, 212, 218, 230),
+            fade_handle_fill: egui::Color32::from_rgb(0xE6, 0xE9, 0xEE),
             fade_handle_hover: ACCENT,
             fade_handle_stroke: egui::Color32::from_rgb(18, 20, 23),
             // Waveform
             wave_width: 1.0,
-            wave_center: egui::Color32::from_rgba_unmultiplied(255, 255, 255, 40),
             wave_dot_r: 1.5,
             // Timeline frame
-            ruler_h: 28.0,
+            ruler_h: 30.0,
             header_col_w: 208.0,
             scrollbar_h: 12.0,
             scrollbar_thumb_min: 20.0,
-            ruler_tick_h: 12.0,
+            ruler_tick_h: 9.0,
             ruler_minor_tick_h: 5.0,
+            ruler_tick_color: egui::Color32::from_rgb(0x3A, 0x40, 0x4A),
             ruler_label_pad_x: 4.0,
             ruler_label_pad_y: 3.0,
-            ruler_label_size: 11.0,
-            ruler_min_tick_px: 90.0,
+            ruler_label_size: 10.5,
+            ruler_min_tick_px: 60.0,
             marker_color: egui::Color32::from_rgb(0xE8, 0xB4, 0x4C),
-            marker_tri_w: 4.0,
-            marker_tri_h: 7.0,
+            marker_tri_w: 5.0,
+            marker_tri_h: 8.0,
             playhead_color: egui::Color32::from_rgb(0xFF, 0x6B, 0x5C),
             playhead_width: 1.5,
             playhead_tri_w: 5.0,
@@ -507,7 +513,7 @@ impl Default for Theme {
             snap_line_color: ACCENT,
             snap_line_w: 2.0,
             range_line: ACCENT,
-            range_line_w: 1.5,
+            range_line_w: 1.0,
             insert_line_color: egui::Color32::from_rgba_unmultiplied(0x4C, 0x9B, 0xE8, 230),
             insert_line_w: 2.0,
             reorder_line_color: ACCENT,
@@ -777,7 +783,7 @@ mod tests {
         assert_eq!(t.trim_edge_w, 6.0);
         assert_eq!(t.snap_px, 8.0);
         assert_eq!(t.fade_handle_sz, 8.0);
-        assert_eq!(t.ruler_h, 28.0);
+        assert_eq!(t.ruler_h, 30.0);
         assert_eq!(t.new_track_h, 96.0);
         assert_eq!(t.meter_red, egui::Color32::from_rgb(0xE5, 0x54, 0x4B));
         assert_eq!(t.meter_yellow, egui::Color32::from_rgb(0xE3, 0xC0, 0x4A));

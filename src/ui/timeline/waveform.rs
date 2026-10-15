@@ -100,6 +100,14 @@ pub fn envelope(clip: &Clip, local: u64) -> f32 {
 /// Stereo media draws two lanes (L above R), mono one lane, each with a faint
 /// center line. The whole clip is added as a single shape. Offline or missing
 /// media is never passed here; track volume does not affect the drawing.
+/// Draws the waveform of one clip inside its body rect.
+///
+/// Stereo media draws two lanes (L above R), mono one lane, each with a faint
+/// center line in the track color at alpha 0x33, a 1 px black 35% divider
+/// between the lanes, and filled solid min/max columns in the track color.
+/// Offline or missing media is never passed here; track volume does not
+/// affect the drawing. On a muted track everything draws at 45% opacity.
+#[allow(clippy::too_many_arguments)]
 pub fn draw(
     painter: &egui::Painter,
     clip: &Clip,
@@ -108,10 +116,22 @@ pub fn draw(
     body: egui::Rect,
     wave_scale: f32,
     color: egui::Color32,
+    muted: bool,
 ) {
     if body.height() < 1.0 {
         return;
     }
+    let scale = if muted { 0.45 } else { 1.0 };
+    let dim = |c: egui::Color32| c.gamma_multiply(scale);
+    // Per-channel center line in the track color at alpha 0x33.
+    let center = egui::Color32::from_rgba_unmultiplied(
+        color.r(),
+        color.g(),
+        color.b(),
+        (0x33 as f32 * scale) as u8,
+    );
+    // 1 px black 35% divider between the L and R lanes.
+    let divider = egui::Color32::from_rgba_unmultiplied(0, 0, 0, (89.0 * scale) as u8);
     let peaks = &loaded.peaks;
     let channels = usize::from(peaks.channels).clamp(1, 2);
     let lane_h = body.height() / channels as f32;
@@ -127,10 +147,19 @@ pub fn draw(
         let cy = body.top() + lane_h * (lane as f32 + 0.5);
         shapes.push(egui::Shape::line_segment(
             [egui::pos2(x_left, cy), egui::pos2(x_right, cy)],
-            egui::Stroke::new(THEME.hairline, THEME.wave_center),
+            egui::Stroke::new(THEME.hairline, center),
+        ));
+    }
+    // Divider between the two lanes of stereo media.
+    if channels == 2 {
+        let dy = body.top() + lane_h;
+        shapes.push(egui::Shape::line_segment(
+            [egui::pos2(x_left, dy), egui::pos2(x_right, dy)],
+            egui::Stroke::new(THEME.hairline, divider),
         ));
     }
 
+    let wave_color = dim(color);
     if g.spp < 1.0 {
         draw_samples(
             clip,
@@ -140,7 +169,7 @@ pub fn draw(
             channels,
             lane_h,
             wave_scale,
-            color,
+            wave_color,
             &mut shapes,
         );
     } else {
@@ -155,7 +184,7 @@ pub fn draw(
             channels,
             lane_h,
             wave_scale,
-            color,
+            wave_color,
             &mut shapes,
         );
     }
@@ -221,9 +250,11 @@ fn draw_columns(
             if y_min == y_max {
                 continue;
             }
-            shapes.push(egui::Shape::line_segment(
-                [egui::pos2(x + 0.5, y_min), egui::pos2(x + 0.5, y_max)],
-                stroke,
+            // Filled solid column in the track color.
+            shapes.push(egui::Shape::rect_filled(
+                egui::Rect::from_min_max(egui::pos2(x, y_min), egui::pos2(x + 1.0, y_max)),
+                0.0,
+                stroke.color,
             ));
         }
     }
