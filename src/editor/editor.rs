@@ -1102,6 +1102,10 @@ impl Editor {
     }
 
     /// One-line audio summary for the status bar.
+    ///
+    /// Not drawn any more (the status bar shows fixed readouts); kept for the
+    /// audio-status tests and future diagnostics.
+    #[allow(dead_code)]
     pub fn audio_status(&self) -> String {
         match &self.audio {
             Some(engine) => {

@@ -337,7 +337,7 @@ impl App {
         // Right: Master strip, fixed width.
         egui::Panel::right("master_strip")
             .resizable(false)
-            .exact_size(90.0)
+            .exact_size(116.0)
             .show(ui, |ui| {
                 master_strip::show(ui, editor, meters);
             });

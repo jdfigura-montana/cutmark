@@ -13,8 +13,7 @@ const SIZE: f32 = 11.0;
 
 /// Draws the status bar inside its panel: the playhead time on the left, the
 /// selection readout next to it, a finished-export banner with a Reveal link,
-/// and the audio status, snap/ripple state, bit depth and sample rate on the
-/// right.
+/// and the sample rate, bit depth and snap/ripple state on the right.
 pub fn show(ui: &mut egui::Ui, editor: &Editor, export: Option<&ExportBanner>) {
     let rate = editor.project.sample_rate;
     let timecode = samples_to_timecode(editor.view.playhead, rate);
@@ -71,14 +70,27 @@ pub fn show(ui: &mut egui::Ui, editor: &Editor, export: Option<&ExportBanner>) {
                 editor.reveal_file(&export.path);
             }
         }
+        // Right-aligned readouts, added in reverse so the reading order is
+        // "48 kHz 24-bit SNAP ON RIPPLE OFF". 22 px between groups, 6 px
+        // between a label and its value, 12 px off the right window edge.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_space(12.0);
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+            readout_value(ui, on_off(editor.view.ripple), editor.view.ripple);
             ui.label(
-                egui::RichText::new(editor.audio_status())
+                egui::RichText::new("RIPPLE")
                     .font(Theme::mono(SIZE))
                     .color(THEME.text_muted),
             );
-            toggle_readout(ui, "SNAP", editor.view.snap);
-            toggle_readout(ui, "RIPPLE", editor.view.ripple);
+            ui.spacing_mut().item_spacing = egui::vec2(22.0, 0.0);
+            readout_value(ui, on_off(editor.view.snap), editor.view.snap);
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+            ui.label(
+                egui::RichText::new("SNAP")
+                    .font(Theme::mono(SIZE))
+                    .color(THEME.text_muted),
+            );
+            ui.spacing_mut().item_spacing = egui::vec2(22.0, 0.0);
             ui.label(
                 egui::RichText::new(bit_depth(editor.project.export_bit_depth))
                     .font(Theme::mono(SIZE))
@@ -102,16 +114,16 @@ fn bit_depth(depth: crate::model::project::BitDepth) -> &'static str {
     }
 }
 
-/// One toggle readout: the name in muted text and ON/OFF in primary text.
-fn toggle_readout(ui: &mut egui::Ui, name: &str, on: bool) {
+/// Text of a toggle readout's value: ON or OFF.
+fn on_off(on: bool) -> &'static str {
+    if on { "ON" } else { "OFF" }
+}
+
+/// One toggle readout value: accent while on, plain primary text while off.
+fn readout_value(ui: &mut egui::Ui, text: &str, on: bool) {
     ui.label(
-        egui::RichText::new(name)
+        egui::RichText::new(text)
             .font(Theme::mono(SIZE))
-            .color(THEME.text_muted),
-    );
-    ui.label(
-        egui::RichText::new(if on { "ON" } else { "OFF" })
-            .font(Theme::mono(SIZE))
-            .color(THEME.text_primary),
+            .color(if on { THEME.accent } else { THEME.text_primary }),
     );
 }

@@ -342,7 +342,9 @@ impl ProjectMenu {
                 }
             });
             // Right side: project name and, when dirty, the unsaved dot.
+            // The 8 px space keeps the name off the right window edge.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(8.0);
                 if editor.dirty {
                     Self::unsaved_dot(ui);
                     ui.label(

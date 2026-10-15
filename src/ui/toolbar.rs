@@ -63,17 +63,24 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor) {
         }
 
         // Wave: vertical waveform scale on the right, edited as log2 so
-        // 1x..=16x becomes a linear 0..=4 slider. Display only.
+        // 1x..=16x becomes a linear 0..=4 slider. Display only. Added in
+        // reverse order so the reading order is label, slider, value; the
+        // 12 px space keeps the group off the right window edge.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_space(12.0);
             let scale = editor.wave_scale();
-            ui.label(
-                egui::RichText::new(format!("{scale:.1}x"))
-                    .font(Theme::mono(13.0))
-                    .color(THEME.text_primary),
+            ui.add_sized(
+                egui::vec2(40.0, 18.0),
+                egui::Label::new(
+                    egui::RichText::new(format!("{scale:.1}x"))
+                        .font(Theme::mono(13.0))
+                        .color(THEME.text_primary),
+                ),
             );
             let mut log_scale = scale.log2();
             let slider = egui::Slider::new(&mut log_scale, 0.0..=4.0)
-                .custom_formatter(|v, _| format!("{:.1}x", 2.0_f32.powf(v as f32)));
+                .custom_formatter(|v, _| format!("{:.1}x", 2.0_f32.powf(v as f32)))
+                .show_value(false);
             {
                 let style = ui.style_mut();
                 style.visuals.slider_trailing_fill = true;
@@ -81,7 +88,7 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor) {
                 style.visuals.selection.bg_fill = THEME.slider_fill;
                 style.visuals.widgets.hovered.bg_fill = THEME.slider_thumb;
             }
-            let resp = ui.add_sized(egui::vec2(140.0, 18.0), slider);
+            let resp = ui.add_sized(egui::vec2(110.0, 18.0), slider);
             editor.set_wave_scale(2.0_f32.powf(log_scale));
             if resp.double_clicked() {
                 editor.set_wave_scale(1.0);
