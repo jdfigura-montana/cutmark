@@ -73,6 +73,8 @@ pub struct Theme {
     pub slider_fill: egui::Color32,
     /// Thumb color of an egui slider.
     pub slider_thumb: egui::Color32,
+    /// Green of the transport play icon.
+    pub play_green: egui::Color32,
 
     // ---- Clip visuals ----
     /// Height of the clip header strip (name + gain row).
@@ -406,6 +408,7 @@ impl Default for Theme {
             slider_track: egui::Color32::from_rgb(0x2B, 0x30, 0x38),
             slider_fill: egui::Color32::from_rgb(0x5A, 0x61, 0x6D),
             slider_thumb: egui::Color32::from_rgb(0xD7, 0xDA, 0xE0),
+            play_green: egui::Color32::from_rgb(0x5C, 0xC4, 0x6E),
             // Clip visuals
             header_strip_h: 18.0,
             trim_edge_w: 6.0,

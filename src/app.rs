@@ -17,9 +17,17 @@ use crate::ui::master_strip;
 use crate::ui::menu::{ProjectMenu, ProjectMenuAction};
 use crate::ui::start_screen::StartScreen;
 use crate::ui::status_bar;
-use crate::ui::timeline;
+use crate::ui::theme::THEME;
+use crate::ui::timeline::{self, ViewMenuAction};
 use crate::ui::toolbar;
 use crate::ui::widgets::meter::MeterState;
+
+/// Height of the top menu bar panel.
+const MENU_BAR_H: f32 = 30.0;
+/// Height of the toolbar panel.
+const TOOLBAR_H: f32 = 48.0;
+/// Height of the bottom status bar panel.
+const STATUS_BAR_H: f32 = 26.0;
 
 /// The currently shown screen.
 enum Screen {
@@ -296,21 +304,35 @@ impl App {
         }
 
         let mut msgs: Vec<String> = Vec::new();
-        // Top: menu bar with the Project, Edit and View menus, then the toolbar row.
-        let (mut action, view_action) = menu.show(ui, editor);
+        // Top: menu bar (one 30 px panel) with the Project, Edit, Markers,
+        // Process and View menus in a single row, then the toolbar row.
+        let mut action = ProjectMenuAction::None;
+        let mut view_action = ViewMenuAction::None;
+        egui::Panel::top("menu_bar")
+            .exact_size(MENU_BAR_H)
+            .frame(egui::Frame::new().fill(THEME.bar_bg))
+            .show(ui, |ui| {
+                (action, view_action) = menu.show(ui, editor);
+            });
 
         if action == ProjectMenuAction::Import {
             msgs.extend(bin_panel::pick_and_import(editor));
             action = ProjectMenuAction::None;
         }
-        egui::Panel::top("toolbar").show(ui, |ui| {
-            toolbar::show(ui, editor);
-        });
+        egui::Panel::top("toolbar")
+            .exact_size(TOOLBAR_H)
+            .frame(egui::Frame::new().fill(THEME.panel_bg))
+            .show(ui, |ui| {
+                toolbar::show(ui, editor);
+            });
 
         // Bottom: status bar.
-        egui::Panel::bottom("status_bar").show(ui, |ui| {
-            status_bar::show(ui, editor, banner.as_ref());
-        });
+        egui::Panel::bottom("status_bar")
+            .exact_size(STATUS_BAR_H)
+            .frame(egui::Frame::new().fill(THEME.bar_bg))
+            .show(ui, |ui| {
+                status_bar::show(ui, editor, banner.as_ref());
+            });
 
         // Right: Master strip, fixed width.
         egui::Panel::right("master_strip")

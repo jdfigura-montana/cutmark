@@ -1,5 +1,6 @@
 ﻿# Progress
 ## Current state
+Bars rework DONE (2026-10-15): menu bar in its own 30 px top panel via egui::MenuBar (invisible-bar/170 px-gap bug fixed, no painter rect), toolbar 48 px panel with recessed transport + mono timecode box + dividers + icon/text toggles + wave-scale group, status bar 26 px panel all mono 11 (PLAYHEAD/SEL/bitrates/SNAP/RIPPLE). cargo test 382 passed; clippy clean; fmt applied.
 Theme palette wiring DONE (2026-10-15): all Theme fields consumed, allow(dead_code) gone from src/ui, track-colored clips/waveforms/headers. cargo test 382 passed; clippy clean; fmt applied.
 Theme palette task DONE (2026-10-15): full palette + fonts + track_color in src/ui/theme.rs, egui 0.36 API fixes (see activeContext). cargo test 382 passed; clippy clean; fmt applied.
 Task 10.5 DONE (2026-10-15). Final cleanup: dead_code gate removed from main.rs (one real bug found: Scrub::process was never wired into Player::process — scrubbing was silent, now fixed), windows_subsystem for release, [profile.release] opt-3/thin LTO/1 cg unit, README.md. cargo test 381 passed; clippy clean; release exe at target\release\audio_editor.exe (GUI subsystem verified, launches).
