@@ -71,26 +71,14 @@ pub fn show(ui: &mut egui::Ui, editor: &Editor, export: Option<&ExportBanner>) {
             }
         }
         // Right-aligned readouts, added in reverse so the reading order is
-        // "48 kHz 24-bit SNAP ON RIPPLE OFF". 22 px between groups, 6 px
-        // between a label and its value, 12 px off the right window edge.
+        // "48 kHz 24-bit SNAP ON RIPPLE OFF". Each label and its value are
+        // one unit (4 px apart); 22 px between units, 12 px off the right
+        // window edge.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(12.0);
-            ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
-            readout_value(ui, on_off(editor.view.ripple), editor.view.ripple);
-            ui.label(
-                egui::RichText::new("RIPPLE")
-                    .font(Theme::mono(SIZE))
-                    .color(THEME.text_muted),
-            );
-            ui.spacing_mut().item_spacing = egui::vec2(22.0, 0.0);
-            readout_value(ui, on_off(editor.view.snap), editor.view.snap);
-            ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
-            ui.label(
-                egui::RichText::new("SNAP")
-                    .font(Theme::mono(SIZE))
-                    .color(THEME.text_muted),
-            );
-            ui.spacing_mut().item_spacing = egui::vec2(22.0, 0.0);
+            ui.spacing_mut().item_spacing.x = 22.0;
+            toggle_readout(ui, "RIPPLE", on_off(editor.view.ripple), editor.view.ripple);
+            toggle_readout(ui, "SNAP", on_off(editor.view.snap), editor.view.snap);
             ui.label(
                 egui::RichText::new(bit_depth(editor.project.export_bit_depth))
                     .font(Theme::mono(SIZE))
@@ -117,6 +105,20 @@ fn bit_depth(depth: crate::model::project::BitDepth) -> &'static str {
 /// Text of a toggle readout's value: ON or OFF.
 fn on_off(on: bool) -> &'static str {
     if on { "ON" } else { "OFF" }
+}
+
+/// One toggle readout: label and value grouped into a single unit, the two
+/// 4 px apart, the value accent while on and plain primary while off.
+fn toggle_readout(ui: &mut egui::Ui, label: &str, value: &str, on: bool) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.label(
+            egui::RichText::new(label)
+                .font(Theme::mono(SIZE))
+                .color(THEME.text_muted),
+        );
+        readout_value(ui, value, on);
+    });
 }
 
 /// One toggle readout value: accent while on, plain primary text while off.

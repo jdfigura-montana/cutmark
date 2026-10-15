@@ -102,6 +102,10 @@ impl BinPanel {
     /// Header row: MEDIA caption, Import button and the sort button.
     fn header(&mut self, ui: &mut egui::Ui, editor: &mut Editor, messages: &mut Vec<String>) {
         ui.horizontal(|ui| {
+            // 10 px from the panel edge; the caption sits centered against
+            // the button height.
+            ui.add_space(10.0);
+            ui.set_min_height(THEME.bin_btn_h);
             ui.add(egui::Label::new(
                 egui::RichText::new("MEDIA")
                     .font(Theme::semibold(THEME.bin_header_size))
@@ -203,47 +207,55 @@ impl BinPanel {
                         egui::Stroke::new(THEME.hairline, THEME.control_border),
                         egui::StrokeKind::Inside,
                     );
+                    // The phosphor glyph lives in the proportional family
+                    // (egui-phosphor only adds itself there), so use it here
+                    // like the header buttons do.
                     painter.text(
                         tile_rect.center(),
                         egui::Align2::CENTER_CENTER,
                         fill::WAVEFORM,
-                        egui::FontId::new(THEME.bin_tile_icon_size, egui::FontFamily::Monospace),
+                        egui::FontId::proportional(THEME.bin_tile_icon_size),
                         THEME.text_normal,
                     );
 
                     ui.add_space(THEME.space_md);
                     ui.vertical(|ui| {
-                        ui.set_max_width(name_max_w);
                         if self.renaming == Some(item.id) {
                             self.rename_field(ui, editor, item.id, messages);
                         } else {
-                            let mut name = item.display_name.clone();
-                            if offline {
-                                name.push_str(" (offline)");
-                            }
-                            let text = egui::RichText::new(name).size(THEME.bin_name_size);
-                            let text = if offline {
-                                text.color(THEME.bin_offline)
-                            } else {
-                                text.color(THEME.text_primary)
-                            };
-                            let name_response = ui.add(
-                                egui::Label::new(text)
-                                    .sense(egui::Sense::click())
-                                    .truncate(),
-                            );
-                            if name_response.clicked() {
-                                self.selected = Some(item.id);
-                            }
-                            if name_response.double_clicked() {
-                                self.begin_rename(item);
-                            }
+                            // The name stops short of the usage pill.
+                            ui.scope(|ui| {
+                                ui.set_max_width(name_max_w);
+                                let mut name = item.display_name.clone();
+                                if offline {
+                                    name.push_str(" (offline)");
+                                }
+                                let text = egui::RichText::new(name).size(THEME.bin_name_size);
+                                let text = if offline {
+                                    text.color(THEME.bin_offline)
+                                } else {
+                                    text.color(THEME.text_primary)
+                                };
+                                let name_response = ui.add(
+                                    egui::Label::new(text)
+                                        .sense(egui::Sense::click())
+                                        .truncate(),
+                                );
+                                if name_response.clicked() {
+                                    self.selected = Some(item.id);
+                                }
+                                if name_response.double_clicked() {
+                                    self.begin_rename(item);
+                                }
+                            });
+                            ui.add_space(THEME.space_xs);
+                            // The meta line spans the full row width under
+                            // the name, out to the row's right padding.
+                            let meta = egui::RichText::new(meta_line(editor, item))
+                                .font(Theme::mono(THEME.bin_meta_size))
+                                .color(THEME.text_muted);
+                            ui.add(egui::Label::new(meta).truncate());
                         }
-                        ui.add_space(THEME.space_xs);
-                        let meta = egui::RichText::new(meta_line(editor, item))
-                            .font(Theme::mono(THEME.bin_meta_size))
-                            .color(THEME.text_muted);
-                        ui.add(egui::Label::new(meta).truncate());
                     });
                 });
             });
@@ -420,9 +432,12 @@ impl BinPanel {
     }
 }
 
-/// The dashed drop zone at the bottom of the panel.
+/// The dashed drop zone at the bottom of the panel, 10 px in from the
+/// panel edges.
 fn drop_zone(ui: &mut egui::Ui) {
-    let width = ui.available_width();
+    let margin = 10.0;
+    ui.add_space(margin);
+    let width = (ui.available_width() - margin).max(40.0);
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(width, THEME.bin_drop_h), egui::Sense::hover());
     let painter = ui.painter();
@@ -430,7 +445,7 @@ fn drop_zone(ui: &mut egui::Ui) {
         painter,
         rect,
         THEME.bin_drop_rounding,
-        egui::Stroke::new(THEME.hairline, THEME.border),
+        egui::Stroke::new(THEME.hairline, THEME.control_border),
     );
     painter.text(
         rect.center(),

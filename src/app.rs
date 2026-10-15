@@ -342,10 +342,11 @@ impl App {
                 master_strip::show(ui, editor, meters);
             });
 
-        // Left: Media Bin panel, exact 236 px wide.
+        // Left: Media Bin panel, resizable between 200 and 400 px, 236 default.
         egui::Panel::left("media_bin")
-            .resizable(false)
-            .exact_size(236.0)
+            .resizable(true)
+            .default_size(236.0)
+            .size_range(200.0..=400.0)
             .frame(egui::Frame::new().fill(THEME.panel_bg))
             .show(ui, |ui| {
                 ui.take_available_space();
