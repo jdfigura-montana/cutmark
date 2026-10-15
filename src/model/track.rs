@@ -27,7 +27,7 @@ pub struct Track {
 }
 
 impl Track {
-    /// Creates an empty track: volume 0.0 dB, pan centered, not muted or soloed, 80 px high.
+    /// Creates an empty track: volume 0.0 dB, pan centered, not muted or soloed, 96 px high.
     pub fn new(name: String) -> Track {
         Track {
             id: Uuid::new_v4(),
@@ -36,7 +36,7 @@ impl Track {
             pan: 0.0,
             mute: false,
             solo: false,
-            height: 80.0,
+            height: 96.0,
             clips: Vec::new(),
         }
     }

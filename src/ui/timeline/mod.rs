@@ -450,7 +450,7 @@ fn draw(
                 i % 2 == 0,
                 THEME.lane_a,
                 THEME.lane_b,
-                visuals.widgets.noninteractive.bg_stroke,
+                egui::Stroke::new(THEME.hairline, THEME.border),
             );
             // Clips (no waveforms yet, ui::timeline::clip_view).
             for clip in &track.clips {

@@ -211,34 +211,52 @@ pub struct Theme {
     pub gain_edit_size: f32,
 
     // ---- Track header ----
-    /// Width of the reorder grip at the header's left edge.
-    pub track_grip_w: f32,
     /// Height of the resize strip at the header's bottom edge.
     pub track_resize_h: f32,
-    /// Width of the stereo meter at the header's right edge.
-    pub track_meter_w: f32,
-    /// Height of the track name row.
-    pub track_name_h: f32,
-    /// Height of one control row (fader or pan).
-    pub track_ctrl_h: f32,
+    /// Vertical padding (top and bottom) inside one track header.
+    pub track_pad_v: f32,
+    /// Left padding inside one track header, after the color stripe.
+    pub track_pad_l: f32,
+    /// Right padding inside one track header.
+    pub track_pad_r: f32,
+    /// Vertical gap between the header's control rows.
+    pub track_row_gap: f32,
     /// Width of an M / S toggle button.
     pub track_ms_w: f32,
-    /// Header height below which the header uses the compact layout.
-    pub compact_track_h: f32,
+    /// Height of an M / S toggle button.
+    pub track_ms_h: f32,
+    /// Gap between the M and S buttons.
+    pub track_ms_gap: f32,
+    /// Corner radius of an M / S toggle button.
+    pub track_ms_radius: f32,
+    /// Width of the VOL / PAN label column.
+    pub track_label_col_w: f32,
+    /// Width of the fixed, right-aligned value column.
+    pub track_value_col_w: f32,
+    /// Font size of the VOL / PAN labels.
+    pub track_label_size: f32,
+    /// Font size of the volume / pan value readouts.
+    pub track_value_size: f32,
+    /// Thickness of the custom slider track.
+    pub track_slider_track_w: f32,
+    /// Diameter of the custom slider thumb.
+    pub track_slider_thumb: f32,
+    /// Width of one meter bar in a track header.
+    pub track_meter_bar_w: f32,
+    /// Gap between the two meter bars.
+    pub track_meter_gap: f32,
+    /// Side of the square track clip light.
+    pub track_clip_light: f32,
     /// Font size of the track name.
     pub track_name_size: f32,
     /// Font size of the M / S toggle labels.
     pub toggle_size: f32,
+    /// Header height below which the header uses the compact layout.
+    pub compact_track_h: f32,
     /// Background of an active mute button.
     pub mute_color: egui::Color32,
     /// Background of an active solo button.
     pub solo_color: egui::Color32,
-    /// Text color on an active mute/solo button.
-    pub toggle_fg: egui::Color32,
-    /// Vertical spacing between the reorder grip dots.
-    pub track_grip_dots: f32,
-    /// Half length of a reorder grip dot.
-    pub track_grip_dot_len: f32,
 
     // ---- Meters ----
     /// Background fill of a meter bar area.
@@ -468,7 +486,7 @@ impl Default for Theme {
             wave_dot_r: 1.5,
             // Timeline frame
             ruler_h: 28.0,
-            header_col_w: 200.0,
+            header_col_w: 208.0,
             scrollbar_h: 12.0,
             scrollbar_thumb_min: 20.0,
             ruler_tick_h: 12.0,
@@ -500,27 +518,36 @@ impl Default for Theme {
             ghost_stroke: egui::Color32::from_rgba_unmultiplied(0x4C, 0x9B, 0xE8, 220),
             ghost_dash: 6.0,
             ghost_gap: 4.0,
-            new_track_h: 80.0,
+            new_track_h: 96.0,
             clip_menu_min_w: 150.0,
             gain_edit_w: 52.0,
             gain_edit_size: 11.0,
             // Track header
-            track_grip_w: 10.0,
             track_resize_h: 4.0,
-            track_meter_w: 14.0,
-            track_name_h: 18.0,
-            track_ctrl_h: 14.0,
-            track_ms_w: 16.0,
+            track_pad_v: 9.0,
+            track_pad_l: 10.0,
+            track_pad_r: 8.0,
+            track_row_gap: 9.0,
+            track_ms_w: 22.0,
+            track_ms_h: 20.0,
+            track_ms_gap: 4.0,
+            track_ms_radius: 4.0,
+            track_label_col_w: 24.0,
+            track_value_col_w: 44.0,
+            track_label_size: 9.5,
+            track_value_size: 10.5,
+            track_slider_track_w: 4.0,
+            track_slider_thumb: 12.0,
+            track_meter_bar_w: 4.0,
+            track_meter_gap: 2.0,
+            track_clip_light: 4.0,
             compact_track_h: 64.0,
-            track_name_size: 13.0,
+            track_name_size: 12.5,
             toggle_size: 10.0,
             mute_color: egui::Color32::from_rgb(0xE0, 0xA9, 0x3A),
             solo_color: egui::Color32::from_rgb(0x5C, 0xC4, 0x6E),
-            toggle_fg: egui::Color32::from_rgb(18, 20, 23),
-            track_grip_dots: 4.0,
-            track_grip_dot_len: 3.0,
             // Meters
-            meter_bar_bg: egui::Color32::from_rgb(0x0E, 0x10, 0x13),
+            meter_bar_bg: egui::Color32::from_rgb(0x10, 0x12, 0x16),
             meter_red: egui::Color32::from_rgb(0xE5, 0x54, 0x4B),
             meter_yellow: egui::Color32::from_rgb(0xE3, 0xC0, 0x4A),
             meter_green: egui::Color32::from_rgb(0x3D, 0xBE, 0x6B),
@@ -754,7 +781,7 @@ mod tests {
         assert_eq!(t.snap_px, 8.0);
         assert_eq!(t.fade_handle_sz, 8.0);
         assert_eq!(t.ruler_h, 28.0);
-        assert_eq!(t.new_track_h, 80.0);
+        assert_eq!(t.new_track_h, 96.0);
         assert_eq!(t.meter_red, egui::Color32::from_rgb(0xE5, 0x54, 0x4B));
         assert_eq!(t.meter_yellow, egui::Color32::from_rgb(0xE3, 0xC0, 0x4A));
         assert_eq!(t.meter_green, egui::Color32::from_rgb(0x3D, 0xBE, 0x6B));

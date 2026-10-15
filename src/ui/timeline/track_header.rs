@@ -105,9 +105,8 @@ pub fn show(
         state.reorder = None;
     }
 
-    let visuals = ui.visuals().clone();
     let painter = ui.painter_at(header_rect);
-    painter.rect_filled(header_rect, 0.0, visuals.faint_bg_color);
+    painter.rect_filled(header_rect, 0.0, THEME.panel_bg);
 
     // A 4 px left stripe in each track's color identifies the track row.
     let stripe_w = THEME.space_sm;
@@ -133,85 +132,89 @@ pub fn show(
             THEME.track_color(index),
         );
 
-        // Layout: meter on the right edge, controls to its left.
-        let meter_rect = egui::Rect::from_min_max(
-            egui::pos2(rect.right() - THEME.track_meter_w, rect.top()),
-            egui::pos2(rect.right(), rect.bottom() - THEME.track_resize_h),
-        );
+        // Layout: 9 px vertical padding, 10 px after the stripe, 8 px right;
+        // meter bars hug the inner right edge, controls fill the rest.
         let compact = rect.height() < THEME.compact_track_h;
-        let ctrl_left = rect.left() + THEME.track_grip_w + THEME.space_sm;
-        let ctrl_right = meter_rect.left() - THEME.space_sm;
-        let name_rect = egui::Rect::from_min_max(
-            egui::pos2(ctrl_left, rect.top() + THEME.space_xs),
-            egui::pos2(ctrl_right, rect.top() + THEME.space_xs + THEME.track_name_h),
+        let inner = egui::Rect::from_min_max(
+            egui::pos2(
+                rect.left() + stripe_w + THEME.track_pad_l,
+                rect.top() + THEME.track_pad_v,
+            ),
+            egui::pos2(
+                rect.right() - THEME.track_pad_r,
+                rect.bottom() - THEME.track_pad_v,
+            ),
         );
-        let (m_rect, s_rect, vol_rect, pan_rect) = if compact {
-            let row_y = name_rect.bottom() + THEME.space_xs;
-            (
-                egui::Rect::from_min_size(
-                    egui::pos2(ctrl_left, row_y),
-                    egui::vec2(THEME.track_ms_w, THEME.track_ctrl_h),
-                ),
-                egui::Rect::from_min_size(
-                    egui::pos2(ctrl_left + THEME.track_ms_w + THEME.space_sm, row_y),
-                    egui::vec2(THEME.track_ms_w, THEME.track_ctrl_h),
-                ),
-                name_rect,
-                name_rect,
-            )
-        } else {
-            let top = name_rect.top() + THEME.space_xs;
-            (
-                egui::Rect::from_min_size(
-                    egui::pos2(ctrl_right - 2.0 * THEME.track_ms_w - THEME.space_sm, top),
-                    egui::vec2(THEME.track_ms_w, THEME.track_name_h - THEME.space_sm),
-                ),
-                egui::Rect::from_min_size(
-                    egui::pos2(ctrl_right - THEME.track_ms_w, top),
-                    egui::vec2(THEME.track_ms_w, THEME.track_name_h - THEME.space_sm),
-                ),
-                egui::Rect::from_min_max(
-                    egui::pos2(ctrl_left, name_rect.bottom() + THEME.space_sm),
-                    egui::pos2(
-                        ctrl_right,
-                        name_rect.bottom() + THEME.space_sm + THEME.track_ctrl_h,
-                    ),
-                ),
-                egui::Rect::from_min_max(
-                    egui::pos2(
-                        ctrl_left,
-                        name_rect.bottom() + THEME.space_md + THEME.track_ctrl_h,
-                    ),
-                    egui::pos2(
-                        ctrl_right,
-                        name_rect.bottom() + THEME.space_md + 2.0 * THEME.track_ctrl_h,
-                    ),
-                ),
-            )
-        };
 
-        // Reorder grip on the left edge.
-        let grip_rect = egui::Rect::from_min_size(
-            rect.left_top(),
-            egui::vec2(THEME.track_grip_w, rect.height()),
+        // Meter bars: two 4 px bars, 2 px gap, at the inner right edge. The
+        // 4 px clip lights sit above them, inside the top padding band.
+        let bars_w = 2.0 * THEME.track_meter_bar_w + THEME.track_meter_gap;
+        let bars_top = inner.top() + THEME.track_clip_light + THEME.track_meter_gap;
+        let meter_rect = egui::Rect::from_min_max(
+            egui::pos2(inner.right() - bars_w, bars_top),
+            egui::pos2(inner.right(), inner.bottom()),
         );
+
+        // Row 1: drag handle, name, M and S buttons.
+        let row1 = egui::Rect::from_min_max(
+            egui::pos2(inner.left(), inner.top()),
+            egui::pos2(inner.right(), inner.top() + THEME.track_ms_h),
+        );
+        let s_rect = egui::Rect::from_min_size(
+            egui::pos2(row1.right() - THEME.track_ms_w, row1.top()),
+            egui::vec2(THEME.track_ms_w, THEME.track_ms_h),
+        );
+        let m_rect = egui::Rect::from_min_size(
+            egui::pos2(
+                s_rect.left() - THEME.track_ms_gap - THEME.track_ms_w,
+                row1.top(),
+            ),
+            egui::vec2(THEME.track_ms_w, THEME.track_ms_h),
+        );
+        let grip_w = 14.0_f32.min(THEME.track_pad_l + stripe_w);
+        let grip_rect = egui::Rect::from_min_size(
+            egui::pos2(inner.left(), row1.top()),
+            egui::vec2(grip_w, row1.height()),
+        );
+        let name_rect = egui::Rect::from_min_max(
+            egui::pos2(grip_rect.right() + 2.0, row1.top()),
+            egui::pos2(m_rect.left() - 4.0, row1.bottom()),
+        );
+
+        // Rows 2 and 3: VOL and PAN with fixed label and value columns. The
+        // two slider rows share the space under row 1 evenly, 20 px at the
+        // default 96 px header height.
+        let row_h = (((inner.height() - row1.height() - 2.0 * THEME.track_row_gap) * 0.5).floor())
+            .clamp(10.0, THEME.track_ms_h);
+        let vol_row = egui::Rect::from_min_max(
+            egui::pos2(inner.left(), row1.bottom() + THEME.track_row_gap),
+            egui::pos2(inner.right(), row1.bottom() + THEME.track_row_gap + row_h),
+        );
+        let pan_row = egui::Rect::from_min_max(
+            egui::pos2(inner.left(), vol_row.bottom() + THEME.track_row_gap),
+            egui::pos2(
+                inner.right(),
+                vol_row.bottom() + THEME.track_row_gap + row_h,
+            ),
+        );
+        let label_col = THEME.track_label_col_w;
+        let value_col = THEME.track_value_col_w;
+        let vol_rect = egui::Rect::from_min_max(
+            egui::pos2(vol_row.left() + label_col + 2.0, vol_row.top()),
+            egui::pos2(vol_row.right() - value_col - 2.0, vol_row.bottom()),
+        );
+        let pan_rect = egui::Rect::from_min_max(
+            egui::pos2(pan_row.left() + label_col + 2.0, pan_row.top()),
+            egui::pos2(pan_row.right() - value_col - 2.0, pan_row.bottom()),
+        );
+
+        // Reorder by dragging the grip; the phosphor dots show on hover.
         let grip = ui.interact(
             grip_rect,
             egui::Id::new(("track_grip", ht.id)),
             egui::Sense::drag(),
         );
         let grip = grip.on_hover_cursor(egui::CursorIcon::Grab);
-        let cx = rect.left() + THEME.track_grip_w * 0.5;
-        let cy = rect.center().y;
-        for dy in [-THEME.track_grip_dots, 0.0, THEME.track_grip_dots] {
-            painter.line_segment(
-                [
-                    egui::pos2(cx - THEME.track_grip_dot_len, cy + dy),
-                    egui::pos2(cx + THEME.track_grip_dot_len, cy + dy),
-                ],
-                visuals.widgets.noninteractive.fg_stroke,
-            );
-        }
         // Resize strip at the bottom edge.
         let resize_rect = egui::Rect::from_min_max(
             egui::pos2(rect.left(), rect.bottom() - THEME.track_resize_h),
@@ -251,6 +254,17 @@ pub fn show(
         context_menu(editor, &host, &mut state, ht.id, index, &ht.name);
         context_menu(editor, &grip, &mut state, ht.id, index, &ht.name);
         context_menu(editor, &resize, &mut state, ht.id, index, &ht.name);
+
+        // Phosphor drag handle, visible only while the header is hovered.
+        if ui.rect_contains_pointer(rect) {
+            painter.text(
+                grip_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                egui_phosphor::fill::DOTS_SIX_VERTICAL,
+                egui::FontId::proportional(14.0),
+                THEME.text_faint,
+            );
+        }
 
         // Reorder by dragging the grip.
         if let Some((drag_id, _)) = state.reorder
@@ -308,12 +322,20 @@ pub fn show(
         } else if name_resp.double_clicked() {
             state.renaming = Some((ht.id, ht.name.clone()));
         } else {
-            painter.text(
-                egui::pos2(name_rect.left() + THEME.space_sm, name_rect.center().y),
+            // Name in the track color text; faint while the track is muted.
+            // Clipped so long names truncate instead of overlapping the
+            // M and S buttons.
+            let name_color = if ht.mute {
+                THEME.text_faint
+            } else {
+                THEME.text_primary
+            };
+            painter.with_clip_rect(name_rect).text(
+                egui::pos2(name_rect.left(), name_rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 &ht.name,
                 Theme::semibold(THEME.track_name_size),
-                visuals.strong_text_color(),
+                name_color,
             );
         }
 
@@ -347,17 +369,31 @@ pub fn show(
             }
         }
 
-        // Volume fader and pan slider, 64 px of header height and up. Each
-        // drag is one gesture: begin, preview every frame, end on release.
+        // Volume and pan rows, 64 px of header height and up. Each drag is
+        // one gesture: begin, preview every frame, end on release. The value
+        // sits in its own fixed column, so nothing overlaps the thumb.
         if !compact {
-            let out = fader::slider(
+            painter.text(
+                egui::pos2(vol_row.left(), vol_row.center().y),
+                egui::Align2::LEFT_CENTER,
+                "VOL",
+                egui::FontId::proportional(THEME.track_label_size),
+                THEME.text_faint,
+            );
+            painter.text(
+                egui::pos2(pan_row.left(), pan_row.center().y),
+                egui::Align2::LEFT_CENTER,
+                "PAN",
+                egui::FontId::proportional(THEME.track_label_size),
+                THEME.text_faint,
+            );
+            let out = fader::slider_bare(
                 ui,
                 egui::Id::new(("track_volume", ht.id)),
                 vol_rect,
                 ht.volume_db,
                 (-60.0, 12.0),
                 false,
-                fader::db_text,
             );
             apply_outcome(
                 editor,
@@ -365,14 +401,20 @@ pub fn show(
                 |db| Action::SetTrackVolume { id: ht.id, db },
                 0.0,
             );
-            let out = fader::slider(
+            painter.text(
+                egui::pos2(vol_row.right(), vol_row.center().y),
+                egui::Align2::RIGHT_CENTER,
+                format!("{:+.1} dB", ht.volume_db.max(-60.0)),
+                Theme::mono(THEME.track_value_size),
+                THEME.text_normal,
+            );
+            let out = fader::slider_bare(
                 ui,
                 egui::Id::new(("track_pan", ht.id)),
                 pan_rect,
                 ht.pan,
                 (-1.0, 1.0),
-                false,
-                fader::pan_text,
+                true,
             );
             apply_outcome(
                 editor,
@@ -380,17 +422,34 @@ pub fn show(
                 |p| Action::SetTrackPan { id: ht.id, pan: p },
                 0.0,
             );
+            painter.text(
+                egui::pos2(pan_row.right(), pan_row.center().y),
+                egui::Align2::RIGHT_CENTER,
+                fader::pan_text(ht.pan),
+                Theme::mono(THEME.track_value_size),
+                THEME.text_normal,
+            );
         }
 
-        // Stereo meter down the right edge.
+        // Compact meter bars down the inner right edge; click clears clips.
         let channels = meters.entry(ht.id).or_default();
-        meter::stereo_meter(
+        meter::header_meter(
             ui,
             egui::Id::new(("track_meter", ht.id)),
             meter_rect,
             channels,
-            false,
         );
+
+        // 1 px border-colored separator under the header, across the lane.
+        if rect.bottom() <= lane_rect.bottom() {
+            ui.painter_at(header_rect.union(lane_rect)).line_segment(
+                [
+                    egui::pos2(rect.left(), rect.bottom()),
+                    egui::pos2(lane_rect.right(), rect.bottom()),
+                ],
+                egui::Stroke::new(THEME.hairline, THEME.border),
+            );
+        }
     }
 
     // Insertion line while reordering, across headers and lanes.
@@ -468,17 +527,20 @@ fn toggle_button(
         } else {
             THEME.mute_color
         };
-        (bg, THEME.toggle_fg)
+        (bg, THEME.app_bg)
     } else if resp.hovered() {
         // Hover highlight on the toggle.
         (visuals.widgets.hovered.bg_fill, visuals.strong_text_color())
     } else {
-        (
-            visuals.widgets.inactive.bg_fill,
-            visuals.strong_text_color(),
-        )
+        (THEME.control_fill, THEME.text_muted)
     };
-    painter.rect_filled(rect, THEME.corner_round, bg);
+    painter.rect_filled(rect, THEME.track_ms_radius, bg);
+    painter.rect_stroke(
+        rect,
+        THEME.track_ms_radius,
+        egui::Stroke::new(THEME.hairline, THEME.control_border),
+        egui::StrokeKind::Inside,
+    );
     painter.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,

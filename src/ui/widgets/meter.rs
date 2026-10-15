@@ -292,6 +292,73 @@ pub fn stereo_meter(
     clicked
 }
 
+/// Draws the compact track-header meter: two thin bars with a 4 px clip light
+/// above each, lit by dB zone (green below -18, yellow to -6, red above).
+///
+/// Clicking the meter clears both clip lights. Returns true when clicked.
+pub fn header_meter(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    rect: Rect,
+    channels: &mut [ChannelBallistics; 2],
+) -> bool {
+    let painter = ui.painter_at(rect);
+    let resp = ui.interact(rect, id, egui::Sense::click());
+    let clicked = resp.clicked();
+    if clicked {
+        for ch in channels.iter_mut() {
+            ch.clear_clip();
+        }
+    }
+    let bar_w = THEME.track_meter_bar_w;
+    for (i, ch) in channels.iter().enumerate() {
+        let left = rect.left() + i as f32 * (bar_w + THEME.track_meter_gap);
+        let bar = Rect::from_min_max(
+            Pos2::new(left, rect.top()),
+            Pos2::new(left + bar_w, rect.bottom()),
+        );
+        painter.rect_filled(bar, 0.0, THEME.meter_bar_bg);
+        // Lit portion, split by the dB zone boundaries.
+        let lit = ch.rms_db().max(FLOOR);
+        fill_zone(&painter, bar, FLOOR, lit.min(-18.0), THEME.meter_green);
+        fill_zone(&painter, bar, -18.0, lit.min(-6.0), THEME.meter_yellow);
+        fill_zone(&painter, bar, -6.0, lit, THEME.meter_red);
+        // Clip light above the bar.
+        let light = Rect::from_min_size(
+            Pos2::new(
+                left,
+                rect.top() - THEME.track_clip_light - THEME.track_meter_gap,
+            ),
+            Vec2::new(bar_w, THEME.track_clip_light),
+        );
+        painter.rect_filled(
+            light,
+            0.0,
+            if ch.clip {
+                THEME.clip_light_on
+            } else {
+                THEME.clip_light_off
+            },
+        );
+    }
+    clicked
+}
+
+/// Fills the part of `bar` between two dBFS values with `color`.
+fn fill_zone(painter: &egui::Painter, bar: Rect, lo: f32, hi: f32, color: Color32) {
+    if hi <= lo {
+        return;
+    }
+    painter.rect_filled(
+        Rect::from_min_max(
+            Pos2::new(bar.left(), db_y(bar, hi)),
+            Pos2::new(bar.right(), db_y(bar, lo)),
+        ),
+        0.0,
+        color,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
