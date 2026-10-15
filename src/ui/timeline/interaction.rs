@@ -639,8 +639,6 @@ enum ClipDrag {
 struct ClipMenu {
     /// The right-clicked clip.
     clip_id: Uuid,
-    /// The clip's track.
-    track_id: Uuid,
     /// Screen position of the menu's top left corner.
     pos: egui::Pos2,
 }
@@ -1052,13 +1050,8 @@ pub fn handle_clip_input(
         // Any click on a clip clears a marker selection.
         editor.select_marker(None);
         if secondary {
-            if let Some((clip_id, index, _zone)) = clip_hit(editor, g, lane_rect, scroll_y, p) {
-                let track_id = editor.project.tracks[index].id;
-                state.menu = Some(ClipMenu {
-                    clip_id,
-                    track_id,
-                    pos: p,
-                });
+            if let Some((clip_id, _index, _zone)) = clip_hit(editor, g, lane_rect, scroll_y, p) {
+                state.menu = Some(ClipMenu { clip_id, pos: p });
                 handled = true;
             }
         } else if let Some((clip_id, index, zone)) = clip_hit(editor, g, lane_rect, scroll_y, p) {

@@ -203,6 +203,24 @@ impl Player {
             if frames == 0 {
                 break;
             }
+            if self.state == State::Scrubbing {
+                // The scrub reader owns the whole block: variable speed, its
+                // own declick gain, meters included. The mouse drives the
+                // position; `scrub_stop` ends the scrub after its countdown.
+                self.scrub.process(timeline, out);
+                self.position = self.scrub.position().round().max(0.0) as u64;
+                let frames64 = (out.len() / 2) as u64;
+                if let Some(left) = self.scrub_stop {
+                    if left <= frames64 {
+                        self.scrub_stop = None;
+                        self.state = State::Stopped;
+                        self.position = self.last_target;
+                    } else {
+                        self.scrub_stop = Some(left - frames64);
+                    }
+                }
+                return;
+            }
             if self.pending.is_none() && !self.active() {
                 for s in &mut out[cursor..] {
                     *s = 0.0;

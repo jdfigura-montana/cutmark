@@ -12,6 +12,7 @@ pub fn samples_to_timecode(samples: u64, rate: u32) -> String {
 }
 
 /// Converts a sample count to seconds at the given sample rate.
+#[cfg(test)]
 pub fn samples_to_seconds(samples: u64, rate: u32) -> f64 {
     samples as f64 / f64::from(rate)
 }

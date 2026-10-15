@@ -222,6 +222,7 @@ impl Editor {
     }
 
     /// Wraps an existing project for tests: no disk access, no history.
+    #[cfg(test)]
     pub fn with_project(project: Project, view: ViewState, paths: ProjectPaths) -> Editor {
         Editor {
             project: Arc::new(project),
@@ -283,11 +284,6 @@ impl Editor {
         self.save()?;
         Self::touch_recent(&self.project.name, &self.paths.root);
         Ok(())
-    }
-
-    /// Read-only access to the view state.
-    pub fn view(&self) -> &ViewState {
-        &self.view
     }
 
     /// Ids and file names of every MediaItem in the project and in every
@@ -533,11 +529,6 @@ impl Editor {
             end: length,
             tracks,
         };
-    }
-
-    /// The track id of the last track clicked, if any.
-    pub fn last_clicked_track(&self) -> Option<Uuid> {
-        self.last_clicked_track
     }
 
     /// Remembers which track was last clicked.
@@ -1113,7 +1104,13 @@ impl Editor {
     /// One-line audio summary for the status bar.
     pub fn audio_status(&self) -> String {
         match &self.audio {
-            Some(engine) => engine.device_info().to_string(),
+            Some(engine) => {
+                if engine.errored() {
+                    "Audio device error".to_string()
+                } else {
+                    engine.device_info().to_string()
+                }
+            }
             None => match &self.audio_error {
                 Some(error) => format!("No audio: {error}"),
                 None => "No audio".to_string(),
@@ -1359,7 +1356,7 @@ impl Editor {
                         state.frac = frac;
                     }
                 }
-                JobMessage::ExportPeak { job: _, peak_db } => {
+                JobMessage::ExportPeak { peak_db } => {
                     if let Some(state) = &mut self.exporting {
                         state.peak_warning = Some(peak_db);
                     }

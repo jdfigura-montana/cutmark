@@ -53,8 +53,6 @@ pub enum JobMessage {
     RelinkDone {
         /// Job id.
         job: u64,
-        /// Media id that was relinked.
-        media_id: Uuid,
         /// The updated bin entry plus loaded audio, or the failure.
         result: Result<(MediaItem, Loaded), IoError>,
     },
@@ -69,8 +67,6 @@ pub enum JobMessage {
     },
     /// Pass 1 found a peak above 0 dBFS; the Editor must send an ExportDecision.
     ExportPeak {
-        /// Job id.
-        job: u64,
         /// Peak level in dBFS (above 0 when this fires).
         peak_db: f32,
     },
@@ -137,16 +133,11 @@ pub fn spawn_relink(
     item: MediaItem,
     project_rate: u32,
 ) {
-    let media_id = item.id;
     thread::spawn(move || {
         let result = relink_file(&src, &paths, &item, project_rate, &mut |frac| {
             let _ = sender.send(JobMessage::Progress { job, frac });
         });
-        let _ = sender.send(JobMessage::RelinkDone {
-            job,
-            media_id,
-            result,
-        });
+        let _ = sender.send(JobMessage::RelinkDone { job, result });
     });
 }
 
@@ -234,7 +225,6 @@ fn run_export(
     // Above 0 dBFS: warn and wait for the Editor's decision.
     if peak > 1.0 {
         let _ = sender.send(JobMessage::ExportPeak {
-            job,
             peak_db: linear_to_db(peak),
         });
         match decision_rx.recv() {

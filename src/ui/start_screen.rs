@@ -181,7 +181,7 @@ impl StartScreen {
                 self.recent = None;
                 *opened = Some(*editor);
             }
-            Ok(OpenOutcome::NeedsRecoveryChoice(_)) => self.recovery = Some(path),
+            Ok(OpenOutcome::NeedsRecoveryChoice(path)) => self.recovery = Some(path),
             Err(error) => self.error = Some(error.to_string()),
         }
     }

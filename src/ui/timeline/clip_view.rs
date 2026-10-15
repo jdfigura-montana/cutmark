@@ -57,6 +57,7 @@ pub fn gain_line_y(clip: &Clip, clip_rect: egui::Rect) -> f32 {
 }
 
 /// Clip gain in dB for a window y in the body (the inverse of gain_line_y).
+#[cfg(test)]
 pub fn gain_db_at_y(y: f32, clip_rect: egui::Rect) -> f32 {
     let body = body_rect(clip_rect);
     if body.height() <= 0.0 {

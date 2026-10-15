@@ -56,7 +56,7 @@ pub struct Shared {
 /// joins the callback when the `Stream` is dropped.
 pub struct Engine {
     /// The live output stream; dropping it stops playback.
-    stream: Stream,
+    _stream: Stream,
     /// Bounded command queue into the callback; commands are dropped when full.
     cmd_tx: Sender<Command>,
     /// Latest timeline mix plan.
@@ -185,7 +185,7 @@ impl Engine {
             format!("{device_rate} Hz device, resampling from {project_rate} Hz")
         };
         Ok(Engine {
-            stream,
+            _stream: stream,
             cmd_tx,
             timeline,
             preview,

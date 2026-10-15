@@ -1,4 +1,4 @@
-#![allow(dead_code)] // TEMP: remove in phase 10
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
 mod audio;
