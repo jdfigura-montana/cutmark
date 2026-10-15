@@ -1,10 +1,10 @@
-﻿//! ui::start_screen: start screen with New, Open and Recent Projects.
+//! ui::start_screen: start screen with New, Open and Recent Projects.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use eframe::egui;
 
-use crate::editor::{Editor, RecentEntry, recent_projects, remove_recent};
+use crate::editor::{Editor, OpenOutcome, RecentEntry, recent_projects, remove_recent};
 use crate::ui::dialogs::new_project::NewProjectDialog;
 use crate::ui::theme::THEME;
 
@@ -19,6 +19,8 @@ pub struct StartScreen {
     error: Option<String>,
     /// True when the Project > Open picker must be shown on the next frame.
     pending_open: bool,
+    /// Project path awaiting an autosave-recovery decision, if any.
+    recovery: Option<PathBuf>,
 }
 
 impl StartScreen {
@@ -86,7 +88,70 @@ impl StartScreen {
                 self.show_recent_list(ui, &mut opened);
             });
         });
+        self.show_recovery_modal(ui, &mut opened);
         opened
+    }
+
+    /// Draws the autosave-recovery modal when a project needs a decision.
+    fn show_recovery_modal(&mut self, ui: &mut egui::Ui, opened: &mut Option<Editor>) {
+        let Some(path) = self.recovery.clone() else {
+            return;
+        };
+        #[derive(PartialEq)]
+        enum Choice {
+            Recover,
+            LastSaved,
+            Cancel,
+        }
+        let mut choice = None;
+        let mut open = true;
+        egui::Window::new("Recover autosave")
+            .open(&mut open)
+            .default_width(THEME.dialog_w)
+            .collapsible(false)
+            .resizable(false)
+            .movable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ui.ctx(), |ui| {
+                ui.label(
+                    "This project has unsaved changes from a session that didn't close properly.",
+                );
+                ui.add_space(THEME.space_md);
+                ui.vertical_centered(|ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button("Recover autosave").clicked() {
+                            choice = Some(Choice::Recover);
+                        }
+                        if ui.button("Open last saved").clicked() {
+                            choice = Some(Choice::LastSaved);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            choice = Some(Choice::Cancel);
+                        }
+                    });
+                });
+            });
+        self.recovery = None;
+        if open && choice != Some(Choice::Cancel) {
+            self.finish_open(&path, choice == Some(Choice::Recover), opened);
+        }
+    }
+
+    /// Opens the project either from the autosave or from the last save.
+    fn finish_open(&mut self, path: &Path, recover: bool, opened: &mut Option<Editor>) {
+        self.error = None;
+        let result = if recover {
+            Editor::open_recovered(path)
+        } else {
+            Editor::open_discarding_autosave(path)
+        };
+        match result {
+            Ok(editor) => {
+                self.recent = None;
+                *opened = Some(editor);
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
     }
 
     /// Opens a project picked with a file dialog filtered to project.json.
@@ -109,13 +174,14 @@ impl StartScreen {
         }
     }
 
-    /// Attempts Editor::open and records the error message on failure.
+    /// Attempts the recovery-checked open; a newer autosave raises the modal.
     fn try_open(&mut self, path: PathBuf, opened: &mut Option<Editor>) {
-        match Editor::open(&path) {
-            Ok(editor) => {
+        match Editor::open_with_recovery_check(&path) {
+            Ok(OpenOutcome::Opened(editor)) => {
                 self.recent = None;
-                *opened = Some(editor);
+                *opened = Some(*editor);
             }
+            Ok(OpenOutcome::NeedsRecoveryChoice(_)) => self.recovery = Some(path),
             Err(error) => self.error = Some(error.to_string()),
         }
     }

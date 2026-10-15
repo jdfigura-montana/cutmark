@@ -12,5 +12,5 @@ pub mod selection;
 pub mod snap;
 pub mod transport;
 
-pub use self::editor::{Editor, recent_projects, remove_recent};
+pub use self::editor::{Editor, OpenOutcome, recent_projects, remove_recent};
 pub use crate::io::recent::RecentEntry;

@@ -1,5 +1,6 @@
 ﻿# Progress
 ## Current state
+Task 10.1 DONE (2026-10-15). Autosave every 2 min + recovery prompt on open (io::autosave, editor autosave_tick/open_with_recovery_check/open_recovered/open_discarding_autosave, start-screen recovery modal). 12 new tests; filetime added as dev dep. cargo test 368 passed; clippy clean; fmt applied.
 Task 9.3 DONE (2026-10-13). Export dialog UI (Project menu + Ctrl+E), progress window with click blocker, clipping warning modal, status-bar success banner with Reveal, overwrite asked exactly once. See activeContext. cargo test 356 passed; clippy clean; fmt applied.
 Task 9.2 DONE (2026-10-13). Editor export job in editor::jobs + editor.rs (see activeContext): two-pass render, clip warning with Continue/Cancel decision channel, cancel flag, editing lock via EditorError::Locked; 9 tests.
 Task 9.1 DONE (2026-10-13). io::export (ExportKind/ExportFormat/mp3_rate/AudioSink/open_sink), WAV sink (16-bit TPDF dither, 24-bit, float32) and CBR MP3 sink (mp3lame-encoder 0.2.5, LAME/Info tag written so decoders trim delay; streaming rubato for 88.2/96 kHz) via `<path>.part` + rename; io::resample::StreamResampler. See activeContext. cargo test 343 passed; clippy clean; fmt applied.
@@ -63,7 +64,7 @@ Task 8.1 DONE (2026-10-13). Markers: Editor selected_marker/select_marker/add_ma
 - Phase 2 complete: model/undo core, editor ops, io (paths, project_file, recent), start screen, menus, dialogs (1.1-2.8).
 
 ## What is left (SPEC Build phases)
-3. Media import complete. 4. Timeline view (complete through 4.5). 5. Playback. 6. Editing. 7. Levels/processing: 7.1 amplitude ops DONE, 7.2 meters DONE, 7.3 header controls DONE, 7.4 clip gain line/fade handles/Clip Gain dialog DONE; 7.5 Gain/Normalize/Fade/Silence menu+keys DONE. 8. Markers/scrub UI DONE. 9. Export DONE (9.1 sinks, 9.2 editor job, 9.3 dialog/progress/warning). 10. Safety net/polish.
+3. Media import complete. 4. Timeline view (complete through 4.5). 5. Playback. 6. Editing. 7. Levels/processing: 7.1 amplitude ops DONE, 7.2 meters DONE, 7.3 header controls DONE, 7.4 clip gain line/fade handles/Clip Gain dialog DONE; 7.5 Gain/Normalize/Fade/Silence menu+keys DONE. 8. Markers/scrub UI DONE. 9. Export DONE (9.1 sinks, 9.2 editor job, 9.3 dialog/progress/warning). 10. Safety net/polish: 10.1 autosave/recovery DONE (missing media relink, unsaved-changes prompts, unused media cleanup remain).
 
 ## Known issues / environment notes
 - cargo not on default PATH; append $env:USERPROFILE\.cargo\bin each session.

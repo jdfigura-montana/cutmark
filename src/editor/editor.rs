@@ -25,6 +25,7 @@ use crate::editor::ops::paste;
 use crate::editor::selection::Selection;
 use crate::editor::transport::TransportState;
 use crate::io::IoError;
+use crate::io::autosave;
 use crate::io::export::ExportKind;
 use crate::io::paths::{self, ProjectPaths};
 use crate::io::project_file;
@@ -54,6 +55,14 @@ pub enum EditorError {
 
 /// Message shown when an operation is refused during an export.
 const EXPORT_LOCKED: &str = "Export in progress";
+
+/// Result of opening with an autosave-recovery check.
+pub enum OpenOutcome {
+    /// The project opened normally.
+    Opened(Box<Editor>),
+    /// The autosave is newer than project.json; the UI must ask the user.
+    NeedsRecoveryChoice(PathBuf),
+}
 
 /// Owns the open project; the only gateway between the UI and project state.
 pub struct Editor {
@@ -110,6 +119,14 @@ pub struct Editor {
     exporting: Option<ExportState>,
     /// Result of the finished export job, taken by `take_export_result`.
     export_result: Option<Result<PathBuf, String>>,
+    /// Minimum time between autosave writes; the real app uses 120 s.
+    pub autosave_interval: Duration,
+    /// When the last autosave write happened (or the editor was created).
+    last_autosave: Instant,
+    /// Bumped by every change that marks the project dirty.
+    autosave_generation: u64,
+    /// Generation captured by the last successful autosave write.
+    autosaved_generation: u64,
 }
 
 impl Editor {
@@ -124,12 +141,17 @@ impl Editor {
         let project = Project::new(name.to_string(), sample_rate, bit_depth);
         let view = ViewState::default();
         project_file::save(&project_paths, &project, &view)?;
-        Self::touch_recent(&project.name, &project_paths.root);
-        Ok(Editor {
+        Ok(Self::assemble(project_paths, project, view, false))
+    }
+
+    /// Builds an Editor from loaded parts; used by create, open and recovery.
+    fn assemble(paths: ProjectPaths, project: Project, view: ViewState, dirty: bool) -> Editor {
+        Self::touch_recent(&project.name, &paths.root);
+        let mut editor = Editor {
             project: Arc::new(project),
             view,
-            paths: project_paths,
-            dirty: false,
+            paths,
+            dirty,
             history: History::new(),
             gesture_base: None,
             gesture_label: None,
@@ -155,46 +177,45 @@ impl Editor {
             last_clicked_track: None,
             exporting: None,
             export_result: None,
-        })
+            autosave_interval: Duration::from_secs(120),
+            last_autosave: Instant::now(),
+            autosave_generation: 0,
+            autosaved_generation: 0,
+        };
+        editor.start_media_loads();
+        editor
     }
 
     /// Loads a project from a project.json file path or a project folder path.
     pub fn open(path: &Path) -> Result<Editor, EditorError> {
         let (project_paths, project, view) = project_file::load(path)?;
-        Self::touch_recent(&project.name, &project_paths.root);
-        let mut editor = Editor {
-            project: Arc::new(project),
-            view,
-            paths: project_paths,
-            dirty: false,
-            history: History::new(),
-            gesture_base: None,
-            gesture_label: None,
-            clipboard: None,
-            media_store: MediaStore::new(),
-            pending: BTreeMap::new(),
-            next_job: 1,
-            job_errors: Vec::new(),
-            jobs: JobChannels::new(),
-            wave_scale: 1.0,
-            audio: None,
-            retired: Vec::new(),
-            audio_error: None,
-            master_meter: Arc::new(StereoMeter::new()),
-            meters: Arc::new(MeterBank {
-                track_ids: Vec::new(),
-                tracks: Vec::new(),
-            }),
-            transport_prev: None,
-            preview_item: None,
-            selection: Selection::None,
-            selected_marker: None,
-            last_clicked_track: None,
-            exporting: None,
-            export_result: None,
-        };
-        editor.start_media_loads();
-        Ok(editor)
+        Ok(Self::assemble(project_paths, project, view, false))
+    }
+
+    /// Opens a project, checking whether an autosave is newer than the last
+    /// save. Returns `NeedsRecoveryChoice` so the UI can ask the user.
+    pub fn open_with_recovery_check(path: &Path) -> Result<OpenOutcome, EditorError> {
+        let (project_paths, _, _) = project_file::load(path)?;
+        if autosave::newer_than_saved(&project_paths) {
+            return Ok(OpenOutcome::NeedsRecoveryChoice(path.to_path_buf()));
+        }
+        Ok(OpenOutcome::Opened(Box::new(Self::open(path)?)))
+    }
+
+    /// Opens the project from its autosave snapshot; the editor starts dirty
+    /// so the title shows the unsaved-changes mark.
+    pub fn open_recovered(path: &Path) -> Result<Editor, EditorError> {
+        let (project_paths, _, _) = project_file::load(path)?;
+        let (project, view) = autosave::load(&project_paths)?;
+        Ok(Self::assemble(project_paths, project, view, true))
+    }
+
+    /// Renames the autosave aside (recovery is refused for this session) and
+    /// opens the project from its last save.
+    pub fn open_discarding_autosave(path: &Path) -> Result<Editor, EditorError> {
+        let (project_paths, _, _) = project_file::load(path)?;
+        autosave::discard(&project_paths)?;
+        Self::open(path)
     }
 
     /// Wraps an existing project for tests: no disk access, no history.
@@ -229,6 +250,10 @@ impl Editor {
             last_clicked_track: None,
             exporting: None,
             export_result: None,
+            autosave_interval: Duration::from_secs(120),
+            last_autosave: Instant::now(),
+            autosave_generation: 0,
+            autosaved_generation: 0,
         }
     }
 
@@ -236,6 +261,8 @@ impl Editor {
     pub fn save(&mut self) -> Result<(), EditorError> {
         project_file::save(&self.paths, &self.project, &self.view)?;
         self.dirty = false;
+        // A successful manual save makes the autosave obsolete.
+        let _ = autosave::delete(&self.paths);
         Ok(())
     }
 
@@ -243,6 +270,8 @@ impl Editor {
     /// points the paths at the new root and saves there. The old folder is
     /// left untouched on disk.
     pub fn save_as(&mut self, parent: &Path, new_name: &str) -> Result<(), EditorError> {
+        // The old folder's autosave belongs to the already-saved session.
+        let _ = autosave::delete(&self.paths);
         let new_paths = project_file::copy_project(&self.paths, parent, new_name)?;
         Arc::make_mut(&mut self.project).name = new_name.to_string();
         self.paths = new_paths;
@@ -795,6 +824,7 @@ impl Editor {
         self.project = Arc::new(next);
         self.tidy_selection();
         self.dirty = true;
+        self.autosave_generation += 1;
         self.publish();
         Ok(())
     }
@@ -843,6 +873,7 @@ impl Editor {
                 self.project = entry.before;
                 self.tidy_selection();
                 self.dirty = true;
+                self.autosave_generation += 1;
                 self.publish();
                 true
             }
@@ -860,6 +891,7 @@ impl Editor {
                 self.project = entry.before;
                 self.tidy_selection();
                 self.dirty = true;
+                self.autosave_generation += 1;
                 self.publish();
                 true
             }
@@ -911,6 +943,7 @@ impl Editor {
                     before: base,
                 });
                 self.dirty = true;
+                self.autosave_generation += 1;
                 self.publish();
             }
         }
@@ -975,10 +1008,31 @@ impl Editor {
         ))
     }
 
-    /// Drops retired mix plans older than 2 s; called every frame.
+    /// Drops retired mix plans older than 2 s and runs the autosave; called
+    /// every frame.
     pub fn tick(&mut self) {
         self.retired
             .retain(|(at, _)| at.elapsed() < Duration::from_secs(2));
+        self.autosave_tick();
+    }
+
+    /// Writes the autosave when the project is dirty, an edit happened since
+    /// the last autosave and the interval has passed. Errors are recorded in
+    /// the job error list, never panicked. Runs during an export too (the
+    /// autosave only reads the project).
+    fn autosave_tick(&mut self) {
+        if !self.dirty || self.autosaved_generation == self.autosave_generation {
+            return;
+        }
+        if self.last_autosave.elapsed() < self.autosave_interval {
+            return;
+        }
+        self.last_autosave = Instant::now();
+        if let Err(error) = autosave::write(&self.paths, &self.project, &self.view) {
+            self.job_errors.push(format!("Autosave failed: {error}"));
+            return;
+        }
+        self.autosaved_generation = self.autosave_generation;
     }
 
     /// Takes the current meter readings for every track and the master.
@@ -3323,5 +3377,137 @@ mod tests {
         assert!(editor.view.ripple);
         assert!(!editor.dirty);
         assert!(editor.history.undo.is_empty());
+    }
+
+    /// A real on-disk project (tempdir) plus an Editor wrapping it, with the
+    /// autosave interval set to zero so every tick may write.
+    fn disk_editor(name: &str) -> (tempfile::TempDir, Editor) {
+        let parent = tempdir().unwrap();
+        let paths = crate::io::paths::create_layout(parent.path(), name).unwrap();
+        let project = Project::new(name.to_string(), 48_000, BitDepth::Int16);
+        let view = ViewState::default();
+        project_file::save(&paths, &project, &view).unwrap();
+        let mut editor = Editor::with_project(project, view, paths);
+        editor.autosave_interval = Duration::ZERO;
+        (parent, editor)
+    }
+
+    /// Marks the editor dirty the way an edit would.
+    fn make_dirty(editor: &mut Editor) {
+        editor.dirty = true;
+        editor.autosave_generation += 1;
+    }
+
+    #[test]
+    fn autosave_tick_does_nothing_when_not_dirty() {
+        let parent = tempdir().unwrap();
+        let paths = crate::io::paths::create_layout(parent.path(), "Clean").unwrap();
+        let project = Project::new("Clean".to_string(), 48_000, BitDepth::Int16);
+        project_file::save(&paths, &project, &ViewState::default()).unwrap();
+        let mut editor = Editor::with_project(project, ViewState::default(), paths);
+        editor.autosave_interval = Duration::ZERO;
+        editor.tick();
+        assert!(!autosave::autosave_path(&editor.paths).exists());
+        assert!(editor.take_job_errors().is_empty());
+    }
+
+    #[test]
+    fn autosave_tick_writes_once_after_the_interval() {
+        let (_parent, mut editor) = disk_editor("Ticky");
+        make_dirty(&mut editor);
+        editor.tick();
+        let first = autosave::autosave_path(&editor.paths);
+        assert!(first.is_file());
+        let mtime = std::fs::metadata(&first)
+            .and_then(|m| m.modified())
+            .unwrap();
+        // A second tick with no new edit must not write again.
+        editor.tick();
+        let mtime2 = std::fs::metadata(&first)
+            .and_then(|m| m.modified())
+            .unwrap();
+        assert_eq!(mtime, mtime2);
+        // A new edit makes the next tick write again.
+        make_dirty(&mut editor);
+        editor.tick();
+        let mtime3 = std::fs::metadata(&first)
+            .and_then(|m| m.modified())
+            .unwrap();
+        assert_ne!(mtime2, mtime3);
+    }
+
+    #[test]
+    fn autosave_tick_records_errors_in_job_errors() {
+        let (_parent, mut editor) = disk_editor("Bad");
+        // Make the atomic rename fail: project.autosave.json exists as a
+        // directory, so the rename over it cannot succeed.
+        std::fs::create_dir_all(editor.paths.autosave()).unwrap();
+        std::fs::create_dir(autosave::autosave_path(&editor.paths)).unwrap();
+        make_dirty(&mut editor);
+        editor.tick();
+        assert!(
+            editor
+                .take_job_errors()
+                .iter()
+                .any(|e| e.contains("Autosave failed")),
+            "expected an autosave job error"
+        );
+    }
+
+    #[test]
+    fn save_removes_the_autosave() {
+        let (_parent, mut editor) = disk_editor("Saver");
+        make_dirty(&mut editor);
+        editor.tick();
+        assert!(autosave::autosave_path(&editor.paths).is_file());
+        editor.save().unwrap();
+        assert!(!autosave::autosave_path(&editor.paths).exists());
+    }
+
+    #[test]
+    fn open_with_recovery_check_requests_recovery_for_newer_autosave() {
+        let _recent = lock_recent();
+        let (_parent, mut editor) = disk_editor("Recov");
+        make_dirty(&mut editor);
+        editor.tick();
+        // The autosave is now newer than project.json.
+        assert!(matches!(
+            Editor::open_with_recovery_check(&editor.paths.root),
+            Ok(OpenOutcome::NeedsRecoveryChoice(_))
+        ));
+        // After a manual save the prompt is gone.
+        editor.save().unwrap();
+        assert!(matches!(
+            Editor::open_with_recovery_check(&editor.paths.root),
+            Ok(OpenOutcome::Opened(_))
+        ));
+        drop_from_recent(&editor.paths.root);
+    }
+
+    #[test]
+    fn open_recovered_loads_the_autosave_marked_dirty() {
+        let _recent = lock_recent();
+        let (_parent, mut editor) = disk_editor("Recovered");
+        editor
+            .apply(Action::AddTrack {
+                index: None,
+                name: None,
+            })
+            .unwrap();
+        assert!(editor.dirty);
+        editor.tick();
+        assert!(autosave::autosave_path(&editor.paths).is_file());
+        let track_count = editor.project.tracks.len();
+
+        let recovered = Editor::open_recovered(&editor.paths.root).unwrap();
+        assert!(recovered.dirty, "recovered project must show as unsaved");
+        assert_eq!(recovered.project.tracks.len(), track_count);
+        assert_eq!(recovered.paths.root, editor.paths.root);
+
+        // Discarding opens the last saved project instead (no extra track).
+        let discarded = Editor::open_discarding_autosave(&editor.paths.root).unwrap();
+        assert!(!discarded.dirty);
+        assert!(discarded.project.tracks.is_empty());
+        drop_from_recent(&recovered.paths.root);
     }
 }
