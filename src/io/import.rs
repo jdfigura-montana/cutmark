@@ -1,4 +1,4 @@
-﻿//! io::import: copy originals into media/, conform, cache and build peaks.
+//! io::import: copy originals into media/, conform, cache and build peaks.
 
 use std::fs;
 use std::path::Path;
@@ -33,6 +33,54 @@ pub fn import_file(
     src: &Path,
     paths: &ProjectPaths,
     media_id: Uuid,
+    project_rate: u32,
+    progress: &mut dyn FnMut(f32),
+) -> Result<(MediaItem, Loaded), IoError> {
+    import_core(
+        src,
+        paths,
+        media_id,
+        display_stem(src),
+        project_rate,
+        progress,
+    )
+}
+
+/// Re-links an offline media item to a replacement file.
+///
+/// Runs the same pipeline as `import_file`, but keeps the item's id and
+/// display name, deletes the item's old cache files first (they belong to the
+/// missing original), and copies `src` into media/ under a unique name. If any
+/// step fails, the copy and any cache files written are deleted.
+pub fn relink_file(
+    src: &Path,
+    paths: &ProjectPaths,
+    item: &MediaItem,
+    project_rate: u32,
+    progress: &mut dyn FnMut(f32),
+) -> Result<(MediaItem, Loaded), IoError> {
+    let _ = fs::remove_file(conformed_path(paths, item.id));
+    let _ = fs::remove_file(peaks_path(paths, item.id));
+    import_core(
+        src,
+        paths,
+        item.id,
+        item.display_name.clone(),
+        project_rate,
+        progress,
+    )
+}
+
+/// Shared import pipeline: decode, copy into media/, conform, cache and peaks.
+///
+/// `display_name` becomes the bin entry's display name; `media_id` names the
+/// cache files. If any step after the copy fails, the copy and any cache
+/// files written are deleted.
+fn import_core(
+    src: &Path,
+    paths: &ProjectPaths,
+    media_id: Uuid,
+    display_name: String,
     project_rate: u32,
     progress: &mut dyn FnMut(f32),
 ) -> Result<(MediaItem, Loaded), IoError> {
@@ -90,7 +138,7 @@ pub fn import_file(
 
     let item = MediaItem {
         id: media_id,
-        display_name: display_stem(src),
+        display_name,
         file_name: media_name,
         original_rate: decoded.rate,
         channels,
@@ -260,6 +308,56 @@ mod tests {
         assert!(matches!(result, Err(IoError::UnsupportedAudio(_))));
         assert_eq!(fs::read_dir(paths.media()).unwrap().count(), 0);
         assert_eq!(fs::read_dir(paths.cache()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn relink_file_keeps_id_and_name_and_replaces_cache() {
+        let src_dir = tempdir().unwrap();
+        let original = src_dir.path().join("gone.wav");
+        write_stereo_wav(&original, 48_000, 500);
+        let replacement = src_dir.path().join("new.wav");
+        write_stereo_wav(&replacement, 48_000, 1_000);
+
+        let proj_dir = tempdir().unwrap();
+        let paths = create_layout(proj_dir.path(), "Proj").unwrap();
+        let (item, _) =
+            import_file(&original, &paths, Uuid::new_v4(), 48_000, &mut |_| {}).unwrap();
+        let old_conformed = conformed_path(&paths, item.id);
+        let before = fs::read(&old_conformed).unwrap();
+
+        let (relinked, loaded) =
+            relink_file(&replacement, &paths, &item, 48_000, &mut |_| {}).unwrap();
+        assert_eq!(relinked.id, item.id);
+        assert_eq!(relinked.display_name, item.display_name);
+        assert_ne!(relinked.file_name, item.file_name);
+        assert_eq!(relinked.file_name, "new.wav");
+        assert_eq!(relinked.length, 1_000);
+        assert_eq!(loaded.samples.len(), 1_000 * 2);
+        assert!(paths.media().join("new.wav").is_file());
+        let after = fs::read(&old_conformed).unwrap();
+        assert_ne!(before, after, "cache was rewritten for the replacement");
+        assert!(peaks_path(&paths, item.id).is_file());
+    }
+
+    #[test]
+    fn relink_file_unsupported_leaves_nothing_behind() {
+        let src_dir = tempdir().unwrap();
+        let original = src_dir.path().join("gone.wav");
+        write_stereo_wav(&original, 48_000, 500);
+
+        let proj_dir = tempdir().unwrap();
+        let paths = create_layout(proj_dir.path(), "Proj").unwrap();
+        let (item, _) =
+            import_file(&original, &paths, Uuid::new_v4(), 48_000, &mut |_| {}).unwrap();
+        fs::remove_file(paths.media().join(&item.file_name)).unwrap();
+
+        let notes = src_dir.path().join("notes.txt");
+        fs::write(&notes, "hello").unwrap();
+        let result = relink_file(&notes, &paths, &item, 48_000, &mut |_| {});
+        assert!(matches!(result, Err(IoError::UnsupportedAudio(_))));
+        assert_eq!(fs::read_dir(paths.media()).unwrap().count(), 0);
+        assert!(!conformed_path(&paths, item.id).exists());
+        assert!(!peaks_path(&paths, item.id).exists());
     }
 
     #[test]

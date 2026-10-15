@@ -219,6 +219,10 @@ impl BinPanel {
                 }
                 menu.close();
             }
+            if offline && menu.button("Relink...").clicked() {
+                menu.close();
+                messages.extend(pick_and_relink(editor, item.id));
+            }
             if menu.button("Rename").clicked() {
                 self.begin_rename(item);
                 menu.close();
@@ -347,6 +351,20 @@ pub fn pick_and_import(editor: &mut Editor) -> Vec<String> {
         return Vec::new();
     };
     editor.import_files(files)
+}
+
+/// Opens the relink file picker (WAV and MP3) and starts one relink job.
+///
+/// The job copies the chosen file into media/ for the offline item.
+fn pick_and_relink(editor: &mut Editor, id: Uuid) -> Vec<String> {
+    let Some(file) = rfd::FileDialog::new()
+        .add_filter("Audio (WAV, MP3)", &["wav", "mp3"])
+        .pick_file()
+    else {
+        return Vec::new();
+    };
+    editor.relink(id, file);
+    Vec::new()
 }
 
 /// Returns the bin items in the given sort order.

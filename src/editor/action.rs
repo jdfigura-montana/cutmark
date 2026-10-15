@@ -149,6 +149,19 @@ pub enum Action {
         /// The bin entry to add.
         item: crate::model::media::MediaItem,
     },
+    /// Replaces an offline bin entry's file and stats after a relink.
+    RelinkMedia {
+        /// Media id to relink.
+        id: uuid::Uuid,
+        /// New file name inside media/.
+        file_name: String,
+        /// Original sample rate of the replacement file.
+        original_rate: u32,
+        /// Channel count of the replacement file.
+        channels: u16,
+        /// Length of the replacement in samples at the project rate.
+        length: u64,
+    },
     /// Removes the bin entry and every clip that uses it.
     RemoveMedia {
         /// Media id to remove.
@@ -225,6 +238,7 @@ impl Action {
             Action::DeleteMarkers { .. } => "Delete Marker",
             Action::SetProjectSettings { .. } => "Project Settings",
             Action::ImportMedia { .. } => "Import",
+            Action::RelinkMedia { .. } => "Relink",
             Action::RemoveMedia { .. } => "Remove Media",
             Action::RenameMedia { .. } => "Rename Media",
             Action::ApplyGain { .. } => "Gain",
@@ -301,6 +315,20 @@ impl Action {
             Action::ImportMedia { item } => {
                 crate::editor::ops::media::import_media(project, item.clone())
             }
+            Action::RelinkMedia {
+                id,
+                file_name,
+                original_rate,
+                channels,
+                length,
+            } => crate::editor::ops::media::relink_media(
+                project,
+                *id,
+                file_name.clone(),
+                *original_rate,
+                *channels,
+                *length,
+            ),
             Action::RemoveMedia { id } => crate::editor::ops::media::remove_media(project, *id),
             Action::RenameMedia { id, name } => {
                 crate::editor::ops::media::rename_media(project, *id, name)

@@ -1,6 +1,7 @@
 ﻿# Progress
 ## Current state
-Task 10.2 DONE (2026-10-15). Save/Don't Save/Cancel prompts on close/quit + export-in-progress question; window X and Alt+F4 intercepted via close_requested + CancelClose. cargo test 369 passed; clippy clean; fmt applied. 10 remains: missing media relink, unused media cleanup.
+Task 10.3 DONE (2026-10-15). Missing-media notice + Relink (ops::media::relink_media + Action::RelinkMedia, io::import::relink_file over shared import_core, editor relink job/finish_relink/offline_count, one-time notice in tick, bin "Relink..." menu). 6 new tests; cargo test 375 passed; clippy clean; fmt applied. 10 remains: unused media cleanup.
+Task 10.2 DONE (2026-10-15). Save/Don't Save/Cancel prompts on close/quit + export-in-progress question; window X and Alt+F4 intercepted via close_requested + CancelClose. cargo test 369 passed; clippy clean; fmt applied.
 Task 10.1 DONE (2026-10-15). Autosave every 2 min + recovery prompt on open (io::autosave, editor autosave_tick/open_with_recovery_check/open_recovered/open_discarding_autosave, start-screen recovery modal). 12 new tests; filetime added as dev dep.
 Task 9.3 DONE (2026-10-13). Export dialog UI (Project menu + Ctrl+E), progress window with click blocker, clipping warning modal, status-bar success banner with Reveal, overwrite asked exactly once. See activeContext. cargo test 356 passed; clippy clean; fmt applied.
 Task 9.2 DONE (2026-10-13). Editor export job in editor::jobs + editor.rs (see activeContext): two-pass render, clip warning with Continue/Cancel decision channel, cancel flag, editing lock via EditorError::Locked; 9 tests.
@@ -65,7 +66,7 @@ Task 8.1 DONE (2026-10-13). Markers: Editor selected_marker/select_marker/add_ma
 - Phase 2 complete: model/undo core, editor ops, io (paths, project_file, recent), start screen, menus, dialogs (1.1-2.8).
 
 ## What is left (SPEC Build phases)
-3. Media import complete. 4. Timeline view (complete through 4.5). 5. Playback. 6. Editing. 7. Levels/processing: 7.1 amplitude ops DONE, 7.2 meters DONE, 7.3 header controls DONE, 7.4 clip gain line/fade handles/Clip Gain dialog DONE; 7.5 Gain/Normalize/Fade/Silence menu+keys DONE. 8. Markers/scrub UI DONE. 9. Export DONE (9.1 sinks, 9.2 editor job, 9.3 dialog/progress/warning). 10. Safety net/polish: 10.1 autosave/recovery DONE (missing media relink, unsaved-changes prompts, unused media cleanup remain).
+3. Media import complete. 4. Timeline view (complete through 4.5). 5. Playback. 6. Editing. 7. Levels/processing: 7.1 amplitude ops DONE, 7.2 meters DONE, 7.3 header controls DONE, 7.4 clip gain line/fade handles/Clip Gain dialog DONE; 7.5 Gain/Normalize/Fade/Silence menu+keys DONE. 8. Markers/scrub UI DONE. 9. Export DONE (9.1 sinks, 9.2 editor job, 9.3 dialog/progress/warning). 10. Safety net/polish: 10.1 autosave/recovery DONE, 10.2 close prompts DONE, 10.3 missing media notice + relink DONE (unused media cleanup remains).
 
 ## Known issues / environment notes
 - cargo not on default PATH; append $env:USERPROFILE\.cargo\bin each session.

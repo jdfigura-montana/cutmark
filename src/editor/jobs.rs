@@ -12,7 +12,7 @@ use crate::audio::mix_plan::MixPlan;
 use crate::audio::mixer;
 use crate::io::IoError;
 use crate::io::export::{ExportFormat, open_sink};
-use crate::io::import::{Loaded, import_file, load_or_rebuild};
+use crate::io::import::{Loaded, import_file, load_or_rebuild, relink_file};
 use crate::io::paths::ProjectPaths;
 use crate::model::media::MediaItem;
 use crate::util::db::linear_to_db;
@@ -48,6 +48,15 @@ pub enum JobMessage {
         media_id: Uuid,
         /// The loaded audio, or the failure.
         result: Result<Loaded, IoError>,
+    },
+    /// A relink job finished.
+    RelinkDone {
+        /// Job id.
+        job: u64,
+        /// Media id that was relinked.
+        media_id: Uuid,
+        /// The updated bin entry plus loaded audio, or the failure.
+        result: Result<(MediaItem, Loaded), IoError>,
     },
     /// Export progress of one render pass.
     ExportProgress {
@@ -114,6 +123,30 @@ pub fn spawn_import(
             let _ = sender.send(JobMessage::Progress { job, frac });
         });
         let _ = sender.send(JobMessage::ImportDone { job, result });
+    });
+}
+
+/// Spawns a worker thread that relinks an offline media item to `src`.
+///
+/// Progress and the final result are sent over `sender`.
+pub fn spawn_relink(
+    sender: Sender<JobMessage>,
+    job: u64,
+    src: PathBuf,
+    paths: ProjectPaths,
+    item: MediaItem,
+    project_rate: u32,
+) {
+    let media_id = item.id;
+    thread::spawn(move || {
+        let result = relink_file(&src, &paths, &item, project_rate, &mut |frac| {
+            let _ = sender.send(JobMessage::Progress { job, frac });
+        });
+        let _ = sender.send(JobMessage::RelinkDone {
+            job,
+            media_id,
+            result,
+        });
     });
 }
 
@@ -270,6 +303,18 @@ impl JobChannels {
         project_rate: u32,
     ) {
         spawn_import(self.tx.clone(), job, src, paths, media_id, project_rate);
+    }
+
+    /// Spawns a relink job on its own thread.
+    pub fn spawn_relink(
+        &self,
+        job: u64,
+        src: PathBuf,
+        paths: ProjectPaths,
+        item: MediaItem,
+        project_rate: u32,
+    ) {
+        spawn_relink(self.tx.clone(), job, src, paths, item, project_rate);
     }
 
     /// Spawns a load job on its own thread.
@@ -650,6 +695,100 @@ mod tests {
         assert_eq!(wait_done(&mut editor).unwrap_err(), "Cancelled");
         assert!(!path.exists());
         assert!(!part_of(&path).exists());
+    }
+
+    /// Writes a 16-bit int stereo WAV with `frames` sine frames at `rate`.
+    fn write_wav(path: &Path, rate: u32, frames: usize) {
+        use hound::{SampleFormat, WavSpec, WavWriter};
+        let spec = WavSpec {
+            channels: 2,
+            sample_rate: rate,
+            bits_per_sample: 16,
+            sample_format: SampleFormat::Int,
+        };
+        let mut writer = WavWriter::create(path, spec).unwrap();
+        for i in 0..frames {
+            let s = (2.0 * std::f32::consts::PI * 440.0 * i as f32 / rate as f32).sin();
+            let v = (s * 16_000.0) as i16;
+            writer.write_sample(v).unwrap();
+            writer.write_sample(-v).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    #[test]
+    fn relink_job_swaps_offline_media_and_one_undo_restores() {
+        let (mut editor, dir) = test_editor(&[&[(0, 4_000)]], 4_000, pattern);
+        let id = editor.project.media[0].id;
+        let old_item = editor.project.media[0].clone();
+
+        // Make the item offline: its media file is gone (the test editor's
+        // paths have no real file) and the store marks it offline.
+        let _ = std::fs::remove_file(dir.path().join("media").join(&old_item.file_name));
+        editor.media_store.set_offline(id);
+        assert_eq!(editor.offline_count(), 1);
+        assert!(editor.is_media_offline(id));
+
+        // The relink needs the project's media/ and cache/ folders.
+        std::fs::create_dir_all(dir.path().join("media")).unwrap();
+        std::fs::create_dir_all(dir.path().join("cache")).unwrap();
+
+        // A longer replacement WAV in a scratch folder.
+        let src_dir = tempdir().unwrap();
+        let src = src_dir.path().join("replacement.wav");
+        write_wav(&src, 48_000, 8_000);
+
+        editor.relink(id, src);
+        assert!(
+            editor
+                .pending_jobs()
+                .iter()
+                .any(|(label, _)| label == "Relink")
+        );
+
+        // Poll until the relink job finished.
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            editor.poll_jobs();
+            if !editor
+                .pending_jobs()
+                .iter()
+                .any(|(label, _)| label == "Relink")
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "relink did not finish in 10 s");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        // The item is online, the store has samples and the file changed.
+        assert!(
+            editor.take_job_errors().is_empty(),
+            "relink reported errors"
+        );
+        assert!(
+            !editor.is_media_offline(id),
+            "item must be online after relink"
+        );
+        assert_eq!(editor.offline_count(), 0);
+        let loaded = editor.media(id).expect("store has samples after relink");
+        assert_eq!(loaded.samples.len(), 8_000 * 2);
+        let item = editor
+            .project
+            .media
+            .iter()
+            .find(|m| m.id == id)
+            .unwrap()
+            .clone();
+        assert_ne!(item.file_name, old_item.file_name);
+        assert_eq!(item.file_name, "replacement.wav");
+        assert_eq!(item.length, 8_000);
+        assert!(dir.path().join("media").join("replacement.wav").is_file());
+
+        // One undo restores the old MediaItem.
+        assert!(editor.undo(), "relink is one undo step");
+        let restored = editor.project.media.iter().find(|m| m.id == id).unwrap();
+        assert_eq!(*restored, old_item);
     }
 
     #[test]

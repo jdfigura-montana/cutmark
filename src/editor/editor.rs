@@ -27,7 +27,7 @@ use crate::editor::transport::TransportState;
 use crate::io::IoError;
 use crate::io::autosave;
 use crate::io::export::ExportKind;
-use crate::io::paths::{self, ProjectPaths};
+use crate::io::paths::{self, ProjectPaths, conformed_path, peaks_path};
 use crate::io::project_file;
 use crate::io::recent::{RecentEntry, RecentList};
 use crate::model::invariants::{self, InvariantError};
@@ -123,6 +123,8 @@ pub struct Editor {
     pub autosave_interval: Duration,
     /// When the last autosave write happened (or the editor was created).
     last_autosave: Instant,
+    /// True while the one-time missing-media notice is still pending.
+    missing_notice: bool,
     /// Bumped by every change that marks the project dirty.
     autosave_generation: u64,
     /// Generation captured by the last successful autosave write.
@@ -181,6 +183,7 @@ impl Editor {
             last_autosave: Instant::now(),
             autosave_generation: 0,
             autosaved_generation: 0,
+            missing_notice: false,
         };
         editor.start_media_loads();
         editor
@@ -254,6 +257,7 @@ impl Editor {
             last_autosave: Instant::now(),
             autosave_generation: 0,
             autosaved_generation: 0,
+            missing_notice: false,
         }
     }
 
@@ -1013,7 +1017,25 @@ impl Editor {
     pub fn tick(&mut self) {
         self.retired
             .retain(|(at, _)| at.elapsed() < Duration::from_secs(2));
+        self.missing_media_notice();
         self.autosave_tick();
+    }
+
+    /// Shows the missing-media notice once, after all media loads finished.
+    ///
+    /// The message goes through the job error list so the app's message modal
+    /// surfaces it.
+    fn missing_media_notice(&mut self) {
+        if !self.missing_notice || self.has_pending_jobs() {
+            return;
+        }
+        self.missing_notice = false;
+        let count = self.offline_count();
+        if count > 0 {
+            self.job_errors.push(format!(
+                "{count} media files are missing. Their clips are shown in red and play silence. Right-click an item in the bin and choose Relink to fix it."
+            ));
+        }
     }
 
     /// Writes the autosave when the project is dirty, an edit happened since
@@ -1162,6 +1184,81 @@ impl Editor {
         rejected
     }
 
+    /// Starts a relink job: copies a replacement file in for an offline item.
+    ///
+    /// A no-op during an export or for an id that is not in the bin. The job
+    /// copies the file into media/, rebuilds the cache and, on success, checks
+    /// that every clip using the item still fits inside the replacement.
+    pub fn relink(&mut self, id: Uuid, src: PathBuf) {
+        if self.exporting.is_some() {
+            return;
+        }
+        let Some(item) = self.project.media.iter().find(|m| m.id == id) else {
+            return;
+        };
+        let item = item.clone();
+        let job = self.next_job;
+        self.next_job += 1;
+        self.pending.insert(job, ("Relink".to_string(), 0.0));
+        self.jobs
+            .spawn_relink(job, src, self.paths.clone(), item, self.project.sample_rate);
+    }
+
+    /// Applies a finished relink job: the length rule first, then the swap.
+    ///
+    /// When a clip using the item reaches past the replacement's length, the
+    /// new copy and its cache files are deleted and the SPEC message is
+    /// reported; nothing else changes. Otherwise the loaded audio replaces the
+    /// store entry (clearing the offline mark) and the bin entry is updated as
+    /// one undoable "Relink" step.
+    fn finish_relink(
+        &mut self,
+        item: crate::model::media::MediaItem,
+        loaded: crate::io::import::Loaded,
+    ) {
+        // Length rule: run the pure op on a clone; on failure undo the copy.
+        let mut probe = (*self.project).clone();
+        if let Err(error) = crate::editor::ops::media::relink_media(
+            &mut probe,
+            item.id,
+            item.file_name.clone(),
+            item.original_rate,
+            item.channels,
+            item.length,
+        ) {
+            let _ = std::fs::remove_file(self.paths.media().join(&item.file_name));
+            let _ = std::fs::remove_file(conformed_path(&self.paths, item.id));
+            let _ = std::fs::remove_file(peaks_path(&self.paths, item.id));
+            self.job_errors.push(
+                error
+                    .to_string()
+                    .strip_prefix("invalid operation: ")
+                    .unwrap_or(&error.to_string())
+                    .to_string(),
+            );
+            return;
+        }
+        self.media_store.insert(item.id, loaded);
+        if let Err(error) = self.apply(Action::RelinkMedia {
+            id: item.id,
+            file_name: item.file_name.clone(),
+            original_rate: item.original_rate,
+            channels: item.channels,
+            length: item.length,
+        }) {
+            self.job_errors.push(error.to_string());
+        }
+    }
+
+    /// Number of bin items whose media file is missing from media/.
+    pub fn offline_count(&self) -> usize {
+        self.project
+            .media
+            .iter()
+            .filter(|m| self.media_store.is_offline(m.id))
+            .count()
+    }
+
     /// Drains worker-thread messages without blocking.
     pub fn poll_jobs(&mut self) {
         while let Ok(message) = self.jobs.rx.try_recv() {
@@ -1204,6 +1301,16 @@ impl Editor {
                         }
                     }
                 }
+                JobMessage::RelinkDone { job, result, .. } => {
+                    self.pending.remove(&job);
+                    match result {
+                        Ok((item, loaded)) => self.finish_relink(item, loaded),
+                        Err(IoError::MediaOffline(id)) => {
+                            self.media_store.set_offline(id);
+                        }
+                        Err(error) => self.job_errors.push(error.to_string()),
+                    }
+                }
                 JobMessage::ExportProgress { job, pass, frac } => {
                     if let Some(entry) = self.pending.get_mut(&job) {
                         entry.1 = frac;
@@ -1229,6 +1336,9 @@ impl Editor {
 
     /// Starts one background load job per media item (used on open).
     fn start_media_loads(&mut self) {
+        if !self.project.media.is_empty() {
+            self.missing_notice = true;
+        }
         for item in self.project.media.clone() {
             let job = self.next_job;
             self.next_job += 1;
@@ -3172,6 +3282,27 @@ mod tests {
             editor.media(media_id).is_some(),
             "store keeps audio for undo"
         );
+    }
+
+    #[test]
+    fn relink_media_roundtrip() {
+        let project = project_with_clips(&[&[(0, 100)]]);
+        let id = project.media[0].id;
+        let new = roundtrip(
+            project,
+            Action::RelinkMedia {
+                id,
+                file_name: "new.wav".to_string(),
+                original_rate: 44_100,
+                channels: 1,
+                length: 500_000,
+            },
+        );
+        let item = new.media.iter().find(|m| m.id == id).unwrap();
+        assert_eq!(item.file_name, "new.wav");
+        assert_eq!(item.original_rate, 44_100);
+        assert_eq!(item.channels, 1);
+        assert_eq!(item.length, 500_000);
     }
 
     #[test]

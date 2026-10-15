@@ -30,6 +30,48 @@ pub fn remove_media(project: &mut Project, id: Uuid) -> Result<(), OpError> {
     Ok(())
 }
 
+/// Replaces an offline bin entry's file, rates and length after a relink.
+///
+/// The audio was already re-imported by `io::import::relink_file`; this only
+/// records the new file name and stats. Every clip using the item must still
+/// fit inside the replacement's length.
+pub fn relink_media(
+    project: &mut Project,
+    id: Uuid,
+    file_name: String,
+    original_rate: u32,
+    channels: u16,
+    length: u64,
+) -> Result<(), OpError> {
+    if !project.media.iter().any(|m| m.id == id) {
+        return Err(OpError::NotFound(id));
+    }
+    if let Some(highest) = project
+        .tracks
+        .iter()
+        .flat_map(|t| t.clips.iter())
+        .filter(|c| c.media_id == id)
+        .map(|c| c.src_out)
+        .max()
+        .filter(|src_out| *src_out > length)
+    {
+        let need = crate::util::time::samples_to_timecode(highest, project.sample_rate);
+        return Err(OpError::Invalid(format!(
+            "The replacement is too short. The clips using this item need at least {need}."
+        )));
+    }
+    let item = project
+        .media
+        .iter_mut()
+        .find(|m| m.id == id)
+        .ok_or(OpError::NotFound(id))?;
+    item.file_name = file_name;
+    item.original_rate = original_rate;
+    item.channels = channels;
+    item.length = length;
+    Ok(())
+}
+
 /// Renames a bin entry's display name (the file in media/ keeps its name).
 ///
 /// Empty or whitespace-only names are invalid.
@@ -84,6 +126,42 @@ mod tests {
         assert!(project.media.is_empty());
         assert!(project.tracks.iter().all(|t| t.clips.is_empty()));
         assert_eq!(remove_media(&mut project, id), Err(OpError::NotFound(id)));
+    }
+
+    #[test]
+    fn relink_media_updates_the_item() {
+        let mut project = crate::model::fixtures::project_with_clips(&[&[(0, 100)]]);
+        let id = project.media[0].id;
+        relink_media(&mut project, id, "new.mp3".to_string(), 44_100, 1, 500_000).unwrap();
+        let item = project.media.iter().find(|m| m.id == id).unwrap();
+        assert_eq!(item.file_name, "new.mp3");
+        assert_eq!(item.original_rate, 44_100);
+        assert_eq!(item.channels, 1);
+        assert_eq!(item.length, 500_000);
+        assert_eq!(item.display_name, "Test Media");
+        assert!(matches!(
+            relink_media(&mut project, Uuid::new_v4(), "x".to_string(), 48_000, 1, 1),
+            Err(OpError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn relink_media_too_short_errors_and_changes_nothing() {
+        let mut project = crate::model::fixtures::project_with_clips(&[&[(0, 100)]]);
+        let id = project.media[0].id;
+        let before = project.clone();
+        // The clip's src_out is 100 samples = 2 ms at 48 kHz.
+        let result = relink_media(&mut project, id, "short.wav".to_string(), 48_000, 2, 99);
+        match result {
+            Err(OpError::Invalid(msg)) => {
+                assert!(msg.contains("The replacement is too short"), "{msg}");
+                assert!(msg.contains("00:00:00.002"), "{msg}");
+            }
+            other => panic!("expected Invalid, got {other:?}"),
+        }
+        assert_eq!(project, before, "a too-short relink changes nothing");
+        // Exactly long enough: allowed.
+        relink_media(&mut project, id, "short.wav".to_string(), 48_000, 2, 100).unwrap();
     }
 
     #[test]
