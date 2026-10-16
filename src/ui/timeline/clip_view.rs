@@ -337,8 +337,12 @@ fn clip_name_font() -> egui::FontId {
     egui::FontId::proportional(THEME.clip_name_size)
 }
 
-/// Lays out `text` in `font`, truncating with an ellipsis until it fits
-/// `max_w` (or a single character remains).
+/// Lays out `text` in `font`; when it is wider than `max_w`, the longest
+/// prefix that fits followed by an ellipsis (at least one character plus the
+/// ellipsis, even if that is still wider than `max_w`; the caller clips).
+///
+/// A binary search over the prefix length, so it always terminates after
+/// about log2(len) layouts.
 fn fit_galley(
     painter: &egui::Painter,
     text: &str,
@@ -350,23 +354,24 @@ fn fit_galley(
     if full.size().x <= max_w {
         return full;
     }
-    let mut candidate: String = text.to_owned();
-    loop {
-        let char_count = candidate.chars().count();
-        if char_count <= 1 {
-            return full;
-        }
-        candidate = candidate.chars().take(char_count - 1).collect();
+    let chars: Vec<char> = text.chars().collect();
+    let with_ellipsis = |keep: usize| {
+        let mut candidate: String = chars[..keep].iter().collect();
         candidate.push('\u{2026}');
-        let galley = painter.layout_no_wrap(candidate.clone(), font.clone(), color);
-        if galley.size().x <= max_w {
-            return galley;
-        }
-        // Keep trimming; the trailing ellipsis is re-added on the next pass.
-        if candidate.chars().count() <= 2 {
-            return galley;
+        painter.layout_no_wrap(candidate, font.clone(), color)
+    };
+    // Invariant: `lo` characters always count as fitting (the minimum shown),
+    // `hi` characters never fit.
+    let (mut lo, mut hi) = (1_usize.min(chars.len()), chars.len());
+    while lo + 1 < hi {
+        let mid = lo + (hi - lo) / 2;
+        if with_ellipsis(mid).size().x <= max_w {
+            lo = mid;
+        } else {
+            hi = mid;
         }
     }
+    with_ellipsis(lo)
 }
 
 /// Draws the clip gain line, the fade curves and the fade handle squares.
@@ -496,6 +501,57 @@ mod tests {
             fade_in,
             fade_out,
         }
+    }
+
+    /// Runs `fit_galley` in one headless frame; returns the laid-out text and
+    /// its width. Fails instead of hanging if the fit never terminates.
+    fn fit(text: &'static str, max_w: f32) -> (String, f32) {
+        crate::ui::test_util::within_secs(10, move || {
+            let mut h = crate::ui::test_util::Headless::new(400.0, 200.0);
+            let mut result = None;
+            let _ = h.frame(Vec::new(), |ui| {
+                let galley = fit_galley(
+                    ui.painter(),
+                    text,
+                    clip_name_font(),
+                    THEME.clip_text_color,
+                    max_w,
+                );
+                result = Some((galley.text().to_string(), galley.size().x));
+            });
+            result.expect("the frame ran")
+        })
+    }
+
+    #[test]
+    fn fit_galley_keeps_a_name_that_fits() {
+        assert_eq!(fit("Test Tone", 300.0).0, "Test Tone");
+    }
+
+    #[test]
+    fn fit_galley_truncates_a_wide_name_and_terminates() {
+        // The old loop re-added the ellipsis it had just cut, never shrank
+        // the string and froze the app on any clip narrower than its name.
+        let name = "5 Second Synth Tone";
+        let (text, width) = fit(name, 60.0);
+        assert!(width <= 60.0, "{text:?} is {width} wide");
+        assert!(text.ends_with('\u{2026}'), "{text:?}");
+        assert!(text.chars().count() < name.chars().count());
+        assert!(text.chars().count() > 1, "keeps some of the name");
+    }
+
+    #[test]
+    fn fit_galley_keeps_more_text_when_given_more_room() {
+        let name = "5 Second Synth Tone";
+        let narrow = fit(name, 50.0).0.chars().count();
+        let wider = fit(name, 90.0).0.chars().count();
+        assert!(wider > narrow, "{wider} vs {narrow}");
+    }
+
+    #[test]
+    fn fit_galley_with_no_room_shows_one_character_and_the_ellipsis() {
+        assert_eq!(fit("5 Second Synth Tone", 1.0).0, "5\u{2026}");
+        assert_eq!(fit("A", 1.0).0, "A\u{2026}");
     }
 
     #[test]

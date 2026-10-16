@@ -6,6 +6,8 @@ pub mod master_strip;
 pub mod menu;
 pub mod start_screen;
 pub mod status_bar;
+#[cfg(test)]
+pub mod test_util;
 pub mod theme;
 pub mod timeline;
 pub mod toolbar;

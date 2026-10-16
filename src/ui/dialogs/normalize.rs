@@ -41,7 +41,7 @@ pub fn request(ctx: &egui::Context) {
 
 /// Shows the Normalize dialog when open. OK calls `Editor::normalize` (one
 /// undo step); errors show in red inside the dialog and keep it open.
-/// Cancel, the close box or Esc dismisses it.
+/// Cancel, the backdrop or Esc dismisses it.
 pub fn show(ctx: &egui::Context, editor: &mut Editor) -> Vec<String> {
     let Some(mut dialog) =
         ctx.data_mut(|d| d.remove_temp::<NormalizeDialog>(egui::Id::new(DIALOG_KEY)))
@@ -50,50 +50,38 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor) -> Vec<String> {
     };
     let mut ok = false;
     if dialog.open {
-        let mut open = true;
-        let mut closed = false;
-        egui::Window::new("Normalize")
-            .open(&mut open)
-            .default_width(THEME.dialog_w)
-            .collapsible(false)
-            .resizable(false)
-            .movable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.label("Target peak (dBFS):");
-                ui.add(
-                    egui::DragValue::new(&mut dialog.target_dbfs)
-                        .range(-60.0..=0.0)
-                        .speed(0.1)
-                        .suffix(" dBFS"),
-                );
-                // Enter confirms, Esc cancels.
-                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        let response = super::modal("normalize_dialog").show(ctx, |ui| {
+            super::card_width(ui, THEME.dialog_w);
+            super::title(ui, "Normalize");
+            ui.add_space(THEME.space_xs);
+            super::description(ui, "Raise the loudest peak to the target level.");
+            super::before_form(ui);
+            super::form_row(ui, "Target peak", |ui| {
+                super::db_control(ui, "normalize_dbfs", &mut dialog.target_dbfs, (-60.0, 0.0));
+            });
+            super::bare_row(ui, |ui| {
+                ui.checkbox(&mut dialog.per_track, "Normalize each track separately");
+            });
+            if let Some(error) = &dialog.error {
+                ui.label(egui::RichText::new(error).color(THEME.error));
+            }
+            super::footer(ui, |ui| {
+                if super::footer_button(ui, "OK", super::FooterButton::Primary, true).clicked() {
                     ok = true;
                 }
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    closed = true;
+                if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
+                    dialog.open = false;
                 }
-                ui.checkbox(&mut dialog.per_track, "Normalize each track separately");
-                if let Some(error) = &dialog.error {
-                    ui.colored_label(THEME.error, error);
-                }
-                ui.add_space(THEME.space_md);
-                ui.vertical_centered(|ui| {
-                    ui.horizontal(|ui| {
-                        if ui.button("OK").clicked() {
-                            ok = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            closed = true;
-                        }
-                    });
-                });
             });
-        if closed {
-            open = false;
+            // Enter confirms.
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                ok = true;
+            }
+        });
+        // Esc or the backdrop cancels.
+        if response.should_close() {
+            dialog.open = false;
         }
-        dialog.open = open;
     }
     if ok && dialog.open {
         dialog.error = None;

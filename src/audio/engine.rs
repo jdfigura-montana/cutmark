@@ -1,4 +1,4 @@
-﻿//! audio::engine: the cpal output stream and its real-time callback.
+//! audio::engine: the cpal output stream and its real-time callback.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
@@ -69,6 +69,13 @@ pub struct Engine {
     device_info: String,
     /// Set by the stream error callback instead of logging.
     errored: Arc<AtomicBool>,
+}
+
+/// Name of the default output device, for the start screen status bar.
+pub fn default_output_name() -> Option<String> {
+    cpal::default_host()
+        .default_output_device()
+        .map(|device| device.to_string())
 }
 
 impl Engine {

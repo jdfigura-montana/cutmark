@@ -1,4 +1,4 @@
-﻿//! editor::selection: range and clip selection state, not undoable.
+//! editor::selection: range and clip selection state, not undoable.
 
 use uuid::Uuid;
 

@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = "1.0.104"
 arc-swap = "1.9.2"
 assert_no_alloc = { version = "1.1.2", features = ["warn_debug"] }
+chrono = { version = "0.4.45", features = ["clock"] }
 cpal = "0.18.2"
 crossbeam-channel = "0.5.17"
 directories = "6.0.0"

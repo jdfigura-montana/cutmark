@@ -1,4 +1,4 @@
-﻿//! editor::ops::paste: insert and overwrite paste operations.
+//! editor::ops::paste: insert and overwrite paste operations.
 
 use std::sync::Arc;
 

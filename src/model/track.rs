@@ -1,4 +1,4 @@
-﻿//! model::track: Track, one timeline lane holding clips.
+//! model::track: Track, one timeline lane holding clips.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

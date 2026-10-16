@@ -1,4 +1,4 @@
-﻿//! audio::scrub: the variable-speed scrubbing reader.
+//! audio::scrub: the variable-speed scrubbing reader.
 
 use crate::audio::mix_plan::MixPlan;
 use crate::audio::mixer;

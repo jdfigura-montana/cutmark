@@ -1,4 +1,4 @@
-﻿//! model::marker: Marker, a position-only timeline marker.
+//! model::marker: Marker, a position-only timeline marker.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

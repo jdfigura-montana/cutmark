@@ -1,4 +1,4 @@
-﻿//! util::db: dB <-> linear conversion.
+//! util::db: dB <-> linear conversion.
 
 /// Converts decibels to a linear amplitude factor (1.0 at 0 dB).
 pub fn db_to_linear(db: f32) -> f32 {

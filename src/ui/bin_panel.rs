@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::editor::Editor;
 use crate::editor::action::Action;
 use crate::model::media::MediaItem;
+use crate::ui::dialogs::{self, FooterButton};
 use crate::ui::theme::{THEME, Theme};
 use crate::ui::timeline::interaction::MediaDrag;
 
@@ -301,44 +302,46 @@ impl BinPanel {
         if row_response.clicked() {
             self.selected = Some(item.id);
         }
-        row_response.context_menu(|menu| {
-            if !offline
-                && menu
-                    .button(if previewing_this {
-                        "Stop Preview"
+        egui::Popup::context_menu(&row_response)
+            .style(crate::ui::theme::menu_item_style as fn(&mut egui::Style))
+            .show(|ui| {
+                if !offline
+                    && ui
+                        .button(if previewing_this {
+                            "Stop Preview"
+                        } else {
+                            "Preview"
+                        })
+                        .clicked()
+                {
+                    if previewing_this {
+                        editor.stop_preview();
                     } else {
-                        "Preview"
-                    })
-                    .clicked()
-            {
-                if previewing_this {
-                    editor.stop_preview();
-                } else {
-                    editor.preview_media(item.id);
+                        editor.preview_media(item.id);
+                    }
+                    ui.close();
                 }
-                menu.close();
-            }
-            if offline && menu.button("Relink...").clicked() {
-                menu.close();
-                messages.extend(pick_and_relink(editor, item.id));
-            }
-            if menu.button("Rename").clicked() {
-                self.begin_rename(item);
-                menu.close();
-            }
-            if menu.button("Reveal in Explorer").clicked() {
-                editor.reveal_media(item.id);
-                menu.close();
-            }
-            if menu.button("Remove from Project").clicked() {
-                menu.close();
-                if usage > 0 {
-                    self.confirm_remove = Some((item.id, usage));
-                } else if let Err(error) = editor.apply(Action::RemoveMedia { id: item.id }) {
-                    messages.push(error.to_string());
+                if offline && ui.button("Relink...").clicked() {
+                    ui.close();
+                    messages.extend(pick_and_relink(editor, item.id));
                 }
-            }
-        });
+                if ui.button("Rename").clicked() {
+                    self.begin_rename(item);
+                    ui.close();
+                }
+                if ui.button("Reveal in Explorer").clicked() {
+                    editor.reveal_media(item.id);
+                    ui.close();
+                }
+                if ui.button("Remove from Project").clicked() {
+                    ui.close();
+                    if usage > 0 {
+                        self.confirm_remove = Some((item.id, usage));
+                    } else if let Err(error) = editor.apply(Action::RemoveMedia { id: item.id }) {
+                        messages.push(error.to_string());
+                    }
+                }
+            });
     }
 
     /// Starts an inline rename of the given item.
@@ -403,29 +406,39 @@ impl BinPanel {
             self.confirm_remove = None;
             return;
         };
-        let mut open = true;
+        let open = true;
         let mut remove = false;
         let mut cancel = false;
-        egui::Window::new("Remove from Project")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .movable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.label(format!(
+        let response = dialogs::modal("bin_remove_confirm").show(ctx, |ui| {
+            dialogs::card_width(ui, THEME.dialog_w);
+            dialogs::title(ui, "Remove from Project");
+            ui.add_space(THEME.space_xs);
+            dialogs::description(
+                ui,
+                &format!(
                     "Remove \"{name}\"? This item is used by {usage} clips. Removing it also removes those clips."
-                ));
-                ui.add_space(THEME.space_md);
-                ui.horizontal(|ui| {
-                    if ui.button("Remove").clicked() {
-                        remove = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        cancel = true;
-                    }
-                });
+                ),
+            );
+            dialogs::before_form(ui);
+            dialogs::footer(ui, |ui| {
+                if dialogs::footer_button(ui, "Remove", FooterButton::Destructive, true)
+                    .clicked()
+                {
+                    remove = true;
+                }
+                if dialogs::footer_button(ui, "Cancel", FooterButton::Cancel, true).clicked() {
+                    cancel = true;
+                }
             });
+            // Enter confirms the removal.
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                remove = true;
+            }
+        });
+        // Esc or the backdrop cancels.
+        if response.should_close() {
+            cancel = true;
+        }
         if remove {
             self.selected = None;
             if let Err(error) = editor.apply(Action::RemoveMedia { id }) {
@@ -575,7 +588,8 @@ fn sorted_items(items: &[MediaItem], sort: BinSort) -> Vec<MediaItem> {
     items
 }
 
-/// The monospace meta line, e.g. `0:06.200 · 48k · St · MP3`.
+/// The monospace meta line: time, rate, channels and format separated by
+/// middle dots (`\u{B7}`), e.g. `0:06.200 48k St MP3` with dots between.
 fn meta_line(editor: &Editor, item: &MediaItem) -> String {
     let rate = editor.project.sample_rate;
     let total_ms = item.length * 1000 / u64::from(rate);
@@ -584,7 +598,7 @@ fn meta_line(editor: &Editor, item: &MediaItem) -> String {
     let ms = total_ms % 1000;
     let channels = if item.channels <= 1 { "Mo" } else { "St" };
     format!(
-        "{min}:{sec:02}.{ms:03} · {}k · {channels} · {}",
+        "{min}:{sec:02}.{ms:03} \u{B7} {}k \u{B7} {channels} \u{B7} {}",
         item.original_rate / 1000,
         media_format(&item.file_name)
     )
@@ -653,5 +667,25 @@ mod tests {
     fn usage_text_singular_and_plural() {
         assert_eq!(usage_text(1), "1 use");
         assert_eq!(usage_text(3), "3 uses");
+    }
+
+    #[test]
+    fn meta_line_separates_with_real_middle_dots() {
+        let editor = Editor::with_project(
+            crate::model::project::Project::new(
+                "Test".to_string(),
+                48_000,
+                crate::model::project::BitDepth::Int24,
+            ),
+            crate::model::project::ViewState::default(),
+            crate::io::paths::ProjectPaths {
+                root: std::path::PathBuf::from("unused"),
+            },
+        );
+        let line = meta_line(&editor, &item("tone"));
+        assert_eq!(line, "0:01.000 \u{B7} 44k \u{B7} Mo \u{B7} WAV");
+        // UTF-8 for U+00B7 is C2 B7; the double-encoded mojibake starts C3 82.
+        assert!(line.contains('\u{B7}'));
+        assert!(!line.contains('\u{C2}'), "no double-encoded middle dot");
     }
 }

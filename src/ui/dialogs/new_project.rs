@@ -8,9 +8,6 @@ use crate::editor::Editor;
 use crate::model::project::BitDepth;
 use crate::ui::theme::THEME;
 
-/// Sample rates offered when creating a project, in kHz.
-const SAMPLE_RATES_KHZ: [u32; 4] = [44, 48, 88, 96];
-
 /// Modal dialog for creating a new project.
 pub struct NewProjectDialog {
     /// Whether the dialog is open.
@@ -51,91 +48,88 @@ impl NewProjectDialog {
     /// Shows the dialog; returns the created Editor when the user succeeds.
     pub fn show(&mut self, ctx: &egui::Context) -> Option<Editor> {
         let mut created = None;
-        let mut open = self.open;
         let mut cancel = false;
-        egui::Window::new("New Project")
-            .open(&mut open)
-            .default_width(THEME.dialog_w)
-            .collapsible(false)
-            .resizable(false)
-            .movable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                egui::Grid::new("new_project_grid")
-                    .num_columns(3)
-                    .spacing([THEME.space_md, THEME.grid_spacing])
-                    .show(ui, |ui| {
-                        ui.label("Name:");
-                        ui.text_edit_singleline(&mut self.name);
-                        ui.end_row();
-
-                        ui.label("Parent folder:");
-                        let folder_text = match &self.parent {
-                            Some(path) => path.display().to_string(),
-                            None => String::new(),
-                        };
+        if self.open {
+            let response = super::modal("new_project_dialog").show(ctx, |ui| {
+                super::card_width(ui, THEME.dialog_w);
+                super::title(ui, "New Project");
+                ui.add_space(THEME.space_xs);
+                super::description(ui, "Create a project folder with a timeline and media bin.");
+                super::before_form(ui);
+                super::form_row(ui, "Name", |ui| {
+                    super::text_field(ui, &mut self.name, "np_name");
+                });
+                super::form_row(ui, "Parent folder", |ui| {
+                    let folder_text = match &self.parent {
+                        Some(path) => path.display().to_string(),
+                        None => String::new(),
+                    };
+                    let browse = super::with_browse(ui, |ui| {
                         ui.add(
-                            egui::Label::new(egui::RichText::new(folder_text).weak()).truncate(),
+                            egui::Label::new(
+                                egui::RichText::new(folder_text)
+                                    .color(THEME.text_normal)
+                                    .size(THEME.dialog_label_size),
+                            )
+                            .truncate(),
                         );
-                        if ui.button("Browse...").clicked() {
-                            self.parent = rfd::FileDialog::new().pick_folder();
-                        }
-                        ui.end_row();
-
-                        ui.label("Sample rate:");
-                        egui::ComboBox::from_id_salt("sample_rate")
-                            .selected_text(format!("{} kHz", self.sample_rate_khz))
-                            .show_ui(ui, |ui| {
-                                for khz in SAMPLE_RATES_KHZ {
-                                    ui.selectable_value(
-                                        &mut self.sample_rate_khz,
-                                        khz,
-                                        format!("{} kHz", khz),
-                                    );
-                                }
-                            });
-                        ui.end_row();
-
-                        ui.label("Export bit depth:");
-                        egui::ComboBox::from_id_salt("bit_depth")
-                            .selected_text(bit_depth_text(self.bit_depth))
-                            .show_ui(ui, |ui| {
-                                for depth in [BitDepth::Int16, BitDepth::Int24, BitDepth::Float32] {
-                                    ui.selectable_value(
-                                        &mut self.bit_depth,
-                                        depth,
-                                        bit_depth_text(depth),
-                                    );
-                                }
-                            });
-                        ui.end_row();
                     });
-
-                ui.add_space(THEME.space_md);
+                    if browse {
+                        self.parent = rfd::FileDialog::new().pick_folder();
+                    }
+                });
+                super::form_row(ui, "Sample rate", |ui| {
+                    super::segmented(
+                        ui,
+                        "np_rate",
+                        &[
+                            (44, "44 kHz"),
+                            (48, "48 kHz"),
+                            (88, "88 kHz"),
+                            (96, "96 kHz"),
+                        ],
+                        &mut self.sample_rate_khz,
+                    );
+                });
+                super::form_row(ui, "Bit depth", |ui| {
+                    super::segmented(
+                        ui,
+                        "np_depth",
+                        &[
+                            (BitDepth::Int16, "16-bit"),
+                            (BitDepth::Int24, "24-bit"),
+                            (BitDepth::Float32, "32-bit float"),
+                        ],
+                        &mut self.bit_depth,
+                    );
+                });
                 if let Some(error) = &self.error {
                     ui.label(egui::RichText::new(error).color(THEME.error_soft));
                 }
-                ui.add_space(THEME.space_sm);
-
                 let can_create = !self.name.trim().is_empty() && self.parent.is_some();
-                ui.horizontal(|ui| {
-                    let create = ui.add_enabled(can_create, egui::Button::new("Create"));
-                    if create.clicked() {
+                super::footer(ui, |ui| {
+                    if super::footer_button(ui, "Create", super::FooterButton::Primary, can_create)
+                        .clicked()
+                    {
                         self.try_create(&mut created);
                     }
-                    if ui.button("Cancel").clicked() {
+                    if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true)
+                        .clicked()
+                    {
                         cancel = true;
                     }
                 });
-                // Enter confirms (when valid), Esc cancels.
+                // Enter confirms (when valid).
                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) && can_create {
                     self.try_create(&mut created);
                 }
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    cancel = true;
-                }
             });
-        if !open || cancel {
+            // Esc or the backdrop cancels.
+            if response.should_close() {
+                cancel = true;
+            }
+        }
+        if cancel {
             *self = NewProjectDialog {
                 open: false,
                 ..NewProjectDialog::default()
@@ -162,14 +156,5 @@ impl NewProjectDialog {
             }
             Err(error) => self.error = Some(error.to_string()),
         }
-    }
-}
-
-/// Human-readable text for a bit depth.
-fn bit_depth_text(depth: BitDepth) -> &'static str {
-    match depth {
-        BitDepth::Int16 => "16-bit",
-        BitDepth::Int24 => "24-bit",
-        BitDepth::Float32 => "32-bit float",
     }
 }

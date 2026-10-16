@@ -1,4 +1,4 @@
-﻿//! model: plain project data with serde derive; read by all layers, written only by the editor.
+//! model: plain project data with serde derive; read by all layers, written only by the editor.
 
 pub mod clip;
 pub mod invariants;

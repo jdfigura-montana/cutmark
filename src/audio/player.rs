@@ -1,4 +1,4 @@
-﻿//! audio::player: transport state machine with declick ramps; pure code, no cpal.
+//! audio::player: transport state machine with declick ramps; pure code, no cpal.
 
 use crate::audio::mix_plan::MixPlan;
 use crate::audio::mixer;

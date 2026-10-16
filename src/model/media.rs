@@ -1,4 +1,4 @@
-﻿//! model::media: MediaItem, a bin entry pointing at conformed audio in media/.
+//! model::media: MediaItem, a bin entry pointing at conformed audio in media/.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

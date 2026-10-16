@@ -1,4 +1,4 @@
-﻿//! ui::timeline::lane: a track lane, where clips live.
+//! ui::timeline::lane: a track lane, where clips live.
 
 use eframe::egui;
 

@@ -107,6 +107,34 @@ fn on_off(on: bool) -> &'static str {
     if on { "ON" } else { "OFF" }
 }
 
+/// Start-screen status bar: the default output device on the left (omitted
+/// when none is known) and "NO PROJECT OPEN" on the right.
+pub fn show_start(ui: &mut egui::Ui, device: Option<&str>) {
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
+        if let Some(device) = device {
+            ui.label(
+                egui::RichText::new("OUTPUT")
+                    .font(Theme::mono(SIZE))
+                    .color(THEME.text_muted),
+            );
+            ui.label(
+                egui::RichText::new(device)
+                    .font(Theme::mono(SIZE))
+                    .color(THEME.text_primary),
+            );
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_space(12.0);
+            ui.label(
+                egui::RichText::new("NO PROJECT OPEN")
+                    .font(Theme::mono(SIZE))
+                    .color(THEME.text_muted),
+            );
+        });
+    });
+}
+
 /// One toggle readout: label and value laid out as a single job, so the pair
 /// always reads left to right: the label muted, a space, then the value
 /// accent while on and plain primary while off.

@@ -1,4 +1,4 @@
-﻿//! io::paths: project folder layout (media/, cache/, autosave/, exports/).
+//! io::paths: project folder layout (media/, cache/, autosave/, exports/).
 
 use std::collections::HashSet;
 use std::fs;

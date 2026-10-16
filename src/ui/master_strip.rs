@@ -175,6 +175,22 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, meters: &mut MeterState) {
         editor.cancel_gesture();
     }
 
+    // 0 dB tick on the fader track: 8 px line in text_faint plus a "0" label.
+    let range = 12.0 - -60.0;
+    let zero_y = fader_rect.top() + (12.0 / range) * fader_rect.height();
+    let cx = fader_rect.center().x;
+    painter.line_segment(
+        [Pos2::new(cx - 4.0, zero_y), Pos2::new(cx + 4.0, zero_y)],
+        Stroke::new(THEME.hairline, THEME.text_faint),
+    );
+    painter.text(
+        Pos2::new(fader_rect.right() + 2.0, zero_y),
+        Align2::LEFT_CENTER,
+        "0",
+        Theme::mono(9.0),
+        THEME.text_faint,
+    );
+
     // Peak readout: highest master peak since the last reset, as "-9.6".
     let readout = Rect::from_min_max(
         Pos2::new(content.left(), content.bottom() - READOUT_H - VALUE_H),

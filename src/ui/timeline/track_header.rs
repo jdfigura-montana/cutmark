@@ -487,30 +487,32 @@ fn context_menu(
     index: usize,
     track_name: &str,
 ) {
-    resp.context_menu(|menu| {
-        if menu.button("Rename").clicked() {
-            state.renaming = Some((id, track_name.to_string()));
-            menu.close();
-        }
-        if menu.button("Delete Track").clicked() {
-            let _ = editor.apply(Action::DeleteTrack { id });
-            menu.close();
-        }
-        if menu.button("Add Track Above").clicked() {
-            let _ = editor.apply(Action::AddTrack {
-                index: Some(index),
-                name: None,
-            });
-            menu.close();
-        }
-        if menu.button("Add Track Below").clicked() {
-            let _ = editor.apply(Action::AddTrack {
-                index: Some(index + 1),
-                name: None,
-            });
-            menu.close();
-        }
-    });
+    egui::Popup::context_menu(resp)
+        .style(crate::ui::theme::menu_item_style as fn(&mut egui::Style))
+        .show(|ui| {
+            if ui.button("Rename").clicked() {
+                state.renaming = Some((id, track_name.to_string()));
+                ui.close();
+            }
+            if ui.button("Delete Track").clicked() {
+                let _ = editor.apply(Action::DeleteTrack { id });
+                ui.close();
+            }
+            if ui.button("Add Track Above").clicked() {
+                let _ = editor.apply(Action::AddTrack {
+                    index: Some(index),
+                    name: None,
+                });
+                ui.close();
+            }
+            if ui.button("Add Track Below").clicked() {
+                let _ = editor.apply(Action::AddTrack {
+                    index: Some(index + 1),
+                    name: None,
+                });
+                ui.close();
+            }
+        });
 }
 
 /// Draws a small M / S toggle button; returns true when clicked this frame.

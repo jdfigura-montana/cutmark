@@ -1183,7 +1183,8 @@ pub fn draw_clip_menu(ui: &egui::Ui, editor: &mut Editor) -> Vec<String> {
         .order(egui::Order::Foreground)
         .fixed_pos(menu.pos)
         .show(ui.ctx(), |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
+            crate::ui::theme::menu_frame().show(ui, |ui| {
+                crate::ui::theme::menu_item_style(ui.style_mut());
                 ui.set_min_width(THEME.clip_menu_min_w);
                 if ui
                     .add_enabled(splittable, egui::Button::new("Split"))

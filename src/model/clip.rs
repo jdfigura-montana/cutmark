@@ -1,4 +1,4 @@
-﻿//! model::clip: Clip, a reference into a media item with in/out points and fades.
+//! model::clip: Clip, a reference into a media item with in/out points and fades.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

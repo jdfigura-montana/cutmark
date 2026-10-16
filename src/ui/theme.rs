@@ -8,6 +8,9 @@ use eframe::egui;
 /// The single accent color: selection, lit toggles, range lines and focus.
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x4C, 0x9B, 0xE8);
 
+/// Named family holding the IBM Plex Sans Medium face.
+const MEDIUM_FAMILY: &str = "PlexMedium";
+
 /// The named egui font family holding the IBM Plex Sans SemiBold face.
 const SEMIBOLD_FAMILY: &str = "PlexSemiBold";
 
@@ -329,12 +332,9 @@ pub struct Theme {
     pub space_md: f32,
     /// Large spacing (16).
     pub space_lg: f32,
-    /// Extra-large spacing (24).
-    pub space_xl: f32,
     /// Extra-extra-large spacing (40).
     pub space_xxl: f32,
     /// Vertical grid spacing inside dialogs.
-    pub grid_spacing: f32,
 
     // ---- Shared shapes ----
     /// Small corner radius for filled rects.
@@ -365,12 +365,144 @@ pub struct Theme {
     pub dialog_w: f32,
     /// Translucent shade drawn over the UI behind modal windows.
     pub modal_shade: egui::Color32,
+    /// Content width of a standard dialog card (420 px).
+    pub export_dialog_w: f32,
+    /// Corner radius of a dialog card.
+    pub card_radius: f32,
+    /// Inner padding of a dialog card.
+    pub card_pad: f32,
+    /// Soft shadow under a dialog card.
+    pub card_shadow: egui::Shadow,
+    /// Corner radius of a menu popup.
+    pub menu_radius: f32,
+    /// Inner padding of a menu popup.
+    pub menu_pad: f32,
+    /// Height of a menu item.
+    /// Corner radius of a menu item.
+    pub menu_item_radius: f32,
+    /// Soft shadow under a menu popup.
+    pub menu_shadow: egui::Shadow,
+    /// Padding between the menu bar's project readout and the window edge.
+    pub menu_right_pad: f32,
+    /// Diameter of the painted "unsaved changes" dot in the menu bar.
+    pub unsaved_dot_d: f32,
+    /// Height of a dialog text field / segmented control / footer button.
+    pub field_h: f32,
+    /// Width of the form label column in a dialog.
+    pub form_label_w: f32,
+    /// Vertical gap between form rows.
+    pub form_row_gap: f32,
+    /// Dialog title font size (PlexSemiBold).
+    pub dialog_title_size: f32,
+    /// Dialog description font size.
+    pub dialog_desc_size: f32,
+    /// Form label font size in a dialog.
+    pub dialog_label_size: f32,
+    /// Destructive footer-button text color.
+    pub destructive: egui::Color32,
+    /// Accent fill of the primary footer button while hovered.
+    pub accent_hover: egui::Color32,
+
+    // ---- Start screen ----
+    /// Status bar height (26), reused by the start screen status bar.
+    pub status_bar_h: f32,
+    /// Start screen card width (1000).
+    pub start_card_w: f32,
+    /// Start screen card height (600).
+    pub start_card_h: f32,
+    /// Minimum margin around the start screen card (48).
+    pub start_card_margin: f32,
+    /// Smallest start screen card width when the window is narrow (760).
+    pub start_card_min_w: f32,
+    /// Corner radius of the start screen card (14).
+    pub start_card_radius: f32,
+    /// Width of the start screen card's left column (360).
+    pub start_col_w: f32,
+    /// Top padding of the left column (36).
+    pub start_pad_top: f32,
+    /// Side padding of the left column (32).
+    pub start_pad_side: f32,
+    /// Bottom padding of the left column (28).
+    pub start_pad_bottom: f32,
+    /// Top padding of the right column (32).
+    pub start_pad_r_top: f32,
+    /// Side padding of the right column (28).
+    pub start_pad_r_side: f32,
+    /// Bottom padding of the right column (20).
+    pub start_pad_r_bottom: f32,
+    /// Height of the logo bar box (40).
+    pub start_logo_h: f32,
+    /// Width of one logo bar (4).
+    pub start_bar_w: f32,
+    /// Horizontal pitch between logo bars (6).
+    pub start_bar_pitch: f32,
+    /// Height of each of the 20 logo bars.
+    pub start_bar_heights: [f32; 20],
+    /// Gap between the logo and the title (20).
+    pub start_title_gap: f32,
+    /// Gap between the version line and the buttons (40).
+    pub start_buttons_gap: f32,
+    /// Height of the New/Open buttons (52).
+    pub start_btn_h: f32,
+    /// Gap between the two buttons (10).
+    pub start_btn_gap: f32,
+    /// Corner radius of the buttons (8).
+    pub start_btn_radius: f32,
+    /// Gap between the buttons and the drop zone (20).
+    pub start_drop_gap: f32,
+    /// Corner radius of the drop zone (8).
+    pub start_drop_radius: f32,
+    /// White text on the accent button.
+    pub start_on_accent: egui::Color32,
+    /// Gap between the recent rows (2).
+    pub start_row_gap: f32,
+    /// Height of one recent row (64).
+    pub start_row_h: f32,
+    /// Size of the recent row's project tile (40).
+    pub start_tile: f32,
+    /// Fixed width of the last-opened date column (96).
+    pub start_last_col_w: f32,
+    /// Size of the per-row remove button (28).
+    pub start_x_btn: f32,
+    /// Fill of the MISSING pill.
+    pub start_missing_fill: egui::Color32,
+    /// Text color of the MISSING pill.
+    pub start_missing_text: egui::Color32,
+    /// Icon color of a missing project's tile.
+    pub start_missing_icon: egui::Color32,
+    /// Title font size under the logo (24).
+    pub start_title_size: f32,
+    /// Small mono font size: version line, shortcut hints, path (11).
+    pub start_small_size: f32,
+    /// Button label font size (14).
+    pub start_btn_text_size: f32,
+    /// Hint font size: drop zone, footnotes, dates, Clear missing (12).
+    pub start_hint_size: f32,
+    /// Recent row name font size (14).
+    pub start_name_size: f32,
+    /// MISSING pill font size (10.5).
+    pub start_pill_size: f32,
+    /// Phosphor icon size in buttons and tiles (16).
+    pub start_icon_size: f32,
+    /// Height of the recent-projects header row (22).
+    pub start_header_h: f32,
+    /// Corner radius of a recent row and its tile (8).
+    pub start_row_radius: f32,
+    /// Dash length of the drop-zone dashed border (4).
+    pub start_dash: f32,
+    /// Gap between dashes of the drop-zone border (4).
+    pub start_dash_gap: f32,
 }
 
 impl Theme {
     /// Monospace font at `size`, used for every timecode readout.
     pub fn mono(size: f32) -> egui::FontId {
         egui::FontId::new(size, egui::FontFamily::Monospace)
+    }
+
+    /// Medium-weight text font at `size`, used for row names and buttons.
+    pub fn medium(size: f32) -> egui::FontId {
+        egui::FontId::new(size, egui::FontFamily::Name(MEDIUM_FAMILY.into()))
     }
 
     /// SemiBold heading font at `size`, used for headings and track names.
@@ -533,9 +665,7 @@ impl Default for Theme {
             space_sm: 4.0,
             space_md: 8.0,
             space_lg: 16.0,
-            space_xl: 32.0,
             space_xxl: 40.0,
-            grid_spacing: 8.0,
             // Shared shapes
             corner_r: 2.0,
             corner_round: 3.0,
@@ -549,8 +679,84 @@ impl Default for Theme {
             text_muted: egui::Color32::from_rgb(0x8A, 0x90, 0x9A),
             text_faint: egui::Color32::from_rgb(0x6E, 0x75, 0x81),
             hover_overlay: egui::Color32::from_rgba_unmultiplied(0x4C, 0x9B, 0xE8, 0x2E),
-            dialog_w: 360.0,
-            modal_shade: egui::Color32::from_black_alpha(110),
+            dialog_w: 420.0,
+            export_dialog_w: 480.0,
+            modal_shade: egui::Color32::from_black_alpha(140),
+            card_radius: 10.0,
+            card_pad: 20.0,
+            card_shadow: egui::Shadow {
+                offset: [0, 4],
+                blur: 16,
+                spread: 0,
+                color: egui::Color32::from_black_alpha(90),
+            },
+            menu_radius: 8.0,
+            menu_pad: 6.0,
+            menu_item_radius: 5.0,
+            menu_shadow: egui::Shadow {
+                offset: [0, 4],
+                blur: 12,
+                spread: 0,
+                color: egui::Color32::from_black_alpha(90),
+            },
+            menu_right_pad: 8.0,
+            unsaved_dot_d: 6.0,
+            field_h: 30.0,
+            form_label_w: 140.0,
+            form_row_gap: 10.0,
+            dialog_title_size: 15.0,
+            dialog_desc_size: 12.0,
+            dialog_label_size: 12.5,
+            destructive: egui::Color32::from_rgb(0xE5, 0x54, 0x4B),
+            accent_hover: egui::Color32::from_rgb(0x60, 0xAA, 0xEC),
+            // Start screen
+            status_bar_h: 26.0,
+            start_card_w: 1000.0,
+            start_card_h: 600.0,
+            start_card_margin: 48.0,
+            start_card_min_w: 760.0,
+            start_card_radius: 14.0,
+            start_col_w: 360.0,
+            start_pad_top: 36.0,
+            start_pad_side: 32.0,
+            start_pad_bottom: 28.0,
+            start_pad_r_top: 32.0,
+            start_pad_r_side: 28.0,
+            start_pad_r_bottom: 20.0,
+            start_logo_h: 40.0,
+            start_bar_w: 4.0,
+            start_bar_pitch: 6.0,
+            start_bar_heights: [
+                8.0, 16.0, 26.0, 34.0, 22.0, 30.0, 38.0, 24.0, 14.0, 28.0, 36.0, 20.0, 30.0, 18.0,
+                10.0, 24.0, 32.0, 16.0, 8.0, 12.0,
+            ],
+            start_title_gap: 20.0,
+            start_buttons_gap: 40.0,
+            start_btn_h: 52.0,
+            start_btn_gap: 10.0,
+            start_btn_radius: 8.0,
+            start_drop_gap: 20.0,
+            start_drop_radius: 8.0,
+            start_on_accent: egui::Color32::WHITE,
+            start_row_gap: 2.0,
+            start_row_h: 64.0,
+            start_tile: 40.0,
+            start_last_col_w: 96.0,
+            start_x_btn: 28.0,
+            start_missing_fill: egui::Color32::from_rgb(0x3A, 0x22, 0x24),
+            start_missing_text: egui::Color32::from_rgb(0xE5, 0x54, 0x4B),
+            start_missing_icon: egui::Color32::from_rgb(0x5A, 0x61, 0x6D),
+            start_title_size: 24.0,
+            start_small_size: 11.0,
+            start_btn_text_size: 14.0,
+            start_hint_size: 12.0,
+            start_name_size: 14.0,
+            start_pill_size: 10.5,
+            start_icon_size: 16.0,
+            start_header_h: 22.0,
+            start_row_radius: 8.0,
+            start_dash: 4.0,
+            start_dash_gap: 4.0,
         }
     }
 }
@@ -595,6 +801,10 @@ pub fn apply(ctx: &egui::Context) {
         monospace.insert(0, "JetBrainsMono-Regular".into());
     }
     fonts.families.insert(
+        egui::FontFamily::Name(MEDIUM_FAMILY.into()),
+        vec!["IBMPlexSans-Medium".into(), "IBMPlexSans-Regular".into()],
+    );
+    fonts.families.insert(
         egui::FontFamily::Name(SEMIBOLD_FAMILY.into()),
         vec!["IBMPlexSans-SemiBold".into(), "IBMPlexSans-Medium".into()],
     );
@@ -607,9 +817,10 @@ pub fn apply(ctx: &egui::Context) {
     v.window_fill = t.panel_bg;
     v.extreme_bg_color = t.recessed_a; // recessed surfaces (fader slot, etc.)
     v.faint_bg_color = t.lane_b; // odd lane shade
-    v.window_stroke = egui::Stroke::new(t.hairline, t.border);
-    v.window_corner_radius = t.corner_r.into();
-    v.menu_corner_radius = t.corner_r.into();
+    v.window_stroke = egui::Stroke::new(t.hairline, t.control_border);
+    v.window_corner_radius = t.menu_radius.into();
+    v.menu_corner_radius = t.menu_radius.into();
+    v.popup_shadow = t.menu_shadow;
 
     // One accent for selection, focus and links.
     v.selection.stroke = egui::Stroke::new(t.hairline, t.accent);
@@ -654,7 +865,7 @@ pub fn apply(ctx: &egui::Context) {
     ctx.all_styles_mut(|style| {
         style.spacing.item_spacing = egui::vec2(t.space_md, t.space_sm);
         style.spacing.button_padding = egui::vec2(t.space_md, t.space_sm);
-        style.spacing.menu_margin = t.space_sm.into();
+        style.spacing.menu_margin = egui::Margin::same(t.menu_pad as i8);
         style.spacing.window_margin = t.space_md.into();
         let heading_size = style
             .text_styles
@@ -668,6 +879,39 @@ pub fn apply(ctx: &egui::Context) {
     });
 
     ctx.set_visuals(v);
+}
+
+/// The menu popup frame: panel_bg fill, 1 px control_border, radius 8,
+/// 6 px padding and a soft shadow.
+pub fn menu_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(THEME.panel_bg)
+        .stroke(egui::Stroke::new(THEME.hairline, THEME.control_border))
+        .corner_radius(THEME.menu_radius)
+        .shadow(THEME.menu_shadow)
+        .inner_margin(egui::Margin::same(THEME.menu_pad as i8))
+}
+
+/// The menu item / popup style: egui's menu style plus 26 px items with
+/// radius 5, control-fill hover, faint disabled text and 4 px separators.
+///
+/// Passed to `MenuConfig::style` / `Popup::style`, or applied directly with
+/// `ui.style_mut()` for hand-drawn menus.
+pub fn menu_item_style(style: &mut egui::Style) {
+    eframe::egui::containers::menu::menu_style(style);
+    style.spacing.button_padding = egui::vec2(8.0, 5.0);
+    let t = &*THEME;
+    for w in [
+        &mut style.visuals.widgets.inactive,
+        &mut style.visuals.widgets.hovered,
+        &mut style.visuals.widgets.active,
+        &mut style.visuals.widgets.open,
+    ] {
+        w.corner_radius = t.menu_item_radius.into();
+    }
+    style.visuals.widgets.hovered.bg_fill = t.control_fill;
+    style.visuals.widgets.hovered.weak_bg_fill = t.control_fill;
+    style.visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(t.hairline, t.text_faint);
 }
 
 /// Debug-only helper window (toggled with F12) that shows `ctx.style_ui`.
@@ -712,7 +956,6 @@ mod tests {
         assert_eq!(t.meter_green, egui::Color32::from_rgb(0x3D, 0xBE, 0x6B));
         assert_eq!(t.space_xs, 4.0);
         assert_eq!(t.space_md, 8.0);
-        assert_eq!(t.grid_spacing, 8.0);
         assert_eq!(
             t.accent,
             egui::Color32::from_rgb(0x4C, 0x9B, 0xE8),
@@ -726,6 +969,8 @@ mod tests {
         assert_eq!(t.snap_line_color, t.accent);
         assert_eq!(t.playhead_color, egui::Color32::from_rgb(0xFF, 0x6B, 0x5C));
         assert_eq!(t.marker_color, egui::Color32::from_rgb(0xE8, 0xB4, 0x4C));
+        assert_eq!(t.unsaved_dot_d, 6.0);
+        assert_eq!(t.menu_right_pad, 8.0);
         assert_eq!(t.app_bg, egui::Color32::from_rgb(0x16, 0x18, 0x1C));
         assert_eq!(t.lane_a, egui::Color32::from_rgb(0x1B, 0x1E, 0x23));
         assert_eq!(t.lane_b, egui::Color32::from_rgb(0x1E, 0x21, 0x27));

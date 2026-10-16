@@ -69,6 +69,15 @@ pub struct App {
     /// A close (quit / New / Open / Close) waiting for the export and
     /// unsaved-changes prompts, when shown.
     pending_close: Option<PendingClose>,
+    /// True once a quit survived the prompts. `ViewportCommand::Close` comes
+    /// back as a close request on the next frame; this lets that one through
+    /// instead of prompting again (Don't Save leaves the project dirty).
+    close_confirmed: bool,
+    /// Default output device name for the start screen status bar, queried
+    /// from the audio engine once per start-screen session.
+    start_output: Option<String>,
+    /// True once `start_output` has been queried (None then means no device).
+    start_output_queried: bool,
 }
 
 impl Default for App {
@@ -82,12 +91,23 @@ impl Default for App {
             meters: MeterState::default(),
             title: "Audio Editor".to_string(),
             pending_close: None,
+            close_confirmed: false,
+            start_output: None,
+            start_output_queried: false,
         }
     }
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.run(ui);
+    }
+}
+
+impl App {
+    /// One frame of the app; `eframe::App::ui` forwards here so tests can
+    /// drive the real frame without an `eframe::Frame`.
+    fn run(&mut self, ui: &mut egui::Ui) {
         self.update_title(ui);
         // Debug-only F12 window showing the egui style.
         #[cfg(debug_assertions)]
@@ -101,10 +121,14 @@ impl eframe::App for App {
         let mut resolved: Option<PendingClose> = None;
         match &mut screen {
             Screen::Start(start) => {
+                if !self.start_output_queried {
+                    self.start_output = crate::audio::engine::default_output_name();
+                    self.start_output_queried = true;
+                }
                 if !ui.ctx().egui_wants_keyboard_input() && !start.dialog_is_open() {
                     Self::handle_start_shortcuts(ui, start);
                 }
-                opened = start.show(ui);
+                opened = start.show(ui, self.start_output.as_deref());
             }
             Screen::Editing(editor) => {
                 action = Self::show_editor(
@@ -116,15 +140,12 @@ impl eframe::App for App {
                     &mut self.meters,
                     &mut self.export_banner,
                 );
-                // The window X and Alt+F4 go through the same prompts as the
-                // Project menu while an export runs or changes are unsaved.
-                let wants_close = ui.ctx().input(|i| i.viewport().close_requested());
-                if wants_close && Self::needs_prompt(editor) {
-                    ui.ctx().send_viewport_cmd(ViewportCommand::CancelClose);
-                    if self.pending_close.is_none() {
-                        self.pending_close = Some(PendingClose::Quit);
-                    }
-                }
+                Self::intercept_window_close(
+                    ui.ctx(),
+                    editor,
+                    &mut self.pending_close,
+                    self.close_confirmed,
+                );
                 resolved = Self::run_close_prompts(
                     &ui.ctx().clone(),
                     editor,
@@ -146,6 +167,7 @@ impl eframe::App for App {
         }
         if let Some(pending) = resolved {
             if pending == PendingClose::Quit {
+                self.close_confirmed = true;
                 ui.ctx().send_viewport_cmd(ViewportCommand::Close);
             } else {
                 self.apply_pending(&mut screen, pending);
@@ -160,6 +182,24 @@ impl App {
     /// there are unsaved changes.
     fn needs_prompt(editor: &Editor) -> bool {
         editor.is_locked() || editor.dirty
+    }
+
+    /// The window X and Alt+F4 go through the same prompts as the Project
+    /// menu while an export runs or changes are unsaved. A quit the prompts
+    /// already approved (`confirmed`) is not intercepted a second time.
+    fn intercept_window_close(
+        ctx: &egui::Context,
+        editor: &Editor,
+        pending_close: &mut Option<PendingClose>,
+        confirmed: bool,
+    ) {
+        let wants_close = ctx.input(|i| i.viewport().close_requested());
+        if wants_close && !confirmed && Self::needs_prompt(editor) {
+            ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+            if pending_close.is_none() {
+                *pending_close = Some(PendingClose::Quit);
+            }
+        }
     }
 
     /// Handles a Project menu action that leaves the project; a prompt is
@@ -637,6 +677,216 @@ impl App {
         if title != self.title {
             self.title = title.clone();
             ui.ctx().send_viewport_cmd(ViewportCommand::Title(title));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::io::paths::create_layout;
+    use crate::model::project::{BitDepth, Project, ViewState};
+    use crate::ui::test_util::{Headless, Out};
+
+    const ACTIONS: [PendingClose; 4] = [
+        PendingClose::Quit,
+        PendingClose::New,
+        PendingClose::Open,
+        PendingClose::Close,
+    ];
+
+    /// An app editing a dirty project in a real folder (so Save can work),
+    /// driven frame by frame through the real `App::run`.
+    struct Rig {
+        h: Headless,
+        app: App,
+        _dir: tempfile::TempDir,
+    }
+
+    impl Rig {
+        fn new() -> Rig {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let paths = create_layout(dir.path(), "Test 2").expect("layout");
+            let mut editor = Editor::with_project(
+                Project::new("Test 2".to_string(), 48_000, BitDepth::Int24),
+                ViewState::default(),
+                paths,
+            );
+            editor.dirty = true;
+            Rig {
+                h: Headless::new(1280.0, 800.0),
+                app: App {
+                    screen: Screen::Editing(Box::new(editor)),
+                    ..App::default()
+                },
+                _dir: dir,
+            }
+        }
+
+        fn frame(&mut self) -> Out {
+            let app = &mut self.app;
+            self.h.frame(Vec::new(), |ui| app.run(ui))
+        }
+
+        /// A frame in which the window reports that its X was pressed.
+        fn window_x(&mut self) -> Out {
+            let app = &mut self.app;
+            self.h.frame_close_requested(|ui| app.run(ui))
+        }
+
+        /// Starts the close the way the user does: the window X for Quit,
+        /// the Project menu action otherwise. Returns the first frame.
+        fn request(&mut self, pending: PendingClose) -> Out {
+            if pending == PendingClose::Quit {
+                return self.window_x();
+            }
+            let mut screen =
+                std::mem::replace(&mut self.app.screen, Screen::Start(StartScreen::default()));
+            self.app.request_close(&mut screen, pending);
+            self.app.screen = screen;
+            self.frame()
+        }
+
+        /// Clicks the button whose text is `label`; returns the release frame.
+        fn click(&mut self, label: &str) -> Out {
+            let _ = self.frame();
+            let out = self.frame();
+            let target = out
+                .text_rect(label)
+                .unwrap_or_else(|| panic!("no {label} button on screen"))
+                .center();
+            let app = &mut self.app;
+            self.h.click(target, |ui| app.run(ui))
+        }
+
+        fn editor(&self) -> &Editor {
+            match &self.app.screen {
+                Screen::Editing(editor) => editor,
+                Screen::Start(_) => panic!("expected the editor screen"),
+            }
+        }
+    }
+
+    /// A rig whose editor has two tracks with loaded media (samples and
+    /// peaks), the playhead inside the first clip, like a real session.
+    fn rig_with_audio() -> Rig {
+        let mut rig = Rig::new();
+        let Screen::Editing(editor) = &mut rig.app.screen else {
+            panic!("editor screen");
+        };
+        let project =
+            crate::model::fixtures::project_with_clips(&[&[(0, 478_080)], &[(268_800, 297_600)]]);
+        let media_id = project.media[0].id;
+        let samples: Vec<f32> = (0..1_000_000usize)
+            .flat_map(|i| {
+                let v = ((i as f32) * 0.05).sin() * 0.5;
+                [v, v]
+            })
+            .collect();
+        let peaks = crate::io::peaks::build(&samples, 2);
+        editor.media_store.insert(
+            media_id,
+            crate::io::import::Loaded {
+                samples: samples.into(),
+                peaks: peaks.into(),
+            },
+        );
+        editor.project = std::sync::Arc::new(project);
+        editor.view.playhead = 100_000;
+        rig
+    }
+
+    /// Presses and releases `key` in two frames of the real app.
+    fn tap(rig: &mut Rig, key: egui::Key) {
+        for pressed in [true, false] {
+            let event = egui::Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            };
+            let app = &mut rig.app;
+            let _ = rig.h.frame(vec![event], |ui| app.run(ui));
+        }
+    }
+
+    #[test]
+    fn pressing_s_splits_the_clip_and_the_next_frames_still_draw() {
+        // Regression: the frame after a split never returned (the clip name
+        // truncation looped forever), so the whole app froze on Split.
+        let clips = crate::ui::test_util::within_secs(30, || {
+            let mut rig = rig_with_audio();
+            for _ in 0..3 {
+                let _ = rig.frame();
+            }
+            tap(&mut rig, egui::Key::S);
+            for _ in 0..3 {
+                let _ = rig.frame();
+            }
+            rig.editor().project.tracks[0].clips.len()
+        });
+        assert_eq!(clips, 2, "Split cut the clip under the playhead in two");
+    }
+
+    /// True when the app moved on to the start screen for `pending`.
+    fn left_for_start(rig: &Rig, pending: PendingClose) -> bool {
+        match (&rig.app.screen, pending) {
+            (Screen::Start(start), PendingClose::New) => start.dialog_is_open(),
+            (Screen::Start(start), PendingClose::Open | PendingClose::Close) => {
+                !start.dialog_is_open()
+            }
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn save_continues_every_pending_close() {
+        for pending in ACTIONS {
+            let mut rig = Rig::new();
+            let first = rig.request(pending);
+            assert_eq!(first.cancelled_close(), pending == PendingClose::Quit);
+            let out = rig.click("Save");
+            if pending == PendingClose::Quit {
+                assert!(out.sent_close(), "Quit + Save closes the window");
+                assert!(!rig.editor().dirty, "Save clears the dirty flag");
+            } else {
+                assert!(left_for_start(&rig, pending), "{pending:?} + Save");
+            }
+            assert!(rig.app.pending_close.is_none(), "{pending:?} + Save");
+        }
+    }
+
+    #[test]
+    fn dont_save_discards_and_continues_every_pending_close() {
+        for pending in ACTIONS {
+            let mut rig = Rig::new();
+            let first = rig.request(pending);
+            assert_eq!(first.cancelled_close(), pending == PendingClose::Quit);
+            let out = rig.click("Don't Save");
+            assert!(rig.app.pending_close.is_none(), "{pending:?} + Don't Save");
+            if pending == PendingClose::Quit {
+                assert!(out.sent_close(), "Quit + Don't Save closes the window");
+                // The window then reports its own close request; the unsaved
+                // changes were discarded on purpose, so it must go through.
+                let again = rig.window_x();
+                assert!(!again.cancelled_close(), "Quit + Don't Save is not blocked");
+                assert!(rig.app.pending_close.is_none(), "no second prompt");
+            } else {
+                assert!(left_for_start(&rig, pending), "{pending:?} + Don't Save");
+            }
+        }
+    }
+
+    #[test]
+    fn cancel_stays_in_the_project_for_every_pending_close() {
+        for pending in ACTIONS {
+            let mut rig = Rig::new();
+            let _ = rig.request(pending);
+            let out = rig.click("Cancel");
+            assert!(!out.sent_close(), "{pending:?} + Cancel must not close");
+            assert!(rig.app.pending_close.is_none(), "{pending:?} + Cancel");
+            assert!(rig.editor().dirty, "{pending:?} + Cancel keeps the changes");
         }
     }
 }

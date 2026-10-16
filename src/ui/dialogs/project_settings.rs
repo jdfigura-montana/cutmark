@@ -33,64 +33,51 @@ impl ProjectSettingsDialog {
     /// Shows the dialog; applies Action::SetProjectSettings through the Editor
     /// on OK and closes on success.
     pub fn show(&mut self, ctx: &egui::Context, editor: &mut Editor) {
-        let mut open = self.open;
         let mut cancel = false;
-        egui::Window::new("Project Settings")
-            .open(&mut open)
-            .default_width(THEME.dialog_w)
-            .collapsible(false)
-            .resizable(false)
-            .movable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                egui::Grid::new("project_settings_grid")
-                    .num_columns(2)
-                    .spacing([THEME.space_md, THEME.grid_spacing])
-                    .show(ui, |ui| {
-                        ui.label("Name:");
-                        ui.text_edit_singleline(&mut self.name);
-                        ui.end_row();
-
-                        ui.label("Export bit depth:");
-                        egui::ComboBox::from_id_salt("settings_bit_depth")
-                            .selected_text(bit_depth_text(self.bit_depth))
-                            .show_ui(ui, |ui| {
-                                for depth in [BitDepth::Int16, BitDepth::Int24, BitDepth::Float32] {
-                                    ui.selectable_value(
-                                        &mut self.bit_depth,
-                                        depth,
-                                        bit_depth_text(depth),
-                                    );
-                                }
-                            });
-                        ui.end_row();
-                    });
-
-                ui.add_space(THEME.space_md);
-                if let Some(error) = &self.error {
-                    ui.label(egui::RichText::new(error).color(THEME.error_soft));
-                }
-                ui.add_space(THEME.space_sm);
-
-                let can_apply = !self.name.trim().is_empty();
-                ui.horizontal(|ui| {
-                    let apply = ui.add_enabled(can_apply, egui::Button::new("OK"));
-                    if apply.clicked() {
-                        self.try_apply(editor);
-                    }
-                    if ui.button("Cancel").clicked() {
-                        cancel = true;
-                    }
-                });
-                // Enter confirms (when valid), Esc cancels.
-                if ui.input(|i| i.key_pressed(egui::Key::Enter)) && can_apply {
+        let response = super::modal("project_settings_dialog").show(ctx, |ui| {
+            super::card_width(ui, THEME.dialog_w);
+            super::title(ui, "Project Settings");
+            ui.add_space(THEME.space_xs);
+            super::description(ui, "Name and default export bit depth of this project.");
+            super::before_form(ui);
+            super::form_row(ui, "Name", |ui| {
+                super::text_field(ui, &mut self.name, "ps_name");
+            });
+            super::form_row(ui, "Bit depth", |ui| {
+                super::segmented(
+                    ui,
+                    "ps_depth",
+                    &[
+                        (BitDepth::Int16, "16-bit"),
+                        (BitDepth::Int24, "24-bit"),
+                        (BitDepth::Float32, "32-bit float"),
+                    ],
+                    &mut self.bit_depth,
+                );
+            });
+            if let Some(error) = &self.error {
+                ui.label(egui::RichText::new(error).color(THEME.error_soft));
+            }
+            let can_apply = !self.name.trim().is_empty();
+            super::footer(ui, |ui| {
+                if super::footer_button(ui, "OK", super::FooterButton::Primary, can_apply).clicked()
+                {
                     self.try_apply(editor);
                 }
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
                     cancel = true;
                 }
             });
-        if !open || cancel {
+            // Enter confirms (when valid).
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) && can_apply {
+                self.try_apply(editor);
+            }
+        });
+        // Esc or the backdrop cancels.
+        if response.should_close() {
+            cancel = true;
+        }
+        if cancel {
             *self = ProjectSettingsDialog {
                 open: false,
                 name: String::new(),
@@ -118,14 +105,5 @@ impl ProjectSettingsDialog {
             }
             Err(error) => self.error = Some(error.to_string()),
         }
-    }
-}
-
-/// Human-readable text for a bit depth.
-fn bit_depth_text(depth: BitDepth) -> &'static str {
-    match depth {
-        BitDepth::Int16 => "16-bit",
-        BitDepth::Int24 => "24-bit",
-        BitDepth::Float32 => "32-bit float",
     }
 }

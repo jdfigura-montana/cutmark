@@ -1,4 +1,4 @@
-﻿//! editor::transport: forwards play/pause/stop/seek commands to the audio engine.
+//! editor::transport: forwards play/pause/stop/seek commands to the audio engine.
 
 use std::sync::atomic::Ordering;
 

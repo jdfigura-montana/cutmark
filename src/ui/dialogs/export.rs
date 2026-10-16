@@ -1,4 +1,4 @@
-﻿//! ui::dialogs::export: the Export dialog, progress window and clip warning.
+//! ui::dialogs::export: the Export dialog, progress window and clip warning.
 
 use std::path::PathBuf;
 
@@ -10,8 +10,7 @@ use crate::editor::jobs::ExportSettings;
 use crate::editor::selection::Selection;
 use crate::io::export::{ExportFormat, ExportKind, mp3_rate};
 use crate::model::project::BitDepth;
-use crate::ui::theme::THEME;
-
+use crate::ui::theme::{THEME, Theme};
 /// How long the finished-export banner stays in the status bar.
 pub const BANNER_SECONDS: f64 = 10.0;
 
@@ -106,135 +105,123 @@ impl ExportDialog {
         if self.show_overwrite_ask(ctx) == Some(true) {
             self.try_export(editor);
         }
-        blocker(ctx);
         let mut open = self.open;
-        egui::Window::new("Export")
-            .open(&mut open)
-            .default_width(THEME.dialog_w)
-            .collapsible(false)
-            .resizable(false)
-            .movable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                egui::Grid::new("export_grid")
-                    .num_columns(2)
-                    .spacing([THEME.space_md, THEME.grid_spacing])
-                    .show(ui, |ui| {
-                        ui.label("Scope:");
-                        ui.horizontal(|ui| {
-                            ui.radio_value(&mut self.scope, Scope::Whole, "Whole project");
-                            ui.add_enabled_ui(has_range(editor), |ui| {
-                                ui.radio_value(
-                                    &mut self.scope,
-                                    Scope::Selection,
-                                    "Current selection",
-                                );
-                            });
-                        });
-                        ui.end_row();
-
-                        ui.label("");
-                        ui.add_enabled_ui(self.scope == Scope::Selection, |ui| {
-                            ui.checkbox(&mut self.tracks_only, "Selected tracks only");
-                        });
-                        ui.end_row();
-
-                        ui.label("Format:");
-                        let was_mp3 = self.mp3;
-                        ui.horizontal(|ui| {
-                            ui.radio_value(&mut self.mp3, false, "WAV");
-                            ui.radio_value(&mut self.mp3, true, "MP3");
-                        });
-                        if self.mp3 != was_mp3 {
-                            self.path = swap_extension(&self.path, self.extension());
-                            self.confirmed = None;
-                        }
-                        ui.end_row();
-
-                        match self.kind() {
-                            ExportKind::Wav(_) => {
-                                ui.label("Bit depth:");
-                                egui::ComboBox::from_id_salt("export_bit_depth")
-                                    .selected_text(bit_depth_text(self.bit_depth))
-                                    .show_ui(ui, |ui| {
-                                        for depth in
-                                            [BitDepth::Int16, BitDepth::Int24, BitDepth::Float32]
-                                        {
-                                            ui.selectable_value(
-                                                &mut self.bit_depth,
-                                                depth,
-                                                bit_depth_text(depth),
-                                            );
-                                        }
-                                    });
-                                ui.end_row();
-                            }
-                            ExportKind::Mp3 { .. } => {
-                                ui.label("Bitrate:");
-                                ui.vertical(|ui| {
-                                    egui::ComboBox::from_id_salt("export_bitrate")
-                                        .selected_text(format!("{} kbps", self.kbps))
-                                        .show_ui(ui, |ui| {
-                                            for kbps in [128, 192, 256, 320] {
-                                                ui.selectable_value(
-                                                    &mut self.kbps,
-                                                    kbps,
-                                                    format!("{kbps} kbps"),
-                                                );
-                                            }
-                                        });
-                                    ui.label(format!(
-                                        "Exports at {} kHz",
-                                        rate_khz(mp3_rate(editor.project.sample_rate))
-                                    ));
-                                });
-                                ui.end_row();
-                            }
-                        }
-
-                        ui.label("Channels:");
-                        ui.horizontal(|ui| {
-                            ui.radio_value(&mut self.mono, false, "Stereo");
-                            ui.radio_value(&mut self.mono, true, "Mono");
-                        });
-                        ui.end_row();
-
-                        ui.label("File:");
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.path)
-                                    .desired_width(THEME.dialog_w * 0.55),
-                            );
-                            if ui.button("Browse...").clicked() {
-                                self.browse(editor);
-                            }
-                        });
-                        ui.end_row();
+        let mut cancel = false;
+        let response = super::modal("export_dialog").show(ctx, |ui| {
+            super::card_width(ui, THEME.export_dialog_w);
+            super::title(ui, "Export");
+            ui.add_space(THEME.space_xs);
+            super::description(ui, "Render the mix to a WAV or MP3 file.");
+            super::before_form(ui);
+            super::form_scroll(ui, |ui| {
+                super::form_row(ui, "Scope", |ui| {
+                    ui.radio_value(&mut self.scope, Scope::Whole, "Whole project");
+                    ui.add_enabled_ui(has_range(editor), |ui| {
+                        ui.radio_value(&mut self.scope, Scope::Selection, "Current selection");
                     });
-
+                });
+                super::bare_row(ui, |ui| {
+                    ui.add_enabled_ui(self.scope == Scope::Selection, |ui| {
+                        ui.checkbox(&mut self.tracks_only, "Selected tracks only");
+                    });
+                });
+                let was_mp3 = self.mp3;
+                super::form_row(ui, "Format", |ui| {
+                    super::segmented(
+                        ui,
+                        "export_fmt",
+                        &[(false, "WAV"), (true, "MP3")],
+                        &mut self.mp3,
+                    );
+                });
+                if self.mp3 != was_mp3 {
+                    self.path = swap_extension(&self.path, self.extension());
+                    self.confirmed = None;
+                }
+                match self.kind() {
+                    ExportKind::Wav(_) => {
+                        super::form_row(ui, "Bit depth", |ui| {
+                            super::segmented(
+                                ui,
+                                "export_depth",
+                                &[
+                                    (BitDepth::Int16, "16-bit"),
+                                    (BitDepth::Int24, "24-bit"),
+                                    (BitDepth::Float32, "32-bit float"),
+                                ],
+                                &mut self.bit_depth,
+                            );
+                        });
+                    }
+                    ExportKind::Mp3 { .. } => {
+                        super::form_row(ui, "Bitrate", |ui| {
+                            super::segmented(
+                                ui,
+                                "export_kbps",
+                                &[(128, "128"), (192, "192"), (256, "256"), (320, "320")],
+                                &mut self.kbps,
+                            );
+                            ui.add_space(THEME.space_xs);
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "kbps \u{2014} exports at {} kHz",
+                                    rate_khz(mp3_rate(editor.project.sample_rate))
+                                ))
+                                .color(THEME.text_muted)
+                                .size(THEME.dialog_desc_size),
+                            );
+                        });
+                    }
+                }
+                super::form_row(ui, "Channels", |ui| {
+                    super::segmented(
+                        ui,
+                        "export_channels",
+                        &[(false, "Stereo"), (true, "Mono")],
+                        &mut self.mono,
+                    );
+                });
+                super::form_row(ui, "File", |ui| {
+                    let browse = super::with_browse(ui, |ui| {
+                        ui.add_sized(
+                            [ui.available_width(), THEME.field_h],
+                            egui::TextEdit::singleline(&mut self.path).id_salt("export_path"),
+                        );
+                    });
+                    if browse {
+                        self.browse(editor);
+                    }
+                });
                 if let Some(error) = &self.error {
                     ui.label(egui::RichText::new(error).color(THEME.error));
                 }
-                ui.add_space(THEME.space_md);
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(!editor.is_locked(), egui::Button::new("Export"))
-                        .clicked()
-                    {
-                        self.try_export(editor);
-                    }
-                    if ui.button("Cancel").clicked() {
-                        self.open = false;
-                    }
-                });
-                // Enter confirms, Esc cancels.
-                if ui.input(|i| i.key_pressed(egui::Key::Enter)) && !editor.is_locked() {
+            });
+            super::footer(ui, |ui| {
+                if super::footer_button(
+                    ui,
+                    "Export",
+                    super::FooterButton::Primary,
+                    !editor.is_locked(),
+                )
+                .clicked()
+                {
                     self.try_export(editor);
                 }
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    self.open = false;
+                if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
+                    cancel = true;
                 }
             });
+            // Enter confirms (when not locked).
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) && !editor.is_locked() {
+                self.try_export(editor);
+            }
+        });
+        if response.should_close() {
+            cancel = true;
+        }
+        if cancel {
+            open = false;
+        }
         self.open = open;
     }
 
@@ -245,30 +232,31 @@ impl ExportDialog {
     fn show_overwrite_ask(&mut self, ctx: &egui::Context) -> Option<bool> {
         let path = self.overwrite_ask.clone()?;
         let mut choice: Option<bool> = None;
-        egui::Window::new("Overwrite?")
-            .collapsible(false)
-            .resizable(false)
-            .movable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                let name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| path.display().to_string());
-                ui.label(format!("\"{name}\" already exists. Overwrite it?"));
-                ui.add_space(THEME.space_md);
-                ui.horizontal(|ui| {
-                    if ui.button("Overwrite").clicked() {
-                        choice = Some(true);
-                    }
-                    if ui.button("Cancel").clicked() {
-                        choice = Some(false);
-                    }
-                });
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        let response = super::modal("export_overwrite_dialog").show(ctx, |ui| {
+            super::card_width(ui, THEME.dialog_w);
+            super::title(ui, "Overwrite?");
+            ui.add_space(THEME.space_xs);
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            super::description(ui, &format!("\"{name}\" already exists. Overwrite it?"));
+            super::before_form(ui);
+            super::footer(ui, |ui| {
+                if super::footer_button(ui, "Overwrite", super::FooterButton::Primary, true)
+                    .clicked()
+                {
+                    choice = Some(true);
+                }
+                if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
                     choice = Some(false);
                 }
             });
+        });
+        // Esc or the backdrop cancels the overwrite.
+        if choice.is_none() && response.should_close() {
+            choice = Some(false);
+        }
         match choice {
             Some(true) => {
                 self.confirmed = Some(path);
@@ -379,67 +367,94 @@ impl ExportDialog {
     }
 }
 
-/// Draws the progress window and the clip warning while an export job runs,
-/// with a full-screen blocker so nothing else in the UI reacts to clicks.
+/// Draws the progress modal and the clipping warning while an export job runs;
+/// the modals' backdrops block input to the rest of the UI.
 pub fn show_progress(ctx: &egui::Context, editor: &mut Editor) {
     let Some(status) = editor.export_status() else {
         return;
     };
-    blocker(ctx);
-    egui::Window::new("Exporting")
-        .collapsible(false)
-        .resizable(false)
-        .movable(false)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .show(ctx, |ui| {
-            ui.label(if status.pass == 1 {
-                "Checking levels..."
-            } else {
-                "Writing file..."
-            });
-            ui.add(egui::ProgressBar::new(status.frac).show_percentage());
-            ui.add_space(THEME.space_md);
-            ui.vertical_centered(|ui| {
-                if ui.button("Cancel").clicked() {
+    if status.peak_warning.is_none() {
+        let response = super::modal("export_progress").show(ctx, |ui| {
+            super::card_width(ui, THEME.dialog_w);
+            super::title(ui, "Exporting");
+            ui.add_space(THEME.space_xs);
+            super::description(
+                ui,
+                if status.pass == 1 {
+                    "Checking levels..."
+                } else {
+                    "Writing file..."
+                },
+            );
+            super::before_form(ui);
+            progress_bar(ui, status.frac);
+            super::footer(ui, |ui| {
+                if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
                     editor.export_cancel();
                 }
             });
         });
+        let _ = response;
+    }
     if let Some(db) = status.peak_warning {
-        egui::Window::new("Clipping")
-            .collapsible(false)
-            .resizable(false)
-            .movable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.label(format!("The mix peaks at +{db:.1} dBFS and will clip."));
-                ui.add_space(THEME.space_md);
-                ui.horizontal(|ui| {
-                    if ui.button("Export Anyway").clicked() {
-                        editor.export_continue();
-                    }
-                    if ui.button("Cancel").clicked() {
-                        editor.export_cancel();
-                    }
-                });
+        let response = super::modal("export_clipping").show(ctx, |ui| {
+            super::card_width(ui, THEME.dialog_w);
+            super::warning_title(ui, "Clipping");
+            ui.add_space(THEME.space_xs);
+            super::description(
+                ui,
+                &format!("The mix peaks at +{db:.1} dBFS and will clip."),
+            );
+            super::before_form(ui);
+            super::footer(ui, |ui| {
+                if super::footer_button(ui, "Export Anyway", super::FooterButton::Destructive, true)
+                    .clicked()
+                {
+                    editor.export_continue();
+                }
+                if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
+                    editor.export_cancel();
+                }
             });
+            // Enter keeps the export going.
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                editor.export_continue();
+            }
+        });
+        // Esc and the backdrop cancel the export.
+        if response.should_close() {
+            editor.export_cancel();
+        }
     }
     // The export reports progress through poll_jobs; keep the UI advancing.
     ctx.request_repaint();
 }
 
-/// Full-screen translucent layer that swallows every click so the modal
-/// window shown above it is the only thing that reacts.
-fn blocker(ctx: &egui::Context) {
-    egui::Area::new(egui::Id::new("modal_click_blocker"))
-        .order(egui::Order::Foreground)
-        .anchor(egui::Align2::LEFT_TOP, [0.0, 0.0])
-        .show(ctx, |ui| {
-            let size = ctx.viewport_rect().size();
-            let rect = egui::Rect::from_min_size(ui.cursor().min, size);
-            let _response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
-            ui.painter().rect_filled(rect, 0.0, THEME.modal_shade);
-        });
+/// The 6 px progress bar: recessed_a track, accent fill, radius 3, percent
+/// in JetBrains Mono on the right.
+fn progress_bar(ui: &mut egui::Ui, frac: f32) {
+    ui.horizontal(|ui| {
+        let bar_w = ui.available_width() - 52.0;
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, 6.0), egui::Sense::hover());
+        let painter = ui.painter();
+        painter.rect_filled(rect, 3.0, THEME.recessed_a);
+        if frac > 0.0 {
+            painter.rect_filled(
+                egui::Rect::from_min_max(
+                    rect.min,
+                    egui::pos2(rect.min.x + rect.width() * frac, rect.max.y),
+                ),
+                3.0,
+                THEME.accent,
+            );
+        }
+        ui.label(
+            egui::RichText::new(format!("{}%", (frac * 100.0).round() as i32))
+                .font(Theme::mono(11.0))
+                .color(THEME.text_normal)
+                .size(11.0),
+        );
+    });
 }
 
 /// True when the editor holds a range selection.
@@ -493,18 +508,130 @@ fn rate_khz(rate: u32) -> String {
     }
 }
 
-/// Human-readable text for a bit depth.
-fn bit_depth_text(depth: BitDepth) -> &'static str {
-    match depth {
-        BitDepth::Int16 => "16-bit",
-        BitDepth::Int24 => "24-bit",
-        BitDepth::Float32 => "32-bit float",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::paths::ProjectPaths;
+    use crate::model::project::{Project, ViewState};
+    use crate::ui::test_util::Headless;
+
+    #[test]
+    fn export_dialog_card_is_compact_and_holds_title_format_and_footer() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let mut editor = Editor::with_project(
+            Project::new("Test 2".to_string(), 48_000, BitDepth::Int24),
+            ViewState::default(),
+            ProjectPaths {
+                root: PathBuf::from("unused"),
+            },
+        );
+        let mut dialog = ExportDialog::new_open(&editor);
+        // The modal's first frame is hidden while egui measures it and it
+        // then fades in; settle runs past both.
+        let out = h.settle(|ui| dialog.show(ui.ctx(), &mut editor));
+
+        // The card: the largest filled, outlined rect (the modal is still
+        // fading in, so its colors are not exactly the theme values yet).
+        let card = out
+            .rects()
+            .into_iter()
+            .filter(|r| r.stroke.width > 0.0 && r.fill.a() > 0)
+            .map(|r| r.rect)
+            .max_by(|a, b| a.area().total_cmp(&b.area()))
+            .expect("the dialog card is painted");
+        assert!(
+            card.height() < 640.0,
+            "card is {} px tall on an 800 px window",
+            card.height()
+        );
+        assert!(
+            card.top() > 0.0 && card.bottom() < 800.0,
+            "card is on screen"
+        );
+
+        // The title is the first "Export", the footer button the last one.
+        let texts = out.texts();
+        let exports: Vec<_> = texts.iter().filter(|t| t.text == "Export").collect();
+        assert_eq!(exports.len(), 2, "title and footer button");
+        let title = exports[0].rect;
+        let footer_export = exports[1].rect;
+        let format = out.text_rect("Format").expect("Format row label");
+        let cancel = out.text_rect("Cancel").expect("footer Cancel button");
+        for (name, rect) in [
+            ("title", title),
+            ("Format row", format),
+            ("footer Export", footer_export),
+            ("footer Cancel", cancel),
+        ] {
+            assert!(
+                card.contains_rect(rect),
+                "{name} {rect:?} must sit inside the card {card:?}"
+            );
+        }
+
+        // Rows are laid out one under another, not stacked on one spot.
+        let scope = out.text_rect("Scope").expect("Scope row label");
+        let channels = out.text_rect("Channels").expect("Channels row label");
+        let file = out.text_rect("File").expect("File row label");
+        let ys = [
+            title.center().y,
+            scope.center().y,
+            format.center().y,
+            channels.center().y,
+            file.center().y,
+            footer_export.center().y,
+        ];
+        assert!(
+            ys.windows(2).all(|pair| pair[0] + 10.0 < pair[1]),
+            "rows must run top to bottom: {ys:?}"
+        );
+        assert!(
+            footer_export.center().x < cancel.center().x,
+            "Export then Cancel, left to right"
+        );
+
+        // The card is exactly export_dialog_w wide with equal padding on
+        // both sides of the content (the footer divider spans the content).
+        let tol = 0.6;
+        let line = out.footer_line().expect("footer divider");
+        assert!(
+            (card.width() - THEME.export_dialog_w).abs() < tol,
+            "card is {} wide",
+            card.width()
+        );
+        let (pad_left, pad_right) = (line.left() - card.left(), card.right() - line.right());
+        assert!(
+            (pad_left - pad_right).abs() < tol,
+            "padding {pad_left} left vs {pad_right} right"
+        );
+
+        // Footer buttons: 8 px apart, the last one flush with the content.
+        let export_button = out
+            .filled_rect_at(footer_export.center())
+            .expect("footer Export button");
+        let cancel_button = out
+            .filled_rect_at(cancel.center())
+            .expect("footer Cancel button");
+        assert!(
+            (cancel_button.left() - export_button.right() - THEME.space_md).abs() < tol,
+            "gap is {}",
+            cancel_button.left() - export_button.right()
+        );
+        assert!(
+            (cancel_button.right() - line.right()).abs() < tol,
+            "Cancel ends {} short of the content edge",
+            line.right() - cancel_button.right()
+        );
+
+        // The Browse button is flush with the content's right edge too.
+        let browse = out.text_rect("Browse...").expect("Browse button text");
+        let browse_button = out.filled_rect_at(browse.center()).expect("Browse button");
+        assert!(
+            (browse_button.right() - line.right()).abs() < tol,
+            "Browse ends {} short of the content edge",
+            line.right() - browse_button.right()
+        );
+    }
 
     #[test]
     fn swap_extension_only_touches_wav_and_mp3() {

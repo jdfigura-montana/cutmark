@@ -1627,6 +1627,15 @@ pub fn remove_recent(root: &Path) {
     }
 }
 
+/// Removes every missing entry from the recent list; a write failure is ignored.
+pub fn remove_missing_recent() {
+    if let Some(list_path) = crate::io::recent::default_path() {
+        let mut list = RecentList::load(&list_path);
+        list.remove_missing();
+        let _ = list.save(&list_path);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,4 +1,4 @@
-﻿//! io::recent: the recent-projects list in %APPDATA%.
+//! io::recent: the recent-projects list in %APPDATA%.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,6 +17,10 @@ pub struct RecentEntry {
     pub name: String,
     /// Project root folder path.
     pub root: PathBuf,
+    /// Unix timestamp (seconds) of the last open; None for pre-existing
+    /// entries written before the field existed.
+    #[serde(default)]
+    pub last_opened: Option<i64>,
 }
 
 impl RecentEntry {
@@ -24,6 +28,14 @@ impl RecentEntry {
     pub fn exists(&self) -> bool {
         self.root.join("project.json").is_file()
     }
+}
+
+/// The current time as a Unix timestamp in seconds.
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// The recent-projects list, newest first.
@@ -63,16 +75,28 @@ impl RecentList {
     }
 
     /// Moves the entry with the given root to the top (or inserts it there),
-    /// keeping at most MAX_ENTRIES entries.
+    /// stamping it with the current time, keeping at most MAX_ENTRIES entries.
     pub fn touch(&mut self, name: String, root: PathBuf) {
         self.entries.retain(|e| e.root != root);
-        self.entries.insert(0, RecentEntry { name, root });
+        self.entries.insert(
+            0,
+            RecentEntry {
+                name,
+                root,
+                last_opened: Some(now_unix()),
+            },
+        );
         self.entries.truncate(MAX_ENTRIES);
     }
 
     /// Removes the entry with the given root, if present.
     pub fn remove(&mut self, root: &Path) {
         self.entries.retain(|e| e.root != root);
+    }
+
+    /// Removes every entry whose project folder no longer exists.
+    pub fn remove_missing(&mut self) {
+        self.entries.retain(|e| e.exists());
     }
 }
 
@@ -174,9 +198,55 @@ mod tests {
         let entry = RecentEntry {
             name: "gone".into(),
             root: root.clone(),
+            last_opened: None,
         };
         assert!(entry.exists());
         fs::remove_dir_all(&root).unwrap();
         assert!(!entry.exists());
+    }
+
+    #[test]
+    fn touch_stamps_last_opened() {
+        let dir = tempdir().unwrap();
+        let mut list = RecentList::default();
+        list.touch("A".into(), dir.path().join("a"));
+        let ts = list.entries[0].last_opened.expect("stamped");
+        let now = now_unix();
+        assert!((now - ts).abs() < 60, "timestamp {ts} vs now {now}");
+    }
+
+    #[test]
+    fn remove_missing_removes_only_missing_entries() {
+        let dir = tempdir().unwrap();
+        let kept = make_project(dir.path(), "kept");
+        let gone = make_project(dir.path(), "gone");
+        fs::remove_dir_all(&gone).unwrap();
+        let mut list = RecentList {
+            entries: vec![
+                RecentEntry {
+                    name: "gone".into(),
+                    root: gone,
+                    last_opened: Some(0),
+                },
+                RecentEntry {
+                    name: "kept".into(),
+                    root: kept,
+                    last_opened: None,
+                },
+            ],
+        };
+        list.remove_missing();
+        assert_eq!(list.entries.len(), 1);
+        assert_eq!(list.entries[0].name, "kept");
+    }
+
+    #[test]
+    fn old_config_without_last_opened_still_loads() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("recent.json");
+        fs::write(&path, r#"{"entries":[{"name":"A","root":"C:\\x"}]}"#).unwrap();
+        let list = RecentList::load(&path);
+        assert_eq!(list.entries.len(), 1);
+        assert_eq!(list.entries[0].last_opened, None);
     }
 }

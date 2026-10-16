@@ -102,7 +102,7 @@ pub fn request_process(ctx: &egui::Context) {
 }
 
 /// Shows the gain dialog when open. OK applies SetClipGain to every
-/// target clip as one undo step; Cancel, the close box or Esc dismiss it.
+/// target clip as one undo step; Cancel, the backdrop or Esc dismiss it.
 /// Returns human-readable error messages from failed applies.
 pub fn show(ctx: &egui::Context, editor: &mut Editor) -> Vec<String> {
     let Some(mut dialog) = ctx.data_mut(|d| d.remove_temp::<GainDialog>(egui::Id::new(DIALOG_KEY)))
@@ -112,62 +112,40 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor) -> Vec<String> {
     let mut messages = Vec::new();
     let mut ok = false;
     if dialog.open {
-        let mut open = true;
-        let mut closed = false;
-        egui::Window::new(if dialog.mode == GainMode::Gain {
-            "Gain"
+        let (title, (min, max)) = if dialog.mode == GainMode::Gain {
+            ("Gain", (-24.0, 24.0))
         } else {
-            "Clip Gain"
-        })
-        .open(&mut open)
-        .default_width(THEME.dialog_w)
-        .collapsible(false)
-        .resizable(false)
-        .movable(false)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .show(ctx, |ui| {
-            ui.label(if dialog.mode == GainMode::Gain {
-                "Gain change (-24 to +24 dB):"
-            } else {
-                "Clip gain (-60 to +24 dB):"
+            ("Clip Gain", (-60.0, 24.0))
+        };
+        let response = super::modal("gain_dialog").show(ctx, |ui| {
+            super::card_width(ui, THEME.dialog_w);
+            super::title(ui, title);
+            ui.add_space(THEME.space_xs);
+            super::description(ui, &format!("Gain change ({min:.0} to {max:+.0} dB)"));
+            super::before_form(ui);
+            super::form_row(ui, "Amount", |ui| {
+                super::db_control(ui, "gain_db", &mut dialog.db, (min, max));
             });
-            let (min, max) = if dialog.mode == GainMode::Gain {
-                (-24.0, 24.0)
-            } else {
-                (-60.0, 24.0)
-            };
-            ui.add(
-                egui::DragValue::new(&mut dialog.db)
-                    .range(min..=max)
-                    .speed(0.1)
-                    .suffix(" dB"),
-            );
-            // Enter confirms, Esc cancels.
+            if let Some(error) = &dialog.error {
+                ui.label(egui::RichText::new(error).color(THEME.error));
+            }
+            super::footer(ui, |ui| {
+                if super::footer_button(ui, "OK", super::FooterButton::Primary, true).clicked() {
+                    ok = true;
+                }
+                if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
+                    dialog.open = false;
+                }
+            });
+            // Enter confirms.
             if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 ok = true;
             }
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                closed = true;
-            }
-            if let Some(error) = &dialog.error {
-                ui.colored_label(THEME.error, error);
-            }
-            ui.add_space(THEME.space_md);
-            ui.vertical_centered(|ui| {
-                ui.horizontal(|ui| {
-                    if ui.button("OK").clicked() {
-                        ok = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        closed = true;
-                    }
-                });
-            });
         });
-        if closed {
-            open = false;
+        // Esc or the backdrop cancels.
+        if response.should_close() {
+            dialog.open = false;
         }
-        dialog.open = open;
     }
     if ok && dialog.open {
         match dialog.mode {

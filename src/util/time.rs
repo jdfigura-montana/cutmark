@@ -1,4 +1,4 @@
-﻿//! util::time: samples <-> timecode conversion.
+//! util::time: samples <-> timecode conversion.
 
 /// Formats a sample position as `HH:MM:SS.mmm` at the given sample rate.
 /// Milliseconds are rounded down.
