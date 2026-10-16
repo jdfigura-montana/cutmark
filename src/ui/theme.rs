@@ -14,6 +14,9 @@ const MEDIUM_FAMILY: &str = "PlexMedium";
 /// The named egui font family holding the IBM Plex Sans SemiBold face.
 const SEMIBOLD_FAMILY: &str = "PlexSemiBold";
 
+/// The font-data key egui-phosphor registers its icon font under.
+const PHOSPHOR_FONT: &str = "phosphor";
+
 /// IBM Plex Sans Regular (SIL OFL 1.1, see assets/fonts/LICENSE-IBMPlex.txt).
 const PLEX_REGULAR: &[u8] = include_bytes!("../../assets/fonts/IBMPlexSans-Regular.ttf");
 /// IBM Plex Sans Medium (SIL OFL 1.1, see assets/fonts/LICENSE-IBMPlex.txt).
@@ -332,8 +335,6 @@ pub struct Theme {
     pub space_md: f32,
     /// Large spacing (16).
     pub space_lg: f32,
-    /// Extra-extra-large spacing (40).
-    pub space_xxl: f32,
     /// Vertical grid spacing inside dialogs.
 
     // ---- Shared shapes ----
@@ -450,6 +451,8 @@ pub struct Theme {
     pub start_btn_radius: f32,
     /// Gap between the buttons and the drop zone (20).
     pub start_drop_gap: f32,
+    /// Height of the dashed drop zone (52).
+    pub start_drop_h: f32,
     /// Corner radius of the drop zone (8).
     pub start_drop_radius: f32,
     /// White text on the accent button.
@@ -466,6 +469,8 @@ pub struct Theme {
     pub start_x_btn: f32,
     /// Fill of the MISSING pill.
     pub start_missing_fill: egui::Color32,
+    /// At-rest background of the most recently opened recent row (#1F2328).
+    pub start_row_recent: egui::Color32,
     /// Text color of the MISSING pill.
     pub start_missing_text: egui::Color32,
     /// Icon color of a missing project's tile.
@@ -665,7 +670,6 @@ impl Default for Theme {
             space_sm: 4.0,
             space_md: 8.0,
             space_lg: 16.0,
-            space_xxl: 40.0,
             // Shared shapes
             corner_r: 2.0,
             corner_round: 3.0,
@@ -736,6 +740,7 @@ impl Default for Theme {
             start_btn_gap: 10.0,
             start_btn_radius: 8.0,
             start_drop_gap: 20.0,
+            start_drop_h: 52.0,
             start_drop_radius: 8.0,
             start_on_accent: egui::Color32::WHITE,
             start_row_gap: 2.0,
@@ -744,6 +749,7 @@ impl Default for Theme {
             start_last_col_w: 96.0,
             start_x_btn: 28.0,
             start_missing_fill: egui::Color32::from_rgb(0x3A, 0x22, 0x24),
+            start_row_recent: egui::Color32::from_rgb(0x1F, 0x23, 0x28),
             start_missing_text: egui::Color32::from_rgb(0xE5, 0x54, 0x4B),
             start_missing_icon: egui::Color32::from_rgb(0x5A, 0x61, 0x6D),
             start_title_size: 24.0,
@@ -764,13 +770,11 @@ impl Default for Theme {
 /// The shared theme instance every ui module reads.
 pub static THEME: LazyLock<Theme> = LazyLock::new(Theme::default);
 
-/// Sets the egui Style/Visuals once at startup (called from `main`).
-///
-/// Owns the whole look: the dark palette surfaces, a single accent color for
-/// selection/lit toggles/range lines/focus, IBM Plex Sans (Proportional) and
-/// JetBrains Mono (Monospace) with a named "PlexSemiBold" family for headings
-/// and track names, the phosphor icon font, and 4/8 px default spacing.
-pub fn apply(ctx: &egui::Context) {
+/// Builds the font set: IBM Plex Sans (Proportional), JetBrains Mono
+/// (Monospace), the named "PlexMedium"/"PlexSemiBold" families, and the
+/// phosphor icon font as a glyph fallback for EVERY family, so an icon
+/// renders wherever it is mixed into text.
+fn font_definitions() -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Fill);
     for (key, bytes) in [
@@ -785,7 +789,7 @@ pub fn apply(ctx: &egui::Context) {
             .insert(key.into(), egui::FontData::from_static(bytes).into());
     }
     // IBM Plex Sans is the proportional face, JetBrains Mono the monospace
-    // face; phosphor stays in both lists as the glyph fallback.
+    // face; phosphor stays in every family list as the glyph fallback.
     {
         let proportional = fonts
             .families
@@ -799,16 +803,35 @@ pub fn apply(ctx: &egui::Context) {
             .or_default();
         monospace.insert(0, "JetBrainsMono-Medium".into());
         monospace.insert(0, "JetBrainsMono-Regular".into());
+        monospace.push(PHOSPHOR_FONT.into());
     }
     fonts.families.insert(
         egui::FontFamily::Name(MEDIUM_FAMILY.into()),
-        vec!["IBMPlexSans-Medium".into(), "IBMPlexSans-Regular".into()],
+        vec![
+            "IBMPlexSans-Medium".into(),
+            "IBMPlexSans-Regular".into(),
+            PHOSPHOR_FONT.into(),
+        ],
     );
     fonts.families.insert(
         egui::FontFamily::Name(SEMIBOLD_FAMILY.into()),
-        vec!["IBMPlexSans-SemiBold".into(), "IBMPlexSans-Medium".into()],
+        vec![
+            "IBMPlexSans-SemiBold".into(),
+            "IBMPlexSans-Medium".into(),
+            PHOSPHOR_FONT.into(),
+        ],
     );
-    ctx.set_fonts(fonts);
+    fonts
+}
+
+/// Sets the egui Style/Visuals once at startup (called from `main`).
+///
+/// Owns the whole look: the dark palette surfaces, a single accent color for
+/// selection/lit toggles/range lines/focus, IBM Plex Sans (Proportional) and
+/// JetBrains Mono (Monospace) with a named "PlexSemiBold" family for headings
+/// and track names, the phosphor icon font, and 4/8 px default spacing.
+pub fn apply(ctx: &egui::Context) {
+    ctx.set_fonts(font_definitions());
     let t = &*THEME;
     let mut v = egui::Visuals::dark();
 
@@ -941,6 +964,47 @@ pub fn debug_window(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn phosphor_icons_resolve_in_every_family() {
+        use eframe::egui::epaint::text::{Fonts, TextOptions};
+        let mut fonts = Fonts::new(TextOptions::default(), font_definitions());
+        // Without the phosphor face, the icons must NOT resolve: this proves
+        // phosphor itself (and not an egui default font) owns the glyphs.
+        let mut bare = font_definitions();
+        for keys in bare.families.values_mut() {
+            keys.retain(|key| key != PHOSPHOR_FONT);
+        }
+        let mut bare_fonts = Fonts::new(TextOptions::default(), bare);
+        let families = [
+            egui::FontFamily::Proportional,
+            egui::FontFamily::Monospace,
+            egui::FontFamily::Name(MEDIUM_FAMILY.into()),
+            egui::FontFamily::Name(SEMIBOLD_FAMILY.into()),
+        ];
+        for family in &families {
+            let id = egui::FontId::new(16.0, family.clone());
+            for (name, icon) in [
+                ("FOLDER_OPEN", egui_phosphor::fill::FOLDER_OPEN),
+                ("FILE_AUDIO", egui_phosphor::fill::FILE_AUDIO),
+                ("PLUS", egui_phosphor::fill::PLUS),
+                ("X", egui_phosphor::fill::X),
+                ("WAVEFORM", egui_phosphor::fill::WAVEFORM),
+            ] {
+                let c = icon.chars().next().unwrap();
+                assert!(
+                    !bare_fonts.has_glyph(&id, c),
+                    "{name} (U+{:04X}) resolves WITHOUT phosphor in {family:?}: the probe is blind",
+                    c as u32
+                );
+                assert!(
+                    fonts.has_glyph(&id, c),
+                    "{name} (U+{:04X}) missing in family {family:?}",
+                    c as u32
+                );
+            }
+        }
+    }
 
     #[test]
     fn theme_holds_the_spec_values() {

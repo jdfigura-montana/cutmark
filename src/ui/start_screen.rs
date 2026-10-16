@@ -202,7 +202,8 @@ impl StartScreen {
         self.show_drop_zone(ui);
     }
 
-    /// The dashed drop zone, sized so the two footnotes sit at the bottom.
+    /// The dashed 52 px drop zone, 20 px below the Open button, with its text
+    /// centered; the two footnotes stay pinned to the bottom of the column.
     fn show_drop_zone(&mut self, ui: &mut egui::Ui) {
         let p = ui.painter().clone();
         let hint = "Or drop a project folder or project.json here";
@@ -211,10 +212,10 @@ impl StartScreen {
         let hint_font = egui::FontId::proportional(THEME.start_hint_size);
         let g1 = p.layout_no_wrap(foot1.to_owned(), hint_font.clone(), THEME.text_faint);
         let g2 = p.layout_no_wrap(foot2.to_owned(), hint_font.clone(), THEME.text_faint);
-        let foot_h = g1.size().y + THEME.space_sm + g2.size().y;
-        let dz_h = (ui.available_height() - foot_h - THEME.space_md).max(THEME.space_xxl);
-        let (dz, _) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), dz_h), egui::Sense::hover());
+        let (dz, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), THEME.start_drop_h),
+            egui::Sense::hover(),
+        );
         p.rect_filled(
             dz,
             THEME.start_drop_radius,
@@ -226,20 +227,35 @@ impl StartScreen {
             None => (hint.to_owned(), THEME.text_faint),
         };
         p.text(
-            egui::pos2(dz.left() + THEME.space_lg, dz.top() + THEME.space_lg),
-            egui::Align2::LEFT_TOP,
+            dz.center(),
+            egui::Align2::CENTER_CENTER,
             text,
             hint_font.clone(),
             color,
         );
-        ui.add_space(THEME.space_md);
-        for foot in [foot1, foot2] {
-            ui.label(
-                egui::RichText::new(foot)
-                    .font(hint_font.clone())
-                    .color(THEME.text_faint),
-            );
-        }
+        // The gap between the drop zone and the footnotes stays empty; the
+        // footnotes are pinned to the bottom of the column.
+        let feet_top = (ui.max_rect().bottom() - g1.size().y - THEME.space_sm - g2.size().y)
+            .max(dz.bottom() + THEME.space_sm);
+        let spacer_h = (feet_top - ui.next_widget_position().y).max(0.0);
+        ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), spacer_h),
+            egui::Sense::hover(),
+        );
+        p.text(
+            egui::pos2(dz.left(), feet_top),
+            egui::Align2::LEFT_TOP,
+            foot1,
+            hint_font.clone(),
+            THEME.text_faint,
+        );
+        p.text(
+            egui::pos2(dz.left(), feet_top + g1.size().y + THEME.space_sm),
+            egui::Align2::LEFT_TOP,
+            foot2,
+            hint_font,
+            THEME.text_faint,
+        );
     }
 
     /// One full-width 52 px start-screen button, drawn with the painter.
@@ -385,8 +401,15 @@ impl StartScreen {
                     THEME.text_faint,
                 );
             } else {
+                // The list is recency-ordered; the row opened last gets the
+                // subtle at-rest highlight.
+                let newest = entries
+                    .iter()
+                    .enumerate()
+                    .max_by_key(|(i, e)| (e.last_opened, std::cmp::Reverse(*i)))
+                    .map_or(0, |(i, _)| i);
                 for (i, entry) in entries.iter().enumerate() {
-                    self.show_row(ui, i, entry, opened);
+                    self.show_row(ui, i, entry, newest, opened);
                 }
             }
         });
@@ -430,11 +453,14 @@ impl StartScreen {
     }
 
     /// One 64 px recent-project row: tile, name, path, date and remove button.
+    /// `newest` is the index of the most recently opened entry, which shows a
+    /// subtle at-rest background.
     fn show_row(
         &mut self,
         ui: &mut egui::Ui,
         index: usize,
         entry: &RecentEntry,
+        newest: usize,
         opened: &mut Option<Editor>,
     ) {
         let t = &*THEME;
@@ -447,6 +473,8 @@ impl StartScreen {
         let dim = |c: egui::Color32| if exists { c } else { c.gamma_multiply(0.7) };
         if resp.hovered() {
             p.rect_filled(rect, t.start_row_radius, t.control_fill);
+        } else if index == newest {
+            p.rect_filled(rect, t.start_row_radius, t.start_row_recent);
         }
 
         // Tile: track color at low alpha, or grey for a missing project.
