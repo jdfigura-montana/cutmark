@@ -1,0 +1,2 @@
+# Cutmark Video build configuration. FilmCraft's .cargo/config.toml only defines xtask aliases,
+# which this workspace does not use; no extra settings are needed to build on Windows.

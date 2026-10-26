@@ -1,0 +1,1 @@
+Read C:\Users\JD_Admin\Documents\Programming_Projects\cm_suite\cutmark\CLAUDE.md before every task and follow it. The FilmCraft reference clone is C:\Users\JD_Admin\Documents\Programming_Projects\cm_suite\filmcraft (read-only, never edit, not a workspace member).
