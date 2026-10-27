@@ -330,7 +330,9 @@ impl BinPanel {
                     ui.close();
                 }
                 if ui.button("Reveal in Explorer").clicked() {
-                    editor.reveal_media(item.id);
+                    if let Err(error) = editor.reveal_media(item.id) {
+                        messages.push(error.to_string());
+                    }
                     ui.close();
                 }
                 if ui.button("Remove from Project").clicked() {

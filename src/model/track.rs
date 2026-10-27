@@ -5,6 +5,13 @@ use uuid::Uuid;
 
 use crate::model::clip::Clip;
 
+/// Smallest lane height in pixels (also the clamp applied to loaded projects).
+pub const MIN_HEIGHT: f32 = 40.0;
+/// Largest lane height in pixels.
+pub const MAX_HEIGHT: f32 = 400.0;
+/// Lane height of a new track, and the stand-in for a non-numeric loaded height.
+pub const DEFAULT_HEIGHT: f32 = 96.0;
+
 /// One timeline track, top to bottom.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Track {
@@ -36,7 +43,7 @@ impl Track {
             pan: 0.0,
             mute: false,
             solo: false,
-            height: 96.0,
+            height: DEFAULT_HEIGHT,
             clips: Vec::new(),
         }
     }

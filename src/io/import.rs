@@ -96,7 +96,9 @@ fn import_core(
         .map(|n| n.to_string_lossy().into_owned())
         .ok_or_else(|| IoError::UnsupportedAudio(src.display().to_string()))?;
     let media_name = unique_media_name(&paths.media(), &src_name);
-    let media_path = paths.media().join(&media_name);
+    // A name the loader would refuse (e.g. a device name made with a `\\?\`
+    // path) must never be written into a project: it would not open again.
+    let media_path = paths.media_file(&media_name)?;
     fs::copy(src, &media_path)?;
 
     let cleanup = || {
@@ -165,7 +167,10 @@ pub fn load_or_rebuild(
     project_rate: u32,
     progress: &mut dyn FnMut(f32),
 ) -> Result<Loaded, IoError> {
-    let media_path = paths.media().join(&item.file_name);
+    // `file_name` comes from project.json: an unsafe name (UNC, absolute, `..`
+    // ...) is an error here and is never joined, so nothing outside media/ is
+    // touched (not even a network path probed).
+    let media_path = paths.media_file(&item.file_name)?;
     if !media_path.is_file() {
         return Err(IoError::MediaOffline(item.id));
     }
@@ -394,6 +399,63 @@ mod tests {
         assert_eq!(loaded.samples.len(), 500 * 2);
         assert!(conformed_path(&paths, item.id).is_file());
         assert!(peaks_path(&paths, item.id).is_file());
+    }
+
+    #[test]
+    fn load_or_rebuild_never_joins_an_unsafe_file_name() {
+        // A real, decodable WAV outside the project: an absolute `file_name`
+        // used to load it, a UNC name would have probed the network.
+        let src_dir = tempdir().unwrap();
+        let outside = src_dir.path().join("outside.wav");
+        write_stereo_wav(&outside, 48_000, 500);
+        let proj_dir = tempdir().unwrap();
+        let paths = create_layout(proj_dir.path(), "Proj").unwrap();
+
+        let unsafe_names = [
+            outside.display().to_string(),
+            r"\\attacker.example\share\a.wav".to_string(),
+            r"\outside.wav".to_string(),
+            r"..\..\outside.wav".to_string(),
+            "bad\"name.wav".to_string(),
+            "con.wav".to_string(),
+        ];
+        for name in unsafe_names {
+            let item = MediaItem {
+                id: Uuid::new_v4(),
+                display_name: "x".to_string(),
+                file_name: name.clone(),
+                original_rate: 48_000,
+                channels: 2,
+                length: 500,
+            };
+            let result = load_or_rebuild(&paths, &item, 48_000, &mut |_| {});
+            assert!(
+                matches!(result, Err(IoError::UnsafePath(_))),
+                "{name:?} must be refused, got {result:?}"
+            );
+        }
+        // Nothing was decoded, so nothing was cached.
+        assert_eq!(cache_file_count(&paths), 0);
+    }
+
+    #[test]
+    fn import_refuses_a_name_the_loader_would_reject() {
+        // Windows only lets a device name exist through a verbatim path.
+        let src_dir = tempdir().unwrap();
+        let verbatim = format!(r"\\?\{}\nul.wav", src_dir.path().display());
+        let src = Path::new(&verbatim);
+        write_stereo_wav(src, 48_000, 100);
+
+        let proj_dir = tempdir().unwrap();
+        let paths = create_layout(proj_dir.path(), "Proj").unwrap();
+        let result = import_file(src, &paths, Uuid::new_v4(), 48_000, &mut |_| {});
+        fs::remove_file(src).unwrap();
+        assert!(
+            matches!(result, Err(IoError::UnsafePath(_))),
+            "got {result:?}"
+        );
+        assert_eq!(fs::read_dir(paths.media()).unwrap().count(), 0);
+        assert_eq!(cache_file_count(&paths), 0);
     }
 
     #[test]

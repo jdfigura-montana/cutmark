@@ -1,4 +1,6 @@
 //! model::invariants: unit-tested rules the model enforces (overlap, bounds, fades).
+use std::collections::{HashMap, HashSet};
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -54,19 +56,30 @@ pub enum InvariantError {
 
 /// Verifies every model invariant; returns the first violation found.
 pub fn check(project: &Project) -> Result<(), InvariantError> {
-    // Rule g: no duplicate ids anywhere.
-    let mut ids: Vec<Uuid> = Vec::new();
-    ids.extend(project.media.iter().map(|m| m.id));
-    ids.extend(project.tracks.iter().map(|t| t.id));
-    for track in &project.tracks {
-        ids.extend(track.clips.iter().map(|c| c.id));
-    }
-    ids.extend(project.markers.iter().map(|m| m.id));
-    for i in 1..ids.len() {
-        if ids[..i].contains(&ids[i]) {
-            return Err(InvariantError::DuplicateId { id: ids[i] });
+    // Rule g: no duplicate ids anywhere (media, tracks, clips, markers in that
+    // order; the first repeat is reported). A set keeps this linear: the
+    // check also runs on projects loaded from disk with up to 100,000 clips.
+    let mut seen: HashSet<Uuid> = HashSet::new();
+    let ids = project
+        .media
+        .iter()
+        .map(|m| m.id)
+        .chain(project.tracks.iter().map(|t| t.id))
+        .chain(
+            project
+                .tracks
+                .iter()
+                .flat_map(|t| t.clips.iter().map(|c| c.id)),
+        )
+        .chain(project.markers.iter().map(|m| m.id));
+    for id in ids {
+        if !seen.insert(id) {
+            return Err(InvariantError::DuplicateId { id });
         }
     }
+    // Duplicate media ids are rejected above, so each id maps to one length.
+    let media_lengths: HashMap<Uuid, u64> =
+        project.media.iter().map(|m| (m.id, m.length)).collect();
 
     for track in &project.tracks {
         // Rule a: clips sorted by start and never overlapping.
@@ -85,13 +98,13 @@ pub fn check(project: &Project) -> Result<(), InvariantError> {
 
         // Rules b, c, d and clip gain (rule e) per clip.
         for clip in &track.clips {
-            let Some(media) = project.media.iter().find(|m| m.id == clip.media_id) else {
+            let Some(&media_length) = media_lengths.get(&clip.media_id) else {
                 return Err(InvariantError::MissingMedia { clip_id: clip.id });
             };
-            if !(clip.src_in < clip.src_out && clip.src_out <= media.length) {
+            if !(clip.src_in < clip.src_out && clip.src_out <= media_length) {
                 return Err(InvariantError::SrcRange { clip_id: clip.id });
             }
-            if clip.fade_in + clip.fade_out > clip.len() {
+            if clip.fade_in.saturating_add(clip.fade_out) > clip.len() {
                 return Err(InvariantError::FadeSum { clip_id: clip.id });
             }
             if !(-60.0..=24.0).contains(&clip.gain_db) {

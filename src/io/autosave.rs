@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use super::IoError;
 use super::paths::ProjectPaths;
-use super::project_file::{FORMAT_VERSION, ProjectFile};
+use super::project_file::{FORMAT_VERSION, ProjectFile, finish_load};
 use crate::model::project::{Project, ViewState};
 
 /// File name of the autosave snapshot inside autosave/.
@@ -58,7 +58,9 @@ pub fn newer_than_saved(paths: &ProjectPaths) -> bool {
     }
 }
 
-/// Loads the autosave snapshot, returning the project and view state.
+/// Loads the autosave snapshot, returning the project and view state. The
+/// project is validated like project.json (`IoError::InvalidProject` when it
+/// fails), so the caller can fall back to the last saved project.
 pub fn load(paths: &ProjectPaths) -> Result<(Project, ViewState), IoError> {
     let text = fs::read_to_string(autosave_path(paths))?;
     let file: ProjectFile = serde_json::from_str(&text)?;
@@ -68,7 +70,7 @@ pub fn load(paths: &ProjectPaths) -> Result<(Project, ViewState), IoError> {
             max: FORMAT_VERSION,
         });
     }
-    Ok((file.project, file.view))
+    Ok((finish_load(file.project)?, file.view))
 }
 
 /// Renames the autosave to autosave/project.autosave.old.json, replacing any
@@ -126,6 +128,34 @@ mod tests {
         let (loaded_project, loaded_view) = load(&paths).unwrap();
         assert_eq!(loaded_project, project);
         assert_eq!(loaded_view, view);
+    }
+
+    #[test]
+    fn load_rejects_an_invalid_autosave_with_the_reason() {
+        let (_parent, paths) = saved_layout();
+        let (mut project, view) = sample();
+        project.sample_rate = 0;
+        write(&paths, &project, &view).unwrap();
+        match load(&paths) {
+            Err(error @ IoError::InvalidProject(_)) => {
+                let text = error.to_string();
+                assert!(text.starts_with("This project file is invalid: "), "{text}");
+                assert!(text.contains("sample rate 0 Hz"), "{text}");
+            }
+            other => panic!("expected InvalidProject, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_clamps_track_heights_like_project_json() {
+        let (_parent, paths) = saved_layout();
+        let (mut project, view) = sample();
+        let mut track = crate::model::track::Track::new("T".to_string());
+        track.height = 5.0;
+        project.tracks.push(track);
+        write(&paths, &project, &view).unwrap();
+        let (loaded, _) = load(&paths).unwrap();
+        assert_eq!(loaded.tracks[0].height, 40.0);
     }
 
     #[test]

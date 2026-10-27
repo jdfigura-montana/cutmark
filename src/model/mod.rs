@@ -6,6 +6,7 @@ pub mod marker;
 pub mod media;
 pub mod project;
 pub mod track;
+pub mod validate;
 
 #[cfg(test)]
 pub mod fixtures;

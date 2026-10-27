@@ -207,10 +207,26 @@ impl Editor {
 
     /// Opens the project from its autosave snapshot; the editor starts dirty
     /// so the title shows the unsaved-changes mark.
+    ///
+    /// An autosave that fails validation is not used: it is set aside
+    /// (renamed to `project.autosave.old.json`, so the recovery prompt does
+    /// not come back), the last saved project.json opens instead and the
+    /// reason is queued for the message dialog (`take_job_errors`).
     pub fn open_recovered(path: &Path) -> Result<Editor, EditorError> {
-        let (project_paths, _, _) = project_file::load(path)?;
-        let (project, view) = autosave::load(&project_paths)?;
-        Ok(Self::assemble(project_paths, project, view, true))
+        let (project_paths, saved_project, saved_view) = project_file::load(path)?;
+        match autosave::load(&project_paths) {
+            Ok((project, view)) => Ok(Self::assemble(project_paths, project, view, true)),
+            Err(error @ IoError::InvalidProject(_)) => {
+                let _ = autosave::discard(&project_paths);
+                let mut editor = Self::assemble(project_paths, saved_project, saved_view, false);
+                editor.job_errors.push(format!(
+                    "The autosave could not be recovered. {error}. \
+                     The last saved project was opened instead."
+                ));
+                Ok(editor)
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Renames the autosave aside (recovery is refused for this session) and
@@ -350,7 +366,10 @@ impl Editor {
         let Some(track) = next.tracks.iter_mut().find(|t| t.id == id) else {
             return;
         };
-        track.height = height.clamp(40.0, 400.0);
+        track.height = height.clamp(
+            crate::model::track::MIN_HEIGHT,
+            crate::model::track::MAX_HEIGHT,
+        );
         if next != *self.project {
             self.project = Arc::new(next);
         }
@@ -362,7 +381,7 @@ impl Editor {
             .tracks
             .iter()
             .flat_map(|t| t.clips.iter())
-            .map(|c| c.start + (c.src_out - c.src_in))
+            .map(|c| c.start.saturating_add(c.src_out.saturating_sub(c.src_in)))
             .max()
             .unwrap_or(0)
     }
@@ -1423,15 +1442,22 @@ impl Editor {
     }
 
     /// Reveals the media item's file in media/ in Windows Explorer.
-    pub fn reveal_media(&self, id: Uuid) {
+    ///
+    /// The name comes from project.json, so it is turned into a path only by
+    /// `ProjectPaths::media_file`: an unsafe name is an error and Explorer is
+    /// not started. An unknown id does nothing.
+    pub fn reveal_media(&self, id: Uuid) -> Result<(), EditorError> {
         if let Some(item) = self.project.media.iter().find(|m| m.id == id) {
-            paths::reveal_in_explorer(&self.paths.media().join(&item.file_name));
+            let path = self.paths.media_file(&item.file_name)?;
+            paths::reveal_in_explorer(&path)?;
         }
+        Ok(())
     }
 
     /// Reveals any file on disk (e.g. a finished export) in Windows Explorer.
+    /// A path Explorer must not be given (one containing `"`) is ignored.
     pub fn reveal_file(&self, path: &std::path::Path) {
-        paths::reveal_in_explorer(path);
+        let _ = paths::reveal_in_explorer(path);
     }
 
     /// Places a clip of the given media item at `start` (drop from the bin).
@@ -1598,15 +1624,19 @@ impl Editor {
         self.export_result.take()
     }
 
-    /// Default export file: exports/<project name>.wav or .mp3.
+    /// Default export file: exports/<project name>.wav or .mp3. Only the
+    /// sanitized file-name part of the project name is used
+    /// (`paths::safe_file_stem`), so the path always stays inside exports/.
     pub fn default_export_path(&self, kind: ExportKind) -> PathBuf {
         let extension = match kind {
             ExportKind::Wav(_) => "wav",
             ExportKind::Mp3 { .. } => "mp3",
         };
-        self.paths
-            .exports()
-            .join(format!("{}.{}", self.project.name, extension))
+        self.paths.exports().join(format!(
+            "{}.{}",
+            paths::safe_file_stem(&self.project.name),
+            extension
+        ))
     }
 }
 
@@ -3823,5 +3853,137 @@ mod tests {
         assert!(!discarded.dirty);
         assert!(discarded.project.tracks.is_empty());
         drop_from_recent(&recovered.paths.root);
+    }
+
+    #[test]
+    fn open_recovered_falls_back_to_project_json_when_the_autosave_is_invalid() {
+        let _recent = lock_recent();
+        let (_parent, editor) = disk_editor("BadAutosave");
+        // An autosave that fails validation (sample rate 0).
+        let mut bad = (*editor.project).clone();
+        bad.sample_rate = 0;
+        autosave::write(&editor.paths, &bad, &editor.view).unwrap();
+
+        let mut opened = Editor::open_recovered(&editor.paths.root).unwrap();
+        // The last saved project opened, clean, with its own sample rate.
+        assert!(!opened.dirty);
+        assert_eq!(opened.project.sample_rate, 48_000);
+        assert_eq!(opened.project.name, "BadAutosave");
+        // The bad autosave was set aside so the recovery prompt does not return.
+        assert!(!autosave::autosave_path(&opened.paths).exists());
+        assert!(
+            opened
+                .paths
+                .autosave()
+                .join("project.autosave.old.json")
+                .is_file()
+        );
+        // The reason is queued for the message dialog.
+        let messages = opened.take_job_errors();
+        assert!(
+            messages.iter().any(|m| m.contains("autosave")
+                && m.contains("This project file is invalid")
+                && m.contains("sample rate 0 Hz")
+                && m.contains("last saved project")),
+            "messages: {messages:?}"
+        );
+        drop_from_recent(&opened.paths.root);
+    }
+
+    #[test]
+    fn open_rejects_an_invalid_project_file_with_the_reason() {
+        let parent = tempdir().unwrap();
+        let paths = crate::io::paths::create_layout(parent.path(), "Invalid").unwrap();
+        let mut project = project_with_clips(&[&[(0, 100)]]);
+        project.media[0].file_name = r"\\attacker.example\share\a.wav".to_string();
+        project_file::save(&paths, &project, &ViewState::default()).unwrap();
+        match Editor::open(&paths.root) {
+            Err(error @ EditorError::Io(IoError::InvalidProject(_))) => {
+                let text = error.to_string();
+                assert!(text.starts_with("This project file is invalid: "), "{text}");
+                assert!(text.contains("path separator"), "{text}");
+            }
+            Err(other) => panic!("wrong error: {other}"),
+            Ok(_) => panic!("an invalid project must not open"),
+        }
+        // The recovery check refuses it too, before any prompt.
+        assert!(matches!(
+            Editor::open_with_recovery_check(&paths.root),
+            Err(EditorError::Io(IoError::InvalidProject(_)))
+        ));
+    }
+
+    #[test]
+    fn reveal_media_refuses_an_unsafe_name_without_starting_explorer() {
+        let parent = tempdir().unwrap();
+        let paths = crate::io::paths::create_layout(parent.path(), "Reveal").unwrap();
+        for name in [
+            r"\\attacker.example\share\a.wav",
+            "boom.wav\" \"C:\\Windows\\System32\\notepad.exe",
+            r"..\..\a.wav",
+        ] {
+            let mut project = project_with_clips(&[&[(0, 100)]]);
+            let id = project.media[0].id;
+            project.media[0].file_name = name.to_string();
+            let editor = Editor::with_project(project, ViewState::default(), paths.clone());
+            assert!(
+                matches!(
+                    editor.reveal_media(id),
+                    Err(EditorError::Io(IoError::UnsafePath(_)))
+                ),
+                "{name:?}"
+            );
+            // An id that is not in the bin does nothing.
+            assert!(editor.reveal_media(Uuid::new_v4()).is_ok());
+        }
+    }
+
+    #[test]
+    fn default_export_path_stays_inside_exports_for_hostile_project_names() {
+        let parent = tempdir().unwrap();
+        let paths = crate::io::paths::create_layout(parent.path(), "Export").unwrap();
+        for (name, stem) in [
+            (r"..\..\Documents\x", "x"),
+            ("../../etc/passwd", "passwd"),
+            (r"C:\Windows\evil", "evil"),
+            ("CON", "export"),
+            ("a<b>c", "abc"),
+            ("", "export"),
+            ("..", "export"),
+        ] {
+            let mut project = project_with_clips(&[&[(0, 100)]]);
+            project.name = name.to_string();
+            let editor = Editor::with_project(project, ViewState::default(), paths.clone());
+            for (kind, extension) in [
+                (ExportKind::Wav(BitDepth::Int24), "wav"),
+                (ExportKind::Mp3 { kbps: 192 }, "mp3"),
+            ] {
+                let path = editor.default_export_path(kind);
+                assert_eq!(path.parent(), Some(paths.exports().as_path()), "{name:?}");
+                assert_eq!(
+                    path.file_name().and_then(|n| n.to_str()),
+                    Some(format!("{stem}.{extension}").as_str()),
+                    "{name:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn project_length_does_not_overflow_on_hostile_clips() {
+        let parent = tempdir().unwrap();
+        let paths = crate::io::paths::create_layout(parent.path(), "Length").unwrap();
+        let mut project = project_with_clips(&[&[(0, 100)], &[(0, 100)]]);
+        // src_out < src_in counts as an empty clip; a clip at the end of the range saturates.
+        project.tracks[0].clips[0].start = 1_000;
+        project.tracks[0].clips[0].src_in = 90;
+        project.tracks[0].clips[0].src_out = 10;
+        project.tracks[1].clips[0].start = u64::MAX - 5;
+        let editor = Editor::with_project(project.clone(), ViewState::default(), paths.clone());
+        assert_eq!(editor.project_length(), u64::MAX);
+
+        project.tracks[1].clips.clear();
+        let editor = Editor::with_project(project, ViewState::default(), paths);
+        assert_eq!(editor.project_length(), 1_000);
     }
 }

@@ -31,7 +31,8 @@ pub fn render(plan: &MixPlan, start: u64, out: &mut [f32], meter: bool) {
         return;
     }
     let frames = out.len() / 2;
-    let block_end = start + frames as u64;
+    // Saturating: a playhead near u64::MAX must not wrap (or panic in debug).
+    let block_end = start.saturating_add(frames as u64);
     for (index, track) in plan.tracks.iter().enumerate() {
         if !track.audible {
             continue;
@@ -94,24 +95,30 @@ fn mix_clip(
 ) {
     let samples: Option<&[f32]> = clip.samples.as_deref();
     let clip_end = clip.start.saturating_add(clip.len);
-    let last = clip_end.min(start + (out.len() / 2) as u64);
+    let block_end = start.saturating_add((out.len() / 2) as u64);
+    let last = clip_end.min(block_end);
     if clip_end <= start || last <= clip.start {
         return;
     }
-    // First frame in this block that falls inside the clip.
-    let first_t = clip.start.max(start) - start;
-    let count = (last - clip.start.max(start)) as usize;
+    // First frame in this block that falls inside the clip. Past the guard
+    // above `last` is beyond both `start` and `clip.start`, so every
+    // subtraction below stays non-negative; saturating keeps it panic-free
+    // regardless, and `first_t + count <= frames` holds, so `out[o]` is in range.
+    let first_abs = clip.start.max(start);
+    let first_t = first_abs.saturating_sub(start);
+    let count = last.saturating_sub(first_abs) as usize;
     // Local offset from clip.start for the first frame of the clip inside this block.
-    let base_local = clip.start.max(start) - clip.start;
+    let base_local = first_abs.saturating_sub(clip.start);
     for i in 0..count {
-        let t = first_t + i as u64; // block-local frame index
-        let local = base_local + i as u64; // offset from clip.start
+        let t = first_t.saturating_add(i as u64); // block-local frame index
+        let local = base_local.saturating_add(i as u64); // offset from clip.start
         let env = clip.gain * fade_gain(local, clip.len, clip.fade_in, clip.fade_out);
-        let src = clip.src_in + local;
+        // A saturated index reads past the buffer end, which is silence.
+        let src = clip.src_in.saturating_add(local);
         let (l, r) = match clip.channels {
             2 => {
-                let l = read_sample(samples, src * 2) * env;
-                let r = read_sample(samples, src * 2 + 1) * env;
+                let l = read_sample(samples, src.saturating_mul(2)) * env;
+                let r = read_sample(samples, src.saturating_mul(2).saturating_add(1)) * env;
                 (l, r)
             }
             _ => {
@@ -172,7 +179,7 @@ mod tests {
     fn one_clip_plan(clip: ClipPlan, gain_l: f32, gain_r: f32, master_gain: f32) -> MixPlan {
         MixPlan {
             rate: 48_000,
-            length: clip.start + clip.len,
+            length: clip.start.saturating_add(clip.len),
             master_gain,
             tracks: vec![TrackPlan {
                 audible: true,
@@ -519,5 +526,32 @@ mod tests {
         let _ = render_all(&plan, 0, 100);
         assert!(plan.meters.tracks[0].l.take().3);
         assert!(plan.master.r.take().3);
+    }
+
+    /// Extreme positions from a hostile project file must neither wrap nor
+    /// panic (the tests run with overflow checks on).
+    #[test]
+    fn extreme_positions_saturate_without_panicking() {
+        // Playhead at the very end of the u64 range, clip covering all of it.
+        let huge = mono_clip(0, u64::MAX, 0, 1.0, Some(const_samples(0.5, 100, 1)));
+        let plan = one_clip_plan(huge, 1.0, 1.0, 1.0);
+        let out = render_all(&plan, u64::MAX - 5, 64);
+        assert!(out.iter().all(|s| s.is_finite()));
+
+        // Source offset so large that `src_in + local` and `src * 2` would overflow.
+        let stereo = ClipPlan {
+            channels: 2,
+            ..mono_clip(10, 100, u64::MAX - 3, 1.0, Some(const_samples(0.5, 100, 2)))
+        };
+        let plan = one_clip_plan(stereo, 1.0, 1.0, 1.0);
+        let out = render_all(&plan, 0, 200);
+        // Every read lands past the buffer end: silence, not a wrapped read.
+        assert!(out.iter().all(|s| *s == 0.0));
+
+        // A clip starting near the end of the range.
+        let late = mono_clip(u64::MAX - 10, 100, 0, 1.0, Some(const_samples(0.5, 100, 1)));
+        let plan = one_clip_plan(late, 1.0, 1.0, 1.0);
+        let out = render_all(&plan, u64::MAX - 20, 64);
+        assert!(out.iter().all(|s| s.is_finite()));
     }
 }

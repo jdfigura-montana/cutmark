@@ -1,6 +1,7 @@
 //! io::paths: project folder layout (media/, cache/, autosave/, exports/).
 
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -8,6 +9,7 @@ use std::process::Command;
 use uuid::Uuid;
 
 use super::IoError;
+use crate::model::validate::{check_media_file_name, is_reserved_device_name};
 
 /// Locations of a project folder and its standard subfolders.
 #[derive(Debug, Clone)]
@@ -25,6 +27,15 @@ impl ProjectPaths {
     /// Path of the media/ subfolder.
     pub fn media(&self) -> PathBuf {
         self.root.join("media")
+    }
+
+    /// Path of the media file `file_name` inside media/. The only way to turn
+    /// a name stored in a project into a path: an unsafe name (separators,
+    /// drive or UNC prefix, `..`, a device name ...) is `IoError::UnsafePath`
+    /// and is never joined, so the result is always directly inside media/.
+    pub fn media_file(&self, file_name: &str) -> Result<PathBuf, IoError> {
+        check_media_file_name(file_name).map_err(|error| IoError::UnsafePath(error.to_string()))?;
+        Ok(self.media().join(file_name))
     }
 
     /// Path of the cache/ subfolder.
@@ -46,12 +57,43 @@ impl ProjectPaths {
 /// Forbidden characters in a project name.
 const FORBIDDEN_NAME_CHARS: &[char] = &['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
 
-/// Validates a project name: not empty, not whitespace-only, no forbidden characters.
+/// Validates a project name: not empty, not whitespace-only, no forbidden or
+/// control characters, no trailing dot or space (Windows drops them, so the
+/// folder would not match the name) and not a reserved device name (CON, NUL,
+/// COM1 ...).
 pub fn validate_project_name(name: &str) -> Result<(), IoError> {
-    if name.trim().is_empty() || name.chars().any(|c| FORBIDDEN_NAME_CHARS.contains(&c)) {
+    let bad = name.trim().is_empty()
+        || name
+            .chars()
+            .any(|c| FORBIDDEN_NAME_CHARS.contains(&c) || c.is_control())
+        || name.ends_with(['.', ' '])
+        || is_reserved_device_name(name);
+    if bad {
         return Err(IoError::InvalidProjectName(name.to_string()));
     }
     Ok(())
+}
+
+/// Longest stem `safe_file_stem` returns, in characters.
+const MAX_STEM_CHARS: usize = 120;
+
+/// A safe file-name stem made from untrusted text such as a project name:
+/// only what follows the last `\`, `/` or `:`, with forbidden and control
+/// characters removed and trailing dots and spaces trimmed. Falls back to
+/// "export" when nothing usable is left or the result is a reserved device
+/// name, so `<stem>.wav` always names a plain file in the folder it is joined to.
+pub fn safe_file_stem(name: &str) -> String {
+    let last = name.rsplit(['\\', '/', ':']).next().unwrap_or("");
+    let cleaned: String = last
+        .chars()
+        .filter(|c| !FORBIDDEN_NAME_CHARS.contains(c) && !c.is_control())
+        .take(MAX_STEM_CHARS)
+        .collect();
+    let cleaned = cleaned.trim_end_matches(['.', ' ']);
+    if cleaned.trim().is_empty() || is_reserved_device_name(cleaned) {
+        return "export".to_string();
+    }
+    cleaned.to_string()
 }
 
 /// Creates a new project folder with media/, cache/, autosave/ and exports/ under parent.
@@ -202,13 +244,38 @@ fn remove_unused(path: &Path, name: &str, recycle: bool, messages: &mut Vec<Stri
     }
 }
 
+/// The `/select,"<path>"` argument for Explorer. Windows file names cannot
+/// contain `"`, so a path with one is refused: it would close the quotes early
+/// and let the rest of the text become extra Explorer arguments.
+fn reveal_arg(path: &Path) -> Result<String, IoError> {
+    let text = path.display().to_string();
+    if text.contains('"') {
+        return Err(IoError::UnsafePath(
+            "the path contains a quote character".to_string(),
+        ));
+    }
+    Ok(format!("/select,\"{text}\""))
+}
+
+/// Absolute path of explorer.exe: `%SystemRoot%\explorer.exe`, or
+/// `C:\Windows\explorer.exe` when SystemRoot is unset or empty. Never a bare
+/// name, so no search order (application folder, PATH) decides what runs.
+fn explorer_exe(system_root: Option<OsString>) -> PathBuf {
+    let root = system_root
+        .filter(|root| !root.is_empty())
+        .unwrap_or_else(|| OsString::from("C:\\Windows"));
+    PathBuf::from(root).join("explorer.exe")
+}
+
 /// Opens Windows Explorer with `path` pre-selected. Paths with spaces and
-/// commas are passed safely via a raw argument. Errors are ignored.
-pub fn reveal_in_explorer(path: &Path) {
+/// commas are passed safely via a raw argument; a path containing `"` is
+/// refused with an error. A failure to start Explorer itself is ignored.
+pub fn reveal_in_explorer(path: &Path) -> Result<(), IoError> {
     use std::os::windows::process::CommandExt;
-    let _ = Command::new("explorer.exe")
-        .raw_arg(format!("/select,\"{}\"", path.display()))
-        .spawn();
+    let arg = reveal_arg(path)?;
+    let exe = explorer_exe(std::env::var_os("SystemRoot"));
+    let _ = Command::new(exe).raw_arg(arg).spawn();
+    Ok(())
 }
 
 #[cfg(test)]
@@ -249,7 +316,138 @@ mod tests {
 
     #[test]
     fn validate_project_name_accepts_simple_names() {
-        assert!(validate_project_name("My Project").is_ok());
+        for name in [
+            "My Project",
+            "CONSOLE",
+            "Comet",
+            "a.b",
+            "Song 2",
+            "r\u{e9}sum\u{e9}",
+        ] {
+            assert!(validate_project_name(name).is_ok(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn validate_project_name_rejects_reserved_names_trailing_dots_and_control_chars() {
+        for bad in [
+            "CON",
+            "nul",
+            "Com1",
+            "LPT9",
+            "aux.txt",
+            "prn ", // reserved device names
+            "name.",
+            "name ",
+            "name..",
+            "name. ", // Windows drops trailing dots and spaces
+            "a\u{7}b",
+            "a\nb",
+            "tab\tname",
+            "\u{0}", // control characters
+            "a<b",
+            "a|b",
+            "a?b",
+            "a*b",
+            "a\"b", // the old forbidden set still applies
+        ] {
+            assert!(
+                matches!(
+                    validate_project_name(bad),
+                    Err(IoError::InvalidProjectName(_))
+                ),
+                "expected rejection of {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn create_layout_rejects_a_reserved_name() {
+        let parent = tempdir().unwrap();
+        assert!(matches!(
+            create_layout(parent.path(), "NUL"),
+            Err(IoError::InvalidProjectName(_))
+        ));
+        assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn media_file_joins_only_plain_names() {
+        let dir = tempdir().unwrap();
+        let paths = ProjectPaths {
+            root: dir.path().to_path_buf(),
+        };
+        assert_eq!(
+            paths.media_file("boom.wav").unwrap(),
+            dir.path().join("media").join("boom.wav")
+        );
+        for bad in [
+            r"\\attacker.example\share\a.wav",
+            r"C:\Windows\win.ini",
+            r"\Windows\win.ini",
+            r"..\..\a.wav",
+            "a\"b.wav",
+            "nul.wav",
+            "",
+        ] {
+            assert!(
+                matches!(paths.media_file(bad), Err(IoError::UnsafePath(_))),
+                "{bad:?} must not be joined"
+            );
+        }
+    }
+
+    #[test]
+    fn safe_file_stem_keeps_only_a_plain_file_name() {
+        assert_eq!(safe_file_stem("My Project"), "My Project");
+        assert_eq!(safe_file_stem("a.b"), "a.b");
+        // Directories and drive prefixes are dropped, only the last part stays.
+        assert_eq!(safe_file_stem(r"..\..\Documents\x"), "x");
+        assert_eq!(safe_file_stem("../../etc/x"), "x");
+        assert_eq!(safe_file_stem(r"C:\Users\me\song"), "song");
+        assert_eq!(safe_file_stem(r"\\server\share\song"), "song");
+        assert_eq!(safe_file_stem("C:song"), "song");
+        // Forbidden and control characters are removed, trailing dots and spaces trimmed.
+        assert_eq!(safe_file_stem("a<b>c|d?e*f\"g"), "abcdefg");
+        assert_eq!(safe_file_stem("a\u{7}b\nc"), "abc");
+        assert_eq!(safe_file_stem("name. . "), "name");
+        // Nothing usable, or a device name, falls back.
+        for name in [
+            "", "   ", ".", "..", r"..\..", r"a\", "CON", "nul", "com1 ", "<>",
+        ] {
+            assert_eq!(safe_file_stem(name), "export", "{name:?}");
+        }
+        // The result is bounded.
+        assert!(safe_file_stem(&"x".repeat(10_000)).chars().count() <= 120);
+    }
+
+    #[test]
+    fn reveal_arg_refuses_quotes_and_quotes_the_path() {
+        let ok = reveal_arg(Path::new(r"C:\My Projects\a, b\media\boom.wav")).unwrap();
+        assert_eq!(ok, "/select,\"C:\\My Projects\\a, b\\media\\boom.wav\"");
+        // The injection from the audit: a quote that closes the argument early.
+        let injected = Path::new("C:\\p\\media\\boom.wav\" \"C:\\Windows\\System32\\notepad.exe");
+        assert!(matches!(reveal_arg(injected), Err(IoError::UnsafePath(_))));
+        assert!(matches!(
+            reveal_in_explorer(injected),
+            Err(IoError::UnsafePath(_))
+        ));
+    }
+
+    #[test]
+    fn explorer_is_started_by_absolute_path() {
+        assert_eq!(
+            explorer_exe(Some(OsString::from(r"D:\Win"))),
+            PathBuf::from(r"D:\Win\explorer.exe")
+        );
+        // SystemRoot unset or empty falls back to C:\Windows.
+        for missing in [None, Some(OsString::new())] {
+            assert_eq!(
+                explorer_exe(missing),
+                PathBuf::from(r"C:\Windows\explorer.exe")
+            );
+        }
+        assert!(explorer_exe(std::env::var_os("SystemRoot")).is_absolute());
     }
 
     #[test]

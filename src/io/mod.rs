@@ -28,6 +28,13 @@ pub enum IoError {
     /// The path is not a project folder or project.json file.
     #[error("not a project: {0}")]
     NotAProject(String),
+    /// project.json or an autosave failed validation, so the project does not
+    /// open. The text is the reason, e.g. "the sample rate 0 Hz is outside ...".
+    #[error("This project file is invalid: {0}")]
+    InvalidProject(String),
+    /// A path was refused before it reached a file or process call.
+    #[error("unsafe path: {0}")]
+    UnsafePath(String),
     /// Unsupported project.json format version.
     #[error("unsupported project file format version: found {found}, maximum supported {max}")]
     UnsupportedVersion {
