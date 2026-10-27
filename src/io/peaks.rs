@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use super::IoError;
+use super::limits::{MAX_PEAK_CHANNELS, MAX_PEAK_LEVELS};
 use crate::model::media::{PeakLevel, Peaks};
 
 /// File magic: b"PEAK".
@@ -12,6 +13,8 @@ const MAGIC: &[u8; 4] = b"PEAK";
 const VERSION: u32 = 1;
 /// Samples per block at level 0.
 const BASE_BLOCK: u32 = 256;
+/// Bytes of one [min, max] f32 pair in the file.
+const PAIR_BYTES: u64 = 8;
 
 /// Builds four peak levels (256, 1024, 4096, 16384) from interleaved samples.
 /// Level 0 is computed from the samples; each higher level merges 4 blocks of
@@ -96,8 +99,10 @@ pub fn write(path: &Path, peaks: &Peaks) -> Result<(), IoError> {
     Ok(())
 }
 
-/// Reads a peaks file written by `write`. Errors on wrong magic, wrong version
-/// or a truncated file.
+/// Reads a peaks file written by `write`. Errors on wrong magic, wrong version,
+/// a truncated file, trailing bytes, a channel count outside 1..=2, a level
+/// count outside 1..=8, a zero block size, or a block count that needs more
+/// bytes than the file has left (checked before any allocation).
 pub fn read(path: &Path) -> Result<Peaks, IoError> {
     let bytes = fs::read(path)?;
     let mut pos = 0usize;
@@ -140,14 +145,38 @@ pub fn read(path: &Path) -> Result<Peaks, IoError> {
         )));
     }
     let channels = u16_le(&mut pos)?;
+    if !(1..=MAX_PEAK_CHANNELS).contains(&channels) {
+        return Err(IoError::CorruptPeaks(format!(
+            "unsupported channel count {channels}"
+        )));
+    }
     let frames = u64_le(&mut pos)?;
     let level_count = u32_le(&mut pos)?;
+    if !(1..=MAX_PEAK_LEVELS).contains(&level_count) {
+        return Err(IoError::CorruptPeaks(format!(
+            "unsupported level count {level_count}"
+        )));
+    }
     let mut levels = Vec::new();
     for _ in 0..level_count {
         let block_size = u32_le(&mut pos)?;
+        if block_size == 0 {
+            return Err(IoError::CorruptPeaks("block size is zero".to_string()));
+        }
         let blocks = u64_le(&mut pos)?;
-        let mut data = Vec::with_capacity(blocks as usize * usize::from(channels));
-        for _ in 0..(blocks as usize * usize::from(channels)) {
+        // The block count is untrusted: it must fit in the bytes that are
+        // actually left before anything is allocated or looped over.
+        let bytes_needed = blocks
+            .checked_mul(u64::from(channels))
+            .and_then(|pairs| pairs.checked_mul(PAIR_BYTES))
+            .ok_or_else(|| IoError::CorruptPeaks("block count overflows".to_string()))?;
+        if bytes_needed > (bytes.len() - pos) as u64 {
+            return Err(IoError::CorruptPeaks("truncated file".to_string()));
+        }
+        // Cannot overflow: bytes_needed is at most the file length.
+        let pair_count = (bytes_needed / PAIR_BYTES) as usize;
+        let mut data = Vec::with_capacity(pair_count);
+        for _ in 0..pair_count {
             let min = f32_le(&mut pos)?;
             let max = f32_le(&mut pos)?;
             data.push([min, max]);
@@ -265,5 +294,122 @@ mod tests {
         bytes[4] = 9;
         fs::write(&path, &bytes).unwrap();
         assert!(matches!(read(&path), Err(IoError::CorruptPeaks(_))));
+    }
+
+    /// A peaks header (magic, version 1, `channels`, `frames`, `levels`).
+    fn header(channels: u16, frames: u64, levels: u32) -> Vec<u8> {
+        let mut bytes = MAGIC.to_vec();
+        bytes.extend_from_slice(&VERSION.to_le_bytes());
+        bytes.extend_from_slice(&channels.to_le_bytes());
+        bytes.extend_from_slice(&frames.to_le_bytes());
+        bytes.extend_from_slice(&levels.to_le_bytes());
+        bytes
+    }
+
+    /// The 34 byte file from the audit: one level that claims `blocks` blocks
+    /// and carries none of them.
+    fn lying_file(channels: u16, block_size: u32, blocks: u64) -> Vec<u8> {
+        let mut bytes = header(channels, 0, 1);
+        bytes.extend_from_slice(&block_size.to_le_bytes());
+        bytes.extend_from_slice(&blocks.to_le_bytes());
+        bytes
+    }
+
+    /// Reads `bytes` as a peaks file and returns the error text.
+    fn read_err(bytes: &[u8]) -> String {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("crafted.peaks");
+        fs::write(&path, bytes).unwrap();
+        match read(&path) {
+            Err(IoError::CorruptPeaks(reason)) => reason,
+            other => panic!("expected CorruptPeaks, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_huge_block_count_is_rejected_before_any_allocation() {
+        assert_eq!(lying_file(1, 256, 0).len(), 34);
+        // 2^40 blocks used to ask for an 8 TB buffer (a process abort), 2^62
+        // overflowed Vec::with_capacity (a panic). Both come back as errors,
+        // and this test finishing at all shows nothing that size was allocated.
+        for blocks in [1u64 << 40, 1 << 62, 1 << 61, u64::MAX, 1] {
+            for channels in [1u16, 2] {
+                let reason = read_err(&lying_file(channels, 256, blocks));
+                assert!(
+                    reason == "truncated file" || reason == "block count overflows",
+                    "{blocks} blocks, {channels} channels: {reason}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn block_count_overflow_is_a_checked_multiply() {
+        // blocks * channels * 8 wraps u64 for these, which would look small.
+        assert_eq!(
+            read_err(&lying_file(2, 256, 1 << 62)),
+            "block count overflows"
+        );
+        assert_eq!(
+            read_err(&lying_file(1, 256, u64::MAX / 4)),
+            "block count overflows"
+        );
+    }
+
+    #[test]
+    fn one_block_more_than_the_file_holds_is_rejected_and_exact_fits() {
+        let mut bytes = lying_file(1, 256, 2);
+        bytes.extend_from_slice(&[0; 16]); // exactly two [min, max] pairs
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("exact.peaks");
+        fs::write(&path, &bytes).unwrap();
+        let peaks = read(&path).unwrap();
+        assert_eq!(peaks.levels[0].data.len(), 2);
+
+        let mut short = lying_file(1, 256, 3);
+        short.extend_from_slice(&[0; 16]);
+        assert_eq!(read_err(&short), "truncated file");
+    }
+
+    #[test]
+    fn a_zero_block_size_is_rejected() {
+        assert_eq!(read_err(&lying_file(1, 0, 0)), "block size is zero");
+    }
+
+    #[test]
+    fn channels_must_be_one_or_two() {
+        for channels in [0u16, 3, 8, u16::MAX] {
+            let reason = read_err(&lying_file(channels, 256, 0));
+            assert_eq!(reason, format!("unsupported channel count {channels}"));
+        }
+    }
+
+    #[test]
+    fn level_count_must_be_one_to_eight() {
+        for levels in [0u32, 9, 1_000, u32::MAX] {
+            let reason = read_err(&header(1, 0, levels));
+            assert_eq!(reason, format!("unsupported level count {levels}"));
+        }
+        // 8 levels is the most allowed (here all empty).
+        let mut bytes = header(1, 0, 8);
+        for _ in 0..8 {
+            bytes.extend_from_slice(&256u32.to_le_bytes());
+            bytes.extend_from_slice(&0u64.to_le_bytes());
+        }
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("eight.peaks");
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(read(&path).unwrap().levels.len(), 8);
+    }
+
+    #[test]
+    fn peaks_of_empty_audio_still_round_trip() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("empty.peaks");
+        for channels in [1u16, 2] {
+            let peaks = build(&[], channels);
+            write(&path, &peaks).unwrap();
+            assert_eq!(read(&path).unwrap(), peaks);
+        }
     }
 }

@@ -4,6 +4,7 @@ pub mod autosave;
 pub mod decode;
 pub mod export;
 pub mod import;
+pub mod limits;
 pub mod mp3;
 pub mod paths;
 pub mod peaks;

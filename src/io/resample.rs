@@ -1,8 +1,10 @@
 //! io::resample: rubato conform of imported media to the project sample rate.
 
+#[cfg(test)]
+use rubato::Indexing;
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{
-    Async, FixedAsync, Indexing, Resampler, SincInterpolationParameters, SincInterpolationType,
+    Async, FixedAsync, Resampler, SincInterpolationParameters, SincInterpolationType,
     WindowFunction,
 };
 
@@ -15,13 +17,19 @@ const SINC_LEN: usize = 256;
 /// Intermediate points for sinc interpolation.
 const OVERSAMPLING_FACTOR: usize = 256;
 
+/// The batch resampler the app used before AE-02, kept as the reference the
+/// streaming conform in `io::import` is compared against in tests. It sizes its
+/// buffers from `to / from` (target + delay + a flush chunk), so it is not
+/// compiled into the app: imports use [`StreamResampler`].
+///
 /// Resamples interleaved f32 audio from `from` Hz to `to` Hz with a high
 /// quality sinc resampler, compensating for the resampler's output delay.
 ///
 /// Returns exactly `round(in_frames * to / from)` frames of interleaved
 /// samples, zero-padding at the end if the resampler came up short.
 /// `progress` is called with a 0.0..1.0 fraction as chunks are processed.
-pub fn resample(
+#[cfg(test)]
+pub(crate) fn resample(
     samples: &[f32],
     channels: u16,
     from: u32,
@@ -117,13 +125,13 @@ pub fn resample(
     Ok(result)
 }
 
-/// Streaming counterpart of [`resample`]: feed interleaved audio in pieces of
-/// any size and get the resampled audio back as it becomes available.
+/// Streams interleaved audio through the resampler: feed it in pieces of any
+/// size and get the resampled audio back as it becomes available.
 ///
-/// Uses the same sinc filter and chunk size as `resample`. All working buffers
-/// are allocated once in `new`. The filter's startup delay is dropped, so the
-/// output is not shifted, and after `finish` the total output is exactly
-/// `round(total_in_frames * to / from)` frames.
+/// Uses the same sinc filter and chunk size as the old batch resampler. All
+/// working buffers are allocated once in `new`. The filter's startup delay is
+/// dropped, so the output is not shifted, and after `finish` the total output
+/// is exactly `round(total_in_frames * to / from)` frames.
 pub struct StreamResampler {
     resampler: Async<f32>,
     channels: usize,

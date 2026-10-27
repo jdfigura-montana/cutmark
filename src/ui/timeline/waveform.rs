@@ -40,9 +40,10 @@ pub fn choose_level(peaks: &Peaks, spp: f64) -> Option<usize> {
 /// Min and max over the blocks covering source frames `from..to` of one channel.
 ///
 /// The range is in frames. Returns `(0.0, 0.0)` for an empty range, a range at
-/// or past the end of the audio, or a channel beyond `channels`.
+/// or past the end of the audio, a channel beyond `channels`, or a level whose
+/// block size is 0 (a corrupt level draws nothing).
 pub fn level_minmax(level: &PeakLevel, channels: u16, ch: u16, from: u64, to: u64) -> (f32, f32) {
-    if from >= to || ch >= channels || channels == 0 {
+    if from >= to || ch >= channels || channels == 0 || level.block_size == 0 {
         return (0.0, 0.0);
     }
     let bs = u64::from(level.block_size);
@@ -357,6 +358,18 @@ mod tests {
         assert_eq!(level_minmax(level, 1, 0, 512, 512), (0.0, 0.0));
         assert_eq!(level_minmax(level, 1, 0, 5000, 6000), (0.0, 0.0));
         assert_eq!(level_minmax(level, 1, 1, 0, 256), (0.0, 0.0));
+    }
+
+    #[test]
+    fn level_minmax_with_block_size_zero_draws_nothing() {
+        // A corrupt level used to divide by zero here.
+        let level = PeakLevel {
+            block_size: 0,
+            data: vec![[-1.0, 1.0]; 8],
+        };
+        assert_eq!(level_minmax(&level, 1, 0, 0, 1), (0.0, 0.0));
+        assert_eq!(level_minmax(&level, 2, 1, 0, 4_096), (0.0, 0.0));
+        assert_eq!(level_minmax(&level, 1, 0, 1_000, u64::MAX), (0.0, 0.0));
     }
 
     #[test]
