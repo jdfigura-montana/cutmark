@@ -8,6 +8,8 @@
 ## Toolchain (installed 2026-10-12)
 - rustup + Rust stable 1.99.0 (x86_64-pc-windows-msvc)
 - Visual Studio 2022 Build Tools with VC++ workload (MSVC linker) â€” installed via winget after link.exe was missing
+- Inno Setup 6.7.3 (2026-10-16, winget JRSoftware.InnoSetup) - ISCC.exe under %LOCALAPPDATA%\Programs\Inno Setup 6
+- Python 3.11 with Pillow 10.4.0 (icon + notices scripts)
 
 ## Dependencies (Cargo.toml; add only via cargo add, never hand-type versions)
 - eframe 0.36.2 / egui 0.36.2 - GUI (breaking-API release; see systemPatterns; always check docs.rs for the locked version before using crate APIs)
@@ -25,6 +27,9 @@
 - assert_no_alloc 1.1.2 (feature warn_debug) - no-alloc guard for the audio callback, debug builds only
 - crossbeam-channel 0.5 - editor-to-audio command queue and job channels
 - mp3lame-encoder 0.2.5 - CBR MP3 export (LAME 3.100 compiled from source by mp3lame-sys with cc/MSVC; LGPL-3.0; API: Builder -> Encoder, encode_to_vec(MonoPcm/InterleavedPcm<f32>), flush_to_vec::<FlushGap>, lame_tag_encode_to_vec)
+- winresource 0.1.34 (build-dep) - exe icon + version info (build.rs, windows only)
+- image 0.25 (no default features, png only) - decodes assets/icon/app.png for the window icon
+- crt-static enabled via .cargo/config.toml for x86_64-pc-windows-msvc
 
 ## Commands
 - Validate per task, in order: `cargo fmt`; `cargo clippy --all-targets -- -D warnings`; `cargo test`

@@ -1,0 +1,52 @@
+# Build the Windows installer: release exe + Inno Setup package.
+# Usage: powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1
+$ErrorActionPreference = 'Stop'
+$root = Split-Path -Parent $PSScriptRoot
+Set-Location $root
+
+# 1. If the exe is locked by a running app, rename it aside so the build can
+#    replace it (the user was already asked to delete the old file before).
+$exe = Join-Path $root 'target\release\audio_editor.exe'
+if (Test-Path $exe) {
+    try { $null = [IO.File]::Open($exe, 'Open', 'ReadWrite', 'None').Close() }
+    catch {
+        $aside = Join-Path $root 'target\release\audio_editor-locked-old.exe'
+        Write-Warning "audio_editor.exe is locked (running app); renaming to $(Split-Path -Leaf $aside)"
+        Rename-Item $exe $aside -Force
+    }
+}
+
+# 2. Release build.
+$env:Path = "$env:USERPROFILE\.cargo\bin;" + $env:Path
+cargo build --release
+if ($LASTEXITCODE -ne 0) { throw "cargo build --release failed" }
+
+# 3. Version from Cargo.toml.
+$cargo = Get-Content (Join-Path $root 'Cargo.toml') -Raw
+$version = [regex]::Match($cargo, '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
+if (-not $version) { throw "could not read version from Cargo.toml" }
+
+# 4. Locate ISCC.exe in any "Inno Setup *" folder under the usual roots.
+$iscc = $null
+foreach ($rootDir in @(${env:ProgramFiles}, ${env:ProgramFiles(x86)}, "$env:LOCALAPPDATA\Programs")) {
+    if (-not $rootDir) { continue }
+    $iscc = Get-ChildItem $rootDir -Directory -Filter 'Inno Setup *' -ErrorAction SilentlyContinue |
+        ForEach-Object { Join-Path $_.FullName 'ISCC.exe' } |
+        Where-Object { Test-Path $_ } |
+        Select-Object -First 1
+    if ($iscc) { break }
+}
+if (-not $iscc) {
+    throw "ISCC.exe (Inno Setup 6+) not found under Program Files, Program Files (x86) or $env:LOCALAPPDATA\Programs. Install Inno Setup from https://jrsoftware.org/isinfo.php"
+}
+
+# 5. Compile the installer.
+& $iscc (Join-Path $root 'installer\audio_editor.iss') "/DAppVersion=$version" "/DRoot=$root\"
+if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+
+# 6. Report the result.
+$out = Get-Item (Join-Path $root "target\installer\AudioEditor-Setup-$version.exe")
+Write-Host ''
+Write-Host "Installer: $($out.FullName)"
+Write-Host "Size: $([math]::Round($out.Length / 1MB, 2)) MB"
+Write-Host "LastWriteTime: $($out.LastWriteTime)"

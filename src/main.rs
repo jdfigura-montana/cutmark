@@ -21,7 +21,8 @@ fn main() -> eframe::Result<()> {
             .with_title("Audio Editor")
             .with_inner_size([1400.0, 850.0])
             .with_min_inner_size([1100.0, 700.0])
-            .with_drag_and_drop(true),
+            .with_drag_and_drop(true)
+            .with_icon(window_icon()),
         ..Default::default()
     };
     eframe::run_native(
@@ -32,4 +33,16 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(crate::app::App::default()))
         }),
     )
+}
+
+/// The 256x256 app icon for the window/taskbar, decoded once at startup.
+fn window_icon() -> eframe::egui::IconData {
+    let png = include_bytes!("../assets/icon/app.png");
+    let img = image::load_from_memory(png).expect("embedded assets/icon/app.png decodes");
+    let rgba = img.to_rgba8();
+    eframe::egui::IconData {
+        width: rgba.width(),
+        height: rgba.height(),
+        rgba: rgba.into_raw(),
+    }
 }

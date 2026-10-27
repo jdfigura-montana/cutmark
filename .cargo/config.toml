@@ -1,0 +1,3 @@
+# Static C runtime: no VCRUNTIME140.dll / api-ms-win-crt-* dependency.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
