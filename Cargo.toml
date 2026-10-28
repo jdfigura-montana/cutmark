@@ -44,6 +44,12 @@ log = "0.4"
 # All date/time conversion goes through chrono (no hand-rolled calendar code beyond the 400-year range extension; AGENTS.md).
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 rayon = "1"
+uuid = { version = "1.29.0", features = ["v4", "v7", "serde"] }
+thiserror = "2.0.21"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
 
 # Line tables keep file and line in panics and backtraces at a fraction of full debug info's size;
 # dependencies need none.
