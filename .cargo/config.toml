@@ -1,2 +1,8 @@
-# Cutmark Video build configuration. FilmCraft's .cargo/config.toml only defines xtask aliases,
-# which this workspace does not use; no extra settings are needed to build on Windows.
+# Cutmark suite build configuration. Static CRT so the apps need no VC++ redistributable. FFMPEG_DIR points the FFmpeg bindings at the LGPL shared build that S0 phase 3 fetches into third_party/ffmpeg.
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[env]
+FFMPEG_DIR = { value = "third_party/ffmpeg/dist", relative = true }
+
