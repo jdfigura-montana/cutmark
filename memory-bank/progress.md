@@ -1,3 +1,7 @@
+## Windows installer (2026-10-27)
+Installer tooling DONE, no app-behavior changes. See activeContext.md top entry for details. Output: dist\CutMark-Setup-<version>.exe; script scripts\build-installer.ps1.
+
+
 ﻿
 ## Current state
 Rename to "CutMark Audio Editor" v1.0.0 DONE (2026-10-27): crate renamed audio_editor -> cutmark (Cargo.toml, + description), exe target\release\cutmark.exe, APP_NAME const in src/app.rs used by window title ("<project> - CutMark Audio Editor", "*" dirty marker kept), start-screen heading, build.rs ProductName/FileDescription, installer\cutmark.iss (renamed from audio_editor.iss; AppName "CutMark Audio Editor", AppExe cutmark.exe, CutMark-Setup-<ver>.exe) + scripts/build-installer.ps1 (cutmark.exe, cutmark-locked-old.exe, cutmark.iss, CutMark-Setup-), scripts/gen_notices.py skip "cutmark". Config dir ProjectDirs("CutMark") -> %APPDATA%\CutMark\config\recent.json; io::recent::migrate_old_config() called in main copies old %APPDATA%\AudioEditor config\recent.json once (new missing + old exists; old kept; silent on failure; migrate(old,new) unit-tested, 3 tests). eframe run_native app id = APP_NAME. Start-screen version line already env!(CARGO_PKG_VERSION). README title/version/exe; docs/SPEC.md title line only ("# CutMark Audio Editor Spec"). fmt/clippy -D warnings clean; cargo test 487 passed (+3); release exe 20:19:51.

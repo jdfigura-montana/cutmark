@@ -35,6 +35,7 @@
 ## Commands
 - Validate per task, in order: `cargo fmt`; `cargo clippy --all-targets -- -D warnings`; `cargo test`
 - Run: `cargo run` (debug build ~8 s after first full build)
+- Installer: `.\scripts\build-installer.ps1` (builds release exe, runs ISCC with /DAppVersion from Cargo.toml, writes dist\CutMark-Setup-<version>.exe; fails if cutmark.exe is running). iss: installer\cutmark.iss (AppId GUID is fixed - never change). Licences bundled from licenses\ + assets\fonts.
 
 ## Constraints from clinerules
 - Errors: thiserror enums in model/editor/audio/io; anyhow only in app.rs and main.rs.

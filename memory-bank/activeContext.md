@@ -1,4 +1,7 @@
 ## Current state
+Windows installer DONE (2026-10-27): installer\cutmark.iss (fixed AppId {33A79C24-EFF1-4C51-9F84-B7C35CD05F71}, per-user lowest+dialog override, {autopf}\CutMark, desktop-icon task unchecked, CloseApplications=yes, launch-on-finish, publisher JD, output dist\CutMark-Setup-<version>.exe). Installs exe + licenses\ (README.md, THIRD_PARTY.txt, LGPL-3.0.txt for LAME, OFL font licences from assets\fonts). build.rs embeds icon + FileDescription/ProductName "CutMark Audio Editor" + version via winresource (already existed). scripts\build-installer.ps1: fails if cutmark.exe running, cargo build --release, finds ISCC under Program Files/(x86)/%LOCALAPPDATA%\Programs, /DAppVersion from Cargo.toml. .gitignore already had dist/.
+
+## Current state
 Rename DONE (2026-10-27): app is "CutMark Audio Editor", crate cutmark, exe target\release\cutmark.exe, v1.0.0. APP_NAME const in src/app.rs (window title, start screen, eframe app id, installer). Config moved to %APPDATA%\CutMark\config\recent.json; io::recent::migrate_old_config() (called from main) copies the old %APPDATA%\AudioEditor recent.json once, silently. Details in progress.md top entry.
 
 ## Current state (previous, pre-rename)

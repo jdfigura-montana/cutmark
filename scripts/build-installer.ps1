@@ -4,16 +4,10 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-# 1. If the exe is locked by a running app, rename it aside so the build can
-#    replace it (the user was already asked to delete the old file before).
+# 1. Refuse to build while the app is running (its exe cannot be replaced).
 $exe = Join-Path $root 'target\release\cutmark.exe'
-if (Test-Path $exe) {
-    try { $null = [IO.File]::Open($exe, 'Open', 'ReadWrite', 'None').Close() }
-    catch {
-        $aside = Join-Path $root 'target\release\cutmark-locked-old.exe'
-        Write-Warning "cutmark.exe is locked (running app); renaming to $(Split-Path -Leaf $aside)"
-        Rename-Item $exe $aside -Force
-    }
+if (Get-Process -Name 'cutmark' -ErrorAction SilentlyContinue) {
+    throw "cutmark.exe is running. Close CutMark Audio Editor and try again."
 }
 
 # 2. Release build.
@@ -45,7 +39,7 @@ if (-not $iscc) {
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
 
 # 6. Report the result.
-$out = Get-Item (Join-Path $root "target\installer\CutMark-Setup-$version.exe")
+$out = Get-Item (Join-Path $root "dist\CutMark-Setup-$version.exe")
 Write-Host ''
 Write-Host "Installer: $($out.FullName)"
 Write-Host "Size: $([math]::Round($out.Length / 1MB, 2)) MB"

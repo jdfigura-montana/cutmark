@@ -27,9 +27,10 @@ powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1
 ```
 
 Requires [Inno Setup 6](https://jrsoftware.org/isinfo.php) (ISCC.exe) to be installed. The script
-builds the release exe, runs Inno Setup with the version from `Cargo.toml` and writes
-`target\installer\CutMark-Setup-<version>.exe`. The icons can be regenerated with
-`python scripts\make_icon.py` and the third-party notices with `python scripts\gen_notices.py`.
+refuses to run while CutMark is open, builds the release exe, runs Inno Setup with the version from
+`Cargo.toml` and writes `dist\CutMark-Setup-<version>.exe`. The installer bundles the exe plus a
+`licenses\` folder (third-party licences for the IBM Plex and JetBrains Mono fonts and LAME). The
+icons can be regenerated with `python scripts\make_icon.py`.
 
 ## Keyboard shortcuts
 

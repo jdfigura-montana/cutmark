@@ -15,8 +15,8 @@
 AppId={{33A79C24-EFF1-4C51-9F84-B7C35CD05F71}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppPublisher={#AppName}
-DefaultDirName={autopf}\{#AppName}
+AppPublisher=JD
+DefaultDirName={autopf}\CutMark
 DisableProgramGroupPage=yes
 ; Per-user by default, but the user can choose elevated (all-users) in the dialog.
 PrivilegesRequired=lowest
@@ -28,7 +28,7 @@ SetupIconFile={#Root}assets\icon\app.ico
 UninstallDisplayIcon={app}\{#AppExe}
 ; Close a running copy before updating the exe.
 CloseApplications=yes
-OutputDir={#Root}target\installer
+OutputDir={#Root}dist
 OutputBaseFilename=CutMark-Setup-{#AppVersion}
 Compression=lzma
 SolidCompression=yes
@@ -36,8 +36,10 @@ WizardStyle=modern
 
 [Files]
 Source: "{#Root}target\release\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#Root}README.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#Root}THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Root}licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs
+Source: "{#Root}assets\fonts\LICENSE-IBMPlex.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "{#Root}assets\fonts\OFL-JetBrainsMono.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "{#Root}README.md"; DestDir: "{app}\licenses"; DestName: "README.md"; Flags: ignoreversion
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; \
