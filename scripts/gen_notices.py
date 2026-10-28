@@ -20,7 +20,7 @@ INDEX = Path.home() / ".cargo" / "registry" / "index" / "index.crates.io-1949cf8
 # Hand-written preamble: bundled assets and the C library behind
 # mp3lame-encoder, whose crate license is covered by the crate list below.
 PREAMBLE = """\
-Third-party notices for Audio Editor
+Third-party notices for CutMark Audio Editor
 ====================================
 
 Fonts (bundled under assets/fonts, licenses in the same folder):
@@ -83,7 +83,7 @@ def main() -> None:
     lines = [PREAMBLE]
     missing = 0
     for name, version in pkgs:
-        if name == "audio_editor":  # the root crate itself, not a dependency
+        if name == "cutmark":  # the root crate itself, not a dependency
             continue
         lic = license_from_source(name, version)
         if lic is None:

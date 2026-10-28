@@ -4,7 +4,7 @@
 The project brief is **`docs/SPEC.md`** — read the sections named in each task before writing code. Never edit it; if something seems wrong or unclear, stop and ask. Also follow `clinerules` (per-task rules).
 
 ## Summary (see SPEC for details)
-A personal, Windows-only, multitrack audio editor in Rust that works like a video editor: import media into a project bin, place clips on tracks, edit non-destructively, and export one mixed WAV or MP3. Single executable, egui/eframe UI, pure testable core, full undo.
+A personal, Windows-only, multitrack audio editor named **CutMark Audio Editor** in Rust that works like a video editor: import media into a project bin, place clips on tracks, edit non-destructively, and export one mixed WAV or MP3. Single executable, egui/eframe UI, pure testable core, full undo.
 
 ## SPEC section index (what each covers — details live in the SPEC)
 - **Overview** — guiding principles: simplicity, non-destructive, undo-first, sample-accurate, testable core.

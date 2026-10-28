@@ -1,4 +1,4 @@
-# Rust Audio Editor Spec
+# CutMark Audio Editor Spec
 
 Oct 12, 2026 · @JD
 

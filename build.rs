@@ -6,8 +6,8 @@ fn main() {
         let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
         let mut res = winresource::WindowsResource::new();
         res.set_icon("assets/icon/app.ico");
-        res.set("ProductName", "Audio Editor");
-        res.set("FileDescription", "Audio Editor");
+        res.set("ProductName", "CutMark Audio Editor");
+        res.set("FileDescription", "CutMark Audio Editor");
         res.set("FileVersion", &version);
         res.set("ProductVersion", &version);
         if let Err(e) = res.compile() {

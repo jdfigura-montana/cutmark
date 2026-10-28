@@ -16,17 +16,21 @@ mod util;
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
 fn main() -> eframe::Result<()> {
+    // One-time copy of the recent list from the old AudioEditor config dir.
+    crate::io::recent::migrate_old_config();
+
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("Audio Editor")
+            .with_title(crate::app::APP_NAME)
             .with_inner_size([1400.0, 850.0])
             .with_min_inner_size([1100.0, 700.0])
             .with_drag_and_drop(true)
             .with_icon(window_icon()),
         ..Default::default()
     };
+    // The app id doubles as the eframe persistence key.
     eframe::run_native(
-        "Audio Editor",
+        crate::app::APP_NAME,
         options,
         Box::new(|cc| {
             crate::ui::theme::apply(&cc.egui_ctx);

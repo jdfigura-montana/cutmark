@@ -1,4 +1,6 @@
-# Audio Editor
+# CutMark Audio Editor
+
+Version 1.0.0
 
 A small, keyboard-driven multitrack audio editor for Windows built in Rust with egui. It opens
 project folders (media, cache and project.json live together), imports WAV and MP3 files, and lets
@@ -15,7 +17,7 @@ warning pass.
 cargo build --release
 ```
 
-The executable ends up at `target\release\audio_editor.exe`. Release builds are windowed — no
+The executable ends up at `target\release\cutmark.exe`. Release builds are windowed — no
 console window opens, and the C runtime is linked statically (no VC++ redistributable needed).
 
 ## Build the installer
@@ -26,7 +28,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1
 
 Requires [Inno Setup 6](https://jrsoftware.org/isinfo.php) (ISCC.exe) to be installed. The script
 builds the release exe, runs Inno Setup with the version from `Cargo.toml` and writes
-`target\installer\AudioEditor-Setup-<version>.exe`. The icons can be regenerated with
+`target\installer\CutMark-Setup-<version>.exe`. The icons can be regenerated with
 `python scripts\make_icon.py` and the third-party notices with `python scripts\gen_notices.py`.
 
 ## Keyboard shortcuts

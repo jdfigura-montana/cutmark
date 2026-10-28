@@ -6,12 +6,12 @@ Set-Location $root
 
 # 1. If the exe is locked by a running app, rename it aside so the build can
 #    replace it (the user was already asked to delete the old file before).
-$exe = Join-Path $root 'target\release\audio_editor.exe'
+$exe = Join-Path $root 'target\release\cutmark.exe'
 if (Test-Path $exe) {
     try { $null = [IO.File]::Open($exe, 'Open', 'ReadWrite', 'None').Close() }
     catch {
-        $aside = Join-Path $root 'target\release\audio_editor-locked-old.exe'
-        Write-Warning "audio_editor.exe is locked (running app); renaming to $(Split-Path -Leaf $aside)"
+        $aside = Join-Path $root 'target\release\cutmark-locked-old.exe'
+        Write-Warning "cutmark.exe is locked (running app); renaming to $(Split-Path -Leaf $aside)"
         Rename-Item $exe $aside -Force
     }
 }
@@ -41,11 +41,11 @@ if (-not $iscc) {
 }
 
 # 5. Compile the installer.
-& $iscc (Join-Path $root 'installer\audio_editor.iss') "/DAppVersion=$version" "/DRoot=$root\"
+& $iscc (Join-Path $root 'installer\cutmark.iss') "/DAppVersion=$version" "/DRoot=$root\"
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
 
 # 6. Report the result.
-$out = Get-Item (Join-Path $root "target\installer\AudioEditor-Setup-$version.exe")
+$out = Get-Item (Join-Path $root "target\installer\CutMark-Setup-$version.exe")
 Write-Host ''
 Write-Host "Installer: $($out.FullName)"
 Write-Host "Size: $([math]::Round($out.Length / 1MB, 2)) MB"

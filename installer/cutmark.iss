@@ -1,9 +1,9 @@
-; Inno Setup script for Audio Editor.
+; Inno Setup script for CutMark Audio Editor.
 ; Build with scripts/build-installer.ps1, which passes the version:
-;   ISCC installer\audio_editor.iss /DAppVersion=0.1.0
+;   ISCC installer\cutmark.iss /DAppVersion=1.0.0
 
-#define AppName "Audio Editor"
-#define AppExe "audio_editor.exe"
+#define AppName "CutMark Audio Editor"
+#define AppExe "cutmark.exe"
 ; Root is passed by scripts/build-installer.ps1 as /DRoot=<repo>\; the
 ; fallback ("..\") works when ISCC is run from the repo root.
 #ifndef Root
@@ -29,7 +29,7 @@ UninstallDisplayIcon={app}\{#AppExe}
 ; Close a running copy before updating the exe.
 CloseApplications=yes
 OutputDir={#Root}target\installer
-OutputBaseFilename=AudioEditor-Setup-{#AppVersion}
+OutputBaseFilename=CutMark-Setup-{#AppVersion}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern

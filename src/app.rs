@@ -22,6 +22,10 @@ use crate::ui::timeline::{self, ViewMenuAction};
 use crate::ui::toolbar;
 use crate::ui::widgets::meter::MeterState;
 
+/// The user-visible application name, used for the window title, the start
+/// screen heading and the installer.
+pub const APP_NAME: &str = "CutMark Audio Editor";
+
 /// Height of the top menu bar panel.
 const MENU_BAR_H: f32 = 30.0;
 /// Height of the toolbar panel.
@@ -89,7 +93,7 @@ impl Default for App {
             messages: None,
             export_banner: None,
             meters: MeterState::default(),
-            title: "Audio Editor".to_string(),
+            title: crate::app::APP_NAME.to_string(),
             pending_close: None,
             close_confirmed: false,
             start_output: None,
@@ -664,14 +668,16 @@ impl App {
     }
 
     /// Sends the window title to the OS when it changed:
-    /// "*<name> - Audio Editor" when dirty, "<name> - Audio Editor" otherwise.
+    /// "*<name> - CutMark Audio Editor" when dirty,
+    /// "<name> - CutMark Audio Editor" otherwise.
     fn update_title(&mut self, ui: &egui::Ui) {
         let title = match &self.screen {
-            Screen::Start(_) => "Audio Editor".to_string(),
+            Screen::Start(_) => APP_NAME.to_string(),
             Screen::Editing(editor) => format!(
-                "{}{} - Audio Editor",
+                "{}{} - {}",
                 if editor.dirty { "*" } else { "" },
-                editor.project.name
+                editor.project.name,
+                APP_NAME
             ),
         };
         if title != self.title {

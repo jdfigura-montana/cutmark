@@ -1,6 +1,7 @@
 [package]
-name = "audio_editor"
-version = "0.1.0"
+name = "cutmark"
+version = "1.0.0"
+description = "CutMark Audio Editor"
 edition = "2024"
 
 [dependencies]

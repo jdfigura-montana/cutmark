@@ -45,10 +45,40 @@ pub struct RecentList {
     pub entries: Vec<RecentEntry>,
 }
 
+/// Old per-user config folder name used before the app was renamed.
+const OLD_APP_DIR: &str = "AudioEditor";
+
 /// Default location of recent.json in %APPDATA%, if the config dir can be found.
 pub fn default_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "AudioEditor")
+    directories::ProjectDirs::from("", "", "CutMark")
         .map(|dirs| dirs.config_dir().join("recent.json"))
+}
+
+/// One-time migration: if the current recent.json does not exist but the one
+/// from the old AudioEditor config folder does, copy it over (the old file is
+/// kept). Any failure is silent and non-fatal.
+pub fn migrate_old_config() {
+    if let (Some(new), Some(old)) = (
+        default_path(),
+        directories::ProjectDirs::from("", "", OLD_APP_DIR)
+            .map(|dirs| dirs.config_dir().join("recent.json")),
+    ) {
+        migrate(&old, &new);
+    }
+}
+
+/// Copies `old` to `new` when `new` is missing and `old` exists; true if the
+/// copy happened. Errors are swallowed (migration is best-effort).
+fn migrate(old: &Path, new: &Path) -> bool {
+    if new.exists() || !old.is_file() {
+        return false;
+    }
+    if let Some(parent) = new.parent()
+        && fs::create_dir_all(parent).is_err()
+    {
+        return false;
+    }
+    fs::copy(old, new).is_ok()
 }
 
 impl RecentList {
@@ -248,5 +278,37 @@ mod tests {
         let list = RecentList::load(&path);
         assert_eq!(list.entries.len(), 1);
         assert_eq!(list.entries[0].last_opened, None);
+    }
+
+    #[test]
+    fn migrate_copies_old_to_missing_new() {
+        let dir = tempdir().unwrap();
+        let old = dir.path().join("old").join("recent.json");
+        fs::create_dir_all(old.parent().unwrap()).unwrap();
+        fs::write(&old, "old list").unwrap();
+        let new = dir.path().join("new").join("recent.json");
+        assert!(migrate(&old, &new));
+        assert_eq!(fs::read_to_string(&new).unwrap(), "old list");
+        assert!(old.is_file(), "the old file is kept");
+    }
+
+    #[test]
+    fn migrate_leaves_existing_new_file_untouched() {
+        let dir = tempdir().unwrap();
+        let old = dir.path().join("old.json");
+        fs::write(&old, "old list").unwrap();
+        let new = dir.path().join("new.json");
+        fs::write(&new, "new list").unwrap();
+        assert!(!migrate(&old, &new));
+        assert_eq!(fs::read_to_string(&new).unwrap(), "new list");
+    }
+
+    #[test]
+    fn migrate_without_old_file_is_no_error() {
+        let dir = tempdir().unwrap();
+        let old = dir.path().join("missing.json");
+        let new = dir.path().join("new.json");
+        assert!(!migrate(&old, &new));
+        assert!(!new.exists());
     }
 }

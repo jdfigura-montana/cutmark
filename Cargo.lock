@@ -461,35 +461,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1254ebf6529f3763c491acfb5ab6e960809e3c75a38584cc664f8c5667fb7107"
 
 [[package]]
-name = "audio_editor"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arc-swap",
- "assert_no_alloc",
- "chrono",
- "cpal",
- "crossbeam-channel",
- "directories",
- "eframe",
- "egui-phosphor",
- "filetime",
- "hound",
- "image",
- "mp3lame-encoder",
- "rfd",
- "rubato",
- "serde",
- "serde_json",
- "symphonia",
- "tempfile",
- "thiserror 2.0.21",
- "trash",
- "uuid",
- "winresource",
-]
-
-[[package]]
 name = "audioadapter"
 version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -890,6 +861,35 @@ name = "cursor-icon"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
+
+[[package]]
+name = "cutmark"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "assert_no_alloc",
+ "chrono",
+ "cpal",
+ "crossbeam-channel",
+ "directories",
+ "eframe",
+ "egui-phosphor",
+ "filetime",
+ "hound",
+ "image",
+ "mp3lame-encoder",
+ "rfd",
+ "rubato",
+ "serde",
+ "serde_json",
+ "symphonia",
+ "tempfile",
+ "thiserror 2.0.21",
+ "trash",
+ "uuid",
+ "winresource",
+]
 
 [[package]]
 name = "dasp_sample"

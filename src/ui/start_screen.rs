@@ -175,7 +175,7 @@ impl StartScreen {
         }
         ui.add_space(THEME.start_title_gap);
         ui.label(
-            egui::RichText::new("Audio Editor")
+            egui::RichText::new(crate::app::APP_NAME)
                 .font(Theme::semibold(THEME.start_title_size))
                 .color(THEME.text_primary),
         );
@@ -636,7 +636,7 @@ impl StartScreen {
                 self.try_open(path.clone(), opened);
             } else {
                 self.error = Some(
-                    "Not an Audio Editor project: drop a project folder or a project.json file."
+                    "Not a CutMark Audio Editor project: drop a project folder or a project.json file."
                         .to_owned(),
                 );
             }

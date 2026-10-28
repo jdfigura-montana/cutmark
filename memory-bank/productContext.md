@@ -1,7 +1,7 @@
 # Product Context
 
 ## Why
-A personal audio editor with an NLE (video-editor) workflow: media bin, tracks, non-destructive clips, final mixdown export. Simplicity first — every feature must earn its place (SPEC: "Overview").
+CutMark Audio Editor is a personal audio editor with an NLE (video-editor) workflow: media bin, tracks, non-destructive clips, final mixdown export. Simplicity first — every feature must earn its place (SPEC: "Overview").
 
 ## Problems it solves
 - Multitrack editing on Windows with familiar NLE interactions (drag from bin, trim/split, ripple, snapping).

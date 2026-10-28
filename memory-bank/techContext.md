@@ -4,6 +4,7 @@
 - Windows 10/11 x64; terminal is PowerShell (run one command at a time, no `&&` chains).
 - Working dir: `c:\Users\JD_Admin\Documents\Programming_Projects\Audio_Editor`
 - cargo is NOT on PATH by default; prepend: `$env:Path = "$env:USERPROFILE\.cargo\bin;" + $env:Path`
+- Renamed 2026-10-27: crate `cutmark`, app "CutMark Audio Editor", exe `target\release\cutmark.exe`, config `%APPDATA%\CutMark` (one-time migration from AudioEditor).
 
 ## Toolchain (installed 2026-10-12)
 - rustup + Rust stable 1.99.0 (x86_64-pc-windows-msvc)
