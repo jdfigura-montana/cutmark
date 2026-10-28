@@ -11,7 +11,7 @@
 //! Levels: `info` for Cutmark Video's own crates, `warn` for everything else (wgpu and naga are
 //! chatty). `RUST_LOG` replaces that with env_logger-style directives: `debug`,
 //! `warn,filmcraft_codecs=trace`, `wgpu_core=info`. A directive ending in `*` matches every target
-//! that starts with it (`filmcraft*=debug`).
+//! that starts with it (`cutmark*=debug`).
 //!
 //! Records logged before the data directory is known are kept (up to [`MAX_PENDING`]) and written
 //! once the file is attached. Writing never panics: a file that can't be created or written leaves
@@ -34,14 +34,14 @@ use log::LevelFilter;
 pub const LOG_FILE: &str = "cutmark.log";
 /// The log directory inside the data directory (shared with the crash logs and Reveal Log Files).
 pub const LOG_DIR: &str = "Logs";
-/// How many previous logs are kept (`cutmark.1.log` … `filmcraft.<KEEP>.log`).
+/// How many previous logs are kept (`cutmark.1.log` … `cutmark.<KEEP>.log`).
 pub const KEEP: usize = 2;
 /// The log file stops growing past this size (a runaway warning can't fill the disk).
 pub const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 /// Records kept in memory until the log file is attached.
 pub const MAX_PENDING: usize = 512;
 /// The built-in filter when `RUST_LOG` is unset or empty.
-pub const DEFAULT_FILTER: &str = "warn,filmcraft*=info";
+pub const DEFAULT_FILTER: &str = "warn,filmcraft*=info,cutmark*=info";
 
 /// Per-target level filter parsed from env_logger-style directives.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -129,7 +129,7 @@ fn utc_parts(secs: u64, nanos: u32) -> (i64, chrono::NaiveDateTime) {
 }
 
 fn numbered(dir: &Path, n: usize) -> PathBuf {
-    if n == 0 { dir.join(LOG_FILE) } else { dir.join(format!("filmcraft.{n}.log")) }
+    if n == 0 { dir.join(LOG_FILE) } else { dir.join(format!("cutmark.{n}.log")) }
 }
 
 /// Shift the previous logs up one (`.log` → `.1.log` → … → `.<KEEP>.log`, the oldest dropped)
@@ -339,7 +339,7 @@ mod tests {
         // A module name is matched at `::` boundaries, not as a bare prefix.
         assert_eq!(f.level_for("wgpu_core_extra"), LevelFilter::Info);
         // A trailing `*` is a prefix.
-        assert_eq!(Filter::parse("warn,filmcraft_ui*=debug").level_for("cutmark_video_ui::frames"), LevelFilter::Debug);
+        assert_eq!(Filter::parse("warn,cutmark_video_ui*=debug").level_for("cutmark_video_ui::frames"), LevelFilter::Debug);
         assert_eq!(Filter::parse("warn,filmcraft_ui*=debug").level_for("filmcraft_engine"), LevelFilter::Warn);
         // A bare target name sets that target to the most verbose level, as env_logger does.
         assert_eq!(Filter::parse("naga").level_for("naga::front"), LevelFilter::Trace);
@@ -421,7 +421,7 @@ mod tests {
         assert_eq!(read(&dir.join(LOG_FILE)), "run 4");
         assert_eq!(read(&dir.join("cutmark.1.log")), "run 3");
         assert_eq!(read(&dir.join("cutmark.2.log")), "run 2");
-        assert!(!dir.join("filmcraft.3.log").exists(), "only {KEEP} old logs are kept");
+        assert!(!dir.join("cutmark.3.log").exists(), "only {KEEP} old logs are kept");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -508,12 +508,12 @@ mod tests {
     fn the_logger_filters_records_and_writes_them_to_the_attached_file() {
         let dir = temp_dir("logger");
         let logger = AppLogger::new(Filter::parse(DEFAULT_FILTER), false);
-        record(&logger, log::Level::Info, "filmcraft", "Cutmark Video starting");
+        record(&logger, log::Level::Info, "cutmark-video", "Cutmark Video starting");
         record(&logger, log::Level::Info, "wgpu_core::device", "too chatty");
         let path = logger.attach_dir(&dir).expect("attach");
         assert_eq!(path, dir.join(LOG_FILE));
         record(&logger, log::Level::Warn, "wgpu_hal::vulkan", "a real warning");
-        record(&logger, log::Level::Debug, "filmcraft", "below info");
+        record(&logger, log::Level::Debug, "cutmark-video", "below info");
         let text = read(&path);
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2, "{text}");
@@ -537,7 +537,7 @@ mod tests {
             for _ in 0..4 {
                 s.spawn(|| {
                     for _ in 0..100 {
-                        record(&logger, log::Level::Info, "filmcraft", "from a worker");
+                        record(&logger, log::Level::Info, "cutmark-video", "from a worker");
                     }
                 });
             }
@@ -572,7 +572,7 @@ mod tests {
             panic!("poison the sink");
         }));
         assert!(logger.sink.is_poisoned());
-        record(&logger, log::Level::Info, "filmcraft", "after the panic");
+        record(&logger, log::Level::Info, "cutmark-video", "after the panic");
         assert!(read(&path).contains("after the panic"));
         let _ = std::fs::remove_dir_all(&dir);
     }
