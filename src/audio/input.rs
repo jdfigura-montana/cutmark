@@ -184,7 +184,7 @@ fn best_config(
 /// A device's display name, or None when it cannot be read (for example
 /// because it was just unplugged). `Device`'s own `Display` returns an error
 /// in that case, which makes `to_string()` panic, so it is not used here.
-fn device_name(device: &Device) -> Option<String> {
+pub(crate) fn device_name(device: &Device) -> Option<String> {
     device
         .description()
         .ok()

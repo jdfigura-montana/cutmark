@@ -12,10 +12,13 @@ use cpal::{
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use thiserror::Error;
 
+use crate::audio::input::device_name;
 use crate::audio::mix_plan::MixPlan;
 use crate::audio::player::{Command, Player, State};
 use crate::audio::resampler::DeviceResampler;
 
+/// Name shown when the output device cannot report one.
+const UNKNOWN_DEVICE: &str = "Unknown output device";
 /// Capacity of the editor-to-audio command queue.
 const QUEUE_CAP: usize = 64;
 /// Preallocated callback scratch, in stereo frames (at least 8,192).
@@ -94,7 +97,7 @@ pub struct Engine {
 pub fn default_output_name() -> Option<String> {
     cpal::default_host()
         .default_output_device()
-        .map(|device| device.to_string())
+        .and_then(|device| device_name(&device))
 }
 
 impl Engine {
@@ -112,7 +115,7 @@ impl Engine {
             .map_err(|e| AudioError::Device(e.to_string()))?
             .filter(|c| c.sample_format() == SampleFormat::F32)
             .collect();
-        let name = device.to_string();
+        let name = device_name(&device).unwrap_or_else(|| UNKNOWN_DEVICE.to_string());
         // An f32 config at the project rate, else fall back to the device's
         // own default rate and resample the mix into it.
         let (supported, resampler, device_rate) = match pick_config(&configs, project_rate) {
@@ -197,9 +200,13 @@ impl Engine {
         let error_callback = move |_err: cpal::Error| {
             errored_for_cb.store(true, Ordering::Relaxed);
         };
+        // Debug builds warn on stderr about any allocation inside the callback;
+        // in release builds assert_no_alloc is a plain call (disable_release).
         let stream = device.build_output_stream(
             stream_config,
-            move |data: &mut [f32], _info: &OutputCallbackInfo| callback.run(data),
+            move |data: &mut [f32], _info: &OutputCallbackInfo| {
+                assert_no_alloc::assert_no_alloc(|| callback.run(data));
+            },
             error_callback,
             None,
         )?;
