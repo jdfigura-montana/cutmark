@@ -82,7 +82,6 @@ fn to_i24(s: f32) -> i32 {
 ///
 /// Field order matters: the writer is closed before the guard deletes the
 /// `.part` file (Windows cannot delete an open file).
-#[allow(dead_code)] // the Editor owns one per take (12.2)
 pub struct RecordWriter {
     /// The 24-bit WAV file under construction.
     writer: WavWriter<BufWriter<File>>,
@@ -116,7 +115,6 @@ impl RecordWriter {
     /// a 24-bit WAV at `project_rate`: one channel for Mono1/Mono2, two for
     /// Stereo. Resamples from `device_rate` with a `StreamResampler` when the
     /// rates differ. All working buffers are allocated here.
-    #[allow(dead_code)] // the Editor starts takes with it (12.2)
     pub fn create(
         part_path: &Path,
         device_rate: u32,
@@ -179,7 +177,6 @@ impl RecordWriter {
     /// `[minL, maxL, minR, maxR]` entry to `peaks` per 1,024 output frames
     /// (mono: R = L). A group still incomplete when the take ends is dropped.
     /// Returns the output frames written so far.
-    #[allow(dead_code)] // the take job drains the ring with it (12.2)
     pub fn drain(
         &mut self,
         consumer: &mut Consumer<f32>,
@@ -198,7 +195,6 @@ impl RecordWriter {
     /// Drains what is left in the ring, flushes the resampler, finalizes the
     /// WAV and renames the `.part` file to the final path. Returns the final
     /// path and the total output frames written.
-    #[allow(dead_code)] // the Editor finishes takes with it (12.2)
     pub fn finish(mut self, consumer: &mut Consumer<f32>) -> Result<(PathBuf, u64), IoError> {
         let mut peaks = Vec::new();
         self.drain(consumer, &mut peaks)?;
@@ -216,7 +212,6 @@ impl RecordWriter {
     }
 
     /// Discards the take: closes and deletes the `.part` file.
-    #[allow(dead_code)] // the Editor cancels takes with it (12.2)
     pub fn abort(self) {
         // Dropping closes the writer, then the guard deletes the .part.
         drop(self);

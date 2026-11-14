@@ -32,9 +32,10 @@ fn code_to_state(code: u8) -> TransportState {
 }
 
 impl Editor {
-    /// Transport commands are refused while an export is running.
+    /// Transport commands are refused while an export is running or a take is
+    /// being recorded. (Stop is the exception while recording: it ends the take.)
     fn transport_locked(&self) -> bool {
-        self.is_locked()
+        self.is_locked() || self.is_recording()
     }
 
     /// Current transport state; `Stopped` when audio did not start.
@@ -46,7 +47,12 @@ impl Editor {
     }
 
     /// Space: play from the playhead, or stop while playing (or previewing).
+    /// While recording it ends the take and keeps it.
     pub fn toggle_play(&mut self) {
+        if self.is_recording() {
+            self.stop_recording();
+            return;
+        }
         if self.transport_locked() {
             return;
         }
@@ -83,8 +89,13 @@ impl Editor {
         }
     }
 
-    /// Stop button: the same as Space while playing; nothing otherwise.
+    /// Stop button: the same as Space while playing; nothing otherwise. While
+    /// recording it ends the take and keeps it.
     pub fn stop(&mut self) {
+        if self.is_recording() {
+            self.stop_recording();
+            return;
+        }
         if self.transport_locked() {
             return;
         }

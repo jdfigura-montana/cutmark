@@ -114,31 +114,23 @@ fn import_core(
         let _ = fs::remove_file(peaks_path(paths, media_id));
     };
 
-    let resampled = match conform(samples, channels, rate, project_rate, &mut |p| {
-        progress(0.6 + p * 0.25)
-    }) {
-        Ok(r) => r,
+    let loaded = match cache_conformed(
+        paths,
+        media_id,
+        Decoded {
+            samples,
+            channels,
+            rate,
+        },
+        project_rate,
+        progress,
+    ) {
+        Ok(loaded) => loaded,
         Err(e) => {
             cleanup();
             return Err(e);
         }
     };
-
-    let frames = resampled.len() as u64 / u64::from(channels);
-
-    let conformed = conformed_path(paths, media_id);
-    if let Err(e) = wav::write_f32(&conformed, &resampled, channels, project_rate) {
-        cleanup();
-        return Err(e);
-    }
-    progress(0.95);
-
-    let built = peaks::build(&resampled, channels);
-    if let Err(e) = peaks::write(&peaks_path(paths, media_id), &built) {
-        cleanup();
-        return Err(e);
-    }
-    progress(1.0);
 
     let item = MediaItem {
         id: media_id,
@@ -146,15 +138,83 @@ fn import_core(
         file_name: media_name,
         original_rate: rate,
         channels,
-        length: frames,
+        length: loaded.samples.len() as u64 / u64::from(channels),
     };
-    Ok((
-        item,
-        Loaded {
-            samples: resampled.into(),
-            peaks: built.into(),
-        },
-    ))
+    Ok((item, loaded))
+}
+
+/// Builds the cache for a file that is already in media/, without copying it:
+/// decodes `file_name`, conforms it to `project_rate`, writes the conformed
+/// WAV and peaks into cache/ and returns the bin entry plus the loaded audio.
+/// Used for recorded takes, which the record writer creates in media/.
+///
+/// `progress` reports 0.0..=1.0. If a step fails, the cache files written so
+/// far are deleted; the file in media/ is left alone.
+pub fn conform_existing(
+    paths: &ProjectPaths,
+    file_name: &str,
+    media_id: Uuid,
+    display_name: String,
+    project_rate: u32,
+    progress: &mut dyn FnMut(f32),
+) -> Result<(MediaItem, Loaded), IoError> {
+    let media_path = paths.media_file(file_name)?;
+    progress(0.0);
+    let decoded = decode_file_mapped(&media_path, progress, 0.0, 0.6)?;
+    let (channels, rate) = (decoded.channels, decoded.rate);
+    match cache_conformed(paths, media_id, decoded, project_rate, progress) {
+        Ok(loaded) => {
+            let item = MediaItem {
+                id: media_id,
+                display_name,
+                file_name: file_name.to_string(),
+                original_rate: rate,
+                channels,
+                length: loaded.samples.len() as u64 / u64::from(channels),
+            };
+            Ok((item, loaded))
+        }
+        Err(e) => {
+            let _ = fs::remove_file(conformed_path(paths, media_id));
+            let _ = fs::remove_file(peaks_path(paths, media_id));
+            Err(e)
+        }
+    }
+}
+
+/// Conforms decoded audio to `project_rate`, writes the conformed WAV and the
+/// peaks into cache/ and returns the loaded audio. Progress covers 0.6..=1.0
+/// (decoding, 0.0..0.6, is the caller's). Cleaning up after an error is the
+/// caller's job.
+fn cache_conformed(
+    paths: &ProjectPaths,
+    media_id: Uuid,
+    decoded: Decoded,
+    project_rate: u32,
+    progress: &mut dyn FnMut(f32),
+) -> Result<Loaded, IoError> {
+    let Decoded {
+        samples,
+        channels,
+        rate,
+    } = decoded;
+    let resampled = conform(samples, channels, rate, project_rate, &mut |p| {
+        progress(0.6 + p * 0.25)
+    })?;
+    wav::write_f32(
+        &conformed_path(paths, media_id),
+        &resampled,
+        channels,
+        project_rate,
+    )?;
+    progress(0.95);
+    let built = peaks::build(&resampled, channels);
+    peaks::write(&peaks_path(paths, media_id), &built)?;
+    progress(1.0);
+    Ok(Loaded {
+        samples: resampled.into(),
+        peaks: built.into(),
+    })
 }
 
 /// Loads previously imported media, rebuilding the cache if needed.
@@ -203,23 +263,8 @@ pub fn load_or_rebuild(
     }
 
     // Slow path: rebuild from the original in media/.
-    let Decoded {
-        samples,
-        channels,
-        rate,
-    } = decode_file_mapped(&media_path, progress, 0.0, 0.6)?;
-    let resampled = conform(samples, channels, rate, project_rate, &mut |p| {
-        progress(0.6 + p * 0.25)
-    })?;
-    wav::write_f32(&conformed, &resampled, channels, project_rate)?;
-    progress(0.95);
-    let built = peaks::build(&resampled, channels);
-    peaks::write(&peaks_file, &built)?;
-    progress(1.0);
-    Ok(Loaded {
-        samples: resampled.into(),
-        peaks: built.into(),
-    })
+    let decoded = decode_file_mapped(&media_path, progress, 0.0, 0.6)?;
+    cache_conformed(paths, item.id, decoded, project_rate, progress)
 }
 
 /// Conforms decoded interleaved samples from `from` Hz to `to` Hz.
@@ -333,6 +378,105 @@ mod tests {
         assert_eq!(loaded.peaks.frames, 48_000);
         assert_eq!(loaded.peaks.channels, 2);
         assert_eq!(cache_file_count(&paths), 2);
+    }
+
+    /// Writes a 24-bit mono WAV of `frames` frames at `rate`; every sample is
+    /// `value / 8_388_607`.
+    fn write_mono24(path: &Path, rate: u32, frames: usize, value: i32) {
+        let spec = WavSpec {
+            channels: 1,
+            sample_rate: rate,
+            bits_per_sample: 24,
+            sample_format: SampleFormat::Int,
+        };
+        let mut writer = WavWriter::create(path, spec).unwrap();
+        for _ in 0..frames {
+            writer.write_sample(value).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    #[test]
+    fn conform_existing_builds_the_cache_without_copying() {
+        let proj_dir = tempdir().unwrap();
+        let paths = create_layout(proj_dir.path(), "Proj").unwrap();
+        write_mono24(&paths.media().join("take.wav"), 48_000, 4_800, 4_194_304);
+        let id = Uuid::new_v4();
+
+        let (item, loaded) = conform_existing(
+            &paths,
+            "take.wav",
+            id,
+            "Take".to_string(),
+            48_000,
+            &mut |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(item.id, id);
+        assert_eq!(item.display_name, "Take");
+        assert_eq!(item.file_name, "take.wav");
+        assert_eq!(
+            (item.original_rate, item.channels, item.length),
+            (48_000, 1, 4_800)
+        );
+        assert_eq!(loaded.samples.len(), 4_800);
+        assert!((loaded.samples[0] - 0.5).abs() < 1e-5, "24-bit half scale");
+        assert_eq!((loaded.peaks.channels, loaded.peaks.frames), (1, 4_800));
+        assert!(conformed_path(&paths, id).is_file());
+        assert!(peaks_path(&paths, id).is_file());
+        // Nothing was copied: media/ still holds only the take.
+        assert_eq!(fs::read_dir(paths.media()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn conform_existing_resamples_to_the_project_rate() {
+        let proj_dir = tempdir().unwrap();
+        let paths = create_layout(proj_dir.path(), "Proj").unwrap();
+        write_mono24(&paths.media().join("take.wav"), 44_100, 44_100, 1_000_000);
+        let (item, loaded) = conform_existing(
+            &paths,
+            "take.wav",
+            Uuid::new_v4(),
+            "Take".to_string(),
+            48_000,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(item.original_rate, 44_100);
+        assert_eq!(item.length, 48_000);
+        assert_eq!(loaded.samples.len(), 48_000);
+    }
+
+    #[test]
+    fn conform_existing_failures_leave_no_cache_and_keep_the_file() {
+        let proj_dir = tempdir().unwrap();
+        let paths = create_layout(proj_dir.path(), "Proj").unwrap();
+        let id = Uuid::new_v4();
+
+        // A file that is not audio: decode fails, the file stays.
+        fs::write(paths.media().join("junk.wav"), b"not a wav").unwrap();
+        let result = conform_existing(&paths, "junk.wav", id, "x".to_string(), 48_000, &mut |_| {});
+        assert!(result.is_err());
+        assert!(paths.media().join("junk.wav").is_file());
+        assert_eq!(cache_file_count(&paths), 0);
+
+        // A missing file and an unsafe name are errors too.
+        assert!(
+            conform_existing(&paths, "gone.wav", id, "x".to_string(), 48_000, &mut |_| {}).is_err()
+        );
+        assert!(matches!(
+            conform_existing(
+                &paths,
+                "..\\x.wav",
+                id,
+                "x".to_string(),
+                48_000,
+                &mut |_| {}
+            ),
+            Err(IoError::UnsafePath(_))
+        ));
+        assert_eq!(cache_file_count(&paths), 0);
     }
 
     #[test]

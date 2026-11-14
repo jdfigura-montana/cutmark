@@ -23,7 +23,7 @@ use crate::editor::ops::OpError;
 use crate::editor::ops::amplitude::{self, Target};
 use crate::editor::ops::marker;
 use crate::editor::ops::paste;
-use crate::editor::record::{self as record_state, FakeInput};
+use crate::editor::record::{self as record_state, FakeInput, Recording, Ring};
 use crate::editor::selection::Selection;
 use crate::editor::transport::TransportState;
 use crate::io::IoError;
@@ -57,10 +57,16 @@ pub enum EditorError {
     /// The audio input could not be (re)opened; the message says why.
     #[error("{0}")]
     Input(String),
+    /// A recording could not start (for example no track is armed).
+    #[error("{0}")]
+    Record(String),
 }
 
 /// Message shown when an operation is refused during an export.
 const EXPORT_LOCKED: &str = "Export in progress";
+
+/// Message shown when an operation is refused while recording.
+pub(super) const RECORD_LOCKED: &str = "Recording in progress";
 
 /// Result of opening with an autosave-recovery check.
 pub enum OpenOutcome {
@@ -148,6 +154,11 @@ pub struct Editor {
     /// Some = test double: the input devices come from here and no real input
     /// device is ever opened. None in the running app.
     pub(super) fake_input: Option<FakeInput>,
+    /// The ring buffer behind the open input stream; None while disarmed.
+    pub(super) ring: Option<Ring>,
+    /// The take being recorded, or being saved after Stop. While this is Some
+    /// the editor is locked (see `record.rs`).
+    pub(super) recording: Option<Recording>,
 }
 
 impl Editor {
@@ -210,6 +221,8 @@ impl Editor {
             input: None,
             input_meter: Arc::new(StereoMeter::new()),
             fake_input,
+            ring: None,
+            recording: None,
         };
         editor.start_media_loads();
         editor
@@ -307,6 +320,8 @@ impl Editor {
             input: None,
             input_meter: Arc::new(StereoMeter::new()),
             fake_input: Some(FakeInput::default()),
+            ring: None,
+            recording: None,
         }
     }
 
@@ -324,6 +339,11 @@ impl Editor {
     /// points the paths at the new root and saves there. The old folder is
     /// left untouched on disk.
     pub fn save_as(&mut self, parent: &Path, new_name: &str) -> Result<(), EditorError> {
+        // The take writer owns files in this folder: the project cannot move
+        // out from under it. (Plain Save is fine, it only writes project.json.)
+        if self.recording.is_some() {
+            return Err(EditorError::Locked(RECORD_LOCKED.to_string()));
+        }
         // The old folder's autosave belongs to the already-saved session.
         let _ = autosave::delete(&self.paths);
         let new_paths = project_file::copy_project(&self.paths, parent, new_name)?;
@@ -357,12 +377,13 @@ impl Editor {
     /// Removes media and cache files that nothing references, after a Save.
     ///
     /// Skipped while any background job (import, load, relink or export) is
-    /// still running, so a file a just-started job writes is never mistaken
-    /// for junk. Messages about removed files and failures go into the job
-    /// error list; failures never fail the Save. Tests delete directly
-    /// instead of using the real Recycle Bin.
+    /// still running, and while a take is being recorded or saved, so a file a
+    /// just-started job writes is never mistaken for junk. Messages about
+    /// removed files and failures go into the job error list; failures never
+    /// fail the Save. Tests delete directly instead of using the real
+    /// Recycle Bin.
     fn cleanup_unused_media(&mut self) {
-        if self.has_pending_jobs() {
+        if self.has_pending_jobs() || self.recording.is_some() {
             return;
         }
         let (keep_ids, keep_files) = self.referenced_media();
@@ -886,21 +907,41 @@ impl Editor {
         action: Action,
         label: &'static str,
     ) -> Result<(), EditorError> {
+        // Adding a marker is the one edit that stays allowed while recording.
+        let marker = matches!(action, Action::AddMarker { .. });
+        self.check_unlocked(marker)?;
+        self.run_commit(label, |project| action.run(project))
+    }
+
+    /// `Locked` while an export runs, or while a recording runs unless
+    /// `allow_recording` (only adding a marker is allowed then).
+    pub(super) fn check_unlocked(&self, allow_recording: bool) -> Result<(), EditorError> {
         if self.exporting.is_some() {
             return Err(EditorError::Locked(EXPORT_LOCKED.to_string()));
         }
-        self.commit(label, |project| action.run(project))
+        if self.recording.is_some() && !allow_recording {
+            return Err(EditorError::Locked(RECORD_LOCKED.to_string()));
+        }
+        Ok(())
     }
 
-    /// Runs one pure edit op on a clone, checks invariants, pushes undo and swaps in.
+    /// Runs one pure edit op on a clone, checks invariants, pushes undo and
+    /// swaps in. Refused while an export or a recording runs.
     fn commit(
         &mut self,
         label: &'static str,
         run: impl FnOnce(&mut Project) -> Result<(), OpError>,
     ) -> Result<(), EditorError> {
-        if self.exporting.is_some() {
-            return Err(EditorError::Locked(EXPORT_LOCKED.to_string()));
-        }
+        self.check_unlocked(false)?;
+        self.run_commit(label, run)
+    }
+
+    /// The commit itself: the callers have already checked the locks.
+    pub(super) fn run_commit(
+        &mut self,
+        label: &'static str,
+        run: impl FnOnce(&mut Project) -> Result<(), OpError>,
+    ) -> Result<(), EditorError> {
         let mut next = (*self.project).clone();
         run(&mut next)?;
         invariants::check(&next)?;
@@ -952,7 +993,7 @@ impl Editor {
 
     /// Restores the top undo entry; returns false when there is nothing to undo.
     pub fn undo(&mut self) -> bool {
-        if self.exporting.is_some() {
+        if self.exporting.is_some() || self.recording.is_some() {
             return false;
         }
         match self.history.undo_step(Arc::clone(&self.project)) {
@@ -970,7 +1011,7 @@ impl Editor {
 
     /// Restores the top redo entry; returns false when there is nothing to redo.
     pub fn redo(&mut self) -> bool {
-        if self.exporting.is_some() {
+        if self.exporting.is_some() || self.recording.is_some() {
             return false;
         }
         match self.history.redo_step(Arc::clone(&self.project)) {
@@ -998,14 +1039,18 @@ impl Editor {
 
     /// Starts a continuous gesture: stores the current project as the base snapshot.
     pub fn begin_gesture(&mut self) {
-        if self.exporting.is_some() {
+        if self.exporting.is_some() || self.recording.is_some() {
             return;
         }
         self.gesture_base = Some(Arc::clone(&self.project));
     }
 
-    /// Previews one action on a fresh clone of the gesture base; no history recorded.
+    /// Previews one action on a fresh clone of the gesture base; no history
+    /// recorded. Refused while recording, so a drag cannot change the project.
     pub fn preview(&mut self, action: Action) -> Result<(), EditorError> {
+        if self.recording.is_some() {
+            return Err(EditorError::Locked(RECORD_LOCKED.to_string()));
+        }
         let base = self
             .gesture_base
             .as_ref()
@@ -1189,7 +1234,7 @@ impl Editor {
     /// Previews a bin item on its own: publishes a preview MixPlan, starts it
     /// and stops timeline playback. A no-op without audio or unloaded media.
     pub fn preview_media(&mut self, id: Uuid) {
-        if self.exporting.is_some() {
+        if self.exporting.is_some() || self.recording.is_some() {
             return;
         }
         let engine = match &self.audio {
@@ -1261,7 +1306,7 @@ impl Editor {
     /// Returns the file names that were rejected because their extension is
     /// not supported; one import job is started per supported file.
     pub fn import_files(&mut self, files: Vec<PathBuf>) -> Vec<String> {
-        if self.exporting.is_some() {
+        if self.exporting.is_some() || self.recording.is_some() {
             return Vec::new();
         }
         let mut rejected = Vec::new();
@@ -1294,7 +1339,7 @@ impl Editor {
     /// copies the file into media/, rebuilds the cache and, on success, checks
     /// that every clip using the item still fits inside the replacement.
     pub fn relink(&mut self, id: Uuid, src: PathBuf) {
-        if self.exporting.is_some() {
+        if self.exporting.is_some() || self.recording.is_some() {
             return;
         }
         let Some(item) = self.project.media.iter().find(|m| m.id == id) else {
@@ -1434,6 +1479,14 @@ impl Editor {
                     self.exporting = None;
                     self.export_result = Some(result);
                 }
+                JobMessage::RecordProgress { job, frames, peaks } => {
+                    self.record_progress(job, frames, peaks);
+                }
+                JobMessage::RecordDone {
+                    job,
+                    consumer,
+                    outcome,
+                } => self.record_done(job, consumer, outcome),
             }
         }
     }
@@ -1594,9 +1647,7 @@ impl Editor {
     /// solo still apply to the rest). The job reports progress, an optional
     /// clip warning and its result back through `poll_jobs`.
     pub fn start_export(&mut self, settings: ExportSettings) -> Result<(), EditorError> {
-        if self.exporting.is_some() {
-            return Err(EditorError::Locked(EXPORT_LOCKED.to_string()));
-        }
+        self.check_unlocked(false)?;
         self.stop();
         self.stop_preview();
         let end = settings.end.min(self.project_length());
@@ -1985,6 +2036,73 @@ mod tests {
         assert_eq!(*editor.project, original, "undo must restore the original");
         assert!(editor.redo(), "redo after undo");
         (*editor.project).clone()
+    }
+
+    #[test]
+    fn record_take_roundtrips_as_one_record_step() {
+        let project = project_with_clips(&[&[(0, 100_000)], &[]]);
+        let track_id = project.tracks[0].id;
+        let take = crate::model::media::MediaItem {
+            id: Uuid::new_v4(),
+            display_name: "rec-20261114-101500".to_string(),
+            file_name: "rec-20261114-101500.wav".to_string(),
+            original_rate: 48_000,
+            channels: 1,
+            length: 5_000,
+        };
+        let take_id = take.id;
+        let original = project.clone();
+
+        let mut editor = test_editor(project);
+        editor
+            .apply(Action::RecordTake {
+                item: take,
+                track_id,
+                start: 20_000,
+                src_in: 480,
+            })
+            .unwrap();
+        assert_eq!(editor.undo_label(), Some("Record"));
+        assert_eq!(editor.history.undo.len(), 1, "one step for item and clip");
+        assert!(invariants::check(&editor.project).is_ok());
+        let after = (*editor.project).clone();
+        assert_eq!(after.media.len(), 2);
+        assert_eq!(after.media[1].display_name, "Take 1", "named by the op");
+        assert_eq!(
+            spans(&after, 0),
+            [(0, 20_000), (20_000, 24_520), (24_520, 100_000)]
+        );
+        assert_eq!(srcs(&after, 0)[1], (480, 5_000));
+        assert_eq!(after.tracks[0].clips[1].media_id, take_id);
+
+        assert!(editor.undo(), "undo after apply");
+        assert_eq!(*editor.project, original, "undo restores the original");
+        assert!(editor.redo(), "redo after undo");
+        assert_eq!(*editor.project, after, "redo restores the take");
+    }
+
+    #[test]
+    fn record_take_with_a_missing_track_fails_and_changes_nothing() {
+        let project = project_with_clips(&[&[(0, 100)]]);
+        let original = project.clone();
+        let mut editor = test_editor(project);
+        let take = crate::model::media::MediaItem {
+            id: Uuid::new_v4(),
+            display_name: "x".to_string(),
+            file_name: "x.wav".to_string(),
+            original_rate: 48_000,
+            channels: 1,
+            length: 1_000,
+        };
+        let result = editor.apply(Action::RecordTake {
+            item: take,
+            track_id: Uuid::new_v4(),
+            start: 0,
+            src_in: 0,
+        });
+        assert!(matches!(result, Err(EditorError::Op(OpError::NotFound(_)))));
+        assert_eq!(*editor.project, original);
+        assert!(editor.history.undo.is_empty());
     }
 
     fn range_target(project: &Project, start: u64, end: u64, tracks: &[usize]) -> Target {

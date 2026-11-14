@@ -50,9 +50,6 @@ pub fn trim_to_selection(
         let track = track_mut(project, id)?;
         clear_range(track, 0, s);
         clear_range(track, e, u64::MAX);
-        // clear_range keeps a zero-length piece when a clip starts exactly at 0
-        // or ends exactly at e; trim must not leave empty clips behind.
-        track.clips.retain(|clip| clip.len() > 0);
     }
     Ok(())
 }
@@ -68,6 +65,25 @@ mod tests {
         let id = project.tracks[0].id;
         delete_range(&mut project, 50, 150, &[id], true).unwrap();
         assert_eq!(spans(&project, 0), [(0, 50), (100, 200)]);
+    }
+
+    #[test]
+    fn delete_range_at_a_clip_edge_leaves_no_empty_clip() {
+        // Snapping puts range edges exactly on clip edges all the time.
+        for ripple in [false, true] {
+            let mut project = project_with_clips(&[&[(100, 100)]]);
+            let id = project.tracks[0].id;
+            delete_range(&mut project, 100, 150, &[id], ripple).unwrap();
+            let want = if ripple { (100, 150) } else { (150, 200) };
+            assert_eq!(spans(&project, 0), [want], "ripple {ripple}");
+            assert!(crate::model::invariants::check(&project).is_ok());
+
+            let mut project = project_with_clips(&[&[(100, 100)]]);
+            let id = project.tracks[0].id;
+            delete_range(&mut project, 150, 200, &[id], ripple).unwrap();
+            assert_eq!(spans(&project, 0), [(100, 150)], "ripple {ripple}");
+            assert!(crate::model::invariants::check(&project).is_ok());
+        }
     }
 
     #[test]

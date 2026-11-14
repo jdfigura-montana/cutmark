@@ -4,16 +4,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
+use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
+use rtrb::Consumer;
 use uuid::Uuid;
 
 use crate::audio::mix_plan::MixPlan;
 use crate::audio::mixer;
 use crate::io::IoError;
 use crate::io::export::{ExportFormat, open_sink};
-use crate::io::import::{Loaded, import_file, load_or_rebuild, relink_file};
+use crate::io::import::{Loaded, conform_existing, import_file, load_or_rebuild, relink_file};
 use crate::io::paths::ProjectPaths;
+use crate::io::record_writer::RecordWriter;
 use crate::model::media::MediaItem;
 use crate::util::db::linear_to_db;
 
@@ -22,6 +25,9 @@ const CANCELLED: &str = "Cancelled";
 
 /// Timeline frames rendered per mixer call and progress step during export.
 const EXPORT_BLOCK_FRAMES: u64 = 8192;
+
+/// How often a take job drains its ring buffer.
+const TAKE_DRAIN_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Message a worker thread sends back to the Editor over the job channel.
 #[derive(Debug)]
@@ -77,6 +83,68 @@ pub enum JobMessage {
         /// The written file, or the error message ("Cancelled" on cancel).
         result: Result<PathBuf, String>,
     },
+    /// A running take wrote more audio.
+    RecordProgress {
+        /// Job id.
+        job: u64,
+        /// Frames written to the take file so far, at the project rate.
+        frames: u64,
+        /// New `[minL, maxL, minR, maxR]` entries, one per 1,024 frames.
+        peaks: Vec<[f32; 4]>,
+    },
+    /// A take job ended. The ring consumer comes back for the next take.
+    RecordDone {
+        /// Job id.
+        job: u64,
+        /// The ring's reading end, returned by the job.
+        consumer: Consumer<f32>,
+        /// How the take ended.
+        outcome: TakeOutcome,
+    },
+}
+
+/// How a take job ended.
+#[derive(Debug)]
+pub enum TakeOutcome {
+    /// The take is a WAV in media/ with its cache built: the bin entry data
+    /// plus the loaded audio.
+    Finished {
+        /// The bin entry for the take (the Editor names it "Take <n>").
+        item: MediaItem,
+        /// The conformed audio and its peaks.
+        loaded: Loaded,
+    },
+    /// The take was no longer than its latency, so nothing was audible after
+    /// compensation: the file was deleted.
+    TooShort,
+    /// The take was discarded: the `.part` file was deleted.
+    Cancelled,
+    /// Writing or loading the take failed; the message says why. A failed
+    /// write leaves no file behind.
+    Failed(String),
+}
+
+/// Everything a take job owns: the open writer, the ring's reading end and
+/// where the take ends up.
+pub struct TakeJob {
+    /// The open take file.
+    pub writer: RecordWriter,
+    /// The ring's reading end; handed back in `RecordDone`.
+    pub consumer: Consumer<f32>,
+    /// The project folder the take lives in.
+    pub paths: ProjectPaths,
+    /// Final file name in media/ (the writer renames its `.part` to it).
+    pub file_name: String,
+    /// Id of the bin entry the take becomes.
+    pub media_id: Uuid,
+    /// Project sample rate in Hz.
+    pub project_rate: u32,
+    /// Take latency in samples: a take of this many frames or fewer is too short.
+    pub latency: u64,
+    /// Set by the Editor to end the take and keep it.
+    pub finish: Arc<AtomicBool>,
+    /// Set by the Editor to end the take and delete it.
+    pub cancel: Arc<AtomicBool>,
 }
 
 /// What the Editor decided when a mix peaked above 0 dBFS.
@@ -268,6 +336,105 @@ fn run_export(
         .map_err(|e| e.to_string())
 }
 
+/// Spawns a worker thread that writes a take: it drains the ring about every
+/// 10 ms, reports frames and new peak entries over `sender`, and ends when the
+/// finish or cancel flag is set. The consumer and the outcome come back in
+/// `RecordDone`.
+pub fn spawn_record(sender: Sender<JobMessage>, job: u64, take: TakeJob) {
+    thread::spawn(move || {
+        let (consumer, outcome) = run_take(take, &sender, job);
+        let _ = sender.send(JobMessage::RecordDone {
+            job,
+            consumer,
+            outcome,
+        });
+    });
+}
+
+/// Runs one take: drain loop, then (on finish) close the WAV, check the length
+/// and conform it in place. Cancel and a failed write delete the `.part`; an
+/// Editor that went away (the channel is closed) counts as a cancel.
+fn run_take(take: TakeJob, sender: &Sender<JobMessage>, job: u64) -> (Consumer<f32>, TakeOutcome) {
+    let TakeJob {
+        mut writer,
+        mut consumer,
+        paths,
+        file_name,
+        media_id,
+        project_rate,
+        latency,
+        finish,
+        cancel,
+    } = take;
+    let mut peaks: Vec<[f32; 4]> = Vec::new();
+    let mut reported = 0u64;
+    loop {
+        // Read this before the flags: the Editor sets a flag and only then
+        // closes the input, so an abandoned ring seen first means a flag that
+        // is already visible below.
+        let abandoned = consumer.is_abandoned();
+        if cancel.load(Ordering::Acquire) {
+            writer.abort();
+            return (consumer, TakeOutcome::Cancelled);
+        }
+        if finish.load(Ordering::Acquire) {
+            break;
+        }
+        if abandoned {
+            // The input is gone and nobody asked for the take (the Editor was
+            // dropped mid-take): do not leave a thread and a file behind.
+            writer.abort();
+            return (consumer, TakeOutcome::Cancelled);
+        }
+        match writer.drain(&mut consumer, &mut peaks) {
+            Ok(frames) => {
+                if frames != reported || !peaks.is_empty() {
+                    reported = frames;
+                    let message = JobMessage::RecordProgress {
+                        job,
+                        frames,
+                        peaks: std::mem::take(&mut peaks),
+                    };
+                    if sender.send(message).is_err() {
+                        writer.abort();
+                        return (consumer, TakeOutcome::Cancelled);
+                    }
+                }
+            }
+            Err(error) => {
+                writer.abort();
+                return (consumer, TakeOutcome::Failed(error.to_string()));
+            }
+        }
+        thread::sleep(TAKE_DRAIN_INTERVAL);
+    }
+
+    // Finish: drain what is left, close the file, rename it into place.
+    let (path, frames) = match writer.finish(&mut consumer) {
+        Ok(done) => done,
+        Err(error) => return (consumer, TakeOutcome::Failed(error.to_string())),
+    };
+    if frames <= latency {
+        let _ = std::fs::remove_file(&path);
+        return (consumer, TakeOutcome::TooShort);
+    }
+    let display_name = path
+        .file_stem()
+        .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
+    let outcome = match conform_existing(
+        &paths,
+        &file_name,
+        media_id,
+        display_name,
+        project_rate,
+        &mut |_| {},
+    ) {
+        Ok((item, loaded)) => TakeOutcome::Finished { item, loaded },
+        Err(error) => TakeOutcome::Failed(format!("could not load the take: {error}")),
+    };
+    (consumer, outcome)
+}
+
 /// The Editor-owned job channel pair plus helpers for spawning job threads.
 pub struct JobChannels {
     /// Sends job messages to the Editor.
@@ -322,6 +489,11 @@ impl JobChannels {
         cancel: Arc<AtomicBool>,
     ) {
         spawn_export(self.tx.clone(), job, plan, settings, decision_rx, cancel);
+    }
+
+    /// Spawns a take (recording writer) job on its own thread.
+    pub fn spawn_record(&self, job: u64, take: TakeJob) {
+        spawn_record(self.tx.clone(), job, take);
     }
 }
 
@@ -646,6 +818,36 @@ mod tests {
                 .iter()
                 .all(|(label, _)| label == "Export")
         );
+
+        editor.export_continue();
+        wait_done(&mut editor).unwrap();
+    }
+
+    #[test]
+    fn recording_is_refused_while_exporting() {
+        let (mut editor, dir) = test_editor(&[&[(0, 4_000)]], 4_000, |_, _| 2.0);
+        let track0 = editor.project.tracks[0].id;
+        editor
+            .apply(Action::SetTrackVolume {
+                id: track0,
+                db: -3.0,
+            })
+            .unwrap();
+        editor.toggle_arm(track0);
+        assert_eq!(editor.armed_track(), Some(track0));
+        let path = dir.path().join("rec_locked.wav");
+        editor
+            .start_export(wav_settings(&editor, path.clone(), 2, 0, 4_000, None))
+            .unwrap();
+        wait_peak(&mut editor);
+
+        // The job waits for a decision, so the lock is stable here.
+        let result = editor.start_recording();
+        assert!(
+            matches!(&result, Err(EditorError::Locked(m)) if m == "Export in progress"),
+            "{result:?}"
+        );
+        assert!(!editor.is_recording());
 
         editor.export_continue();
         wait_done(&mut editor).unwrap();

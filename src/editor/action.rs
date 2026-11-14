@@ -162,6 +162,18 @@ pub enum Action {
         /// Length of the replacement in samples at the project rate.
         length: u64,
     },
+    /// Adds a recorded take: its bin entry (named "Take <n>") and one clip of
+    /// it on a track, in one step.
+    RecordTake {
+        /// The bin entry for the take (audio already in media/ and cached).
+        item: crate::model::media::MediaItem,
+        /// Track the take was recorded on.
+        track_id: uuid::Uuid,
+        /// Timeline start of the clip (where recording began), in samples.
+        start: u64,
+        /// Source in-point in samples: the hidden latency at the file's start.
+        src_in: u64,
+    },
     /// Removes the bin entry and every clip that uses it.
     RemoveMedia {
         /// Media id to remove.
@@ -239,6 +251,7 @@ impl Action {
             Action::SetProjectSettings { .. } => "Project Settings",
             Action::ImportMedia { .. } => "Import",
             Action::RelinkMedia { .. } => "Relink",
+            Action::RecordTake { .. } => "Record",
             Action::RemoveMedia { .. } => "Remove Media",
             Action::RenameMedia { .. } => "Rename Media",
             Action::ApplyGain { .. } => "Gain",
@@ -328,6 +341,18 @@ impl Action {
                 *original_rate,
                 *channels,
                 *length,
+            ),
+            Action::RecordTake {
+                item,
+                track_id,
+                start,
+                src_in,
+            } => crate::editor::ops::media::record_take(
+                project,
+                item.clone(),
+                *track_id,
+                *start,
+                *src_in,
             ),
             Action::RemoveMedia { id } => crate::editor::ops::media::remove_media(project, *id),
             Action::RenameMedia { id, name } => {

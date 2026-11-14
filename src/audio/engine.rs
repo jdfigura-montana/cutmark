@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -70,6 +71,52 @@ pub struct Shared {
     pub preview_pos: AtomicU64,
     /// Transport state code: 0 stopped, 1 playing, 2 paused, 3 previewing, 4 scrubbing.
     pub state: AtomicU8,
+    /// Output latency in nanoseconds, refreshed by every callback: how long
+    /// after the callback the audio it writes is heard (playback instant minus
+    /// callback instant). See [`latency_ns`] for the fallbacks.
+    pub output_latency_ns: AtomicU64,
+}
+
+/// Latency of one stream callback in nanoseconds.
+///
+/// `delta` is the host's timestamp difference (output: playback minus
+/// callback; input: callback minus capture). A zero `delta` means the host
+/// gave no usable timestamp, so the buffer size is used instead: `frames` at
+/// `rate` Hz. When that is unknown too (no frames or no rate) the result is 0.
+/// No allocation, no panics: safe for an audio callback.
+pub fn latency_ns(delta: Duration, frames: usize, rate: u32) -> u64 {
+    if !delta.is_zero() {
+        return u64::try_from(delta.as_nanos()).unwrap_or(u64::MAX);
+    }
+    if frames == 0 || rate == 0 {
+        return 0;
+    }
+    let ns = frames as u128 * 1_000_000_000 / u128::from(rate);
+    u64::try_from(ns).unwrap_or(u64::MAX)
+}
+
+/// Take latency in samples at the project rate: output plus input latency
+/// (nanoseconds) plus the Latency offset setting (milliseconds, may be
+/// negative), rounded to the nearest sample and never below zero.
+pub fn latency_samples(out_ns: u64, in_ns: u64, offset_ms: i32, project_rate: u32) -> u64 {
+    let total_ns = i128::from(out_ns) + i128::from(in_ns) + i128::from(offset_ms) * 1_000_000;
+    if total_ns <= 0 {
+        return 0;
+    }
+    let samples = (total_ns * i128::from(project_rate) + 500_000_000) / 1_000_000_000;
+    u64::try_from(samples).unwrap_or(u64::MAX)
+}
+
+/// Output latency of one callback from cpal's timestamps: playback instant
+/// minus callback instant (saturating at zero), with the [`latency_ns`]
+/// buffer-size fallback. `frames` is the callback's frame count.
+fn output_latency_ns(info: &OutputCallbackInfo, frames: usize, rate: u32) -> u64 {
+    let stamp = info.timestamp();
+    latency_ns(
+        stamp.playback.saturating_duration_since(stamp.callback),
+        frames,
+        rate,
+    )
 }
 
 /// The cpal output stream plus the shared state the audio callback reads.
@@ -174,6 +221,7 @@ impl Engine {
             playhead: AtomicU64::new(0),
             preview_pos: AtomicU64::new(0),
             state: AtomicU8::new(state_code(State::Stopped)),
+            output_latency_ns: AtomicU64::new(0),
         });
         let errored = Arc::new(AtomicBool::new(false));
         let (cmd_tx, cmd_rx) = bounded::<Command>(QUEUE_CAP);
@@ -194,6 +242,7 @@ impl Engine {
             preview: Arc::clone(&preview),
             shared: Arc::clone(&shared),
             channels,
+            device_rate,
             primed: false,
         };
 
@@ -205,8 +254,8 @@ impl Engine {
         // in release builds assert_no_alloc is a plain call (disable_release).
         let stream = device.build_output_stream(
             stream_config,
-            move |data: &mut [f32], _info: &OutputCallbackInfo| {
-                assert_no_alloc::assert_no_alloc(|| callback.run(data));
+            move |data: &mut [f32], info: &OutputCallbackInfo| {
+                assert_no_alloc::assert_no_alloc(|| callback.run(data, info));
             },
             error_callback,
             None,
@@ -309,13 +358,15 @@ struct Callback {
     shared: Arc<Shared>,
     /// Device channel count.
     channels: u16,
+    /// Device sample rate in Hz (the buffer-size latency fallback needs it).
+    device_rate: u32,
     /// False until the first callback has run; see [`Callback::run`].
     primed: bool,
 }
 
 impl Callback {
     /// One device callback: no allocation, no locks, no panics.
-    fn run(&mut self, data: &mut [f32]) {
+    fn run(&mut self, data: &mut [f32], info: &OutputCallbackInfo) {
         // Drain the command queue without blocking.
         while let Ok(cmd) = self.cmd_rx.try_recv() {
             self.player.handle(cmd);
@@ -359,6 +410,10 @@ impl Callback {
         self.shared
             .state
             .store(state_code(self.player.state()), Ordering::Relaxed);
+        self.shared.output_latency_ns.store(
+            output_latency_ns(info, frames, self.device_rate),
+            Ordering::Relaxed,
+        );
     }
 
     /// Largest callback chunk the scratch can serve without overflowing the
@@ -397,6 +452,96 @@ fn write_channels(target: &mut [f32], stereo: &[f32], channels: u16) {
                     target[i * n + ch] = 0.0;
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cpal::{OutputStreamTimestamp, StreamInstant};
+
+    const MS: u64 = 1_000_000;
+
+    #[test]
+    fn a_host_timestamp_difference_is_the_latency() {
+        assert_eq!(latency_ns(Duration::from_millis(25), 480, 48_000), 25 * MS);
+        // The buffer size is ignored when the host gave a timestamp.
+        assert_eq!(latency_ns(Duration::from_nanos(1), 480, 48_000), 1);
+    }
+
+    #[test]
+    fn without_a_timestamp_the_buffer_size_is_the_latency() {
+        // 480 frames at 48 kHz = 10 ms.
+        assert_eq!(latency_ns(Duration::ZERO, 480, 48_000), 10 * MS);
+        assert_eq!(latency_ns(Duration::ZERO, 441, 44_100), 10 * MS);
+    }
+
+    #[test]
+    fn without_a_timestamp_or_a_buffer_size_the_latency_is_zero() {
+        assert_eq!(latency_ns(Duration::ZERO, 0, 48_000), 0);
+        assert_eq!(latency_ns(Duration::ZERO, 480, 0), 0);
+        assert_eq!(latency_ns(Duration::ZERO, 0, 0), 0);
+    }
+
+    #[test]
+    fn latency_samples_converts_nanoseconds_at_the_project_rate() {
+        // 10 ms out + 5 ms in = 15 ms = 720 samples at 48 kHz.
+        assert_eq!(latency_samples(10 * MS, 5 * MS, 0, 48_000), 720);
+        assert_eq!(latency_samples(10 * MS, 5 * MS, 0, 44_100), 662); // 661.5 rounds up
+        assert_eq!(latency_samples(0, 0, 0, 48_000), 0);
+    }
+
+    #[test]
+    fn latency_samples_adds_the_offset_in_milliseconds() {
+        assert_eq!(latency_samples(0, 0, 100, 48_000), 4_800);
+        assert_eq!(latency_samples(10 * MS, 5 * MS, 10, 48_000), 1_200);
+        assert_eq!(latency_samples(10 * MS, 5 * MS, -5, 48_000), 480);
+    }
+
+    #[test]
+    fn latency_samples_is_never_negative() {
+        assert_eq!(latency_samples(10 * MS, 5 * MS, -100, 48_000), 0);
+        assert_eq!(latency_samples(0, 0, -1, 48_000), 0);
+        assert_eq!(latency_samples(0, 0, i32::MIN, 48_000), 0);
+        // Exactly cancelled out.
+        assert_eq!(latency_samples(10 * MS, 0, -10, 48_000), 0);
+    }
+
+    #[test]
+    fn latency_samples_survives_extreme_values() {
+        assert_eq!(latency_samples(u64::MAX, u64::MAX, i32::MAX, 192_000), {
+            let ns = u128::from(u64::MAX) * 2 + 2_147_483_647 * 1_000_000;
+            u64::try_from((ns * 192_000 + 500_000_000) / 1_000_000_000).unwrap()
+        });
+        assert_eq!(
+            latency_samples(MS, 0, 0, 0),
+            0,
+            "no project rate, no samples"
+        );
+    }
+
+    #[test]
+    fn the_output_latency_comes_from_cpal_timestamps() {
+        let stamp = OutputStreamTimestamp {
+            callback: StreamInstant::new(7, 100_000_000),
+            playback: StreamInstant::new(7, 125_000_000),
+        };
+        let info = OutputCallbackInfo::new(stamp);
+        assert_eq!(output_latency_ns(&info, 960, 48_000), 25 * MS);
+    }
+
+    #[test]
+    fn an_unusable_output_timestamp_falls_back_to_the_buffer_size() {
+        // Playback at the callback instant, or before it: no usable difference.
+        for playback in [StreamInstant::new(7, 0), StreamInstant::new(6, 0)] {
+            let info = OutputCallbackInfo::new(OutputStreamTimestamp {
+                callback: StreamInstant::new(7, 0),
+                playback,
+            });
+            assert_eq!(output_latency_ns(&info, 960, 48_000), 20 * MS);
+            // And no buffer size either: zero.
+            assert_eq!(output_latency_ns(&info, 0, 48_000), 0);
         }
     }
 }

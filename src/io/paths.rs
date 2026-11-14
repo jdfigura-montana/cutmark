@@ -143,8 +143,6 @@ pub fn unique_media_name(media_dir: &Path, file_name: &str) -> String {
 
 /// File name for a new take in media/: "rec-YYYYMMDD-HHMMSS.wav", with the
 /// same " (2)"-style clash suffix as [`unique_media_name`] when taken.
-// The take job names the WAV with it (12.2).
-#[allow(dead_code)]
 pub fn record_file_name(media_dir: &Path, now: DateTime<Local>) -> String {
     unique_media_name(
         media_dir,

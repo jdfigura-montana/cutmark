@@ -48,9 +48,12 @@ pub fn clear_range(track: &mut Track, s: u64, e: u64) {
             result.push(clip);
         } else if clip.start >= s && end <= e {
             // Entirely inside the range: remove.
-        } else if clip.start <= s && end >= e {
-            // Covers both edges: split into a left piece ending at s and a
-            // right piece starting at e with a new id.
+        } else if clip.start < s && end > e {
+            // Reaches past both edges: split into a left piece ending at s and
+            // a right piece starting at e with a new id. (Strict on both
+            // sides: a clip that starts exactly at s, or ends exactly at e,
+            // has no left or right piece and falls through to the cases below
+            // instead of leaving an empty clip behind.)
             let mut left = clip;
             let right_src_in = left.src_in + (e - left.start);
             let right_src_out = left.src_out;
@@ -486,6 +489,56 @@ mod tests {
         let mut project = project_with_clips(&[&[(100, 100)]]);
         clear_range(&mut project.tracks[0], 120, 120);
         assert_eq!(spans(&project, 0), [(100, 200)]);
+    }
+
+    #[test]
+    fn clear_range_at_a_clip_edge_leaves_no_empty_clip() {
+        // Starts exactly at the clip's start: only the tail piece remains.
+        let mut project = project_with_clips(&[&[(100, 100)]]);
+        clear_range(&mut project.tracks[0], 100, 150);
+        assert_eq!(spans(&project, 0), [(150, 200)]);
+        assert_eq!(srcs(&project, 0), [(50, 100)]);
+        assert!(crate::model::invariants::check(&project).is_ok());
+
+        // Ends exactly at the clip's end: only the head piece remains.
+        let mut project = project_with_clips(&[&[(100, 100)]]);
+        clear_range(&mut project.tracks[0], 150, 200);
+        assert_eq!(spans(&project, 0), [(100, 150)]);
+        assert_eq!(srcs(&project, 0), [(0, 50)]);
+        assert!(crate::model::invariants::check(&project).is_ok());
+
+        // Exactly the clip, and a range reaching past both its edges: it is gone.
+        for (s, e) in [(100, 200), (50, 250), (100, 250), (50, 200)] {
+            let mut project = project_with_clips(&[&[(100, 100)]]);
+            clear_range(&mut project.tracks[0], s, e);
+            assert!(project.tracks[0].clips.is_empty(), "{s}..{e}");
+        }
+
+        // Strictly inside still splits in two.
+        let mut project = project_with_clips(&[&[(100, 100)]]);
+        clear_range(&mut project.tracks[0], 101, 199);
+        assert_eq!(spans(&project, 0), [(100, 101), (199, 200)]);
+    }
+
+    #[test]
+    fn place_overwrite_at_the_exact_start_of_a_longer_clip() {
+        // The re-take case: a new clip lands where an older one starts.
+        let mut project = project_with_clips(&[&[(0, 100)]]);
+        let media_id = project.tracks[0].clips[0].media_id;
+        let clip = Clip {
+            id: Uuid::new_v4(),
+            media_id,
+            start: 0,
+            src_in: 0,
+            src_out: 40,
+            gain_db: 0.0,
+            fade_in: 0,
+            fade_out: 0,
+        };
+        place_overwrite(&mut project.tracks[0], clip);
+        assert_eq!(spans(&project, 0), [(0, 40), (40, 100)]);
+        assert_eq!(srcs(&project, 0), [(0, 40), (40, 100)]);
+        assert!(crate::model::invariants::check(&project).is_ok());
     }
 
     #[test]

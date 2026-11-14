@@ -10,7 +10,7 @@ use cpal::{
 };
 use rtrb::Producer;
 
-use crate::audio::engine::AudioError;
+use crate::audio::engine::{AudioError, latency_ns};
 use crate::audio::meters::{ChannelMeter, StereoMeter};
 
 /// Name shown when the device cannot report one.
@@ -170,6 +170,19 @@ fn record_block<S: InputSample>(
     u64::try_from(dropped).unwrap_or(u64::MAX)
 }
 
+/// Input latency of one callback from cpal's timestamps: callback instant
+/// minus capture instant (saturating at zero), with the buffer-size fallback of
+/// [`latency_ns`]. `frames` is the callback's frame count. No allocation, no
+/// panics: safe for the input callback.
+fn input_latency_ns(info: &InputCallbackInfo, frames: usize, rate: u32) -> u64 {
+    let stamp = info.timestamp();
+    latency_ns(
+        stamp.callback.saturating_duration_since(stamp.capture),
+        frames,
+        rate,
+    )
+}
+
 /// True for stream errors that mean the capture has stopped. A reroute to a
 /// new default device, a buffer glitch and a refused real-time priority all
 /// leave the stream running, so they must not read as a lost device.
@@ -260,9 +273,7 @@ pub fn device_channels(name: Option<&str>) -> Option<u16> {
 /// Name, sample rate and channel count of the device [`InputStream::open`]
 /// would use (the named device, else the Windows default input), resolved the
 /// same way `open` resolves them, including the best-config ranking. Opens
-/// nothing.
-// The Editor sizes the recording ring from it (12.2).
-#[allow(dead_code)]
+/// nothing. The Editor sizes the recording ring from it.
 pub fn probe_input(device: Option<&str>) -> Result<(String, u32, u16), AudioError> {
     let host = cpal::default_host();
     let (device, _) = choose_device(&host, device)?;
@@ -298,8 +309,9 @@ fn choose_device(host: &cpal::Host, wanted: Option<&str>) -> Result<(Device, boo
 }
 
 /// Builds the capture stream for sample type `S`. The data callback meters the
-/// picked channels and, while the recording flag is set, pushes whole frames
-/// into the ring; the error callback only sets a flag.
+/// picked channels, stores the capture-to-callback latency and, while the
+/// recording flag is set, pushes whole frames into the ring; the error
+/// callback only sets a flag.
 // The parameters mirror what cpal needs: the device, its config and everything
 // the callback touches.
 #[allow(clippy::too_many_arguments)]
@@ -311,16 +323,20 @@ fn build_stream<S>(
     mut producer: Producer<f32>,
     recording: Arc<AtomicBool>,
     dropped: Arc<AtomicU64>,
+    latency: Arc<AtomicU64>,
     errored: Arc<AtomicBool>,
 ) -> Result<Stream, cpal::Error>
 where
     S: InputSample + SizedSample + Send + 'static,
 {
     let channels = config.channels;
+    let rate = config.sample_rate;
     device.build_input_stream(
         config,
-        move |data: &[S], _info: &InputCallbackInfo| {
+        move |data: &[S], info: &InputCallbackInfo| {
             assert_no_alloc::assert_no_alloc(|| {
+                let frames = data.len().checked_div(usize::from(channels)).unwrap_or(0);
+                latency.store(input_latency_ns(info, frames, rate), Ordering::Relaxed);
                 meter_block(data, channels, pick, &meter);
                 let dropped_frames = record_block(
                     data,
@@ -362,6 +378,9 @@ pub struct InputStream {
     recording: Arc<AtomicBool>,
     /// Whole frames dropped because the ring was full.
     dropped: Arc<AtomicU64>,
+    /// Input latency in nanoseconds, refreshed by every callback: callback
+    /// instant minus capture instant (see [`latency_ns`] for the fallbacks).
+    latency: Arc<AtomicU64>,
     /// Set by the stream error callback instead of logging.
     errored: Arc<AtomicBool>,
 }
@@ -408,6 +427,7 @@ impl InputStream {
         let errored = Arc::new(AtomicBool::new(false));
         let recording = Arc::new(AtomicBool::new(false));
         let dropped = Arc::new(AtomicU64::new(0));
+        let latency = Arc::new(AtomicU64::new(0));
         let config = supported.config();
         let stream = match supported.sample_format() {
             SampleFormat::F32 => build_stream::<f32>(
@@ -418,6 +438,7 @@ impl InputStream {
                 producer,
                 Arc::clone(&recording),
                 Arc::clone(&dropped),
+                Arc::clone(&latency),
                 Arc::clone(&errored),
             ),
             SampleFormat::I16 => build_stream::<i16>(
@@ -428,6 +449,7 @@ impl InputStream {
                 producer,
                 Arc::clone(&recording),
                 Arc::clone(&dropped),
+                Arc::clone(&latency),
                 Arc::clone(&errored),
             ),
             SampleFormat::U16 => build_stream::<u16>(
@@ -438,6 +460,7 @@ impl InputStream {
                 producer,
                 Arc::clone(&recording),
                 Arc::clone(&dropped),
+                Arc::clone(&latency),
                 Arc::clone(&errored),
             ),
             _ => return Err(AudioError::NoInputFormat(name)),
@@ -453,12 +476,13 @@ impl InputStream {
             device_channels: have,
             recording,
             dropped,
+            latency,
             errored,
         })
     }
 
     /// Display name of the device actually opened.
-    // The take message names the device with it (12.2).
+    // Nothing shows it yet: a take message could name the device.
     #[allow(dead_code)]
     pub fn device_name(&self) -> &str {
         &self.device_name
@@ -470,39 +494,35 @@ impl InputStream {
     }
 
     /// Device sample rate in Hz.
-    // The record writer needs it to resample to the project rate (12.2).
-    #[allow(dead_code)]
     pub fn device_rate(&self) -> u32 {
         self.device_rate
     }
 
     /// Device channel count.
-    // The record writer needs it to pick the channels from the ring (12.2).
-    #[allow(dead_code)]
     pub fn device_channels(&self) -> u16 {
         self.device_channels
     }
 
     /// Turns recording on or off: the callback starts or stops pushing whole
     /// frames into the ring.
-    // The Editor sets it around a take (12.2).
-    #[allow(dead_code)]
     pub fn set_recording(&self, on: bool) {
         self.recording.store(on, Ordering::Release);
     }
 
     /// Whole frames dropped so far because the ring was full.
-    // The Editor reads it after a take for the dropped-ms message (12.2).
-    #[allow(dead_code)]
     pub fn dropped_frames(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
     }
 
     /// Resets the dropped-frames counter to 0 (before a new take).
-    // The Editor resets it when a take starts (12.2).
-    #[allow(dead_code)]
     pub fn reset_dropped(&self) {
         self.dropped.store(0, Ordering::Relaxed);
+    }
+
+    /// Input latency in nanoseconds as of the latest callback (0 until the
+    /// first callback has run).
+    pub fn latency_ns(&self) -> u64 {
+        self.latency.load(Ordering::Relaxed)
     }
 
     /// True once the stream error callback has reported a fatal error.
@@ -849,5 +869,40 @@ mod tests {
             range(2, 48_000, SampleFormat::F64),
         ];
         assert_eq!(best_config(default, others), None);
+    }
+
+    /// An input callback info whose capture was `before_ms` before the callback.
+    fn info_with_capture(before_ms: u32) -> InputCallbackInfo {
+        use cpal::{InputStreamTimestamp, StreamInstant};
+        InputCallbackInfo::new(InputStreamTimestamp {
+            callback: StreamInstant::new(3, 500_000_000),
+            capture: StreamInstant::new(3, 500_000_000 - before_ms * 1_000_000),
+        })
+    }
+
+    #[test]
+    fn the_input_latency_is_callback_minus_capture() {
+        assert_eq!(
+            input_latency_ns(&info_with_capture(12), 480, 48_000),
+            12_000_000
+        );
+    }
+
+    #[test]
+    fn an_unusable_input_timestamp_falls_back_to_the_buffer_size() {
+        // Capture at the callback instant: no usable difference, so one buffer.
+        assert_eq!(
+            input_latency_ns(&info_with_capture(0), 480, 48_000),
+            10_000_000
+        );
+        // Capture after the callback saturates to zero, with the same fallback.
+        use cpal::{InputStreamTimestamp, StreamInstant};
+        let backwards = InputCallbackInfo::new(InputStreamTimestamp {
+            callback: StreamInstant::new(3, 0),
+            capture: StreamInstant::new(4, 0),
+        });
+        assert_eq!(input_latency_ns(&backwards, 441, 44_100), 10_000_000);
+        // No buffer size known either: zero.
+        assert_eq!(input_latency_ns(&backwards, 0, 44_100), 0);
     }
 }
