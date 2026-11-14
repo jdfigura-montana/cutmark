@@ -14,6 +14,7 @@ A personal, Windows-only, multitrack audio editor named **CutMark Audio Editor**
 - **Timeline model** — Project/MediaItem/Track/Clip/Marker structs and unit-tested invariants.
 - **Waveform display and timeline UI** — window layout, ruler, peaks, zoom/scroll, clip anatomy, selection, snapping.
 - **Transport and scrubbing** — play/stop/pause, play selection, playback-time edits, audible scrubbing.
+- **Recording** — arm a track, record one input onto it, Audio Settings, latency compensation, take placement.
 - **Core editing** — split/trim/move/paste/delete/ripple and undo semantics.
 - **Levels, processing, markers, export, keyboard shortcuts** — mixer controls, gain/normalize/fades, markers, two-pass WAV/MP3 export, shortcut table.
 - **Code architecture** — five sealed layers, the src/ source tree (exact file list), layer rules, thread model.
@@ -21,4 +22,4 @@ A personal, Windows-only, multitrack audio editor named **CutMark Audio Editor**
 - **Out of scope and defaults to review** — v1 non-goals and chosen defaults.
 
 ## Build phases (progress tracked in progress.md)
-1. Skeleton → 2. Model/undo core → 3. Media import → 4. Timeline view → 5. Playback → 6. Editing → 7. Levels/processing → 8. Markers/scrubbing → 9. Export → 10. Safety net/polish.
+1. Skeleton → 2. Model/undo core → 3. Media import → 4. Timeline view → 5. Playback → 6. Editing → 7. Levels/processing → 8. Markers/scrubbing → 9. Export → 10. Safety net/polish → 11. Input and arming → 12. Recording.

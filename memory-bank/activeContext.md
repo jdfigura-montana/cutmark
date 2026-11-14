@@ -1,4 +1,7 @@
 ## Current state
+SPEC 1.1 merge DONE (2026-11-14, docs only, no code): docs/SPEC.md now carries the 1.1 Recording spec from docs/SPEC-recording-1.1.md, which was deleted after the merge. New Recording section between Transport and scrubbing and Core editing. Also: Audio I/O and rtrb rows, Record transport row, toolbar Record button, track Arm button, source tree (editor/record.rs, audio/input.rs, io/record_writer.rs, io/config.rs, ui/dialogs/audio_settings.rs), layer rule 6, input and record writer threads, Ctrl+R shortcut, build phases 11 and 12, out-of-scope list, six Recording defaults. Title line already matched. Version target 1.1.0 not started. No code changed, so no cargo run.
+
+## Current state
 Windows installer DONE (2026-10-27): installer\cutmark.iss (fixed AppId {33A79C24-EFF1-4C51-9F84-B7C35CD05F71}, per-user lowest+dialog override, {autopf}\CutMark, desktop-icon task unchecked, CloseApplications=yes, launch-on-finish, publisher JD, output dist\CutMark-Setup-<version>.exe). Installs exe + licenses\ (README.md, THIRD_PARTY.txt, LGPL-3.0.txt for LAME, OFL font licences from assets\fonts). build.rs embeds icon + FileDescription/ProductName "CutMark Audio Editor" + version via winresource (already existed). scripts\build-installer.ps1: fails if cutmark.exe running, cargo build --release, finds ISCC under Program Files/(x86)/%LOCALAPPDATA%\Programs, /DAppVersion from Cargo.toml. .gitignore already had dist/.
 
 ## Current state

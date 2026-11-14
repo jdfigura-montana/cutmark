@@ -101,7 +101,7 @@ Task 8.1 DONE (2026-10-13). Markers: Editor selected_marker/select_marker/add_ma
 - Phase 2 complete: model/undo core, editor ops, io (paths, project_file, recent), start screen, menus, dialogs (1.1-2.8).
 
 ## What is left (SPEC Build phases)
-3. Media import complete. 4. Timeline view (complete through 4.5). 5. Playback. 6. Editing. 7. Levels/processing: 7.1 amplitude ops DONE, 7.2 meters DONE, 7.3 header controls DONE, 7.4 clip gain line/fade handles/Clip Gain dialog DONE; 7.5 Gain/Normalize/Fade/Silence menu+keys DONE. 8. Markers/scrub UI DONE. 9. Export DONE (9.1 sinks, 9.2 editor job, 9.3 dialog/progress/warning). 10. Safety net/polish: 10.1 autosave/recovery DONE, 10.2 close prompts DONE, 10.3 missing media notice + relink DONE (unused media cleanup remains).
+3. Media import complete. 4. Timeline view (complete through 4.5). 5. Playback. 6. Editing. 7. Levels/processing: 7.1 amplitude ops DONE, 7.2 meters DONE, 7.3 header controls DONE, 7.4 clip gain line/fade handles/Clip Gain dialog DONE; 7.5 Gain/Normalize/Fade/Silence menu+keys DONE. 8. Markers/scrub UI DONE. 9. Export DONE (9.1 sinks, 9.2 editor job, 9.3 dialog/progress/warning). 10. Safety net/polish: 10.1 autosave/recovery DONE, 10.2 close prompts DONE, 10.3 missing media notice + relink DONE (unused media cleanup remains). 11. Input and arming: NOT STARTED. 12. Recording: NOT STARTED. Version target 1.1.0 (SPEC Recording section).
 
 ## Known issues / environment notes
 - cargo not on default PATH; append $env:USERPROFILE\.cargo\bin each session.

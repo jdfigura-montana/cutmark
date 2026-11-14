@@ -21,7 +21,8 @@ Target: Windows 10 and 11, x64, single executable. Rust stable, edition 2021. Us
 | Job | Crate | Notes |
 | --- | --- | --- |
 | GUI | `eframe` / `egui` | Immediate mode. Timeline and waveforms drawn with the egui painter. |
-| Audio output | `cpal` | WASAPI backend, default output device. |
+| Audio I/O | `cpal` | WASAPI backend, default output device, input device chosen in Audio Settings. |
+| Recording ring buffer | `rtrb` | Lock-free single-producer single-consumer ring from the input callback to the writer thread. |
 | Decode WAV and MP3 | `symphonia` | Features: `wav`, `mp3`, `pcm`. |
 | Write WAV | `hound` | 16-bit, 24-bit int, 32-bit float. |
 | Encode MP3 | `mp3lame-encoder` | Wraps LAME. CBR only. |
@@ -174,13 +175,13 @@ struct Marker {
 
 **Window layout:**
 
-- Top: menu bar, then a toolbar (transport buttons, Ripple toggle, Snap toggle, Add Track).
+- Top: menu bar, then a toolbar (transport buttons, Record button after Stop, Ripple toggle, Snap toggle, Add Track).
 - Left: media bin panel, resizable.
 - Center: timeline. Ruler across the top, track headers on the left, track lanes to the right.
 - Right: master strip with the master fader, master meter, clip light and peak readout.
 - Bottom: status bar showing playhead time, selection start / end / length, project sample rate.
 
-**Track header:** name (double-click to rename), volume slider in dB, pan knob or slider, M and S buttons, a stereo peak and RMS meter with clip light, and a drag handle to reorder tracks. Right-click: Rename, Delete Track, Add Track Above / Below.
+**Track header:** name (double-click to rename), volume slider in dB, pan knob or slider, M and S buttons, an Arm button next to them, a stereo peak and RMS meter with clip light, and a drag handle to reorder tracks. Right-click: Rename, Delete Track, Add Track Above / Below.
 
 **Ruler:** timecode as `HH:MM:SS.mmm`, tick spacing adapts to zoom. Markers draw on the ruler as small triangles with a faint line down through all tracks.
 
@@ -238,6 +239,7 @@ On empty lane space: click sets the playhead and clears selection; drag makes a 
 | Jump to start | Home | Playhead to 0. |
 | Jump to end | End | Playhead to project end. |
 | Previous / next marker | , and . | Playhead jumps to the marker. |
+| Record | Ctrl+R | Records onto the armed track from the playhead (see Recording). |
 
 Play from cursor is the default Play: wherever the playhead sits is where playback starts.
 
@@ -254,6 +256,62 @@ Play from cursor is the default Play: wherever the playhead sits is where playba
 3. Speed is clamped to 4x in either direction. Holding still is silent.
 4. Reading uses linear interpolation between samples, with a short smoothing ramp so speed changes don't click.
 5. On release, the playhead stays where you let go.
+
+## Recording
+
+Record from one input device onto one armed track, while the other tracks play. Takes are plain WAV files in `media/` and become normal bin items and clips.
+
+**Audio Settings** (Project menu > Audio Settings...):
+
+| Setting | Options | Default |
+| --- | --- | --- |
+| Input device | Windows input devices, by name | Windows default input |
+| Record channels | Mono (input 1), Mono (input 2), Stereo (inputs 1+2) | Mono (input 1) |
+| Latency offset | -100 to +100 ms, added on top of automatic compensation | 0 ms |
+
+1. Stored in the app config at `%APPDATA%\CutMark\config.json`, not in the project.
+2. If the saved device is missing at launch, fall back to the Windows default input and show "Input device <name> not found. Using the default input."
+3. A device with only 1 channel greys out Mono (input 2) and Stereo.
+
+**Arming:**
+
+1. Each track header gets an Arm button (round, red when armed) next to M and S.
+2. One armed track at a time. Arming a track disarms the others.
+3. Arm state is editor state: not saved, not undoable, not dirty.
+4. While a track is armed, the input stream is open and that track's header meter shows the **input** level (stopped or recording). Disarming closes the input stream.
+5. If the input device can't open, the Arm button stays off and shows the error.
+
+**Record** (toolbar Record button, or `Ctrl+R`):
+
+1. No armed track: show "Arm a track first" and do nothing.
+2. Recording starts at the playhead. All other unmuted tracks play from the same point (overdub). The armed track's existing clips also play.
+3. No monitoring: the input is never sent to the speakers.
+4. While recording, a red clip grows on the armed track from the record start, with a live waveform.
+5. Stop (`Space` or Stop button) ends the take and keeps it. `Esc` ends the take and discards it.
+6. During recording, editing is locked (same lock as export). Allowed: Stop, Esc, `M` (add marker), zoom and scroll. Not allowed: seek, scrub, Pause, play selection, all edits.
+7. The view pages to follow the playhead, same as playback.
+
+**Writing the take:**
+
+1. The input callback pushes samples into a lock-free ring buffer (2 seconds at the device rate). Audio thread rules apply to the input callback (no allocation, locks, I/O, logging or panics).
+2. A worker thread drains the ring, picks the record channels, resamples to the project rate with `StreamResampler` if the device rate differs, and streams a **24-bit WAV at the project rate** to `media/rec-YYYYMMDD-HHMMSS.wav.part`.
+3. The worker sends min/max pairs per 1,024 samples to the UI for the live waveform.
+4. If the ring overflows, the worker counts the dropped frames. After the take: "The recording dropped <N> ms of audio."
+5. On Stop: finish the WAV, rename `.part` to `.wav`, then run the normal import conform (cache f32 + peaks) on it without copying (it is already in `media/`).
+6. On Esc, a device error, or a failed write: delete the `.part`. Device lost mid-take: keep what was captured up to that point, then show "Recording stopped: input device lost."
+
+**Placing the take:**
+
+1. Adds a bin item named `Take <n>` (n counts up per project, starting at 1) and places one clip on the armed track at the record start. Overwrite rules apply (Timeline model, rule 1).
+2. Bin item and clip are added as **one undo step**, labeled "Record". Undo removes both; the file is cleaned up on the next Save (existing unused-media cleanup).
+
+**Latency compensation:**
+
+1. Take latency `L` = output latency + input latency, measured from cpal stream timestamps at record start, plus the Latency offset setting. Converted to samples at the project rate, never negative.
+2. The clip keeps `start` = record start and sets `src_in = L`, so what you played lands where you heard it. The first `L` samples of the file are hidden, not deleted.
+3. If cpal reports no timestamps, use the device's reported buffer sizes instead. If that fails too, `L` = Latency offset only.
+
+**Signal path for recording:** input device, channel pick, resample to project rate, WAV file. No gain, no meter after the file. The header meter reads the input before the file.
 
 ## Core editing
 
@@ -447,10 +505,12 @@ src/
   editor/                 the only code that changes a Project
     editor.rs  action.rs  history.rs  selection.rs  clipboard.rs  snap.rs
     transport.rs          forwards play / pause / stop / seek / scrub to audio
+    record.rs             arm state, start / stop / cancel, places the take
     jobs.rs               runs import and export on worker threads
     ops/  range.rs  paste.rs  clip.rs  amplitude.rs  track.rs  marker.rs  media.rs
   audio/                  no file access
     engine.rs             cpal stream, owns the callback
+    input.rs              cpal input stream, ring producer, input meter atomics
     mix_plan.rs           Project + media buffers, handed over by the editor
     mixer.rs              render(plan, start, frames) -> stereo f32; also used by export
     scrub.rs              variable-speed reader
@@ -459,11 +519,12 @@ src/
     decode.rs  resample.rs  peaks.rs  import.rs    media in
     wav.rs  mp3.rs                                 audio out
     project_file.rs  autosave.rs  recent.rs  paths.rs
+    record_writer.rs  config.rs
   ui/                     talks only to editor
     start_screen.rs  menu.rs  toolbar.rs  status_bar.rs  bin_panel.rs  master_strip.rs
     timeline/  ruler.rs  track_header.rs  lane.rs  clip_view.rs  waveform.rs  interaction.rs
     widgets/  meter.rs  fader.rs
-    dialogs/  new_project.rs  export.rs  gain.rs  normalize.rs  confirm.rs
+    dialogs/  new_project.rs  export.rs  gain.rs  normalize.rs  confirm.rs  audio_settings.rs
   util/
     time.rs               samples <-> timecode
     db.rs                 dB <-> linear
@@ -476,11 +537,14 @@ src/
 3. `audio` never touches files. `io` never plays audio. They never call each other.
 4. `model` depends on nothing. `util` holds shared helpers only.
 5. Only `ui` and `app` import `egui`. Only `audio` imports `cpal`.
+6. `audio::input` owns the ring producer; `io::record_writer` owns the consumer. The `Editor` creates the ring and hands each end over. `audio` and `io` still never call each other.
 
 **Threads:**
 
 - **UI thread:** runs the `ui` layer and owns the `Editor`. The Editor builds a new `MixPlan` after every change and publishes it with `ArcSwap`.
 - **Audio thread** (the `cpal` callback): reads the latest `MixPlan`, calls `mixer::render`, writes the playhead to an `AtomicU64` and meter values to atomics.
+- **Input thread** (the `cpal` input callback): pushes frames into the ring, writes input meter values to atomics. Same rules as the audio thread.
+- **Record writer** (worker thread started by `editor::jobs`): drains the ring and writes the take.
 - **Worker threads:** started by `editor::jobs` for import, conform, peaks and export. Report progress and results back to the Editor over `crossbeam-channel`.
 - Editor to audio commands (play, pause, stop, seek, scrub target) go over a bounded `crossbeam-channel`.
 
@@ -511,6 +575,7 @@ Shortcuts only fire when no text field has focus.
 | Transport | Shift+Space | Play selection |
 | Transport | P | Pause |
 | Transport | Home / End | Jump to start / end |
+| Transport | Ctrl+R | Record |
 | Markers | M | Add marker at playhead |
 | Markers | , / . | Previous / next marker |
 | Edit | Ctrl+Z / Ctrl+Y | Undo / Redo (Ctrl+Shift+Z also redoes) |
@@ -555,13 +620,20 @@ Each phase ends with something you can run and check. Don't start a phase until 
    - Check: export, re-import the result into a new track, and confirm it lines up and sounds the same.
 10. **Safety net and polish.** Autosave and recovery, missing media and relink, unsaved-changes prompts, unused media cleanup on Save.
     - Check: kill the app mid-edit; reopening offers the autosave.
+11. **Input and arming.** App config file, Audio Settings dialog, input stream, Arm buttons, input level on the armed track's meter.
+    - Check: arm a track, talk, see the meter move; change the input device and channel mode, restart the app, settings are kept.
+12. **Recording.** Ring buffer, record writer, Record / Stop / Esc, live waveform, take placement as one undo step, latency compensation, editing lock.
+    - Check: play a click track, record yourself clapping along for 30 s, zoom in: claps sit on the clicks within 2 ms. Undo removes the take; Save removes its file.
 
 ## Out of scope and defaults to review
 
 **Not in v1:**
 
 - File formats other than WAV and MP3 (no AAC, FLAC, OGG); files with more than 2 channels
-- Recording
+- Punch in / out, loop recording, take lanes
+- Recording more than one track at a time
+- Input monitoring through the app
+- ASIO
 - Effects, plugins, real-time FX
 - Volume or pan automation envelopes
 - Crossfades between overlapping clips (overlaps overwrite instead)
@@ -588,6 +660,12 @@ Each phase ends with something you can run and check. Don't start a phase until 
 | Snapping | 8 px, Alt bypasses during a drag |
 | Recent projects | Last 10 |
 | Media size | All conformed media held in RAM, about 1 hour of stereo per project |
+| Record format | 24-bit WAV at the project rate |
+| Record channels | Mono (input 1) |
+| Armed tracks | One at a time |
+| Monitoring | Off |
+| Latency offset | 0 ms, on top of automatic compensation |
+| Recording ring buffer | 2 seconds |
 
 **Markers** (position only, no names):
 
