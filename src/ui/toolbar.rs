@@ -20,16 +20,23 @@ const BOX_RADIUS: f32 = 7.0;
 /// Font size of the toolbar timecode.
 const TIMECODE_SIZE: f32 = 17.0;
 
-/// Draws the toolbar row inside its panel.
+/// Draws the toolbar row inside its panel; returns the messages for the user
+/// (a Record click that could not start).
 ///
-/// Left to right: the recessed transport group (Home, Play, Pause, Stop, End),
-/// the recessed timecode box, then the Ripple and Snap toggles and the Add
-/// Track button. Right aligned: the "WAVE SCALE" caption, its slider and its
-/// value, a logarithmic vertical waveform scale from 1x to 16x (double-click
-/// resets to 1x, display only, never changes the audio).
-pub fn show(ui: &mut egui::Ui, editor: &mut Editor) {
+/// Left to right: the recessed transport group (Home, Play, Pause, Stop,
+/// Record, End), the recessed timecode box, then the Ripple and Snap toggles
+/// and the Add Track button. Right aligned: the "WAVE SCALE" caption, its
+/// slider and its value, a logarithmic vertical waveform scale from 1x to 16x
+/// (double-click resets to 1x, display only, never changes the audio).
+///
+/// While a take is recorded the Play and Stop buttons end it, Home, Pause and
+/// End are disabled, the timecode shows the record position and the editing
+/// toggles are disabled.
+pub fn show(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<String> {
+    let mut messages = Vec::new();
+    let recording = editor.is_recording();
     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-        transport_group(ui, editor);
+        messages.extend(transport_group(ui, editor));
         ui.add_space(GROUP_GAP);
         timecode_box(ui, editor);
         ui.add_space(GROUP_GAP);
@@ -40,6 +47,7 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor) {
             fill::SCISSORS,
             editor.view.ripple,
             "Ripple edit (R)",
+            !recording,
             || editor.toggle_ripple(),
         );
         divider(ui);
@@ -49,11 +57,15 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor) {
             fill::MAGNET,
             editor.view.snap,
             "Snapping (N)",
+            !recording,
             || editor.toggle_snap(),
         );
         ui.add_space(GROUP_GAP);
         if ui
-            .add(egui::Button::new(format!("{} Add Track", fill::PLUS)))
+            .add_enabled(
+                !recording,
+                egui::Button::new(format!("{} Add Track", fill::PLUS)),
+            )
             .on_hover_text("Add a new track (Ctrl+Shift+T)")
             .clicked()
         {
@@ -102,10 +114,16 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor) {
             );
         });
     });
+    messages
 }
 
-/// The recessed transport group: jump start, play/stop, pause, stop and end.
-fn transport_group(ui: &mut egui::Ui, editor: &mut Editor) {
+/// The recessed transport group: jump start, play/stop, pause, stop, record
+/// and end. Returns the messages for the user (Record could not start).
+fn transport_group(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<String> {
+    let mut messages = Vec::new();
+    // While recording, Play and Stop both end the take; Home, Pause and End
+    // are off (the editor refuses them too).
+    let recording = editor.is_recording();
     egui::Frame::new()
         .fill(THEME.bar_bg)
         .stroke(egui::Stroke::new(THEME.hairline, THEME.control_border))
@@ -114,37 +132,38 @@ fn transport_group(ui: &mut egui::Ui, editor: &mut Editor) {
         .show(ui, |ui| {
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
-                if icon_button(ui, fill::SKIP_BACK, THEME.text_normal)
+                if icon_button(ui, fill::SKIP_BACK, THEME.text_normal, !recording)
                     .on_hover_text("Jump to start (Home)")
                     .clicked()
                 {
                     editor.jump_start();
                 }
-                let playing = editor.transport_state() == TransportState::Playing;
+                let playing = editor.transport_state() == TransportState::Playing || recording;
                 let (glyph, color, tooltip) = if playing {
                     (fill::STOP, THEME.text_normal, "Stop (Space)")
                 } else {
                     (fill::PLAY, THEME.play_green, "Play (Space)")
                 };
-                if icon_button(ui, glyph, color)
+                if icon_button(ui, glyph, color, true)
                     .on_hover_text(tooltip)
                     .clicked()
                 {
                     editor.toggle_play();
                 }
-                if icon_button(ui, fill::PAUSE, THEME.text_normal)
+                if icon_button(ui, fill::PAUSE, THEME.text_normal, !recording)
                     .on_hover_text("Pause (P)")
                     .clicked()
                 {
                     editor.toggle_pause();
                 }
-                if icon_button(ui, fill::STOP, THEME.text_normal)
+                if icon_button(ui, fill::STOP, THEME.text_normal, true)
                     .on_hover_text("Stop")
                     .clicked()
                 {
                     editor.stop();
                 }
-                if icon_button(ui, fill::SKIP_FORWARD, THEME.text_normal)
+                messages.extend(record_button(ui, editor));
+                if icon_button(ui, fill::SKIP_FORWARD, THEME.text_normal, !recording)
                     .on_hover_text("Jump to end (End)")
                     .clicked()
                 {
@@ -152,19 +171,69 @@ fn transport_group(ui: &mut egui::Ui, editor: &mut Editor) {
                 }
             });
         });
+    messages
 }
 
-/// One 34x30 icon button.
-fn icon_button(ui: &mut egui::Ui, icon: &str, color: egui::Color32) -> egui::Response {
+/// The round Record button after Stop: a `record_red` record glyph; while a
+/// take is being captured a `record_red` disc with a white glyph. A click
+/// starts a take when idle and ends it (keeping it) while recording. A take
+/// that was already stopped and is being saved ignores clicks. Returns the
+/// reason a take could not start ("Arm a track first", ...).
+fn record_button(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<String> {
+    let live = editor.take_is_live();
+    let saving = editor.is_recording() && !live;
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(THEME.record_btn_d, THEME.record_btn_d),
+        egui::Sense::click(),
+    );
+    let painter = ui.painter();
+    if live {
+        painter.circle_filled(rect.center(), THEME.record_btn_d * 0.5, THEME.record_red);
+    } else if response.hovered() && !saving {
+        painter.circle_filled(rect.center(), THEME.record_btn_d * 0.5, THEME.control_fill);
+    }
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        fill::RECORD,
+        egui::FontId::proportional(THEME.record_btn_glyph),
+        if live {
+            THEME.on_record_glyph
+        } else {
+            THEME.record_red
+        },
+    );
+    let clicked = response.on_hover_text("Record (Ctrl+R)").clicked();
+    let mut messages = Vec::new();
+    if clicked && live {
+        editor.stop_recording();
+    } else if clicked
+        && !saving
+        && let Err(error) = editor.start_recording()
+    {
+        messages.push(error.to_string());
+    }
+    messages
+}
+
+/// One 34x30 icon button; a disabled one is drawn faded and ignores clicks.
+fn icon_button(
+    ui: &mut egui::Ui,
+    icon: &str,
+    color: egui::Color32,
+    enabled: bool,
+) -> egui::Response {
     let button = egui::Button::new(egui::RichText::new(icon).color(color).size(14.0))
         .min_size(TRANSPORT_BTN)
         .frame(false);
-    ui.add(button)
+    ui.add_enabled(enabled, button)
 }
 
-/// The recessed timecode box showing the playhead time.
+/// The recessed timecode box showing the playhead time (the record position
+/// while a take exists).
 fn timecode_box(ui: &mut egui::Ui, editor: &Editor) {
-    let timecode = samples_to_timecode(editor.view.playhead, editor.project.sample_rate);
+    let position = editor.record_playhead().unwrap_or(editor.view.playhead);
+    let timecode = samples_to_timecode(position, editor.project.sample_rate);
     egui::Frame::new()
         .fill(THEME.recessed_a)
         .stroke(egui::Stroke::new(THEME.hairline, THEME.control_border))
@@ -193,6 +262,7 @@ fn toggle_button(
     icon: &str,
     on: bool,
     tooltip: &str,
+    enabled: bool,
     toggle: impl FnOnce(),
 ) {
     let icon_color = if on { THEME.accent } else { THEME.text_normal };
@@ -205,7 +275,11 @@ fn toggle_button(
             .fill(THEME.accent_soft)
             .stroke(egui::Stroke::new(THEME.hairline, THEME.accent));
     }
-    if ui.add(button).on_hover_text(tooltip).clicked() {
+    if ui
+        .add_enabled(enabled, button)
+        .on_hover_text(tooltip)
+        .clicked()
+    {
         toggle();
     }
 }

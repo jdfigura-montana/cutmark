@@ -165,6 +165,60 @@ impl ExportCloseDialog {
     }
 }
 
+/// What the user chose in the recording-in-progress close prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordCloseChoice {
+    /// End the take and keep it, then continue closing.
+    KeepTake,
+    /// End the take and throw it away, then continue closing.
+    Discard,
+    /// Keep recording; the close is aborted.
+    Cancel,
+}
+
+/// Modal shown when quitting, opening or closing while a take is recording:
+/// "A recording is in progress." with Keep Take, Discard and Cancel.
+pub struct RecordCloseDialog;
+
+impl RecordCloseDialog {
+    /// Shows the modal. Enter keeps the take; Esc, the backdrop and Cancel
+    /// leave the recording running.
+    pub fn show(&self, ctx: &egui::Context) -> Option<RecordCloseChoice> {
+        let mut choice = None;
+        let response = super::modal("record_close_dialog").show(ctx, |ui| {
+            super::card_width(ui, THEME.dialog_w);
+            super::title(ui, "Recording");
+            ui.add_space(THEME.space_xs);
+            super::description(ui, "A recording is in progress.");
+            super::before_form(ui);
+            super::footer(ui, |ui| {
+                if super::footer_button(ui, "Keep Take", super::FooterButton::Primary, true)
+                    .clicked()
+                {
+                    choice = Some(RecordCloseChoice::KeepTake);
+                }
+                if super::footer_button(ui, "Discard", super::FooterButton::Destructive, true)
+                    .clicked()
+                {
+                    choice = Some(RecordCloseChoice::Discard);
+                }
+                if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
+                    choice = Some(RecordCloseChoice::Cancel);
+                }
+            });
+            // Enter keeps the take (nothing is lost).
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                choice = Some(RecordCloseChoice::KeepTake);
+            }
+        });
+        // Esc and the backdrop cancel the close.
+        if choice.is_none() && response.should_close() {
+            choice = Some(RecordCloseChoice::Cancel);
+        }
+        choice
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

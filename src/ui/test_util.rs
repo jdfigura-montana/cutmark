@@ -30,6 +30,56 @@ pub fn within_secs<T: Send + 'static>(
     }
 }
 
+/// An editor over a real project folder with the given tracks (clips as
+/// `(start, len)` pairs), the first track armed on the test input double, so a
+/// take can be recorded without any audio device. The caller keeps the
+/// returned folder alive for as long as the editor is used.
+pub fn armed_editor(
+    tracks: &[&[(u64, u64)]],
+    name: &str,
+) -> (crate::editor::Editor, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let paths = crate::io::paths::create_layout(dir.path(), name).expect("layout");
+    let mut editor = crate::editor::Editor::with_project(
+        crate::model::fixtures::project_with_clips(tracks),
+        crate::model::project::ViewState::default(),
+        paths,
+    );
+    let first = editor.project.tracks[0].id;
+    editor.toggle_arm(first);
+    assert_eq!(editor.armed_track(), Some(first), "the test input armed");
+    (editor, dir)
+}
+
+/// Polls the editor's jobs until `done` is true; fails after 10 s.
+pub fn wait_until(
+    editor: &mut crate::editor::Editor,
+    what: &str,
+    done: impl Fn(&crate::editor::Editor) -> bool,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        editor.poll_jobs();
+        if done(editor) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+/// Feeds `frames` mono frames of `value` to the take and waits until the
+/// writer has written `total` frames in all.
+pub fn feed_take(editor: &mut crate::editor::Editor, frames: usize, value: f32, total: u64) {
+    editor.push_input_frames(&vec![value; frames]);
+    wait_until(editor, "the writer to catch up", |e| {
+        e.recording_status().is_some_and(|s| s.frames == total)
+    });
+}
+
 /// A context with the app theme applied, driven one frame at a time.
 pub struct Headless {
     /// The egui context shared by every frame.
@@ -38,6 +88,10 @@ pub struct Headless {
     size: Vec2,
     /// Fake clock in seconds, advanced 1/60 s per frame.
     time: f64,
+    /// Modifier keys held down (none by default).
+    modifiers: Modifiers,
+    /// The modifiers egui was last told about (it learns them from events).
+    reported: Modifiers,
 }
 
 impl Headless {
@@ -50,9 +104,18 @@ impl Headless {
             ctx,
             size: egui::vec2(width, height),
             time: 0.0,
+            modifiers: Modifiers::NONE,
+            reported: Modifiers::NONE,
         };
         headless.frame(Vec::new(), |_| {});
         headless
+    }
+
+    /// Holds `modifiers` down from the next frame on (Ctrl+R needs Ctrl as a
+    /// held modifier, not only on the key event); egui hears about it through
+    /// a `ModifiersChanged` event at the start of that frame.
+    pub fn set_modifiers(&mut self, modifiers: Modifiers) {
+        self.modifiers = modifiers;
     }
 
     /// Runs one frame with `events`; returns what was painted. Multi-pass
@@ -73,6 +136,11 @@ impl Headless {
         add_contents: impl FnMut(&mut egui::Ui),
     ) -> Out {
         self.time += 1.0 / 60.0;
+        let mut events = events;
+        if self.modifiers != self.reported {
+            events.insert(0, Event::ModifiersChanged(self.modifiers));
+            self.reported = self.modifiers;
+        }
         let mut input = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)),
             time: Some(self.time),

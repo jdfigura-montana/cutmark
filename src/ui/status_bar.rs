@@ -11,24 +11,40 @@ use crate::util::time::samples_to_timecode;
 /// Font size of every status bar readout.
 const SIZE: f32 = 11.0;
 
-/// Draws the status bar inside its panel: the playhead time on the left, the
-/// selection readout next to it, a finished-export banner with a Reveal link,
-/// and the sample rate, bit depth and snap/ripple state on the right.
+/// Draws the status bar inside its panel: the playhead time on the left (while
+/// a take is recorded, "REC" in red and the elapsed recording time instead),
+/// the selection readout next to it, a finished-export banner with a Reveal
+/// link, and the sample rate, bit depth and snap/ripple state on the right.
 pub fn show(ui: &mut egui::Ui, editor: &Editor, export: Option<&ExportBanner>) {
     let rate = editor.project.sample_rate;
-    let timecode = samples_to_timecode(editor.view.playhead, rate);
     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
-        ui.label(
-            egui::RichText::new("PLAYHEAD")
-                .font(Theme::mono(SIZE))
-                .color(THEME.text_muted),
-        );
-        ui.label(
-            egui::RichText::new(timecode)
-                .font(Theme::mono(SIZE))
-                .color(THEME.text_primary),
-        );
+        match editor.recording_status().filter(|_| editor.take_is_live()) {
+            Some(take) => {
+                ui.label(
+                    egui::RichText::new("REC")
+                        .font(Theme::mono(SIZE))
+                        .color(THEME.record_red),
+                );
+                ui.label(
+                    egui::RichText::new(samples_to_timecode(take.frames, rate))
+                        .font(Theme::mono(SIZE))
+                        .color(THEME.text_primary),
+                );
+            }
+            None => {
+                ui.label(
+                    egui::RichText::new("PLAYHEAD")
+                        .font(Theme::mono(SIZE))
+                        .color(THEME.text_muted),
+                );
+                ui.label(
+                    egui::RichText::new(samples_to_timecode(editor.view.playhead, rate))
+                        .font(Theme::mono(SIZE))
+                        .color(THEME.text_primary),
+                );
+            }
+        }
         if let Selection::Range { start, end, .. } = editor.selection() {
             let t = |samples: u64| samples_to_timecode(samples, rate);
             ui.label(

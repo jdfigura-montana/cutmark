@@ -9,6 +9,10 @@ use crate::audio::scrub::Scrub;
 pub enum Command {
     /// Start playback from `from`.
     Play { from: u64 },
+    /// Start playback from `from` for a recording take: like `Play`, but it
+    /// never ends at the end of the project. The player keeps advancing and
+    /// renders silence past the last clip until `Stop`.
+    Record { from: u64 },
     /// Play `start..end` once, then stop and return to `start`.
     PlayRange { start: u64, end: u64 },
     /// Freeze playback at the current position.
@@ -53,8 +57,13 @@ enum Pending {
     Pause { at: u64 },
     /// Jump to `to` and keep playing from there.
     Seek { to: u64 },
-    /// Begin (or restart) timeline playback.
-    StartPlay { from: u64, range_end: Option<u64> },
+    /// Begin (or restart) timeline playback; `open_ended` is a recording take
+    /// that does not stop at the end of the project.
+    StartPlay {
+        from: u64,
+        range_end: Option<u64>,
+        open_ended: bool,
+    },
     /// Begin preview playback from its start.
     StartPreview,
     /// The preview material ended on its own.
@@ -82,6 +91,8 @@ pub struct Player {
     return_to: u64,
     /// End of a play range, if one is playing.
     range_end: Option<u64>,
+    /// True while a recording take plays: the timeline has no end.
+    open_ended: bool,
     /// Preview playhead in samples.
     preview_pos: u64,
     /// Current transport state.
@@ -112,6 +123,7 @@ impl Player {
             position: 0,
             return_to: 0,
             range_end: None,
+            open_ended: false,
             preview_pos: 0,
             state: State::Stopped,
             ramp_pos: 0,
@@ -128,8 +140,11 @@ impl Player {
     /// Applies a transport command.
     pub fn handle(&mut self, cmd: Command) {
         match cmd {
-            Command::Play { from } => self.start_play(from, None),
-            Command::PlayRange { start, end } => self.start_play(start, Some(end.max(start))),
+            Command::Play { from } => self.start_play(from, None, false),
+            Command::Record { from } => self.start_play(from, None, true),
+            Command::PlayRange { start, end } => {
+                self.start_play(start, Some(end.max(start)), false);
+            }
             Command::Pause => {
                 if self.state == State::Playing {
                     let at = self.position;
@@ -304,6 +319,9 @@ impl Player {
     fn play_end(&self, timeline: &MixPlan, preview: &MixPlan) -> u64 {
         if self.state == State::Previewing {
             preview.length
+        } else if self.open_ended {
+            // A recording take runs until Stop, past the last clip.
+            u64::MAX
         } else {
             self.range_end
                 .map_or(timeline.length, |e| e.min(timeline.length))
@@ -348,7 +366,7 @@ impl Player {
     }
 
     /// Begins timeline playback, declicking out of any current sound first.
-    fn start_play(&mut self, from: u64, range_end: Option<u64>) {
+    fn start_play(&mut self, from: u64, range_end: Option<u64>, open_ended: bool) {
         match self.state {
             State::Stopped | State::Paused | State::Scrubbing => {
                 self.scrub_stop = None;
@@ -356,10 +374,15 @@ impl Player {
                 self.position = from;
                 self.return_to = from;
                 self.range_end = range_end;
+                self.open_ended = open_ended;
                 self.start_ramp_up();
             }
             State::Playing | State::Previewing => {
-                self.ramp_to(Pending::StartPlay { from, range_end });
+                self.ramp_to(Pending::StartPlay {
+                    from,
+                    range_end,
+                    open_ended,
+                });
             }
         }
     }
@@ -386,6 +409,7 @@ impl Player {
             Pending::Stop => {
                 self.state = State::Stopped;
                 self.position = self.return_to;
+                self.open_ended = false;
             }
             Pending::Pause { at } => {
                 self.state = State::Paused;
@@ -396,11 +420,16 @@ impl Player {
                 self.return_to = to;
                 self.start_ramp_up();
             }
-            Pending::StartPlay { from, range_end } => {
+            Pending::StartPlay {
+                from,
+                range_end,
+                open_ended,
+            } => {
                 self.state = State::Playing;
                 self.position = from;
                 self.return_to = from;
                 self.range_end = range_end;
+                self.open_ended = open_ended;
                 self.start_ramp_up();
             }
             Pending::StartPreview => {
@@ -588,6 +617,84 @@ mod tests {
         assert_eq!(p.position(), 0);
         // The block that contains the end is silent after the material ends.
         assert_eq!(sink[9 * 1024 + 2 * 500], 0.0);
+    }
+
+    #[test]
+    fn record_keeps_advancing_past_the_project_end_and_renders_silence() {
+        let timeline = const_plan(1_000, 0.5);
+        let preview = MixPlan::empty(RATE);
+        let mut p = Player::new(RATE);
+        p.handle(Command::Record { from: 0 });
+        let mut sink = Vec::new();
+        run(&mut p, &timeline, &preview, 10, 512, &mut sink);
+        // Ten blocks (5,120 frames) are far past the 1,000-frame project.
+        assert_eq!(p.state(), State::Playing);
+        assert_eq!(p.position(), 5_120);
+        assert!(sink[500 * 2].abs() > 0.1, "the clip still plays");
+        assert!(
+            sink[2_000 * 2..].iter().all(|s| *s == 0.0),
+            "past the last clip the output is silence"
+        );
+
+        // Stop ends the take and returns the playhead to the record start.
+        p.handle(Command::Stop);
+        sink.clear();
+        run(&mut p, &timeline, &preview, 1, 512, &mut sink);
+        assert_eq!(p.state(), State::Stopped);
+        assert_eq!(p.position(), 0);
+    }
+
+    #[test]
+    fn record_on_an_empty_project_keeps_running() {
+        let timeline = MixPlan::empty(RATE);
+        let preview = MixPlan::empty(RATE);
+        let mut p = Player::new(RATE);
+        p.handle(Command::Record { from: 4_000 });
+        let mut sink = Vec::new();
+        run(&mut p, &timeline, &preview, 20, 512, &mut sink);
+        assert_eq!(p.state(), State::Playing);
+        assert_eq!(p.position(), 4_000 + 20 * 512);
+        assert!(sink.iter().all(|s| *s == 0.0));
+
+        // The same project with a plain Play stops at once (nothing to play).
+        let mut q = Player::new(RATE);
+        q.handle(Command::Play { from: 4_000 });
+        let mut sink = Vec::new();
+        run(&mut q, &timeline, &preview, 2, 512, &mut sink);
+        assert_eq!(q.state(), State::Stopped);
+        assert_eq!(q.position(), 4_000);
+    }
+
+    #[test]
+    fn record_while_playing_switches_to_an_open_ended_take() {
+        let timeline = const_plan(2_000, 0.5);
+        let preview = MixPlan::empty(RATE);
+        let mut p = Player::new(RATE);
+        p.handle(Command::Play { from: 0 });
+        let mut sink = Vec::new();
+        run(&mut p, &timeline, &preview, 1, 256, &mut sink);
+        p.handle(Command::Record { from: 100 });
+        run(&mut p, &timeline, &preview, 20, 512, &mut sink);
+        assert_eq!(p.state(), State::Playing, "no stop at the project end");
+        assert!(p.position() > 2_000, "position {}", p.position());
+    }
+
+    #[test]
+    fn play_after_a_take_ends_at_the_project_end_again() {
+        let timeline = const_plan(1_000, 0.5);
+        let preview = MixPlan::empty(RATE);
+        let mut p = Player::new(RATE);
+        p.handle(Command::Record { from: 0 });
+        let mut sink = Vec::new();
+        run(&mut p, &timeline, &preview, 4, 512, &mut sink);
+        p.handle(Command::Stop);
+        run(&mut p, &timeline, &preview, 2, 512, &mut sink);
+        assert_eq!(p.state(), State::Stopped);
+
+        p.handle(Command::Play { from: 0 });
+        run(&mut p, &timeline, &preview, 10, 512, &mut sink);
+        assert_eq!(p.state(), State::Stopped, "normal play ends at the end");
+        assert_eq!(p.position(), 0);
     }
 
     #[test]

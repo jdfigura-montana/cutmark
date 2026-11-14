@@ -64,6 +64,14 @@ pub fn show(
         d.get_temp_mut_or_default::<State>(egui::Id::new(STATE_KEY))
             .clone()
     });
+    // While a take is recorded the headers ignore input (Arm, M, S, the
+    // sliders, rename, reorder and the right-click menu); the meters keep
+    // running and the resize strip still works.
+    let locked = editor.is_recording();
+    if locked {
+        state.renaming = None;
+        state.reorder = None;
+    }
 
     // Escape cancels an in-progress reorder.
     if state.reorder.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -266,9 +274,9 @@ pub fn show(
                 editor.toggle_range_track(ht.id);
             }
         }
-        context_menu(editor, &host, &mut state, ht.id, index, &ht.name);
-        context_menu(editor, &grip, &mut state, ht.id, index, &ht.name);
-        context_menu(editor, &resize, &mut state, ht.id, index, &ht.name);
+        context_menu(editor, &host, &mut state, ht.id, index, &ht.name, locked);
+        context_menu(editor, &grip, &mut state, ht.id, index, &ht.name, locked);
+        context_menu(editor, &resize, &mut state, ht.id, index, &ht.name, locked);
 
         // Phosphor drag handle, visible only while the header is hovered.
         if ui.rect_contains_pointer(rect) {
@@ -301,7 +309,7 @@ pub fn show(
                 }
                 state.reorder = None;
             }
-        } else if grip.drag_started() {
+        } else if grip.drag_started() && !locked {
             state.reorder = Some((ht.id, index));
         }
         // Name: inline rename on double-click, plain label otherwise.
@@ -334,7 +342,7 @@ pub fn show(
                 }
                 state.renaming = None;
             }
-        } else if name_resp.double_clicked() {
+        } else if name_resp.double_clicked() && !locked {
             state.renaming = Some((ht.id, ht.name.clone()));
         } else {
             // Name in the track color text; faint while the track is muted.
@@ -361,7 +369,8 @@ pub fn show(
             egui::Id::new(("track_mute", ht.id)),
             "M",
             ht.mute,
-        ) {
+        ) && !locked
+        {
             let _ = editor.apply(Action::SetTrackMute {
                 id: ht.id,
                 mute: !ht.mute,
@@ -373,7 +382,8 @@ pub fn show(
             egui::Id::new(("track_solo", ht.id)),
             "S",
             ht.solo,
-        ) {
+        ) && !locked
+        {
             if ui.input(|i| i.modifiers.ctrl) {
                 let _ = editor.apply(Action::SoloExclusive { id: ht.id });
             } else {
@@ -384,7 +394,7 @@ pub fn show(
             }
         }
         // Arm for recording; Ctrl+click is a plain click here.
-        if arm_button(ui, arm_rect, egui::Id::new(("track_arm", ht.id)), ht.armed) {
+        if arm_button(ui, arm_rect, egui::Id::new(("track_arm", ht.id)), ht.armed) && !locked {
             editor.toggle_arm(ht.id);
         }
 
@@ -414,12 +424,14 @@ pub fn show(
                 (-60.0, 12.0),
                 false,
             );
-            apply_outcome(
-                editor,
-                &out,
-                |db| Action::SetTrackVolume { id: ht.id, db },
-                0.0,
-            );
+            if !locked {
+                apply_outcome(
+                    editor,
+                    &out,
+                    |db| Action::SetTrackVolume { id: ht.id, db },
+                    0.0,
+                );
+            }
             painter.text(
                 egui::pos2(vol_row.right(), vol_row.center().y),
                 egui::Align2::RIGHT_CENTER,
@@ -435,12 +447,14 @@ pub fn show(
                 (-1.0, 1.0),
                 true,
             );
-            apply_outcome(
-                editor,
-                &out,
-                |p| Action::SetTrackPan { id: ht.id, pan: p },
-                0.0,
-            );
+            if !locked {
+                apply_outcome(
+                    editor,
+                    &out,
+                    |p| Action::SetTrackPan { id: ht.id, pan: p },
+                    0.0,
+                );
+            }
             painter.text(
                 egui::pos2(pan_row.right(), pan_row.center().y),
                 egui::Align2::RIGHT_CENTER,
@@ -495,6 +509,7 @@ pub fn show(
 }
 
 /// Right-click menu on one track header: Rename, Delete Track, Add Above/Below.
+/// While a take is recorded (`locked`) every item is disabled.
 fn context_menu(
     editor: &mut Editor,
     resp: &egui::Response,
@@ -502,10 +517,14 @@ fn context_menu(
     id: Uuid,
     index: usize,
     track_name: &str,
+    locked: bool,
 ) {
     egui::Popup::context_menu(resp)
         .style(crate::ui::theme::menu_item_style as fn(&mut egui::Style))
         .show(|ui| {
+            if locked {
+                ui.disable();
+            }
             if ui.button("Rename").clicked() {
                 state.renaming = Some((id, track_name.to_string()));
                 ui.close();
@@ -579,7 +598,7 @@ fn arm_button(ui: &mut egui::Ui, rect: egui::Rect, id: egui::Id, armed: bool) ->
     let painter = ui.painter_at(rect);
     let resp = ui.interact(rect, id, egui::Sense::click());
     let (bg, fg) = if armed {
-        (THEME.record_red, egui::Color32::WHITE)
+        (THEME.record_red, THEME.on_record_glyph)
     } else if resp.hovered() {
         (
             ui.visuals().widgets.hovered.bg_fill,
@@ -819,5 +838,67 @@ mod tests {
         let name = out.text_rect("Track 1").expect("track name");
         let m = out.text_rect("M").expect("M button");
         assert!(name.right() < m.left(), "name {name:?} left of M {m:?}");
+    }
+
+    // ---- While a take is recorded ----
+
+    /// Centers of the painted "M" buttons, top to bottom.
+    fn m_centers(out: &Out) -> Vec<egui::Pos2> {
+        let mut found: Vec<_> = out
+            .texts()
+            .into_iter()
+            .filter(|t| t.text == "M")
+            .map(|t| t.rect.center())
+            .collect();
+        found.sort_by(|a, b| a.y.total_cmp(&b.y));
+        found
+    }
+
+    #[test]
+    fn arm_and_mute_ignore_clicks_while_recording_and_work_otherwise() {
+        for recording in [false, true] {
+            let (mut editor, _dir) = crate::ui::test_util::armed_editor(&[&[], &[]], "Rec");
+            let (a, b) = (editor.project.tracks[0].id, editor.project.tracks[1].id);
+            if recording {
+                editor.start_recording().expect("a take");
+            }
+            let mut h = Headless::new(1280.0, 800.0);
+            let (header, lane) = rects();
+            let mut meters = HashMap::new();
+            let mut draw = |ui: &mut egui::Ui, editor: &mut Editor| {
+                show(ui, editor, header, lane, 0.0, &mut meters);
+            };
+            let out = h.frame(Vec::new(), |ui| draw(ui, &mut editor));
+            let arms = arm_centers(&out);
+            let ms = m_centers(&out);
+
+            let _ = h.click(arms[1], |ui| draw(ui, &mut editor));
+            let _ = h.click(ms[1], |ui| draw(ui, &mut editor));
+            let moved = editor.armed_track() == Some(b);
+            let muted = editor.project.tracks[1].mute;
+            if recording {
+                assert_eq!(editor.armed_track(), Some(a), "Arm ignored");
+                assert!(!muted, "M ignored");
+                assert!(editor.take_is_live());
+            } else {
+                assert!(moved, "Arm moved");
+                assert!(muted, "M muted the track");
+            }
+        }
+    }
+
+    #[test]
+    fn the_meters_keep_drawing_while_recording() {
+        let (mut editor, _dir) = crate::ui::test_util::armed_editor(&[&[]], "Rec");
+        editor.start_recording().expect("a take");
+        let mut h = Headless::new(1280.0, 800.0);
+        let (header, lane) = rects();
+        let mut meters = HashMap::new();
+        let id = editor.project.tracks[0].id;
+        let out = h.frame(Vec::new(), |ui| {
+            show(ui, &mut editor, header, lane, 0.0, &mut meters);
+        });
+        assert!(meters.contains_key(&id), "the header meter is alive");
+        assert!(out.text_rect("Track 1").is_some());
     }
 }

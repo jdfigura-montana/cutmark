@@ -265,6 +265,26 @@ pub struct Theme {
     pub record_red: egui::Color32,
     /// Font size of the record glyph on the arm button.
     pub arm_glyph_size: f32,
+    /// Glyph color on a `record_red` fill (an armed Arm button, the Record
+    /// button while recording).
+    pub on_record_glyph: egui::Color32,
+    /// Diameter of the round toolbar Record button.
+    pub record_btn_d: f32,
+    /// Font size of the glyph on the toolbar Record button.
+    pub record_btn_glyph: f32,
+    /// Alpha of a clip body fill (the track color, translucent).
+    pub clip_body_alpha: u8,
+    /// Alpha of a clip header strip fill.
+    pub clip_header_alpha: u8,
+    /// Distance from the visible left edge at which a clip name pins when its
+    /// own left edge is scrolled out of view.
+    pub clip_name_pin: f32,
+    /// Gap between a clip header's name and the value at its right.
+    pub clip_name_gap: f32,
+    /// Narrowest width in which a clip header still shows its name.
+    pub clip_name_min_w: f32,
+    /// Space left above and below a waveform inside its lane.
+    pub wave_lane_pad: f32,
 
     // ---- Meters ----
     /// Background fill of a meter bar area.
@@ -646,6 +666,15 @@ impl Default for Theme {
             solo_color: egui::Color32::from_rgb(0x5C, 0xC4, 0x6E),
             record_red: egui::Color32::from_rgb(0xE5, 0x54, 0x4B),
             arm_glyph_size: 12.0,
+            on_record_glyph: egui::Color32::WHITE,
+            record_btn_d: 28.0,
+            record_btn_glyph: 16.0,
+            clip_body_alpha: 0x22,
+            clip_header_alpha: 0x66,
+            clip_name_pin: 16.0,
+            clip_name_gap: 6.0,
+            clip_name_min_w: 8.0,
+            wave_lane_pad: 1.0,
             // Meters
             meter_bar_bg: egui::Color32::from_rgb(0x10, 0x12, 0x16),
             meter_red: egui::Color32::from_rgb(0xE5, 0x54, 0x4B),
@@ -1053,6 +1082,9 @@ mod tests {
         assert_eq!(t.marker_color, egui::Color32::from_rgb(0xE8, 0xB4, 0x4C));
         assert_eq!(t.unsaved_dot_d, 6.0);
         assert_eq!(t.record_red, egui::Color32::from_rgb(0xE5, 0x54, 0x4B));
+        assert_eq!(t.on_record_glyph, egui::Color32::WHITE);
+        assert_eq!((t.record_btn_d, t.record_btn_glyph), (28.0, 16.0));
+        assert_eq!((t.clip_body_alpha, t.clip_header_alpha), (0x22, 0x66));
         assert_eq!(
             (t.track_ms_w, t.track_ms_h, t.track_ms_gap),
             (22.0, 20.0, 4.0)

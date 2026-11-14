@@ -123,6 +123,10 @@ impl ProjectMenu {
     ) -> (ProjectMenuAction, ViewMenuAction) {
         let mut action = ProjectMenuAction::None;
         let mut view_action = ViewMenuAction::None;
+        // While a take is recorded the Edit and Process menus, Import, Export,
+        // Save As, both settings dialogs and every Markers item except Add
+        // Marker are disabled; Save, New, Open, Close and View stay.
+        let recording = editor.is_recording();
         // One horizontal menu bar row: menus on the left, project status on
         // the right.
         egui::MenuBar::new()
@@ -144,15 +148,21 @@ impl ProjectMenu {
                         self.save(editor);
                         menu.close();
                     }
-                    if menu.add(item("Save As...", "Ctrl+Shift+S")).clicked() {
+                    if menu
+                        .add_enabled(!recording, item("Save As...", "Ctrl+Shift+S"))
+                        .clicked()
+                    {
                         self.open_save_as(editor);
                         menu.close();
                     }
-                    if menu.add(item("Import Media...", "Ctrl+I")).clicked() {
+                    if menu
+                        .add_enabled(!recording, item("Import Media...", "Ctrl+I"))
+                        .clicked()
+                    {
                         action = ProjectMenuAction::Import;
                         menu.close();
                     }
-                    if !editor.is_locked() {
+                    if !editor.is_locked() && !recording {
                         if menu.add(item("Export...", "Ctrl+E")).clicked() {
                             self.open_export(editor);
                             menu.close();
@@ -164,16 +174,25 @@ impl ProjectMenu {
                         action = ProjectMenuAction::Close;
                         menu.close();
                     }
-                    if menu.button("Project Settings...").clicked() {
+                    if menu
+                        .add_enabled(!recording, egui::Button::new("Project Settings..."))
+                        .clicked()
+                    {
                         self.open_settings(editor);
                         menu.close();
                     }
-                    if menu.button("Audio Settings...").clicked() {
+                    if menu
+                        .add_enabled(!recording, egui::Button::new("Audio Settings..."))
+                        .clicked()
+                    {
                         self.audio_settings_dialog = Some(AudioSettingsDialog::new_open(editor));
                         menu.close();
                     }
                 });
                 ui.menu_button("Edit", |menu| {
+                    if recording {
+                        menu.disable();
+                    }
                     match editor.undo_label() {
                         Some(label) => {
                             if menu.add(item(format!("Undo {label}"), "Ctrl+Z")).clicked() {
@@ -337,15 +356,21 @@ impl ProjectMenu {
                         let _ = editor.add_marker_at_playhead();
                         menu.close();
                     }
-                    if menu.add(item("Previous Marker", ",")).clicked() {
+                    if menu
+                        .add_enabled(!recording, item("Previous Marker", ","))
+                        .clicked()
+                    {
                         editor.jump_prev_marker();
                         menu.close();
                     }
-                    if menu.add(item("Next Marker", ".")).clicked() {
+                    if menu
+                        .add_enabled(!recording, item("Next Marker", "."))
+                        .clicked()
+                    {
                         editor.jump_next_marker();
                         menu.close();
                     }
-                    if let Some(id) = editor.selected_marker() {
+                    if let Some(id) = editor.selected_marker().filter(|_| !recording) {
                         if menu.add(item("Delete Marker", "Del")).clicked() {
                             let _ = editor.apply(crate::editor::action::Action::DeleteMarkers {
                                 ids: vec![id],
@@ -357,6 +382,9 @@ impl ProjectMenu {
                     }
                 });
                 ui.menu_button("Process", |menu| {
+                    if recording {
+                        menu.disable();
+                    }
                     let has_target = editor.process_target().is_some();
                     let has_range = matches!(
                         editor.selection(),
@@ -460,6 +488,16 @@ impl ProjectMenu {
             dialog.show(&ctx);
         }
         (action, view_action)
+    }
+
+    /// True while one of the menu's dialogs (save error, Save As, Project or
+    /// Audio Settings) is up. The app keeps Esc and Space away from a running
+    /// take then, so closing a dialog never discards a recording.
+    pub fn modal_open(&self) -> bool {
+        self.error_dialog.as_ref().is_some_and(|dialog| dialog.open)
+            || self.save_as_dialog.is_some()
+            || self.settings_dialog.is_some()
+            || self.audio_settings_dialog.is_some()
     }
 
     /// Shows a failed Process menu operation in the error modal, with the
@@ -672,5 +710,153 @@ mod tests {
             .find(|c| c.fill == THEME.marker_color)
             .expect("amber dot");
         assert!(name.right() <= dot.center.x - dot.radius + EPS);
+    }
+
+    // ---- While a take is recorded ----
+
+    /// The real menu bar; the Project actions chosen are pushed to `actions`.
+    fn menu_panel_actions(
+        ui: &mut egui::Ui,
+        menu: &mut ProjectMenu,
+        editor: &mut Editor,
+        actions: &mut Vec<ProjectMenuAction>,
+    ) {
+        egui::Panel::top("menu_bar")
+            .exact_size(30.0)
+            .frame(egui::Frame::new().fill(THEME.bar_bg))
+            .show(ui, |ui| {
+                let (action, _) = menu.show(ui, editor);
+                if action != ProjectMenuAction::None {
+                    actions.push(action);
+                }
+            });
+    }
+
+    /// On a fresh menu bar: opens the menu `title`, clicks `item_text`, and
+    /// returns the menu (to look at its dialogs) and the Project actions chosen.
+    fn choose(
+        editor: &mut Editor,
+        title: &str,
+        item_text: &str,
+    ) -> (ProjectMenu, Vec<ProjectMenuAction>) {
+        let mut h = Headless::new(1280.0, 800.0);
+        let mut menu = ProjectMenu::default();
+        let mut actions = Vec::new();
+        let out = h.settle(|ui| menu_panel_actions(ui, &mut menu, editor, &mut actions));
+        let at = out
+            .text_rect(title)
+            .unwrap_or_else(|| panic!("no {title} menu"))
+            .center();
+        let _ = h.click(at, |ui| {
+            menu_panel_actions(ui, &mut menu, editor, &mut actions);
+        });
+        let out = h.settle(|ui| menu_panel_actions(ui, &mut menu, editor, &mut actions));
+        let at = out
+            .text_rect(item_text)
+            .unwrap_or_else(|| panic!("no {item_text} item in {title}"))
+            .center();
+        let _ = h.click(at, |ui| {
+            menu_panel_actions(ui, &mut menu, editor, &mut actions);
+        });
+        let _ = h.settle(|ui| menu_panel_actions(ui, &mut menu, editor, &mut actions));
+        (menu, actions)
+    }
+
+    /// A project with a clip and a range selected; recording when `recording`.
+    fn take_editor(recording: bool) -> (Editor, tempfile::TempDir) {
+        let (mut editor, dir) = crate::ui::test_util::armed_editor(&[&[(0, 48_000)], &[]], "Rec");
+        editor.select_all();
+        if recording {
+            editor.start_recording().expect("a take");
+        }
+        (editor, dir)
+    }
+
+    #[test]
+    fn the_project_menu_keeps_save_new_open_and_close_but_not_the_dialogs() {
+        let (mut editor, _dir) = take_editor(true);
+        let (menu, actions) = choose(&mut editor, "Project", "Audio Settings...");
+        assert!(menu.audio_settings_dialog.is_none(), "Audio Settings");
+        let (menu, _) = choose(&mut editor, "Project", "Project Settings...");
+        assert!(menu.settings_dialog.is_none(), "Project Settings");
+        let (menu, _) = choose(&mut editor, "Project", "Save As...");
+        assert!(menu.save_as_dialog.is_none(), "Save As");
+        let (menu, _) = choose(&mut editor, "Project", "Export...");
+        assert!(menu.export_dialog.is_none(), "Export");
+        let (_, import) = choose(&mut editor, "Project", "Import Media...");
+        assert!(import.is_empty() && actions.is_empty(), "Import");
+
+        // Save stays enabled and works; New and Close still ask the app.
+        let (menu, _) = choose(&mut editor, "Project", "Save");
+        assert!(menu.error_dialog.is_none(), "Save worked");
+        let (_, new) = choose(&mut editor, "Project", "New");
+        assert_eq!(new, [ProjectMenuAction::New]);
+        let (_, close) = choose(&mut editor, "Project", "Close");
+        assert_eq!(close, [ProjectMenuAction::Close]);
+        assert!(editor.take_is_live(), "the take was never disturbed");
+    }
+
+    #[test]
+    fn the_same_menu_items_work_when_nothing_is_recording() {
+        // Control for the test above and the two below: the clicks land.
+        let (mut editor, _dir) = take_editor(false);
+        let (menu, _) = choose(&mut editor, "Project", "Audio Settings...");
+        assert!(menu.audio_settings_dialog.is_some());
+        let (menu, _) = choose(&mut editor, "Project", "Save As...");
+        assert!(menu.save_as_dialog.is_some());
+        let (_, import) = choose(&mut editor, "Project", "Import Media...");
+        assert_eq!(import, [ProjectMenuAction::Import]);
+        let _ = choose(&mut editor, "Edit", "Clear Selection");
+        assert!(matches!(
+            editor.selection(),
+            crate::editor::selection::Selection::None
+        ));
+        editor.select_all();
+        let _ = choose(&mut editor, "Edit", "Ripple (R)");
+        assert!(editor.view.ripple, "Ripple toggled");
+        let (menu, _) = choose(&mut editor, "Process", "Silence");
+        assert!(menu.error_dialog.is_none());
+        assert_eq!(editor.undo_label(), Some("Silence"), "Silence ran");
+    }
+
+    #[test]
+    fn the_edit_and_process_menus_are_off_while_recording() {
+        let (mut editor, _dir) = take_editor(true);
+        let ripple = editor.view.ripple;
+        let _ = choose(&mut editor, "Edit", "Clear Selection");
+        assert!(
+            !matches!(
+                editor.selection(),
+                crate::editor::selection::Selection::None
+            ),
+            "Clear Selection did nothing"
+        );
+        let _ = choose(&mut editor, "Edit", "Ripple (R)");
+        assert_eq!(editor.view.ripple, ripple, "Ripple did nothing");
+        let _ = choose(&mut editor, "Edit", "Select All");
+        let (menu, _) = choose(&mut editor, "Process", "Silence");
+        assert!(menu.error_dialog.is_none(), "Silence did nothing");
+        assert!(editor.take_is_live());
+        assert_eq!(editor.undo_label(), None, "no edit was made");
+    }
+
+    #[test]
+    fn only_add_marker_works_in_the_markers_menu_while_recording() {
+        let (mut editor, _dir) = take_editor(true);
+        editor
+            .apply(crate::editor::action::Action::AddMarker { pos: 100 })
+            .expect("a marker is allowed while recording");
+        let id = editor.project.markers[0].id;
+        editor.select_marker(Some(id));
+        editor.view.playhead = 5_000;
+
+        let _ = choose(&mut editor, "Markers", "Previous Marker");
+        let _ = choose(&mut editor, "Markers", "Next Marker");
+        assert_eq!(editor.view.playhead, 5_000, "no jump");
+        let _ = choose(&mut editor, "Markers", "Delete Marker");
+        assert_eq!(editor.project.markers.len(), 1, "not deleted");
+
+        let _ = choose(&mut editor, "Markers", "Add Marker");
+        assert_eq!(editor.project.markers.len(), 2, "Add Marker works");
     }
 }

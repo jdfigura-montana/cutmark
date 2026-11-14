@@ -2,8 +2,10 @@
 
 use eframe::egui::{self, Stroke};
 
+use crate::editor::record::RecordStatus;
 use crate::io::import::Loaded;
 use crate::model::clip::Clip;
+use crate::util::time::samples_to_timecode;
 
 use crate::ui::theme::{THEME, Theme};
 
@@ -121,6 +123,19 @@ pub fn clip_rect(clip: &Clip, g: &Geom, track_rect: egui::Rect) -> egui::Rect {
     )
 }
 
+/// On-screen rectangle of the take being recorded: from the record `start`
+/// for `frames` frames over the armed track's lane, with the same top and
+/// bottom margins as a clip.
+pub fn live_rect(start: u64, frames: u64, g: &Geom, track_rect: egui::Rect) -> egui::Rect {
+    egui::Rect::from_min_max(
+        egui::pos2(g.sample_to_x(start), track_rect.top() + THEME.clip_margin),
+        egui::pos2(
+            g.sample_to_x(start.saturating_add(frames)),
+            track_rect.bottom() - THEME.clip_margin,
+        ),
+    )
+}
+
 /// Which zone of the clip the point is in, or `None` when outside.
 ///
 /// Hit priority: the fade handle squares first, then the outer 6 px edges,
@@ -202,10 +217,18 @@ pub fn draw(
     // Track color of this clip: translucent body, stronger header strip and a
     // solid waveform stroke.
     let tc = dim(THEME.track_color(track_index));
-    let body_fill =
-        egui::Color32::from_rgba_unmultiplied(tc.r(), tc.g(), tc.b(), (0x22 as f32 * scale) as u8);
-    let header_fill =
-        egui::Color32::from_rgba_unmultiplied(tc.r(), tc.g(), tc.b(), (0x66 as f32 * scale) as u8);
+    let body_fill = egui::Color32::from_rgba_unmultiplied(
+        tc.r(),
+        tc.g(),
+        tc.b(),
+        (f32::from(THEME.clip_body_alpha) * scale) as u8,
+    );
+    let header_fill = egui::Color32::from_rgba_unmultiplied(
+        tc.r(),
+        tc.g(),
+        tc.b(),
+        (f32::from(THEME.clip_header_alpha) * scale) as u8,
+    );
 
     // Extremely narrow clip: a single 1 px line, no text.
     if rect.width() < THEME.thin_clip_w {
@@ -293,12 +316,12 @@ pub fn draw(
     // Visible left edge: the name pins here (16 px in) when the clip's left
     // edge is scrolled out of view.
     let name_x = if rect.left() < g.lane_left {
-        g.lane_left + 16.0
+        g.lane_left + THEME.clip_name_pin
     } else {
         rect.left() + THEME.clip_text_pad
     };
-    let name_max_w = gain_left - name_x - 6.0;
-    if name_max_w > 8.0 {
+    let name_max_w = gain_left - name_x - THEME.clip_name_gap;
+    if name_max_w > THEME.clip_name_min_w {
         let name_galley = fit_galley(
             painter,
             media_name,
@@ -330,6 +353,100 @@ pub fn draw(
             dim(THEME.offline_text),
         );
     }
+}
+
+/// Draws the take being recorded over its track's lane, on top of the clips
+/// already there.
+///
+/// It is a `record_red` clip that grows from the record start: a body and
+/// header strip at the same alphas as a normal clip, a solid `record_red`
+/// border, the header text "Recording" on the left and the elapsed time (mono)
+/// on the right, and the live waveform from the writer's peaks in the body.
+/// Narrower than `thin_clip_w` it is a single hairline, like a clip.
+pub fn draw_live(
+    painter: &egui::Painter,
+    status: &RecordStatus<'_>,
+    rate: u32,
+    g: &Geom,
+    track_rect: egui::Rect,
+    wave_scale: f32,
+) {
+    let (vis_start, vis_end) = g.visible_range();
+    let end = status.start.saturating_add(status.frames);
+    if end < vis_start || status.start >= vis_end {
+        return;
+    }
+    let rect = live_rect(status.start, status.frames, g, track_rect);
+    let red = THEME.record_red;
+    let tint = |alpha: u8| egui::Color32::from_rgba_unmultiplied(red.r(), red.g(), red.b(), alpha);
+
+    if rect.width() < THEME.thin_clip_w {
+        painter.line_segment(
+            [rect.left_top(), rect.left_bottom()],
+            Stroke::new(THEME.hairline, red),
+        );
+        return;
+    }
+
+    let header_h = THEME.header_strip_h.min(rect.height());
+    let header_rect =
+        egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.min.y + header_h));
+    let body = egui::Rect::from_min_max(egui::pos2(rect.min.x, header_rect.max.y), rect.max);
+    painter.rect_filled(body, THEME.clip_radius, tint(THEME.clip_body_alpha));
+    painter.rect_filled(
+        header_rect,
+        THEME.clip_radius,
+        tint(THEME.clip_header_alpha),
+    );
+    super::waveform::draw_live(painter, status, g, body, wave_scale, red);
+    painter.rect_stroke(
+        rect,
+        THEME.clip_radius,
+        Stroke::new(THEME.hairline, red),
+        egui::StrokeKind::Inside,
+    );
+
+    // Header text, pinned to the visible edges like a clip's: "Recording" on
+    // the left, the elapsed time on the right.
+    let text_color = THEME.clip_text_color;
+    let clipped = painter.with_clip_rect(rect);
+    let elapsed = painter.layout_no_wrap(
+        samples_to_timecode(status.frames, rate),
+        Theme::mono(THEME.clip_gain_size),
+        text_color,
+    );
+    let lane_right = g.lane_left + g.lane_width;
+    let time_right = if rect.right() > lane_right {
+        lane_right - THEME.clip_text_pad
+    } else {
+        rect.right() - THEME.clip_text_pad
+    };
+    let time_left = time_right - elapsed.size().x;
+    let name_x = if rect.left() < g.lane_left {
+        g.lane_left + THEME.clip_name_pin
+    } else {
+        rect.left() + THEME.clip_text_pad
+    };
+    let name_max_w = time_left - name_x - THEME.clip_name_gap;
+    if name_max_w > THEME.clip_name_min_w {
+        let name = fit_galley(
+            painter,
+            "Recording",
+            clip_name_font(),
+            text_color,
+            name_max_w,
+        );
+        clipped.galley(
+            egui::pos2(name_x, header_rect.center().y - name.size().y * 0.5),
+            name,
+            text_color,
+        );
+    }
+    clipped.galley(
+        egui::pos2(time_left, header_rect.center().y - elapsed.size().y * 0.5),
+        elapsed,
+        text_color,
+    );
 }
 
 /// Font of the clip name in the header strip.
@@ -671,5 +788,140 @@ mod tests {
             ),
             Some(Zone::Body)
         );
+    }
+
+    // ---- The live take ----
+
+    /// A `Geom` at 100 samples per pixel from the start, 800 px of lane.
+    fn live_geom() -> Geom {
+        Geom {
+            lane_left: 100.0,
+            lane_width: 800.0,
+            spp: 100.0,
+            scroll_x: 0,
+        }
+    }
+
+    fn live_lane() -> egui::Rect {
+        egui::Rect::from_min_size(egui::pos2(100.0, 40.0), egui::vec2(800.0, 96.0))
+    }
+
+    #[test]
+    fn live_rect_starts_at_the_record_start_and_spans_the_frames() {
+        let g = Geom {
+            lane_left: 100.0,
+            lane_width: 800.0,
+            spp: 50.0,
+            scroll_x: 1_000,
+        };
+        let lane = live_lane();
+        let rect = live_rect(11_000, 5_000, &g, lane);
+        assert_eq!(rect.left(), g.sample_to_x(11_000));
+        assert_eq!(rect.left(), 300.0, "(11,000 - 1,000) / 50 px in");
+        assert_eq!(rect.width(), 100.0, "5,000 frames at 50 spp");
+        assert_eq!(rect.top(), lane.top() + THEME.clip_margin);
+        assert_eq!(rect.bottom(), lane.bottom() - THEME.clip_margin);
+        assert_eq!(live_rect(11_000, 0, &g, lane).width(), 0.0);
+    }
+
+    #[test]
+    fn the_live_clip_is_a_record_red_clip_headed_recording_and_the_elapsed_time() {
+        let g = live_geom();
+        let lane = live_lane();
+        let peaks = vec![[-0.5, 0.5, -0.5, 0.5]; 46];
+        let status = RecordStatus {
+            track_id: uuid::Uuid::nil(),
+            start: 0,
+            frames: 48_000,
+            channels: 1,
+            peaks: &peaks,
+        };
+        let mut h = crate::ui::test_util::Headless::new(1280.0, 400.0);
+        let clip = test_clip(0.0, 0, 0);
+        let out = h.frame(Vec::new(), |ui| {
+            // A normal clip on another lane for comparison, then the take.
+            draw(
+                ui.painter(),
+                &clip,
+                "Normal",
+                false,
+                None,
+                &g,
+                lane.translate(egui::vec2(0.0, 120.0)),
+                0,
+                1.0,
+                false,
+                None,
+                false,
+                false,
+            );
+            draw_live(ui.painter(), &status, 48_000, &g, lane, 1.0);
+        });
+        assert!(out.text_rect("Recording").is_some(), "header name");
+        assert!(out.text_rect("00:00:01.000").is_some(), "elapsed time");
+
+        // 48,000 frames at 100 spp: 480 px, with a solid record_red border.
+        let border = out
+            .rects()
+            .into_iter()
+            .find(|r| r.stroke.color == THEME.record_red && r.stroke.width > 0.0)
+            .expect("the record_red border");
+        assert_eq!(border.rect, live_rect(0, 48_000, &g, lane));
+        assert!((border.rect.width() - 480.0).abs() < 0.01);
+
+        // The body is record_red at the same alpha as a normal clip's body.
+        let red = THEME.record_red;
+        let live_body =
+            egui::Color32::from_rgba_unmultiplied(red.r(), red.g(), red.b(), THEME.clip_body_alpha);
+        let live_header = egui::Color32::from_rgba_unmultiplied(
+            red.r(),
+            red.g(),
+            red.b(),
+            THEME.clip_header_alpha,
+        );
+        let fills: Vec<_> = out.rects().into_iter().map(|r| r.fill).collect();
+        assert!(fills.contains(&live_body), "body {live_body:?}");
+        assert!(fills.contains(&live_header), "header {live_header:?}");
+        let tc = THEME.track_color(0);
+        let normal_body =
+            egui::Color32::from_rgba_unmultiplied(tc.r(), tc.g(), tc.b(), THEME.clip_body_alpha);
+        assert!(fills.contains(&normal_body), "the normal clip's body alpha");
+    }
+
+    #[test]
+    fn a_take_without_frames_is_a_hairline_and_one_off_screen_draws_nothing() {
+        let g = live_geom();
+        let lane = live_lane();
+        let mut h = crate::ui::test_util::Headless::new(1280.0, 400.0);
+        let none = RecordStatus {
+            track_id: uuid::Uuid::nil(),
+            start: 0,
+            frames: 0,
+            channels: 1,
+            peaks: &[],
+        };
+        let out = h.frame(Vec::new(), |ui| {
+            draw_live(ui.painter(), &none, 48_000, &g, lane, 1.0);
+        });
+        assert!(out.text_rect("Recording").is_none(), "no header yet");
+        assert!(
+            out.rects()
+                .iter()
+                .all(|r| r.stroke.color != THEME.record_red)
+        );
+
+        // Scrolled far past the take: nothing is drawn.
+        let far = Geom {
+            scroll_x: 10_000_000,
+            ..live_geom()
+        };
+        let take = RecordStatus {
+            frames: 48_000,
+            ..none
+        };
+        let out = h.frame(Vec::new(), |ui| {
+            draw_live(ui.painter(), &take, 48_000, &far, lane, 1.0);
+        });
+        assert!(out.text_rect("Recording").is_none());
     }
 }

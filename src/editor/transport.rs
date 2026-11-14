@@ -179,6 +179,17 @@ impl Editor {
     /// is copied into the view; when playback just went from playing to
     /// stopped, the final position (the return point) is copied instead.
     pub fn poll_transport(&mut self) {
+        // While a take exists the playhead is where the recording is (the end
+        // of what has been written), not where the audio player is: the
+        // player runs on past the project end and carries the output latency.
+        if let Some(playhead) = self.record_playhead() {
+            self.view.playhead = playhead;
+            if let Some(engine) = &self.audio {
+                let state = code_to_state(engine.shared().state.load(Ordering::Relaxed));
+                self.transport_prev = Some(state);
+            }
+            return;
+        }
         let Some(engine) = &self.audio else {
             return;
         };

@@ -23,8 +23,9 @@ use super::wav::wav_error;
 /// Full scale of 24-bit samples (the same rule as io::wav).
 const I24_SCALE: f32 = 8_388_607.0;
 
-/// Output frames per min/max peak entry.
-const PEAK_FRAMES: usize = 1024;
+/// Output frames per min/max peak entry (the live waveform reads the same
+/// grouping).
+pub const PEAK_FRAMES: usize = 1024;
 
 /// Staging buffer size in samples: how much one drain pop reads at most.
 const IN_BUF_SAMPLES: usize = 8 * 1024;

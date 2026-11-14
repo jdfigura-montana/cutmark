@@ -73,6 +73,13 @@ impl BinPanel {
             self.reveal = Some(id);
         }
 
+        // While a take is recorded the bin ignores drags, preview, remove,
+        // rename, relink and import: pending prompts and edits go away.
+        if editor.is_recording() {
+            self.renaming = None;
+            self.confirm_remove = None;
+        }
+
         self.header(ui, editor, &mut messages);
         ui.add_space(THEME.space_md);
 
@@ -134,7 +141,10 @@ impl BinPanel {
                 let import_label = egui::RichText::new(format!("{} Import", fill::DOWNLOAD))
                     .size(THEME.bin_btn_text_size);
                 if ui
-                    .add(egui::Button::new(import_label).min_size(egui::vec2(0.0, THEME.bin_btn_h)))
+                    .add_enabled(
+                        !editor.is_recording(),
+                        egui::Button::new(import_label).min_size(egui::vec2(0.0, THEME.bin_btn_h)),
+                    )
                     .clicked()
                 {
                     messages.extend(pick_and_import(editor));
@@ -152,6 +162,7 @@ impl BinPanel {
         messages: &mut Vec<String>,
     ) {
         let offline = editor.is_media_offline(item.id);
+        let recording = editor.is_recording();
         let usage = editor.media_usage(item.id);
         let selected = self.selected == Some(item.id);
         let previewing_this = editor.previewing() == Some(item.id);
@@ -249,7 +260,7 @@ impl BinPanel {
                                 if name_response.clicked() {
                                     self.selected = Some(item.id);
                                 }
-                                if name_response.double_clicked() {
+                                if name_response.double_clicked() && !recording {
                                     self.begin_rename(item);
                                 }
                                 name_line_center = name_response.rect.center().y;
@@ -289,14 +300,15 @@ impl BinPanel {
         let row_response = ui.interact(
             inner.response.rect,
             egui::Id::new(("bin_row", item.id)),
-            if offline {
+            if offline || recording {
                 egui::Sense::click()
             } else {
                 egui::Sense::click_and_drag()
             },
         );
-        // Online rows are drag sources for the timeline; offline ones are not.
-        if !offline && row_response.drag_started() {
+        // Online rows are drag sources for the timeline; offline ones are not,
+        // and nothing is dragged to the timeline while a take is recorded.
+        if !offline && !recording && row_response.drag_started() {
             egui::DragAndDrop::set_payload(ui.ctx(), MediaDrag { media_id: item.id });
         }
         if row_response.clicked() {
@@ -305,13 +317,17 @@ impl BinPanel {
         egui::Popup::context_menu(&row_response)
             .style(crate::ui::theme::menu_item_style as fn(&mut egui::Style))
             .show(|ui| {
+                // Preview, Relink, Rename and Remove are off while recording.
                 if !offline
                     && ui
-                        .button(if previewing_this {
-                            "Stop Preview"
-                        } else {
-                            "Preview"
-                        })
+                        .add_enabled(
+                            !recording,
+                            egui::Button::new(if previewing_this {
+                                "Stop Preview"
+                            } else {
+                                "Preview"
+                            }),
+                        )
                         .clicked()
                 {
                     if previewing_this {
@@ -321,11 +337,18 @@ impl BinPanel {
                     }
                     ui.close();
                 }
-                if offline && ui.button("Relink...").clicked() {
+                if offline
+                    && ui
+                        .add_enabled(!recording, egui::Button::new("Relink..."))
+                        .clicked()
+                {
                     ui.close();
                     messages.extend(pick_and_relink(editor, item.id));
                 }
-                if ui.button("Rename").clicked() {
+                if ui
+                    .add_enabled(!recording, egui::Button::new("Rename"))
+                    .clicked()
+                {
                     self.begin_rename(item);
                     ui.close();
                 }
@@ -335,7 +358,10 @@ impl BinPanel {
                     }
                     ui.close();
                 }
-                if ui.button("Remove from Project").clicked() {
+                if ui
+                    .add_enabled(!recording, egui::Button::new("Remove from Project"))
+                    .clicked()
+                {
                     ui.close();
                     if usage > 0 {
                         self.confirm_remove = Some((item.id, usage));
@@ -553,7 +579,11 @@ fn draw_pill(
 /// Opens the import file picker (WAV and MP3) and starts one import job per file.
 ///
 /// Returns the names of files rejected because of an unsupported extension.
+/// Does nothing (no picker) while a take is being recorded.
 pub fn pick_and_import(editor: &mut Editor) -> Vec<String> {
+    if editor.is_recording() {
+        return Vec::new();
+    }
     let Some(files) = rfd::FileDialog::new()
         .add_filter("Audio (WAV, MP3)", &["wav", "mp3"])
         .pick_files()
@@ -565,8 +595,12 @@ pub fn pick_and_import(editor: &mut Editor) -> Vec<String> {
 
 /// Opens the relink file picker (WAV and MP3) and starts one relink job.
 ///
-/// The job copies the chosen file into media/ for the offline item.
+/// The job copies the chosen file into media/ for the offline item. Does
+/// nothing (no picker) while a take is being recorded.
 fn pick_and_relink(editor: &mut Editor, id: Uuid) -> Vec<String> {
+    if editor.is_recording() {
+        return Vec::new();
+    }
     let Some(file) = rfd::FileDialog::new()
         .add_filter("Audio (WAV, MP3)", &["wav", "mp3"])
         .pick_file()
@@ -689,5 +723,19 @@ mod tests {
         // UTF-8 for U+00B7 is C2 B7; the double-encoded mojibake starts C3 82.
         assert!(line.contains('\u{B7}'));
         assert!(!line.contains('\u{C2}'), "no double-encoded middle dot");
+    }
+
+    #[test]
+    fn import_and_relink_open_no_picker_while_recording() {
+        // A picker would block on a native dialog: the test thread would not
+        // come back, and `within_secs` fails it.
+        let result = crate::ui::test_util::within_secs(10, || {
+            let (mut editor, _dir) = crate::ui::test_util::armed_editor(&[&[]], "Rec");
+            editor.start_recording().expect("a take");
+            let imported = pick_and_import(&mut editor);
+            let relinked = pick_and_relink(&mut editor, uuid::Uuid::nil());
+            (imported.len(), relinked.len(), editor.take_is_live())
+        });
+        assert_eq!(result, (0, 0, true));
     }
 }

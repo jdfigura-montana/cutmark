@@ -114,6 +114,8 @@ pub(super) struct Recording {
     ring_id: Uuid,
     /// Device sample rate in Hz, to turn dropped frames into milliseconds.
     device_rate: u32,
+    /// Channels of the take file: 2 for a Stereo take, else 1.
+    channels: u16,
     /// Frames written to the take file so far, at the project rate.
     frames: u64,
     /// Peak entries `[minL, maxL, minR, maxR]` per 1,024 frames, for the live view.
@@ -129,8 +131,6 @@ pub(super) struct Recording {
 }
 
 /// What a running take looks like from outside, for drawing the live clip.
-// The fields are read by the live clip drawing in 12.3 (no UI in 12.2).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct RecordStatus<'a> {
     /// The track being recorded on.
@@ -139,6 +139,8 @@ pub struct RecordStatus<'a> {
     pub start: u64,
     /// Frames written so far, at the project rate.
     pub frames: u64,
+    /// Channels of the take: 2 draws two lanes (L above R), 1 draws one.
+    pub channels: u16,
     /// `[minL, maxL, minR, maxR]` per 1,024 frames written so far (mono: R = L).
     pub peaks: &'a [[f32; 4]],
 }
@@ -413,16 +415,35 @@ impl Editor {
         self.recording.is_some()
     }
 
+    /// True while a take is being captured: from `start_recording` until Stop
+    /// or Esc. After that the take is only being saved (`is_recording` stays
+    /// true until it is placed), and nothing is left to ask the user.
+    pub fn take_is_live(&self) -> bool {
+        self.recording.as_ref().is_some_and(|rec| !rec.stopping)
+    }
+
     /// The running take, for drawing the live clip: where it starts, how many
     /// frames are written and the peak entries so far.
-    // Nothing draws the live clip until 12.3 (no UI in 12.2).
-    #[allow(dead_code)]
     pub fn recording_status(&self) -> Option<RecordStatus<'_>> {
         self.recording.as_ref().map(|rec| RecordStatus {
             track_id: rec.track_id,
             start: rec.start,
             frames: rec.frames,
+            channels: rec.channels,
             peaks: &rec.peaks,
+        })
+    }
+
+    /// Where the view's playhead sits while a take exists: the end of what is
+    /// recorded so far (record start + frames) while it is live, the record
+    /// start once Stop or Esc returned it. None when nothing is recording.
+    pub fn record_playhead(&self) -> Option<u64> {
+        self.recording.as_ref().map(|rec| {
+            if rec.stopping {
+                rec.start
+            } else {
+                rec.start.saturating_add(rec.frames)
+            }
         })
     }
 
@@ -434,9 +455,8 @@ impl Editor {
     /// preview or scrub, measures the take latency from the stream timestamps
     /// (plus the Latency offset setting), opens the take file in media/ and
     /// starts the writer job, then switches capture on and starts playback.
-    // No Ctrl+R or Record button until 12.3 (no UI in 12.2); everything the
-    // take needs is reached through this entry point.
-    #[allow(dead_code)]
+    /// The player runs open-ended: it keeps advancing past the last clip
+    /// (silence) until Stop.
     pub fn start_recording(&mut self) -> Result<(), EditorError> {
         self.check_unlocked(false)?;
         let Some(track_id) = self.armed_track else {
@@ -511,6 +531,11 @@ impl Editor {
             job,
             ring_id,
             device_rate,
+            channels: if self.config.record_channels == RecordChannels::Stereo {
+                2
+            } else {
+                1
+            },
             frames: 0,
             peaks: Vec::new(),
             dropped: 0,
@@ -526,7 +551,7 @@ impl Editor {
             stream.set_recording(true);
         }
         if let Some(engine) = &self.audio {
-            engine.send(Command::Play { from: start });
+            engine.send(Command::Record { from: start });
         }
         Ok(())
     }
@@ -542,8 +567,6 @@ impl Editor {
     /// Ends the take and discards it: nothing is added to the project and the
     /// take file is deleted. Does nothing when not recording or when the take
     /// was already stopped (Esc after Stop cannot undo the Stop).
-    // No Esc handling until 12.3 (no UI in 12.2).
-    #[allow(dead_code)]
     pub fn cancel_recording(&mut self) {
         self.end_take(true);
     }
@@ -557,11 +580,17 @@ impl Editor {
         // Capture off before the writer is told to finish, so its last drain
         // sees everything the input pushed.
         self.halt_capture();
+        let mut start = None;
         if let Some(rec) = self.recording.as_mut() {
             rec.stopping = true;
             rec.dropped = dropped;
             let flag = if discard { &rec.cancel } else { &rec.finish };
             flag.store(true, Ordering::Release);
+            start = Some(rec.start);
+        }
+        // Like any Stop, the playhead returns to where the take started.
+        if let Some(start) = start {
+            self.view.playhead = start;
         }
     }
 
@@ -1531,6 +1560,69 @@ mod tests {
         );
         assert!(editor.undo(), "the retake is one undo step");
         assert_eq!(spans(&editor.project, 0), [(0, 3_000)]);
+    }
+
+    #[test]
+    fn the_view_playhead_follows_the_take_and_returns_to_its_start_on_stop() {
+        let (mut editor, _dir) = recording_editor(&[&[]]);
+        editor.set_playhead(1_000);
+        assert!(editor.record_playhead().is_none());
+        editor.start_recording().unwrap();
+        assert!(editor.take_is_live());
+        editor.poll_transport();
+        assert_eq!(editor.view.playhead, 1_000, "nothing recorded yet");
+
+        push_mono(&mut editor, 4_800, 0.5, 4_800);
+        editor.poll_transport();
+        assert_eq!(editor.record_playhead(), Some(5_800));
+        assert_eq!(editor.view.playhead, 5_800, "record start + frames");
+        let status = editor.recording_status().unwrap();
+        assert_eq!(status.channels, 1, "a mono take has one lane");
+
+        // Stop: the playhead is back at the record start at once, and stays
+        // there while the take is saved and after it is placed.
+        editor.stop_recording();
+        assert!(!editor.take_is_live(), "no longer being captured");
+        assert!(editor.is_recording(), "but not placed yet");
+        assert_eq!(editor.view.playhead, 1_000);
+        editor.poll_transport();
+        assert_eq!(editor.view.playhead, 1_000);
+        wait_until(&mut editor, "the take to finish", |e| !e.is_recording());
+        editor.poll_transport();
+        assert_eq!(editor.view.playhead, 1_000);
+        assert!(editor.record_playhead().is_none());
+    }
+
+    #[test]
+    fn esc_returns_the_playhead_to_the_record_start_too() {
+        let (mut editor, _dir) = recording_editor(&[&[]]);
+        editor.set_playhead(2_000);
+        editor.start_recording().unwrap();
+        push_mono(&mut editor, 1_000, 0.5, 1_000);
+        editor.poll_transport();
+        assert_eq!(editor.view.playhead, 3_000);
+        editor.cancel_recording();
+        assert_eq!(editor.view.playhead, 2_000);
+        wait_until(&mut editor, "the take to be discarded", |e| {
+            !e.is_recording()
+        });
+        assert_eq!(editor.view.playhead, 2_000);
+    }
+
+    #[test]
+    fn a_stereo_take_reports_two_lanes() {
+        let fake = FakeInput {
+            channels: 2,
+            ..FakeInput::default()
+        };
+        let (mut editor, _dir) = recording_editor_with(&[&[]], fake);
+        editor.config.record_channels = RecordChannels::Stereo;
+        editor.start_recording().unwrap();
+        assert_eq!(editor.recording_status().unwrap().channels, 2);
+        editor.cancel_recording();
+        wait_until(&mut editor, "the take to be discarded", |e| {
+            !e.is_recording()
+        });
     }
 
     #[test]

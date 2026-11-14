@@ -136,6 +136,15 @@ fn scroll_extent(project_length: u64, visible: u64) -> u64 {
     (project_length.max(visible) as f64 * 1.1).ceil() as u64
 }
 
+/// How far the view must be able to scroll and fit: the project length, or the
+/// end of the take being recorded when that runs past the last clip.
+fn content_length(editor: &Editor) -> u64 {
+    let length = editor.project_length();
+    editor.recording_status().map_or(length, |take| {
+        length.max(take.start.saturating_add(take.frames))
+    })
+}
+
 /// Draws the whole timeline into the remaining center space and handles its
 /// input (zoom, scroll, playhead clicks). Not a ScrollArea: everything is
 /// painted by hand over one allocated rect.
@@ -192,22 +201,29 @@ pub fn show(
     // Input first: it may change spp, scroll_x, scroll_y and the playhead.
     // Marker interaction on the ruler comes first and wins over the plain
     // ruler click (playhead), so the flag suppresses that click this frame.
+    // While a take is recorded the mouse only zooms and scrolls: the ruler,
+    // the lanes, the clips and the bin drag ignore it (no seek, no scrub, no
+    // selection, no edits).
+    let recording = editor.is_recording();
     let marker_g = Geom {
         lane_left,
         lane_width,
         spp: editor.view.samples_per_pixel,
         scroll_x: editor.view.scroll_x,
     };
-    let ruler_taken = ruler::handle_markers(ui, editor, &marker_g, ruler_rect);
+    let ruler_taken = !recording && ruler::handle_markers(ui, editor, &marker_g, ruler_rect);
     handle_input(ui, editor, lane_left, lane_width, max_scroll_y, &resp);
     // Audible scrubbing on the ruler (and the playhead handle): press starts,
     // drag scrubs, release ends. Marker interaction wins.
-    ruler::handle_scrub(ui, editor, ruler_rect, ruler_taken);
+    if !recording {
+        ruler::handle_scrub(ui, editor, ruler_rect, ruler_taken);
+    }
 
-    // Follow the playhead while playing: when it leaves the visible lanes on
-    // either side, page so it sits 5 percent in from the left edge. Never
-    // follows while stopped.
-    if editor.transport_state() == TransportState::Playing {
+    // Follow the playhead while playing or recording: when it leaves the
+    // visible lanes on either side, page so it sits 5 percent in from the left
+    // edge. Never follows while stopped. While a take is recorded the playhead
+    // is the end of what was recorded so far.
+    if editor.transport_state() == TransportState::Playing || editor.take_is_live() {
         let spp = editor.view.samples_per_pixel;
         let playhead = editor.view.playhead;
         let visible_end = editor.view.scroll_x + (lane_width as f64 * spp) as u64;
@@ -226,16 +242,20 @@ pub fn show(
         scroll_x: view.scroll_x,
     };
     // A bin item dragged over the lanes: Esc cancels, release over a lane drops.
-    let mut messages = interaction::handle_bin_drag(ui, editor, &g, lane_rect, view.scroll_y);
-    // Clip mouse interaction: header moves, edge trims, clip menu, cursors.
-    // When it takes the press, the lane interaction must not see it.
-    let clip_handled = interaction::handle_clip_input(ui, editor, &g, lane_rect, view.scroll_y);
-    // Lane mouse interaction: range selection, boundary drags, playhead clicks.
-    if !clip_handled {
-        interaction::handle_lane_input(ui, editor, &g, lane_rect, view.scroll_y);
+    let mut messages = Vec::new();
+    if !recording {
+        messages = interaction::handle_bin_drag(ui, editor, &g, lane_rect, view.scroll_y);
+        // Clip mouse interaction: header moves, edge trims, clip menu, cursors.
+        // When it takes the press, the lane interaction must not see it.
+        let clip_handled = interaction::handle_clip_input(ui, editor, &g, lane_rect, view.scroll_y);
+        // Lane mouse interaction: range selection, boundary drags, playhead
+        // clicks.
+        if !clip_handled {
+            interaction::handle_lane_input(ui, editor, &g, lane_rect, view.scroll_y);
+        }
     }
     let visible = g.visible_range().1 - g.visible_range().0;
-    let length = editor.project_length();
+    let length = content_length(editor);
     let max_scroll_x = scroll_extent(length, visible).saturating_sub(visible);
 
     draw(
@@ -263,7 +283,7 @@ pub fn show(
 /// Zooms so the whole project fits, scroll at the start.
 fn apply_fit(editor: &mut Editor, lane_width: f32) {
     let (spp, scroll_x) = zoom_to_fit(
-        editor.project_length(),
+        content_length(editor),
         editor.project.sample_rate,
         lane_width,
     );
@@ -404,7 +424,7 @@ fn handle_input(
 /// the (10 percent padded) end of the project.
 pub(crate) fn clamp_scroll_x(editor: &Editor, spp: f64, lane_width: f32, scroll_x: u64) -> u64 {
     let visible = (lane_width as f64 * spp).ceil() as u64;
-    let length = editor.project_length();
+    let length = content_length(editor);
     scroll_x.min(scroll_extent(length, visible).saturating_sub(visible))
 }
 
@@ -485,6 +505,19 @@ fn draw(
                     gain_active,
                 );
             }
+            // The take being recorded grows over this track's clips.
+            if let Some(take) = editor.recording_status()
+                && take.track_id == track.id
+            {
+                clip_view::draw_live(
+                    &lane_painter,
+                    &take,
+                    editor.project.sample_rate,
+                    g,
+                    track_rect,
+                    editor.wave_scale(),
+                );
+            }
         }
         y = bottom;
     }
@@ -556,7 +589,7 @@ fn draw(
 
     // Horizontal scrollbar: trough plus draggable thumb.
     painter.rect_filled(scroll_rect, THEME.corner_r, visuals.faint_bg_color);
-    let frac = (visible as f32 / scroll_extent(editor.project_length(), visible) as f32).min(1.0);
+    let frac = (visible as f32 / scroll_extent(content_length(editor), visible) as f32).min(1.0);
     let thumb_w = (scroll_rect.width() * frac).max(THEME.scrollbar_thumb_min);
     let scroll_max = max_scroll_x as f32;
     let thumb_x = g.lane_left
