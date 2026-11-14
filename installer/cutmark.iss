@@ -1,6 +1,6 @@
 ; Inno Setup script for CutMark Audio Editor.
 ; Build with scripts/build-installer.ps1, which passes the version:
-;   ISCC installer\cutmark.iss /DAppVersion=1.0.0
+;   ISCC installer\cutmark.iss /DAppVersion=1.1.0
 
 #define AppName "CutMark Audio Editor"
 #define AppExe "cutmark.exe"

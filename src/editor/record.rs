@@ -16,6 +16,7 @@ use crate::audio::player::Command;
 use crate::editor::action::Action;
 use crate::editor::editor::{Editor, EditorError};
 use crate::editor::jobs::{TakeJob, TakeOutcome};
+use crate::editor::message::Message;
 use crate::io::config::{self, AppConfig, RecordChannels};
 use crate::io::import::Loaded;
 use crate::io::paths::{self, conformed_path, peaks_path};
@@ -229,9 +230,9 @@ impl Editor {
         }
         match self.open_input() {
             Ok(()) => self.armed_track = Some(track_id),
-            Err(error) => self
-                .job_errors
-                .push(format!("Could not arm the track: {error}")),
+            Err(error) => self.job_errors.push(Message::recording(format!(
+                "Could not arm the track: {error}"
+            ))),
         }
     }
 
@@ -266,9 +267,10 @@ impl Editor {
         if live_take {
             self.stop_recording();
             self.job_errors
-                .push("Recording stopped: input device lost.".to_string());
+                .push(Message::recording("Recording stopped: input device lost."));
         } else {
-            self.job_errors.push("Input device lost.".to_string());
+            self.job_errors
+                .push(Message::recording("Input device lost."));
         }
         self.disarm();
     }
@@ -308,7 +310,7 @@ impl Editor {
             producer,
         )?;
         if let Some(notice) = fallback_notice(device, stream.fell_back(), &FALLBACK_NOTED) {
-            self.job_errors.push(notice);
+            self.job_errors.push(Message::recording(notice));
         }
         self.ring = Some(Ring::new(consumer, None));
         self.input = Some(stream);
@@ -656,11 +658,13 @@ impl Editor {
         }
         match outcome {
             TakeOutcome::Finished { item, loaded } => self.place_take(&rec, item, loaded),
-            TakeOutcome::TooShort => self.job_errors.push("Recording too short.".to_string()),
-            TakeOutcome::Cancelled => {}
-            TakeOutcome::Failed(message) => self
+            TakeOutcome::TooShort => self
                 .job_errors
-                .push(format!("The recording failed: {message}")),
+                .push(Message::recording("Recording too short.")),
+            TakeOutcome::Cancelled => {}
+            TakeOutcome::Failed(message) => self.job_errors.push(Message::recording(format!(
+                "The recording failed: {message}"
+            ))),
         }
     }
 
@@ -680,15 +684,16 @@ impl Editor {
         match self.apply(action) {
             Ok(()) if rec.dropped > 0 => {
                 let ms = dropped_ms(rec.dropped, rec.device_rate);
-                self.job_errors
-                    .push(format!("The recording dropped {ms} ms of audio."));
+                self.job_errors.push(Message::recording(format!(
+                    "The recording dropped {ms} ms of audio."
+                )));
             }
             Ok(()) => {}
             Err(error) => {
                 let _ = std::fs::remove_file(self.paths.media().join(file_name));
                 let _ = std::fs::remove_file(conformed_path(&self.paths, id));
                 let _ = std::fs::remove_file(peaks_path(&self.paths, id));
-                self.job_errors.push(error.to_string());
+                self.job_errors.push(Message::recording(error.to_string()));
             }
         }
     }
@@ -700,6 +705,7 @@ mod tests {
     use crate::editor::action::Action;
     use crate::editor::history::History;
     use crate::editor::jobs::{ExportSettings, JobMessage};
+    use crate::editor::message::texts;
     use crate::io::export::{ExportFormat, ExportKind};
     use crate::io::paths::ProjectPaths;
     use crate::model::fixtures::{project_with_clips, spans, srcs};
@@ -832,9 +838,10 @@ mod tests {
         let messages = editor.take_job_errors();
         assert_eq!(messages.len(), 1);
         assert!(
-            messages[0].starts_with("Could not arm the track: "),
+            messages[0].text.starts_with("Could not arm the track: "),
             "{messages:?}"
         );
+        assert_eq!(messages[0].title, "Recording");
     }
 
     #[test]
@@ -858,7 +865,7 @@ mod tests {
         assert_eq!(editor.armed_track(), None);
         assert_eq!(
             editor.take_job_errors(),
-            vec!["Input device lost.".to_string()]
+            vec![Message::recording("Input device lost.")]
         );
         // Nothing armed: the lost flag alone says nothing.
         editor.tick();
@@ -1337,7 +1344,11 @@ mod tests {
         push_mono(&mut editor, 480, 0.5, 480);
         finish_take(&mut editor);
 
-        assert_eq!(editor.take_job_errors(), ["Recording too short."]);
+        assert_eq!(
+            editor.take_job_errors(),
+            [Message::recording("Recording too short.")],
+            "a Recording message"
+        );
         assert!(Arc::ptr_eq(&editor.project, &before));
         assert!(editor.history.undo.is_empty());
         assert!(
@@ -1364,7 +1375,7 @@ mod tests {
         let (mut editor, _dir) = recording_editor(&[&[]]);
         editor.start_recording().unwrap();
         finish_take(&mut editor);
-        assert_eq!(editor.take_job_errors(), ["Recording too short."]);
+        assert_eq!(texts(editor.take_job_errors()), ["Recording too short."]);
         assert!(editor.history.undo.is_empty());
         assert!(files_in(editor.paths.media()).is_empty());
     }
@@ -1414,7 +1425,7 @@ mod tests {
         finish_take(&mut editor);
         assert_eq!(
             editor.take_job_errors(),
-            ["The recording dropped 20 ms of audio."]
+            [Message::recording("The recording dropped 20 ms of audio.")]
         );
         assert_eq!(
             bin_item(&editor, "Take 1").length,
@@ -1438,7 +1449,7 @@ mod tests {
 
         assert_eq!(
             editor.take_job_errors(),
-            ["Recording stopped: input device lost."],
+            [Message::recording("Recording stopped: input device lost.")],
             "one message, not two"
         );
         let take = bin_item(&editor, "Take 1");
@@ -1466,7 +1477,10 @@ mod tests {
         editor.fake_input.as_mut().unwrap().lost = true;
         editor.tick();
         wait_until(&mut editor, "the take to finish", |e| !e.is_recording());
-        assert_eq!(editor.take_job_errors(), ["Input device lost."]);
+        assert_eq!(
+            editor.take_job_errors(),
+            [Message::recording("Input device lost.")]
+        );
         assert_eq!(
             bin_item(&editor, "Take 1").length,
             1_000,
@@ -1499,7 +1513,7 @@ mod tests {
         assert!(!editor.is_recording(), "capture is over");
         assert_eq!(
             editor.take_job_errors(),
-            ["The recording failed: disk full"]
+            [Message::recording("The recording failed: disk full")]
         );
         assert!(editor.history.undo.is_empty());
         assert_eq!(editor.project.media.len(), 1);

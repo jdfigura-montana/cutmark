@@ -19,6 +19,7 @@ use crate::editor::clipboard::{Clipboard, copy_clips, copy_range};
 use crate::editor::history::{History, HistoryEntry};
 use crate::editor::jobs::{ExportDecision, ExportSettings, JobChannels, JobMessage};
 use crate::editor::media_store::MediaStore;
+use crate::editor::message::Message;
 use crate::editor::ops::OpError;
 use crate::editor::ops::amplitude::{self, Target};
 use crate::editor::ops::marker;
@@ -101,7 +102,7 @@ pub struct Editor {
     /// Id of the next background job to start.
     pub next_job: u64,
     /// Messages from failed background jobs, read and cleared by the UI.
-    pub(super) job_errors: Vec<String>,
+    pub(super) job_errors: Vec<Message>,
     /// Worker-thread job channel pair.
     pub jobs: JobChannels,
     /// Display-only vertical waveform scale, 1.0..=16.0 (not saved).
@@ -258,10 +259,10 @@ impl Editor {
             Err(error @ IoError::InvalidProject(_)) => {
                 let _ = autosave::discard(&project_paths);
                 let mut editor = Self::assemble(project_paths, saved_project, saved_view, false);
-                editor.job_errors.push(format!(
+                editor.job_errors.push(Message::project(format!(
                     "The autosave could not be recovered. {error}. \
                      The last saved project was opened instead."
-                ));
+                )));
                 Ok(editor)
             }
             Err(error) => Err(error.into()),
@@ -389,7 +390,7 @@ impl Editor {
         let (keep_ids, keep_files) = self.referenced_media();
         let recycle = !cfg!(test);
         for message in paths::cleanup_unused(&self.paths, &keep_ids, &keep_files, recycle) {
-            self.job_errors.push(message);
+            self.job_errors.push(Message::project(message));
         }
     }
 
@@ -1161,9 +1162,9 @@ impl Editor {
         self.missing_notice = false;
         let count = self.offline_count();
         if count > 0 {
-            self.job_errors.push(format!(
+            self.job_errors.push(Message::media(format!(
                 "{count} media files are missing. Their clips are shown in red and play silence. Right-click an item in the bin and choose Relink to fix it."
-            ));
+            )));
         }
     }
 
@@ -1180,7 +1181,8 @@ impl Editor {
         }
         self.last_autosave = Instant::now();
         if let Err(error) = autosave::write(&self.paths, &self.project, &self.view) {
-            self.job_errors.push(format!("Autosave failed: {error}"));
+            self.job_errors
+                .push(Message::project(format!("Autosave failed: {error}")));
             return;
         }
         self.autosaved_generation = self.autosave_generation;
@@ -1378,13 +1380,13 @@ impl Editor {
             let _ = std::fs::remove_file(self.paths.media().join(&item.file_name));
             let _ = std::fs::remove_file(conformed_path(&self.paths, item.id));
             let _ = std::fs::remove_file(peaks_path(&self.paths, item.id));
-            self.job_errors.push(
+            self.job_errors.push(Message::media(
                 error
                     .to_string()
                     .strip_prefix("invalid operation: ")
                     .unwrap_or(&error.to_string())
                     .to_string(),
-            );
+            ));
             return;
         }
         self.media_store.insert(item.id, loaded);
@@ -1395,7 +1397,7 @@ impl Editor {
             channels: item.channels,
             length: item.length,
         }) {
-            self.job_errors.push(error.to_string());
+            self.job_errors.push(Message::media(error.to_string()));
         }
     }
 
@@ -1423,10 +1425,10 @@ impl Editor {
                         Ok((item, loaded)) => {
                             self.media_store.insert(item.id, loaded);
                             if let Err(error) = self.apply(Action::ImportMedia { item }) {
-                                self.job_errors.push(error.to_string());
+                                self.job_errors.push(Message::media(error.to_string()));
                             }
                         }
-                        Err(error) => self.job_errors.push(error.to_string()),
+                        Err(error) => self.job_errors.push(Message::media(error.to_string())),
                     }
                 }
                 JobMessage::LoadDone {
@@ -1446,7 +1448,7 @@ impl Editor {
                         }
                         Err(error) => {
                             self.media_store.set_offline(media_id);
-                            self.job_errors.push(error.to_string());
+                            self.job_errors.push(Message::media(error.to_string()));
                         }
                     }
                 }
@@ -1457,7 +1459,7 @@ impl Editor {
                         Err(IoError::MediaOffline(id)) => {
                             self.media_store.set_offline(id);
                         }
-                        Err(error) => self.job_errors.push(error.to_string()),
+                        Err(error) => self.job_errors.push(Message::media(error.to_string())),
                     }
                 }
                 JobMessage::ExportProgress { job, pass, frac } => {
@@ -1516,7 +1518,7 @@ impl Editor {
     }
 
     /// Takes the messages recorded from failed background jobs.
-    pub fn take_job_errors(&mut self) -> Vec<String> {
+    pub fn take_job_errors(&mut self) -> Vec<Message> {
         std::mem::take(&mut self.job_errors)
     }
 
@@ -1771,6 +1773,7 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::editor::action::Action;
+    use crate::editor::message::texts;
     use crate::editor::ops::OpError;
     use crate::model::fixtures::{project_with_clips, spans, srcs};
 
@@ -1920,7 +1923,12 @@ mod tests {
                 .join(format!("{gone_id}.peaks"))
                 .exists()
         );
-        let messages = editor.take_job_errors().join("\n");
+        let taken = editor.take_job_errors();
+        assert!(
+            taken.iter().all(|m| m.title == "Project"),
+            "cleanup messages are Project messages: {taken:?}"
+        );
+        let messages = texts(taken).join("\n");
         assert!(messages.contains("gone.wav"), "got: {messages}");
         assert!(messages.contains(&gone_id.to_string()), "got: {messages}");
     }
@@ -3944,6 +3952,22 @@ mod tests {
     }
 
     #[test]
+    fn the_missing_media_notice_is_a_media_message() {
+        let mut editor = test_editor(project_with_clips(&[&[(0, 100)]]));
+        let id = editor.project.media[0].id;
+        editor.media_store.set_offline(id);
+        editor.missing_notice = true;
+        editor.missing_media_notice();
+        let messages = editor.take_job_errors();
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert_eq!(messages[0].title, "Media");
+        assert!(
+            messages[0].text.contains("1 media files are missing"),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
     fn autosave_tick_records_errors_in_job_errors() {
         let (_parent, mut editor) = disk_editor("Bad");
         // Make the atomic rename fail: project.autosave.json exists as a
@@ -3956,7 +3980,7 @@ mod tests {
             editor
                 .take_job_errors()
                 .iter()
-                .any(|e| e.contains("Autosave failed")),
+                .any(|e| e.title == "Project" && e.text.contains("Autosave failed")),
             "expected an autosave job error"
         );
     }
@@ -4044,10 +4068,11 @@ mod tests {
         // The reason is queued for the message dialog.
         let messages = opened.take_job_errors();
         assert!(
-            messages.iter().any(|m| m.contains("autosave")
-                && m.contains("This project file is invalid")
-                && m.contains("sample rate 0 Hz")
-                && m.contains("last saved project")),
+            messages.iter().any(|m| m.title == "Project"
+                && m.text.contains("autosave")
+                && m.text.contains("This project file is invalid")
+                && m.text.contains("sample rate 0 Hz")
+                && m.text.contains("last saved project")),
             "messages: {messages:?}"
         );
         drop_from_recent(&opened.paths.root);

@@ -1,6 +1,6 @@
 # CutMark Audio Editor
 
-Version 1.0.0
+Version 1.1.0
 
 A small, keyboard-driven multitrack audio editor for Windows built in Rust with egui. It opens
 project folders (media, cache and project.json live together), imports WAV and MP3 files, and lets
@@ -10,6 +10,9 @@ a master fader with peak and RMS meters, and clip-level gain lines and fades. No
 (split, trim, move, cut/copy/paste, gain, normalize, fades, silence) are all undoable, and projects
 autosave with recovery on reopen. Finished audio can be exported to WAV or MP3 with a clipping
 warning pass.
+
+Recording: arm a track, press Ctrl+R and record from the input device straight onto the timeline;
+each take lands in the bin and on the armed track as one undo step.
 
 ## Build
 
@@ -43,6 +46,7 @@ Shortcuts only fire when no text field has focus.
 | Project | Ctrl+I | Import media |
 | Project | Ctrl+E | Export |
 | Transport | Space | Play / Stop |
+| Transport | Ctrl+R | Record onto the armed track (Space keeps the take, Esc discards it) |
 | Transport | Shift+Space | Play selection |
 | Transport | P | Pause |
 | Transport | Home / End | Jump to start / end |

@@ -6,6 +6,7 @@ use egui_phosphor::fill;
 
 use crate::editor::Editor;
 use crate::editor::action::Action;
+use crate::editor::message::Message;
 use crate::editor::transport::TransportState;
 use crate::ui::theme::{THEME, Theme};
 use crate::ui::widgets::fader;
@@ -32,7 +33,7 @@ const TIMECODE_SIZE: f32 = 17.0;
 /// While a take is recorded the Play and Stop buttons end it, Home, Pause and
 /// End are disabled, the timecode shows the record position and the editing
 /// toggles are disabled.
-pub fn show(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<String> {
+pub fn show(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<Message> {
     let mut messages = Vec::new();
     let recording = editor.is_recording();
     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -119,7 +120,7 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<String> {
 
 /// The recessed transport group: jump start, play/stop, pause, stop, record
 /// and end. Returns the messages for the user (Record could not start).
-fn transport_group(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<String> {
+fn transport_group(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<Message> {
     let mut messages = Vec::new();
     // While recording, Play and Stop both end the take; Home, Pause and End
     // are off (the editor refuses them too).
@@ -179,7 +180,7 @@ fn transport_group(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<String> {
 /// starts a take when idle and ends it (keeping it) while recording. A take
 /// that was already stopped and is being saved ignores clicks. Returns the
 /// reason a take could not start ("Arm a track first", ...).
-fn record_button(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<String> {
+fn record_button(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<Message> {
     let live = editor.take_is_live();
     let saving = editor.is_recording() && !live;
     let (rect, response) = ui.allocate_exact_size(
@@ -211,7 +212,7 @@ fn record_button(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<String> {
         && !saving
         && let Err(error) = editor.start_recording()
     {
-        messages.push(error.to_string());
+        messages.push(Message::recording(error.to_string()));
     }
     messages
 }

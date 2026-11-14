@@ -7,6 +7,7 @@ pub mod editor;
 pub mod history;
 pub mod jobs;
 pub mod media_store;
+pub mod message;
 pub mod ops;
 pub mod record;
 pub mod selection;

@@ -7,6 +7,7 @@ use eframe::egui::ViewportCommand;
 
 use crate::editor::Editor;
 use crate::editor::action::Action;
+use crate::editor::message::{self, Message};
 use crate::editor::transport::TransportState;
 use crate::ui::bin_panel::{self, BinPanel};
 use crate::ui::dialogs::confirm::{
@@ -33,6 +34,12 @@ const MENU_BAR_H: f32 = 30.0;
 const TOOLBAR_H: f32 = 48.0;
 /// Height of the bottom status bar panel.
 const STATUS_BAR_H: f32 = 26.0;
+
+/// Wraps plain panel messages (import, relink, bin and timeline edits) as
+/// "Media" messages for the messages dialog.
+fn media_messages(texts: Vec<String>) -> impl Iterator<Item = Message> {
+    texts.into_iter().map(Message::media)
+}
 
 /// The currently shown screen.
 enum Screen {
@@ -374,7 +381,7 @@ impl App {
             ui.ctx().request_repaint();
         }
 
-        let mut msgs: Vec<String> = Vec::new();
+        let mut msgs: Vec<Message> = Vec::new();
         // Top: menu bar (one 30 px panel) with the Project, Edit, Markers,
         // Process and View menus in a single row, then the toolbar row.
         let mut action = ProjectMenuAction::None;
@@ -394,7 +401,7 @@ impl App {
             });
 
         if action == ProjectMenuAction::Import {
-            msgs.extend(bin_panel::pick_and_import(editor));
+            msgs.extend(media_messages(bin_panel::pick_and_import(editor)));
             action = ProjectMenuAction::None;
         }
         egui::Panel::top("toolbar")
@@ -443,12 +450,17 @@ impl App {
             .frame(egui::Frame::new().fill(THEME.panel_bg))
             .show(ui, |ui| {
                 ui.take_available_space();
-                msgs.extend(bin.show(ui, editor));
+                msgs.extend(media_messages(bin.show(ui, editor)));
             });
 
         // Center: timeline, filling the remainder.
         egui::CentralPanel::default().show(ui, |ui| {
-            msgs.extend(timeline::show(ui, editor, view_action, meters));
+            msgs.extend(media_messages(timeline::show(
+                ui,
+                editor,
+                view_action,
+                meters,
+            )));
         });
 
         // Files dropped anywhere on the window go to the importer.
@@ -460,17 +472,17 @@ impl App {
                 .collect()
         });
         if !dropped.is_empty() {
-            msgs.extend(editor.import_files(dropped));
+            msgs.extend(media_messages(editor.import_files(dropped)));
         }
 
         // While an export job runs: click blocker, progress window and clip
         // warning. Drawn last so the blocker sits above every panel.
         crate::ui::dialogs::export::show_progress(&ui.ctx().clone(), editor);
 
-        // While a take is recorded the keyboard does three things (Space, Esc,
-        // M) and the timeline handles zoom and scroll; everything else is
-        // ignored. An open prompt owns Esc and Space, so they do not reach the
-        // take then.
+        // While a take is recorded the keyboard does four things (Space, Esc,
+        // M and Ctrl+S) and the timeline handles zoom and scroll; everything
+        // else is ignored. An open prompt owns Esc and Space, so they do not
+        // reach the take then.
         let recording = editor.is_recording();
         if recording
             && !ui.ctx().egui_wants_keyboard_input()
@@ -478,7 +490,7 @@ impl App {
             && !messages.as_ref().is_some_and(|dialog| dialog.open)
             && !menu.modal_open()
         {
-            Self::handle_recording_keys(ui, editor);
+            Self::handle_recording_keys(ui, editor, menu);
         }
 
         // Editor shortcuts, only when no text field has keyboard focus, and
@@ -540,7 +552,7 @@ impl App {
             if ctrl && a {
                 editor.select_all();
             } else if ctrl && i && !shift {
-                msgs.extend(bin_panel::pick_and_import(editor));
+                msgs.extend(media_messages(bin_panel::pick_and_import(editor)));
             } else if ctrl && z && !gesture_active {
                 if shift {
                     let _ = editor.redo();
@@ -561,7 +573,7 @@ impl App {
                 // Record onto the armed track from the playhead; "Arm a track
                 // first" and the like go to the messages dialog.
                 if let Err(error) = editor.start_recording() {
-                    msgs.push(error.to_string());
+                    msgs.push(Message::recording(error.to_string()));
                 }
             } else if ctrl && shift && t {
                 let _ = editor.apply(Action::AddTrack {
@@ -652,7 +664,11 @@ impl App {
         // Background job errors from this frame.
         msgs.extend(editor.take_job_errors());
         if !msgs.is_empty() {
-            *messages = Some(ConfirmDialog::new("Media", msgs.join("\n")));
+            let text: Vec<&str> = msgs.iter().map(|m| m.text.as_str()).collect();
+            *messages = Some(ConfirmDialog::new(
+                message::dialog_title(&msgs),
+                text.join("\n"),
+            ));
         }
         if let Some(dialog) = messages {
             dialog.show(&ui.ctx().clone());
@@ -662,10 +678,16 @@ impl App {
 
     /// The keys that work while a take is recorded: Space ends the take and
     /// keeps it, Esc ends it and discards it (the press is consumed, so it
-    /// never also clears the selection) and M adds a marker at the record
-    /// position. Ctrl+R and every other key do nothing.
-    fn handle_recording_keys(ui: &egui::Ui, editor: &mut Editor) {
+    /// never also clears the selection), M adds a marker at the record
+    /// position and Ctrl+S saves the project (the take keeps recording). Ctrl+R
+    /// and every other key, Ctrl+N and Ctrl+O included, do nothing.
+    fn handle_recording_keys(ui: &egui::Ui, editor: &mut Editor, menu: &mut ProjectMenu) {
         ui.input_mut(|i| {
+            let ctrl_only = i.modifiers.ctrl && !i.modifiers.shift && !i.modifiers.alt;
+            if ctrl_only && i.key_pressed(egui::Key::S) {
+                menu.save(editor);
+                return;
+            }
             if i.modifiers.any() {
                 return;
             }
@@ -1082,6 +1104,11 @@ mod tests {
         for _ in 0..3 {
             let _ = rig.frame();
         }
+        let idle = rig.frame();
+        assert!(
+            idle.text_rect("Recording").is_none(),
+            "no title painted before the key"
+        );
         tap_with(&mut rig, egui::Key::R, egui::Modifiers::CTRL);
         let mut out = rig.frame();
         for _ in 0..3 {
@@ -1092,6 +1119,11 @@ mod tests {
             out.text_rect("Arm a track first").is_some(),
             "the messages dialog says why"
         );
+        assert!(
+            out.text_rect("Recording").is_some(),
+            "the dialog is titled Recording"
+        );
+        assert!(out.text_rect("Media").is_none(), "and no longer Media");
     }
 
     #[test]
@@ -1132,7 +1164,7 @@ mod tests {
         ] {
             tap(&mut rig, key);
         }
-        for key in [egui::Key::Z, egui::Key::Y, egui::Key::A, egui::Key::S] {
+        for key in [egui::Key::Z, egui::Key::Y, egui::Key::A] {
             tap_with(&mut rig, key, egui::Modifiers::CTRL);
         }
         assert_eq!(
@@ -1169,6 +1201,78 @@ mod tests {
             "no dialog"
         );
         assert!(out.text_rect("Arm a track first").is_none());
+    }
+
+    #[test]
+    fn ctrl_s_saves_while_recording_and_the_take_keeps_going() {
+        let mut rig = recording_rig();
+        start_take(&mut rig, 2_400);
+        let _ = rig.frame();
+        let start = rig.editor().recording_status().expect("recording").start;
+
+        // M is the one edit a take allows: it makes the project dirty.
+        tap(&mut rig, egui::Key::M);
+        assert!(rig.editor().dirty, "the marker is an unsaved change");
+        let json = rig.editor().paths.project_json();
+        let saved_markers = |json: &std::path::Path| {
+            crate::io::project_file::load(json)
+                .map(|(_, project, _)| project.markers.len())
+                .expect("project.json loads")
+        };
+        assert!(!json.exists(), "nothing saved yet");
+
+        tap_with(&mut rig, egui::Key::S, egui::Modifiers::CTRL);
+        assert!(!rig.editor().dirty, "Ctrl+S saved the project");
+        assert_eq!(saved_markers(&json), 1, "the marker reached project.json");
+        assert!(rig.editor().take_is_live(), "the take is still recording");
+        assert!(!rig.app.menu.modal_open(), "no save error");
+        assert!(rig.app.messages.is_none(), "no dialog");
+
+        // The take goes on: more audio arrives, then Space keeps it.
+        crate::ui::test_util::feed_take(rig.editor_mut(), 2_400, 0.5, 4_800);
+        let _ = rig.frame();
+        assert_eq!(
+            rig.editor().recording_status().map(|s| (s.start, s.frames)),
+            Some((start, 4_800)),
+            "same take, still growing"
+        );
+        tap(&mut rig, egui::Key::Space);
+        frames_until(&mut rig, "the take to be placed", |r| {
+            !r.editor().is_recording()
+        });
+        assert!(bin_names(&rig).contains(&"Take 1".to_string()));
+        assert_eq!(rig.editor().undo_label(), Some("Record"));
+    }
+
+    #[test]
+    fn the_other_file_shortcuts_stay_ignored_while_recording() {
+        let mut rig = recording_rig();
+        start_take(&mut rig, 2_400);
+        let _ = rig.frame();
+        // A marker makes the project dirty, so a stray save would show.
+        tap(&mut rig, egui::Key::M);
+        assert!(rig.editor().dirty);
+        for (key, modifiers) in [
+            (egui::Key::N, egui::Modifiers::CTRL),
+            (egui::Key::O, egui::Modifiers::CTRL),
+            (egui::Key::S, egui::Modifiers::CTRL | egui::Modifiers::SHIFT),
+            (egui::Key::S, egui::Modifiers::ALT | egui::Modifiers::CTRL),
+        ] {
+            tap_with(&mut rig, key, modifiers);
+            for _ in 0..3 {
+                let _ = rig.frame();
+            }
+            assert!(
+                rig.app.pending_close.is_none(),
+                "{key:?} + {modifiers:?} opened a close prompt"
+            );
+            assert!(
+                !rig.app.menu.modal_open(),
+                "{key:?} + {modifiers:?} opened a dialog"
+            );
+        }
+        assert!(rig.editor().take_is_live(), "the take was not disturbed");
+        assert!(rig.editor().dirty, "nothing was saved");
     }
 
     /// The painted live clip: the rect with the solid `record_red` border.
