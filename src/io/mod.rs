@@ -1,6 +1,7 @@
 //! io: file decoding, encoding and project file handling; never plays audio.
 
 pub mod autosave;
+pub mod config;
 pub mod decode;
 pub mod export;
 pub mod import;

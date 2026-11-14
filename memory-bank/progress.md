@@ -1,3 +1,6 @@
+## Task 11.1 (2026-11-14)
+App config + audio input stream DONE, no app-behavior changes (nothing calls the new code until 11.2). io::config (AppConfig input_device / record_channels / latency_offset_ms in `%APPDATA%\CutMark\config.json`, defaults on missing or corrupt file without overwriting it, tmp + rename save, offset clamped -100..=100 on load and save, load_from / save_to for tests) and audio::input (InputPick, input_device_names, default_input_name, InputStream::open with default-device fallback, f32/i16/u16 callback feeding only the input meter through the pure meter_block, fatal-only error flag, assert_no_alloc-wrapped callback). AudioError gained 4 input variants. Module-level allow(dead_code) in both files until 11.2. fmt/clippy -D warnings clean; cargo test 515 passed (+28); release exe 07:34:54. Details, cpal 0.18.2 gotchas and the unwrapped-output-callback finding are in activeContext.md.
+
 ## Windows installer (2026-10-27)
 Installer tooling DONE, no app-behavior changes. See activeContext.md top entry for details. Output: dist\CutMark-Setup-<version>.exe; script scripts\build-installer.ps1.
 
@@ -101,7 +104,7 @@ Task 8.1 DONE (2026-10-13). Markers: Editor selected_marker/select_marker/add_ma
 - Phase 2 complete: model/undo core, editor ops, io (paths, project_file, recent), start screen, menus, dialogs (1.1-2.8).
 
 ## What is left (SPEC Build phases)
-3. Media import complete. 4. Timeline view (complete through 4.5). 5. Playback. 6. Editing. 7. Levels/processing: 7.1 amplitude ops DONE, 7.2 meters DONE, 7.3 header controls DONE, 7.4 clip gain line/fade handles/Clip Gain dialog DONE; 7.5 Gain/Normalize/Fade/Silence menu+keys DONE. 8. Markers/scrub UI DONE. 9. Export DONE (9.1 sinks, 9.2 editor job, 9.3 dialog/progress/warning). 10. Safety net/polish: 10.1 autosave/recovery DONE, 10.2 close prompts DONE, 10.3 missing media notice + relink DONE (unused media cleanup remains). 11. Input and arming: NOT STARTED. 12. Recording: NOT STARTED. Version target 1.1.0 (SPEC Recording section).
+3. Media import complete. 4. Timeline view (complete through 4.5). 5. Playback. 6. Editing. 7. Levels/processing: 7.1 amplitude ops DONE, 7.2 meters DONE, 7.3 header controls DONE, 7.4 clip gain line/fade handles/Clip Gain dialog DONE; 7.5 Gain/Normalize/Fade/Silence menu+keys DONE. 8. Markers/scrub UI DONE. 9. Export DONE (9.1 sinks, 9.2 editor job, 9.3 dialog/progress/warning). 10. Safety net/polish: 10.1 autosave/recovery DONE, 10.2 close prompts DONE, 10.3 missing media notice + relink DONE (unused media cleanup remains). 11. Input and arming: 11.1 config + input stream DONE; Editor wiring, Audio Settings dialog and Arm button NOT STARTED. 12. Recording: NOT STARTED. Version target 1.1.0 (SPEC Recording section).
 
 ## Known issues / environment notes
 - cargo not on default PATH; append $env:USERPROFILE\.cargo\bin each session.

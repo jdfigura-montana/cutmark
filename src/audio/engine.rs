@@ -38,6 +38,25 @@ pub enum AudioError {
     /// The stream could not be built or started.
     #[error("failed to start the output stream: {0}")]
     Stream(#[from] cpal::Error),
+    /// No input device is available.
+    #[error("no input device found")]
+    NoInputDevice,
+    /// The input device offers no f32, i16 or u16 sample format.
+    #[error("input device \"{0}\" has no supported sample format (needs f32, i16 or u16)")]
+    NoInputFormat(String),
+    /// The chosen input needs more channels than the device has.
+    #[error("input device \"{device}\" has {have} input channel(s), but this input needs {need}")]
+    InputChannels {
+        /// Display name of the device.
+        device: String,
+        /// Channels the device offers.
+        have: u16,
+        /// Channels the chosen input needs.
+        need: u16,
+    },
+    /// The input stream could not be built or started.
+    #[error("failed to start the input stream: {0}")]
+    InputStream(cpal::Error),
 }
 
 /// Transport state the audio thread publishes for the UI to read.
