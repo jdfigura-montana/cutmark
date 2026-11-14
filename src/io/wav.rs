@@ -125,7 +125,7 @@ pub(super) fn open_sink(
 }
 
 /// Maps a hound error to an IoError, keeping real I/O errors as such.
-fn wav_error(e: hound::Error) -> IoError {
+pub(super) fn wav_error(e: hound::Error) -> IoError {
     match e {
         hound::Error::IoError(e) => IoError::Io(e),
         other => IoError::Export(format!("WAV write failed: {other}")),

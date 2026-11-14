@@ -25,6 +25,7 @@
 - rubato 5.0.1 - resample imported media to the project rate (v5 API is a full rewrite; see activeContext learnings)
 - arc-swap 1.9.2 - MixPlan handoff to the audio thread
 - cpal 0.18.2 - WASAPI output engine (0.18 is an API rewrite: u32 SampleRate alias, by-value StreamConfig, Device Display instead of name(); see activeContext)
+- rtrb 0.4.1 - lock-free SPSC recording ring from the input callback to the record writer (0.4 renamed push_slice/pop_slice to push_partial_slice/pop_partial_slice etc.; see activeContext)
 - assert_no_alloc 1.1.2 (feature warn_debug) - no-alloc guard around the output callback (wrapped in 11.1b) and the input callback (11.1); debug builds print a warning to stderr, release builds are a plain call
 - crossbeam-channel 0.5 - editor-to-audio command queue and job channels
 - mp3lame-encoder 0.2.5 - CBR MP3 export (LAME 3.100 compiled from source by mp3lame-sys with cc/MSVC; LGPL-3.0; API: Builder -> Encoder, encode_to_vec(MonoPcm/InterleavedPcm<f32>), flush_to_vec::<FlushGap>, lame_tag_encode_to_vec)

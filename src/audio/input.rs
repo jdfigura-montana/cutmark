@@ -1,13 +1,14 @@
 //! audio::input: the cpal input stream; its callback only feeds an input meter.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{
     Device, ErrorKind, InputCallbackInfo, SampleFormat, SizedSample, Stream, StreamConfig,
     SupportedStreamConfig, SupportedStreamConfigRange,
 };
+use rtrb::Producer;
 
 use crate::audio::engine::AudioError;
 use crate::audio::meters::{ChannelMeter, StereoMeter};
@@ -133,6 +134,42 @@ pub fn meter_block<S: InputSample>(
     }
 }
 
+/// When `recording`, pushes whole interleaved frames of `samples` (converted
+/// to f32) into `producer` and returns how many whole frames did not fit and
+/// were dropped; when not, pushes nothing and returns 0. Never pushes a
+/// partial frame. No allocation, no locks, no panics: safe for the input
+/// callback.
+fn record_block<S: InputSample>(
+    samples: &[S],
+    channels: usize,
+    recording: bool,
+    producer: &mut Producer<f32>,
+) -> u64 {
+    if !recording || channels == 0 {
+        return 0;
+    }
+    let frames = samples.len() / channels;
+    let want = frames * channels;
+    // Room for whole frames only, so a frame is never split.
+    let fits = (producer.slots() / channels) * channels;
+    let writable = want.min(fits);
+    if writable > 0
+        && let Ok(mut chunk) = producer.write_chunk(writable)
+    {
+        let (head, tail) = samples.split_at(writable);
+        let (first, second) = chunk.as_mut_slices();
+        for (dst, src) in first.iter_mut().zip(head) {
+            *dst = src.to_f32();
+        }
+        for (dst, src) in second.iter_mut().zip(tail) {
+            *dst = src.to_f32();
+        }
+        chunk.commit_all();
+    }
+    let dropped = (want - writable) / channels;
+    u64::try_from(dropped).unwrap_or(u64::MAX)
+}
+
 /// True for stream errors that mean the capture has stopped. A reroute to a
 /// new default device, a buffer glitch and a refused real-time priority all
 /// leave the stream running, so they must not read as a lost device.
@@ -220,6 +257,28 @@ pub fn device_channels(name: Option<&str>) -> Option<u16> {
         .map(|config| config.channels())
 }
 
+/// Name, sample rate and channel count of the device [`InputStream::open`]
+/// would use (the named device, else the Windows default input), resolved the
+/// same way `open` resolves them, including the best-config ranking. Opens
+/// nothing.
+// The Editor sizes the recording ring from it (12.2).
+#[allow(dead_code)]
+pub fn probe_input(device: Option<&str>) -> Result<(String, u32, u16), AudioError> {
+    let host = cpal::default_host();
+    let (device, _) = choose_device(&host, device)?;
+    let name = device_name(&device).unwrap_or_else(|| UNKNOWN_DEVICE.to_string());
+    let default = device
+        .default_input_config()
+        .map_err(AudioError::InputStream)?;
+    let others = device
+        .supported_input_configs()
+        .map(|ranges| ranges.collect::<Vec<_>>())
+        .unwrap_or_default();
+    let supported =
+        best_config(default, others).ok_or_else(|| AudioError::NoInputFormat(name.clone()))?;
+    Ok((name, supported.sample_rate(), supported.channels()))
+}
+
 /// The device named `wanted` (None = no preference), else the default input.
 /// The flag is true when a name was asked for but not found.
 fn choose_device(host: &cpal::Host, wanted: Option<&str>) -> Result<(Device, bool), AudioError> {
@@ -239,12 +298,19 @@ fn choose_device(host: &cpal::Host, wanted: Option<&str>) -> Result<(Device, boo
 }
 
 /// Builds the capture stream for sample type `S`. The data callback meters the
-/// picked channels and nothing else; the error callback only sets a flag.
+/// picked channels and, while the recording flag is set, pushes whole frames
+/// into the ring; the error callback only sets a flag.
+// The parameters mirror what cpal needs: the device, its config and everything
+// the callback touches.
+#[allow(clippy::too_many_arguments)]
 fn build_stream<S>(
     device: &Device,
     config: StreamConfig,
     pick: InputPick,
     meter: Arc<StereoMeter>,
+    mut producer: Producer<f32>,
+    recording: Arc<AtomicBool>,
+    dropped: Arc<AtomicU64>,
     errored: Arc<AtomicBool>,
 ) -> Result<Stream, cpal::Error>
 where
@@ -254,7 +320,18 @@ where
     device.build_input_stream(
         config,
         move |data: &[S], _info: &InputCallbackInfo| {
-            assert_no_alloc::assert_no_alloc(|| meter_block(data, channels, pick, &meter));
+            assert_no_alloc::assert_no_alloc(|| {
+                meter_block(data, channels, pick, &meter);
+                let dropped_frames = record_block(
+                    data,
+                    usize::from(channels),
+                    recording.load(Ordering::Relaxed),
+                    &mut producer,
+                );
+                if dropped_frames > 0 {
+                    dropped.fetch_add(dropped_frames, Ordering::Relaxed);
+                }
+            });
         },
         move |error: cpal::Error| {
             if is_fatal(error.kind()) {
@@ -265,7 +342,8 @@ where
     )
 }
 
-/// An open cpal input stream whose callback feeds an input meter.
+/// An open cpal input stream whose callback feeds an input meter and, while
+/// recording is on, pushes whole frames into a ring.
 ///
 /// Dropping the `InputStream` closes the device: cpal joins the callback when
 /// the `Stream` is dropped.
@@ -280,13 +358,18 @@ pub struct InputStream {
     device_rate: u32,
     /// Device channel count.
     device_channels: u16,
+    /// True while the callback pushes frames into the ring.
+    recording: Arc<AtomicBool>,
+    /// Whole frames dropped because the ring was full.
+    dropped: Arc<AtomicU64>,
     /// Set by the stream error callback instead of logging.
     errored: Arc<AtomicBool>,
 }
 
 impl InputStream {
     /// Opens `device` (a display name; None, or a name that is not found, means
-    /// the Windows default input) and starts capturing into `meter`.
+    /// the Windows default input) and starts capturing into `meter` and, while
+    /// recording is on, into `producer`.
     ///
     /// Uses the device's default config: f32 when the device offers it at that
     /// channel count and rate, otherwise i16 or u16 converted sample by sample
@@ -296,6 +379,7 @@ impl InputStream {
         device: Option<&str>,
         pick: InputPick,
         meter: Arc<StereoMeter>,
+        producer: Producer<f32>,
     ) -> Result<InputStream, AudioError> {
         let host = cpal::default_host();
         let (device, fell_back) = choose_device(&host, device)?;
@@ -322,17 +406,40 @@ impl InputStream {
         }
 
         let errored = Arc::new(AtomicBool::new(false));
+        let recording = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicU64::new(0));
         let config = supported.config();
         let stream = match supported.sample_format() {
-            SampleFormat::F32 => {
-                build_stream::<f32>(&device, config, pick, meter, Arc::clone(&errored))
-            }
-            SampleFormat::I16 => {
-                build_stream::<i16>(&device, config, pick, meter, Arc::clone(&errored))
-            }
-            SampleFormat::U16 => {
-                build_stream::<u16>(&device, config, pick, meter, Arc::clone(&errored))
-            }
+            SampleFormat::F32 => build_stream::<f32>(
+                &device,
+                config,
+                pick,
+                meter,
+                producer,
+                Arc::clone(&recording),
+                Arc::clone(&dropped),
+                Arc::clone(&errored),
+            ),
+            SampleFormat::I16 => build_stream::<i16>(
+                &device,
+                config,
+                pick,
+                meter,
+                producer,
+                Arc::clone(&recording),
+                Arc::clone(&dropped),
+                Arc::clone(&errored),
+            ),
+            SampleFormat::U16 => build_stream::<u16>(
+                &device,
+                config,
+                pick,
+                meter,
+                producer,
+                Arc::clone(&recording),
+                Arc::clone(&dropped),
+                Arc::clone(&errored),
+            ),
             _ => return Err(AudioError::NoInputFormat(name)),
         }
         .map_err(AudioError::InputStream)?;
@@ -344,12 +451,14 @@ impl InputStream {
             fell_back,
             device_rate: supported.sample_rate(),
             device_channels: have,
+            recording,
+            dropped,
             errored,
         })
     }
 
     /// Display name of the device actually opened.
-    // Nothing reads it before the take is written in phase 12.
+    // The take message names the device with it (12.2).
     #[allow(dead_code)]
     pub fn device_name(&self) -> &str {
         &self.device_name
@@ -361,17 +470,39 @@ impl InputStream {
     }
 
     /// Device sample rate in Hz.
-    // The record writer needs it to resample to the project rate (phase 12).
+    // The record writer needs it to resample to the project rate (12.2).
     #[allow(dead_code)]
     pub fn device_rate(&self) -> u32 {
         self.device_rate
     }
 
     /// Device channel count.
-    // The record writer needs it to pick the channels from the ring (phase 12).
+    // The record writer needs it to pick the channels from the ring (12.2).
     #[allow(dead_code)]
     pub fn device_channels(&self) -> u16 {
         self.device_channels
+    }
+
+    /// Turns recording on or off: the callback starts or stops pushing whole
+    /// frames into the ring.
+    // The Editor sets it around a take (12.2).
+    #[allow(dead_code)]
+    pub fn set_recording(&self, on: bool) {
+        self.recording.store(on, Ordering::Release);
+    }
+
+    /// Whole frames dropped so far because the ring was full.
+    // The Editor reads it after a take for the dropped-ms message (12.2).
+    #[allow(dead_code)]
+    pub fn dropped_frames(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
+
+    /// Resets the dropped-frames counter to 0 (before a new take).
+    // The Editor resets it when a take starts (12.2).
+    #[allow(dead_code)]
+    pub fn reset_dropped(&self) {
+        self.dropped.store(0, Ordering::Relaxed);
     }
 
     /// True once the stream error callback has reported a fatal error.
@@ -384,6 +515,84 @@ impl InputStream {
 mod tests {
     use super::*;
     use cpal::SupportedBufferSize;
+    use rtrb::RingBuffer;
+
+    #[test]
+    fn record_block_off_pushes_nothing() {
+        let (mut producer, consumer) = RingBuffer::new(16);
+        let samples = [0.5f32, -0.5, 0.25, -0.25];
+        let dropped = record_block(&samples, 2, false, &mut producer);
+        assert_eq!(dropped, 0);
+        assert_eq!(consumer.slots(), 0);
+    }
+
+    #[test]
+    fn record_block_pushes_f32_frames_unchanged() {
+        let (mut producer, mut consumer) = RingBuffer::new(16);
+        let samples = [0.5f32, -0.25, 0.75, -1.0];
+        let dropped = record_block(&samples, 2, true, &mut producer);
+        assert_eq!(dropped, 0);
+        assert_eq!(consumer.slots(), 4);
+        let mut out = [0.0f32; 4];
+        let (filled, _) = consumer.pop_partial_slice(&mut out);
+        assert_eq!(filled, samples);
+    }
+
+    #[test]
+    fn record_block_full_ring_drops_whole_frames_only() {
+        // Capacity 5 slots: with 2 channels only 2 whole frames fit (4 slots);
+        // the 5th slot is never filled with half a frame.
+        let (mut producer, mut consumer) = RingBuffer::new(5);
+        let samples = [0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]; // 4 frames
+        let dropped = record_block(&samples, 2, true, &mut producer);
+        assert_eq!(dropped, 2);
+        assert_eq!(consumer.slots(), 4);
+        let mut out = [0.0f32; 5];
+        let (filled, _) = consumer.pop_partial_slice(&mut out);
+        assert_eq!(&*filled, &samples[..4]);
+    }
+
+    #[test]
+    fn record_block_never_pushes_a_partial_trailing_frame() {
+        let (mut producer, mut consumer) = RingBuffer::new(16);
+        let samples = [0.1f32, 0.2, 0.3]; // 1 frame + 1 stray sample
+        let dropped = record_block(&samples, 2, true, &mut producer);
+        assert_eq!(dropped, 0);
+        assert_eq!(consumer.slots(), 2);
+        let mut out = [0.0f32; 3];
+        let (filled, _) = consumer.pop_partial_slice(&mut out);
+        assert_eq!(&*filled, &samples[..2]);
+    }
+
+    #[test]
+    fn record_block_converts_i16() {
+        let (mut producer, mut consumer) = RingBuffer::new(8);
+        let samples = [16_384i16, -32_768];
+        let dropped = record_block(&samples, 1, true, &mut producer);
+        assert_eq!(dropped, 0);
+        assert_eq!(consumer.slots(), 2);
+        let mut out = [0.0f32; 2];
+        let (filled, _) = consumer.pop_partial_slice(&mut out);
+        assert_eq!(filled[0], 16_384.0 / 32_768.0);
+        assert_eq!(filled[1], -1.0);
+    }
+
+    #[test]
+    fn record_block_on_a_zero_capacity_ring_drops_everything() {
+        let (mut producer, _consumer) = RingBuffer::new(0);
+        let dropped = record_block(&[0.1f32, 0.2], 2, true, &mut producer);
+        assert_eq!(dropped, 1);
+    }
+
+    #[test]
+    fn record_block_counts_dropped_frames_not_samples() {
+        // 3-channel device: 6 slots fit 2 frames, so 9 samples (3 frames) lose 1.
+        let (mut producer, consumer) = RingBuffer::new(6);
+        let samples = [0.0f32; 9];
+        let dropped = record_block(&samples, 3, true, &mut producer);
+        assert_eq!(dropped, 1);
+        assert_eq!(consumer.slots(), 6);
+    }
 
     /// What one channel meter holds: (peak, mean square, frames, clipped).
     fn read(meter: &ChannelMeter) -> (f32, f32, u32, bool) {

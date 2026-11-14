@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use chrono::{DateTime, Local};
 use uuid::Uuid;
 
 use super::IoError;
@@ -138,6 +139,17 @@ pub fn unique_media_name(media_dir: &Path, file_name: &str) -> String {
         }
         n += 1;
     }
+}
+
+/// File name for a new take in media/: "rec-YYYYMMDD-HHMMSS.wav", with the
+/// same " (2)"-style clash suffix as [`unique_media_name`] when taken.
+// The take job names the WAV with it (12.2).
+#[allow(dead_code)]
+pub fn record_file_name(media_dir: &Path, now: DateTime<Local>) -> String {
+    unique_media_name(
+        media_dir,
+        &format!("rec-{}.wav", now.format("%Y%m%d-%H%M%S")),
+    )
 }
 
 /// Path of the conformed 32-bit float WAV for a media id: cache/<id>.f32.wav.
@@ -281,7 +293,26 @@ pub fn reveal_in_explorer(path: &Path) -> Result<(), IoError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use tempfile::tempdir;
+
+    #[test]
+    fn record_file_name_has_the_spec_format() {
+        let dir = tempdir().unwrap();
+        let now = Local.with_ymd_and_hms(2026, 11, 14, 9, 5, 3).unwrap();
+        assert_eq!(record_file_name(dir.path(), now), "rec-20261114-090503.wav");
+    }
+
+    #[test]
+    fn record_file_name_suffixes_a_clash() {
+        let dir = tempdir().unwrap();
+        let now = Local.with_ymd_and_hms(2026, 11, 14, 9, 5, 3).unwrap();
+        fs::write(dir.path().join("rec-20261114-090503.wav"), b"x").unwrap();
+        assert_eq!(
+            record_file_name(dir.path(), now),
+            "rec-20261114-090503 (2).wav"
+        );
+    }
 
     #[test]
     fn create_layout_makes_all_five_folders() {

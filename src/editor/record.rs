@@ -153,6 +153,9 @@ impl Editor {
             self.config.input_device.as_deref(),
             input_pick(self.config.record_channels),
             Arc::clone(&self.input_meter),
+            // Placeholder ring: nothing is recorded yet (recording is off), and
+            // 12.2 creates the real ring whose consumer the take job keeps.
+            rtrb::RingBuffer::new(0).0,
         )?;
         if let Some(notice) = fallback_notice(
             self.config.input_device.as_deref(),

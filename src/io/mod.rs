@@ -11,6 +11,7 @@ pub mod paths;
 pub mod peaks;
 pub mod project_file;
 pub mod recent;
+pub mod record_writer;
 pub mod resample;
 pub mod wav;
 
