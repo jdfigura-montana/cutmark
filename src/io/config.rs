@@ -1,8 +1,5 @@
 //! io::config: app-wide settings (audio input) in %APPDATA%\CutMark\config.json.
 
-// Nothing reads these settings until the Editor is wired up in task 11.2.
-#![allow(dead_code)]
-
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -82,16 +79,16 @@ pub fn load_from(path: &Path) -> AppConfig {
         .clamped()
 }
 
-/// Saves the config to the default location.
-pub fn save(config: &AppConfig) -> Result<(), IoError> {
-    let path = default_path()
-        .ok_or_else(|| IoError::Io(io::Error::new(io::ErrorKind::NotFound, "no config folder")))?;
-    save_to(config, &path)
+/// The error for "there is nowhere to save the config": the Editor reports it
+/// when it has no config path (no config folder could be found).
+pub fn no_config_folder() -> IoError {
+    IoError::Io(io::Error::new(io::ErrorKind::NotFound, "no config folder"))
 }
 
-/// Saves the config pretty-printed to `path`: writes `config.json.tmp` next
-/// to it, creating the parent folder if needed, then renames it over the
-/// target. The latency offset is clamped in what is written.
+/// Saves the config pretty-printed to `path` (the Editor passes
+/// [`default_path`], tests pass a temp path): writes `config.json.tmp` next to
+/// it, creating the parent folder if needed, then renames it over the target.
+/// The latency offset is clamped in what is written.
 pub fn save_to(config: &AppConfig, path: &Path) -> Result<(), IoError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;

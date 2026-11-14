@@ -4,6 +4,7 @@ use eframe::egui;
 use uuid::Uuid;
 
 use crate::editor::Editor;
+use crate::ui::dialogs::audio_settings::AudioSettingsDialog;
 use crate::ui::dialogs::confirm::ConfirmDialog;
 use crate::ui::dialogs::export::ExportDialog;
 use crate::ui::dialogs::project_settings::ProjectSettingsDialog;
@@ -106,6 +107,8 @@ pub struct ProjectMenu {
     save_as_dialog: Option<SaveAsDialog>,
     /// Project Settings dialog, when open.
     settings_dialog: Option<ProjectSettingsDialog>,
+    /// Audio Settings dialog, when open.
+    audio_settings_dialog: Option<AudioSettingsDialog>,
     /// Export dialog; kept for the whole session so the last choices are
     /// remembered between opens.
     export_dialog: Option<ExportDialog>,
@@ -163,6 +166,10 @@ impl ProjectMenu {
                     }
                     if menu.button("Project Settings...").clicked() {
                         self.open_settings(editor);
+                        menu.close();
+                    }
+                    if menu.button("Audio Settings...").clicked() {
+                        self.audio_settings_dialog = Some(AudioSettingsDialog::new_open(editor));
                         menu.close();
                     }
                 });
@@ -440,6 +447,12 @@ impl ProjectMenu {
                 self.settings_dialog = None;
             }
         }
+        if let Some(dialog) = &mut self.audio_settings_dialog {
+            dialog.show(&ctx, editor);
+            if dialog.is_closed() {
+                self.audio_settings_dialog = None;
+            }
+        }
         if let Some(dialog) = &mut self.export_dialog {
             dialog.show(&ctx, editor);
         }
@@ -520,24 +533,58 @@ mod tests {
         editor
     }
 
-    /// One frame of the real menu bar, in the same 30 px panel the app uses.
+    /// The real menu bar, in the same 30 px panel the app uses.
+    fn menu_panel(ui: &mut egui::Ui, menu: &mut ProjectMenu, editor: &mut Editor) {
+        egui::Panel::top("menu_bar")
+            .exact_size(30.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(THEME.bar_bg)
+                    .inner_margin(egui::Margin {
+                        left: 8,
+                        ..Default::default()
+                    }),
+            )
+            .show(ui, |ui| {
+                let _ = menu.show(ui, editor);
+            });
+    }
+
+    /// One frame of a fresh menu bar.
     fn menu_bar(h: &mut Headless, editor: &mut Editor) -> Out {
         let mut menu = ProjectMenu::default();
-        h.frame(Vec::new(), |ui| {
-            egui::Panel::top("menu_bar")
-                .exact_size(30.0)
-                .frame(
-                    egui::Frame::new()
-                        .fill(THEME.bar_bg)
-                        .inner_margin(egui::Margin {
-                            left: 8,
-                            ..Default::default()
-                        }),
-                )
-                .show(ui, |ui| {
-                    let _ = menu.show(ui, editor);
-                });
-        })
+        h.frame(Vec::new(), |ui| menu_panel(ui, &mut menu, editor))
+    }
+
+    #[test]
+    fn audio_settings_opens_from_the_project_menu_and_cancel_closes_it() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let mut editor = editor("Test", false);
+        let mut menu = ProjectMenu::default();
+        let out = h.settle(|ui| menu_panel(ui, &mut menu, &mut editor));
+        assert!(out.text_rect("Audio Settings").is_none());
+
+        // Project > Audio Settings...
+        let project = out.text_rect("Project").expect("Project menu").center();
+        let _ = h.click(project, |ui| menu_panel(ui, &mut menu, &mut editor));
+        let out = h.settle(|ui| menu_panel(ui, &mut menu, &mut editor));
+        let item = out
+            .text_rect("Audio Settings...")
+            .expect("the menu item")
+            .center();
+        assert!(menu.audio_settings_dialog.is_none());
+        let _ = h.click(item, |ui| menu_panel(ui, &mut menu, &mut editor));
+        assert!(menu.audio_settings_dialog.is_some(), "the dialog opened");
+        let out = h.settle(|ui| menu_panel(ui, &mut menu, &mut editor));
+        assert!(out.text_rect("Audio Settings").is_some(), "its title");
+
+        // Cancel closes it and leaves the config alone.
+        let cancel = out.text_rect("Cancel").expect("Cancel").center();
+        let _ = h.click(cancel, |ui| menu_panel(ui, &mut menu, &mut editor));
+        assert!(menu.audio_settings_dialog.is_none(), "the dialog closed");
+        assert_eq!(editor.config(), &crate::io::config::AppConfig::default());
+        let out = h.settle(|ui| menu_panel(ui, &mut menu, &mut editor));
+        assert!(out.text_rect("Audio Settings").is_none());
     }
 
     #[test]

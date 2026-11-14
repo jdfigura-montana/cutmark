@@ -32,6 +32,8 @@ struct HeaderTrack {
     mute: bool,
     /// Solo flag.
     solo: bool,
+    /// True while this track is armed for recording.
+    armed: bool,
 }
 
 /// Interaction state of the header column, carried between frames.
@@ -46,9 +48,9 @@ struct State {
 /// Draws the header column: one header per track, scrolled with the lanes.
 ///
 /// Each header has a reorder grip on the left, the track name (double-click
-/// to rename inline), M and S buttons, a volume fader and pan slider (from
-/// 64 px of height up), a stereo meter on the right edge, a context menu and
-/// a 4 px resize strip at the bottom. `lane_rect` is only used to span the
+/// to rename inline), M, S and Arm buttons, a volume fader and pan slider
+/// (from 64 px of height up), a stereo meter on the right edge, a context menu
+/// and a 4 px resize strip at the bottom. `lane_rect` is only used to span the
 /// reorder insertion line across the full timeline width.
 pub fn show(
     ui: &mut egui::Ui,
@@ -78,6 +80,7 @@ pub fn show(
     }
 
     // Snapshot the track list so the project can be mutated while drawing.
+    let armed_track = editor.armed_track();
     let tracks: Vec<HeaderTrack> = editor
         .project
         .tracks
@@ -90,6 +93,7 @@ pub fn show(
             pan: t.pan,
             mute: t.mute,
             solo: t.solo,
+            armed: armed_track == Some(t.id),
         })
         .collect();
 
@@ -159,13 +163,20 @@ pub fn show(
         // so no control or value text can ever reach the meter bars.
         let ctrl_right = inner.right() - bars_w - 6.0;
 
-        // Row 1: drag handle, name, M and S buttons.
+        // Row 1: drag handle, name, then M, S and Arm buttons, left to right.
         let row1 = egui::Rect::from_min_max(
             egui::pos2(inner.left(), inner.top()),
             egui::pos2(ctrl_right, inner.top() + THEME.track_ms_h),
         );
-        let s_rect = egui::Rect::from_min_size(
+        let arm_rect = egui::Rect::from_min_size(
             egui::pos2(row1.right() - THEME.track_ms_w, row1.top()),
+            egui::vec2(THEME.track_ms_w, THEME.track_ms_h),
+        );
+        let s_rect = egui::Rect::from_min_size(
+            egui::pos2(
+                arm_rect.left() - THEME.track_ms_gap - THEME.track_ms_w,
+                row1.top(),
+            ),
             egui::vec2(THEME.track_ms_w, THEME.track_ms_h),
         );
         let m_rect = egui::Rect::from_min_size(
@@ -248,6 +259,7 @@ pub fn show(
                 meter_rect.contains(p)
                     || m_rect.contains(p)
                     || s_rect.contains(p)
+                    || arm_rect.contains(p)
                     || (!compact && (vol_rect.contains(p) || pan_rect.contains(p)))
             });
             if !over_controls {
@@ -370,6 +382,10 @@ pub fn show(
                     solo: !ht.solo,
                 });
             }
+        }
+        // Arm for recording; Ctrl+click is a plain click here.
+        if arm_button(ui, arm_rect, egui::Id::new(("track_arm", ht.id)), ht.armed) {
+            editor.toggle_arm(ht.id);
         }
 
         // Volume and pan rows, 64 px of header height and up. Each drag is
@@ -556,6 +572,45 @@ fn toggle_button(
     resp.clicked()
 }
 
+/// Draws the round Arm button (a record glyph); returns true when clicked this
+/// frame. Off it looks like M / S off; armed it is `record_red` with a white
+/// glyph.
+fn arm_button(ui: &mut egui::Ui, rect: egui::Rect, id: egui::Id, armed: bool) -> bool {
+    let painter = ui.painter_at(rect);
+    let resp = ui.interact(rect, id, egui::Sense::click());
+    let (bg, fg) = if armed {
+        (THEME.record_red, egui::Color32::WHITE)
+    } else if resp.hovered() {
+        (
+            ui.visuals().widgets.hovered.bg_fill,
+            ui.visuals().strong_text_color(),
+        )
+    } else {
+        (THEME.control_fill, THEME.text_muted)
+    };
+    // A pill as tall as the button: round, and the same 22x20 slot as M / S.
+    let radius = rect.height() * 0.5;
+    painter.rect_filled(rect, radius, bg);
+    if !armed {
+        painter.rect_stroke(
+            rect,
+            radius,
+            egui::Stroke::new(THEME.hairline, THEME.control_border),
+            egui::StrokeKind::Inside,
+        );
+    }
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        egui_phosphor::fill::RECORD,
+        egui::FontId::proportional(THEME.arm_glyph_size),
+        fg,
+    );
+    let clicked = resp.clicked();
+    resp.on_hover_text("Arm for recording");
+    clicked
+}
+
 /// Applies one slider outcome to the editor as a gesture on `make(v)`.
 ///
 /// Double-click resets to `default`; a drag is one undo step; Esc cancels.
@@ -596,4 +651,173 @@ fn insert_index_at(tracks: &[HeaderTrack], y_content: f32) -> usize {
         }
     }
     index
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::io::paths::ProjectPaths;
+    use crate::model::fixtures::project_with_clips;
+    use crate::model::project::ViewState;
+    use crate::ui::test_util::{Headless, Out};
+
+    /// Slack for float rounding when comparing painted positions.
+    const TOL: f32 = 0.6;
+
+    /// An editor over `count` empty tracks (no input device is ever opened).
+    fn editor(count: usize) -> Editor {
+        let tracks: Vec<&[(u64, u64)]> = vec![&[]; count];
+        Editor::with_project(
+            project_with_clips(&tracks),
+            ViewState::default(),
+            ProjectPaths {
+                root: PathBuf::from("unused"),
+            },
+        )
+    }
+
+    /// The header column as the app lays it out: 208 px wide, lanes beside it.
+    fn rects() -> (egui::Rect, egui::Rect) {
+        (
+            egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(208.0, 600.0)),
+            egui::Rect::from_min_size(egui::pos2(208.0, 0.0), egui::vec2(900.0, 600.0)),
+        )
+    }
+
+    /// Centers of the painted record glyphs: one Arm button per track, top to
+    /// bottom.
+    fn arm_centers(out: &Out) -> Vec<egui::Pos2> {
+        out.texts()
+            .into_iter()
+            .filter(|t| t.text == egui_phosphor::fill::RECORD)
+            .map(|t| t.rect.center())
+            .collect()
+    }
+
+    /// The painted red arm pills (22x20, `record_red`).
+    fn red_pills(out: &Out) -> Vec<egui::Rect> {
+        out.rects()
+            .into_iter()
+            .filter(|r| r.fill == THEME.record_red && r.rect.size() == egui::vec2(22.0, 20.0))
+            .map(|r| r.rect)
+            .collect()
+    }
+
+    #[test]
+    fn clicking_arm_toggles_the_armed_track_and_moves_it_between_tracks() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let mut editor = editor(2);
+        let (a, b) = (editor.project.tracks[0].id, editor.project.tracks[1].id);
+        let (header, lane) = rects();
+        let mut meters = HashMap::new();
+        let mut draw = |ui: &mut egui::Ui, editor: &mut Editor| {
+            show(ui, editor, header, lane, 0.0, &mut meters);
+        };
+
+        let out = h.frame(Vec::new(), |ui| draw(ui, &mut editor));
+        let centers = arm_centers(&out);
+        assert_eq!(centers.len(), 2, "one Arm button per track");
+        assert!(red_pills(&out).is_empty(), "nothing armed yet");
+        assert_eq!(editor.armed_track(), None);
+
+        // Arm the first track: it turns red.
+        let _ = h.click(centers[0], |ui| draw(ui, &mut editor));
+        assert_eq!(editor.armed_track(), Some(a));
+        let out = h.frame(Vec::new(), |ui| draw(ui, &mut editor));
+        assert_eq!(red_pills(&out).len(), 1, "one red Arm button");
+        let glyph = out
+            .texts()
+            .into_iter()
+            .find(|t| t.text == egui_phosphor::fill::RECORD && t.rect.center() == centers[0])
+            .expect("armed glyph");
+        assert_eq!(glyph.color, egui::Color32::WHITE, "armed = white glyph");
+
+        // Arming the second moves the arm.
+        let _ = h.click(centers[1], |ui| draw(ui, &mut editor));
+        assert_eq!(editor.armed_track(), Some(b));
+        let out = h.frame(Vec::new(), |ui| draw(ui, &mut editor));
+        let pills = red_pills(&out);
+        assert_eq!(pills.len(), 1);
+        assert!(pills[0].contains(centers[1]), "the second track is red");
+
+        // Clicking the armed one disarms it.
+        let _ = h.click(centers[1], |ui| draw(ui, &mut editor));
+        assert_eq!(editor.armed_track(), None);
+        let out = h.frame(Vec::new(), |ui| draw(ui, &mut editor));
+        assert!(red_pills(&out).is_empty());
+        assert!(!editor.dirty, "arming is never an edit");
+        assert_eq!(editor.undo_label(), None);
+    }
+
+    #[test]
+    fn arm_sits_after_m_and_s_with_the_same_gap_and_size() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let mut editor = editor(1);
+        let (header, lane) = rects();
+        let mut meters = HashMap::new();
+        let out = h.frame(Vec::new(), |ui| {
+            show(ui, &mut editor, header, lane, 0.0, &mut meters);
+        });
+        let m = out.text_rect("M").expect("M button").center();
+        let s = out.text_rect("S").expect("S button").center();
+        let arm = arm_centers(&out)[0];
+        let pitch = THEME.track_ms_w + THEME.track_ms_gap;
+        assert!(m.x < s.x && s.x < arm.x, "M, S, Arm left to right");
+        assert!((s.x - m.x - pitch).abs() < TOL, "M to S {}", s.x - m.x);
+        assert!(
+            (arm.x - s.x - pitch).abs() < TOL,
+            "S to Arm {}",
+            arm.x - s.x
+        );
+        assert!((m.y - arm.y).abs() < TOL && (m.y - s.y).abs() < TOL);
+        // The button is the same 22x20 as M and S, and round (a full-height pill).
+        let pill = out
+            .rects()
+            .into_iter()
+            .find(|r| r.rect.contains(arm) && r.rect.size() == egui::vec2(22.0, 20.0))
+            .expect("the Arm button background");
+        assert_eq!(pill.fill, THEME.control_fill, "off = control fill");
+        assert_eq!(pill.corner_radius.nw, (THEME.track_ms_h * 0.5) as u8);
+        // The off glyph is text_muted.
+        let glyph = out
+            .texts()
+            .into_iter()
+            .find(|t| t.text == egui_phosphor::fill::RECORD)
+            .expect("record glyph");
+        assert_eq!(glyph.color, THEME.text_muted);
+    }
+
+    #[test]
+    fn the_compact_header_keeps_m_s_and_arm() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let mut editor = editor(1);
+        let id = editor.project.tracks[0].id;
+        editor.set_track_height(id, 40.0);
+        assert!(editor.project.tracks[0].height < THEME.compact_track_h);
+        let (header, lane) = rects();
+        let mut meters = HashMap::new();
+        let out = h.frame(Vec::new(), |ui| {
+            show(ui, &mut editor, header, lane, 0.0, &mut meters);
+        });
+        assert!(out.text_rect("M").is_some());
+        assert!(out.text_rect("S").is_some());
+        assert_eq!(arm_centers(&out).len(), 1);
+        assert!(out.text_rect("VOL").is_none(), "compact has no VOL row");
+    }
+
+    #[test]
+    fn the_name_stays_left_of_the_buttons() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let mut editor = editor(1);
+        let (header, lane) = rects();
+        let mut meters = HashMap::new();
+        let out = h.frame(Vec::new(), |ui| {
+            show(ui, &mut editor, header, lane, 0.0, &mut meters);
+        });
+        let name = out.text_rect("Track 1").expect("track name");
+        let m = out.text_rect("M").expect("M button");
+        assert!(name.right() < m.left(), "name {name:?} left of M {m:?}");
+    }
 }

@@ -10,6 +10,7 @@ use crossbeam_channel::Sender;
 use thiserror::Error;
 
 use crate::audio::engine::Engine;
+use crate::audio::input::InputStream;
 use crate::audio::meters::{MeterBank, MeterReading, StereoMeter};
 use crate::audio::mix_plan::MixPlan;
 use crate::audio::player::Command;
@@ -22,10 +23,12 @@ use crate::editor::ops::OpError;
 use crate::editor::ops::amplitude::{self, Target};
 use crate::editor::ops::marker;
 use crate::editor::ops::paste;
+use crate::editor::record::{self as record_state, FakeInput};
 use crate::editor::selection::Selection;
 use crate::editor::transport::TransportState;
 use crate::io::IoError;
 use crate::io::autosave;
+use crate::io::config::AppConfig;
 use crate::io::export::ExportKind;
 use crate::io::paths::{self, ProjectPaths, conformed_path, peaks_path};
 use crate::io::project_file;
@@ -51,6 +54,9 @@ pub enum EditorError {
     /// The editor is busy with an export; the operation was refused.
     #[error("{0}")]
     Locked(String),
+    /// The audio input could not be (re)opened; the message says why.
+    #[error("{0}")]
+    Input(String),
 }
 
 /// Message shown when an operation is refused during an export.
@@ -89,7 +95,7 @@ pub struct Editor {
     /// Id of the next background job to start.
     pub next_job: u64,
     /// Messages from failed background jobs, read and cleared by the UI.
-    job_errors: Vec<String>,
+    pub(super) job_errors: Vec<String>,
     /// Worker-thread job channel pair.
     pub jobs: JobChannels,
     /// Display-only vertical waveform scale, 1.0..=16.0 (not saved).
@@ -129,6 +135,19 @@ pub struct Editor {
     autosave_generation: u64,
     /// Generation captured by the last successful autosave write.
     autosaved_generation: u64,
+    /// App-wide audio settings (input device, record channels, latency).
+    pub(super) config: AppConfig,
+    /// Where `set_config` saves the config; None when there is nowhere to.
+    pub(super) config_path: Option<PathBuf>,
+    /// The track armed for recording, if any. Not saved, not undoable.
+    pub(super) armed_track: Option<Uuid>,
+    /// The open input stream while a track is armed.
+    pub(super) input: Option<InputStream>,
+    /// Input level written by the input stream's callback.
+    pub(super) input_meter: Arc<StereoMeter>,
+    /// Some = test double: the input devices come from here and no real input
+    /// device is ever opened. None in the running app.
+    pub(super) fake_input: Option<FakeInput>,
 }
 
 impl Editor {
@@ -149,6 +168,7 @@ impl Editor {
     /// Builds an Editor from loaded parts; used by create, open and recovery.
     fn assemble(paths: ProjectPaths, project: Project, view: ViewState, dirty: bool) -> Editor {
         Self::touch_recent(&project.name, &paths.root);
+        let (config, config_path, fake_input) = record_state::initial_state();
         let mut editor = Editor {
             project: Arc::new(project),
             view,
@@ -184,6 +204,12 @@ impl Editor {
             autosave_generation: 0,
             autosaved_generation: 0,
             missing_notice: false,
+            config,
+            config_path,
+            armed_track: None,
+            input: None,
+            input_meter: Arc::new(StereoMeter::new()),
+            fake_input,
         };
         editor.start_media_loads();
         editor
@@ -275,6 +301,12 @@ impl Editor {
             autosave_generation: 0,
             autosaved_generation: 0,
             missing_notice: false,
+            config: AppConfig::default(),
+            config_path: None,
+            armed_track: None,
+            input: None,
+            input_meter: Arc::new(StereoMeter::new()),
+            fake_input: Some(FakeInput::default()),
         }
     }
 
@@ -584,7 +616,8 @@ impl Editor {
         self.view.ripple = !self.view.ripple;
     }
 
-    /// Drops selection ids that no longer exist after a project change.
+    /// Drops selection ids (and the armed track) that no longer exist after a
+    /// project change.
     fn tidy_selection(&mut self) {
         self.selection = std::mem::take(&mut self.selection).tidy(&self.project);
         if let Some(id) = self.selected_marker
@@ -592,6 +625,7 @@ impl Editor {
         {
             self.selected_marker = None;
         }
+        self.tidy_armed_track();
     }
 
     /// Copies the range `s..e` on the listed tracks to the clipboard.
@@ -1061,12 +1095,13 @@ impl Editor {
         ))
     }
 
-    /// Drops retired mix plans older than 2 s and runs the autosave; called
-    /// every frame.
+    /// Drops retired mix plans older than 2 s, watches the input stream and
+    /// runs the autosave; called every frame.
     pub fn tick(&mut self) {
         self.retired
             .retain(|(at, _)| at.elapsed() < Duration::from_secs(2));
         self.missing_media_notice();
+        self.input_tick();
         self.autosave_tick();
     }
 
@@ -1108,13 +1143,23 @@ impl Editor {
 
     /// Takes the current meter readings for every track and the master.
     /// Each value leaves its accumulator zeroed.
+    ///
+    /// The armed track reads the audio input instead of its own playback
+    /// level; its track meter is still emptied so it does not pile up.
     pub fn read_meters(&self) -> (Vec<(Uuid, [MeterReading; 2])>, [MeterReading; 2]) {
         let tracks = self
             .meters
             .track_ids
             .iter()
             .zip(&self.meters.tracks)
-            .map(|(id, m)| (*id, [m.l.take(), m.r.take()]))
+            .map(|(id, m)| {
+                let playback = [m.l.take(), m.r.take()];
+                if self.armed_track == Some(*id) {
+                    (*id, self.take_input_reading())
+                } else {
+                    (*id, playback)
+                }
+            })
             .collect();
         let master = [self.master_meter.l.take(), self.master_meter.r.take()];
         (tracks, master)

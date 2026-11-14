@@ -3,8 +3,8 @@
 
 use eframe::egui::epaint::{CircleShape, RectShape};
 use eframe::egui::{
-    self, Event, FullOutput, Modifiers, PointerButton, Pos2, Rect, Shape, Vec2, ViewportEvent,
-    ViewportId,
+    self, Color32, Event, FullOutput, Modifiers, PointerButton, Pos2, Rect, Shape, Vec2,
+    ViewportEvent, ViewportId,
 };
 
 /// Runs `work` on its own thread and returns its result, failing the test if
@@ -124,6 +124,8 @@ pub struct TextItem {
     pub text: String,
     /// Where it was painted.
     pub rect: Rect,
+    /// The text color of its first section.
+    pub color: Color32,
 }
 
 /// The shapes painted in one frame, flattened for assertions.
@@ -155,6 +157,12 @@ impl Out {
                 Shape::Text(text) => Some(TextItem {
                     text: text.galley.text().to_string(),
                     rect: text.galley.rect.translate(text.pos.to_vec2()),
+                    color: text
+                        .galley
+                        .job
+                        .sections
+                        .first()
+                        .map_or(text.fallback_color, |section| section.format.color),
                 }),
                 _ => None,
             })

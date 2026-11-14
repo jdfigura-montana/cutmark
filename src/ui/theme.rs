@@ -261,6 +261,10 @@ pub struct Theme {
     pub mute_color: egui::Color32,
     /// Background of an active solo button.
     pub solo_color: egui::Color32,
+    /// Background of an armed record-arm button.
+    pub record_red: egui::Color32,
+    /// Font size of the record glyph on the arm button.
+    pub arm_glyph_size: f32,
 
     // ---- Meters ----
     /// Background fill of a meter bar area.
@@ -393,6 +397,14 @@ pub struct Theme {
     pub form_label_w: f32,
     /// Vertical gap between form rows.
     pub form_row_gap: f32,
+    /// Padding added to a segmented-control label (both sides together).
+    pub segment_pad: f32,
+    /// Smallest segment padding when the labels are too wide for the row.
+    pub segment_pad_min: f32,
+    /// Width of the typed-value box next to a dialog slider.
+    pub value_box_w: f32,
+    /// Gap between a dialog slider and its typed-value box.
+    pub value_gap: f32,
     /// Dialog title font size (PlexSemiBold).
     pub dialog_title_size: f32,
     /// Dialog description font size.
@@ -632,6 +644,8 @@ impl Default for Theme {
             toggle_size: 10.0,
             mute_color: egui::Color32::from_rgb(0xE0, 0xA9, 0x3A),
             solo_color: egui::Color32::from_rgb(0x5C, 0xC4, 0x6E),
+            record_red: egui::Color32::from_rgb(0xE5, 0x54, 0x4B),
+            arm_glyph_size: 12.0,
             // Meters
             meter_bar_bg: egui::Color32::from_rgb(0x10, 0x12, 0x16),
             meter_red: egui::Color32::from_rgb(0xE5, 0x54, 0x4B),
@@ -708,6 +722,10 @@ impl Default for Theme {
             field_h: 30.0,
             form_label_w: 140.0,
             form_row_gap: 10.0,
+            segment_pad: 16.0,
+            segment_pad_min: 8.0,
+            value_box_w: 72.0,
+            value_gap: 8.0,
             dialog_title_size: 15.0,
             dialog_desc_size: 12.0,
             dialog_label_size: 12.5,
@@ -1034,6 +1052,11 @@ mod tests {
         assert_eq!(t.playhead_color, egui::Color32::from_rgb(0xFF, 0x6B, 0x5C));
         assert_eq!(t.marker_color, egui::Color32::from_rgb(0xE8, 0xB4, 0x4C));
         assert_eq!(t.unsaved_dot_d, 6.0);
+        assert_eq!(t.record_red, egui::Color32::from_rgb(0xE5, 0x54, 0x4B));
+        assert_eq!(
+            (t.track_ms_w, t.track_ms_h, t.track_ms_gap),
+            (22.0, 20.0, 4.0)
+        );
         assert_eq!(t.menu_right_pad, 8.0);
         assert_eq!(t.app_bg, egui::Color32::from_rgb(0x16, 0x18, 0x1C));
         assert_eq!(t.lane_a, egui::Color32::from_rgb(0x1B, 0x1E, 0x23));

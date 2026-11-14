@@ -1,5 +1,6 @@
 //! ui::dialogs: modal dialogs and the shared card / field / footer builders.
 
+pub mod audio_settings;
 pub mod confirm;
 pub mod export;
 pub mod gain;
@@ -143,12 +144,29 @@ pub fn segmented<T: PartialEq + Copy>(
     options: &[(T, &str)],
     value: &mut T,
 ) -> bool {
+    let all_enabled: Vec<(T, &str, bool)> = options
+        .iter()
+        .map(|&(option, label)| (option, label, true))
+        .collect();
+    segmented_enabled(ui, id_salt, &all_enabled, value)
+}
+
+/// [`segmented`] where each option also says whether it can be chosen. A
+/// disabled segment is drawn in `text_faint`, has no hover and ignores clicks.
+pub fn segmented_enabled<T: PartialEq + Copy>(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    options: &[(T, &str, bool)],
+    value: &mut T,
+) -> bool {
     let mut changed = false;
     ui.scope(|ui| {
-        // Segment widths: the label plus 16 px of padding.
-        let sizes: Vec<f32> = options
+        // Segment widths: the label plus `segment_pad` of padding. When the
+        // labels would not fit the row, the padding shrinks (down to
+        // `segment_pad_min`) so the group never runs past the row's edge.
+        let texts: Vec<f32> = options
             .iter()
-            .map(|(_, label)| {
+            .map(|(_, label, _)| {
                 ui.painter()
                     .layout_no_wrap(
                         label.to_string(),
@@ -157,9 +175,12 @@ pub fn segmented<T: PartialEq + Copy>(
                     )
                     .size()
                     .x
-                    + 16.0
             })
             .collect();
+        let text_total: f32 = texts.iter().sum();
+        let room = (ui.available_width() - text_total) / texts.len().max(1) as f32;
+        let pad = room.clamp(THEME.segment_pad_min, THEME.segment_pad);
+        let sizes: Vec<f32> = texts.iter().map(|text| text + pad).collect();
         let group_w: f32 = sizes.iter().sum();
         let (group, _) = ui.allocate_exact_size(egui::vec2(group_w, THEME.field_h), Sense::hover());
         let painter = ui.painter();
@@ -171,13 +192,18 @@ pub fn segmented<T: PartialEq + Copy>(
             StrokeKind::Inside,
         );
         let mut x = group.left();
-        for (i, (opt, label)) in options.iter().enumerate() {
+        for (i, (opt, label, enabled)) in options.iter().enumerate() {
             let seg = egui::Rect::from_min_max(
                 egui::pos2(x, group.top()),
                 egui::pos2(x + sizes[i], group.bottom()),
             );
-            let resp = ui.interact(seg, egui::Id::new((id_salt, i)), Sense::click());
-            if resp.clicked() && *value != *opt {
+            let sense = if *enabled {
+                Sense::click()
+            } else {
+                Sense::hover()
+            };
+            let resp = ui.interact(seg, egui::Id::new((id_salt, i)), sense);
+            if *enabled && resp.clicked() && *value != *opt {
                 *value = *opt;
                 changed = true;
             }
@@ -190,7 +216,7 @@ pub fn segmented<T: PartialEq + Copy>(
                     Stroke::new(THEME.hairline, THEME.accent),
                     StrokeKind::Inside,
                 );
-            } else if resp.hovered() {
+            } else if *enabled && resp.hovered() {
                 painter.rect_filled(seg.shrink2(egui::vec2(2.0, 2.0)), 4.0, THEME.control_hover);
             }
             painter.text(
@@ -198,7 +224,9 @@ pub fn segmented<T: PartialEq + Copy>(
                 egui::Align2::CENTER_CENTER,
                 *label,
                 egui::FontId::proportional(THEME.dialog_label_size),
-                if selected {
+                if !*enabled {
+                    THEME.text_faint
+                } else if selected {
                     THEME.text_primary
                 } else {
                     THEME.text_normal
@@ -296,24 +324,36 @@ pub fn with_browse(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) -> bool {
     footer_button(&mut button, "Browse...", FooterButton::Cancel, true).clicked()
 }
 
-/// A dB control: `slider_bare` plus a typed value in JetBrains Mono.
-///
-/// The slider fills the row width minus the 72 px value box and the 8 px
-/// gap between them. Double-click on the slider resets to 0.0.
-pub fn db_control(ui: &mut egui::Ui, id_salt: &str, value: &mut f32, range: (f32, f32)) {
-    let slider_w = (ui.available_width() - 72.0 - 8.0).max(0.0);
+/// The slider half of a slider + typed value control: fills the row width
+/// minus the value box and the gap between them. Returns the slider's outcome
+/// (new value, double-click reset).
+fn value_slider(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    value: f32,
+    range: (f32, f32),
+) -> crate::ui::widgets::fader::SliderOutcome {
+    let slider_w = (ui.available_width() - THEME.value_box_w - THEME.value_gap).max(0.0);
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(slider_w, THEME.field_h - 6.0),
         egui::Sense::click_and_drag(),
     );
-    let out = crate::ui::widgets::fader::slider_bare(
+    crate::ui::widgets::fader::slider_bare(
         ui,
         egui::Id::new((id_salt, "slider")),
         rect,
-        *value,
+        value,
         range,
         false,
-    );
+    )
+}
+
+/// A dB control: `slider_bare` plus a typed value in JetBrains Mono.
+///
+/// The slider fills the row width minus the value box and the gap between
+/// them. Double-click on the slider resets to 0.0.
+pub fn db_control(ui: &mut egui::Ui, id_salt: &str, value: &mut f32, range: (f32, f32)) {
+    let out = value_slider(ui, id_salt, *value, range);
     if let Some(v) = out.value {
         *value = v;
     }
@@ -323,11 +363,35 @@ pub fn db_control(ui: &mut egui::Ui, id_salt: &str, value: &mut f32, range: (f32
     ui.scope(|ui| {
         ui.style_mut().override_font_id = Some(Theme::mono(THEME.dialog_label_size));
         ui.add_sized(
-            [72.0, THEME.field_h],
+            [THEME.value_box_w, THEME.field_h],
             egui::DragValue::new(value)
                 .range(range.0..=range.1)
                 .speed(0.1)
                 .suffix(" dB"),
+        );
+    });
+}
+
+/// A whole-millisecond control: the same slider + typed value layout as
+/// [`db_control`], with a signed mono value ("+0 ms"). Double-click on the
+/// slider resets to 0.
+pub fn ms_control(ui: &mut egui::Ui, id_salt: &str, value: &mut i32, range: (i32, i32)) {
+    let out = value_slider(ui, id_salt, *value as f32, (range.0 as f32, range.1 as f32));
+    if let Some(v) = out.value {
+        *value = (v.round() as i32).clamp(range.0, range.1);
+    }
+    if out.reset {
+        *value = 0;
+    }
+    ui.scope(|ui| {
+        ui.style_mut().override_font_id = Some(Theme::mono(THEME.dialog_label_size));
+        ui.add_sized(
+            [THEME.value_box_w, THEME.field_h],
+            egui::DragValue::new(value)
+                .range(range.0..=range.1)
+                .speed(0.5)
+                .custom_formatter(|n, _| format!("{:+}", n.round() as i64))
+                .suffix(" ms"),
         );
     });
 }

@@ -298,7 +298,9 @@ impl App {
 
         // Meter ballistics advance with egui's frame time; keep repainting
         // for one more second after playback stops so meters fall to empty.
-        if transport_active {
+        // An armed track's meter shows the live input, so it keeps repainting
+        // while armed even when nothing plays.
+        if transport_active || editor.armed_track().is_some() {
             meters.mark_active();
         }
         let (now, dt) = ui.input(|i| {

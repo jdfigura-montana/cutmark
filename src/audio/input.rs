@@ -1,8 +1,5 @@
 //! audio::input: the cpal input stream; its callback only feeds an input meter.
 
-// Nothing opens an input stream until the Editor is wired up in task 11.2.
-#![allow(dead_code)]
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -212,6 +209,17 @@ pub fn default_input_name() -> Option<String> {
         .and_then(|device| device_name(&device))
 }
 
+/// Input channel count of the device `InputStream::open(name, ..)` would use
+/// (the named device, else the Windows default), or None when there is no such
+/// device or it cannot report a config. Opens nothing.
+pub fn device_channels(name: Option<&str>) -> Option<u16> {
+    let (device, _) = choose_device(&cpal::default_host(), name).ok()?;
+    device
+        .default_input_config()
+        .ok()
+        .map(|config| config.channels())
+}
+
 /// The device named `wanted` (None = no preference), else the default input.
 /// The flag is true when a name was asked for but not found.
 fn choose_device(host: &cpal::Host, wanted: Option<&str>) -> Result<(Device, bool), AudioError> {
@@ -295,7 +303,7 @@ impl InputStream {
 
         let default = device
             .default_input_config()
-            .map_err(|error| AudioError::Device(error.to_string()))?;
+            .map_err(AudioError::InputStream)?;
         let others = device
             .supported_input_configs()
             .map(|ranges| ranges.collect::<Vec<_>>())
@@ -341,6 +349,8 @@ impl InputStream {
     }
 
     /// Display name of the device actually opened.
+    // Nothing reads it before the take is written in phase 12.
+    #[allow(dead_code)]
     pub fn device_name(&self) -> &str {
         &self.device_name
     }
@@ -351,11 +361,15 @@ impl InputStream {
     }
 
     /// Device sample rate in Hz.
+    // The record writer needs it to resample to the project rate (phase 12).
+    #[allow(dead_code)]
     pub fn device_rate(&self) -> u32 {
         self.device_rate
     }
 
     /// Device channel count.
+    // The record writer needs it to pick the channels from the ring (phase 12).
+    #[allow(dead_code)]
     pub fn device_channels(&self) -> u16 {
         self.device_channels
     }

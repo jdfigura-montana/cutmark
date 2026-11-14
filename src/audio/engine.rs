@@ -194,6 +194,7 @@ impl Engine {
             preview: Arc::clone(&preview),
             shared: Arc::clone(&shared),
             channels,
+            primed: false,
         };
 
         let errored_for_cb = Arc::clone(&errored);
@@ -308,6 +309,8 @@ struct Callback {
     shared: Arc<Shared>,
     /// Device channel count.
     channels: u16,
+    /// False until the first callback has run; see [`Callback::run`].
+    primed: bool,
 }
 
 impl Callback {
@@ -319,8 +322,17 @@ impl Callback {
         }
         // Load both plans with a guard; the UI keeps retired plans alive for
         // 2 s so the last reference is never released here.
-        let timeline = self.timeline.load();
-        let preview = self.preview.load();
+        //
+        // arc-swap creates its per-thread debt node lazily, on a thread's first
+        // load(): one small allocation. That first call is the only place
+        // allocation is permitted; every later call stays fully guarded.
+        // (permit_alloc is a plain call wherever assert_no_alloc is.)
+        let (timeline, preview) = if self.primed {
+            (self.timeline.load(), self.preview.load())
+        } else {
+            self.primed = true;
+            assert_no_alloc::permit_alloc(|| (self.timeline.load(), self.preview.load()))
+        };
         let channels = usize::from(self.channels).max(1);
         let frames = data.len() / channels;
         let chunk_cap = self.chunk_frames();
