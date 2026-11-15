@@ -6,8 +6,7 @@ $Exclude = @()
 $ErrorActionPreference = "Continue"
 Set-Location (Split-Path $PSScriptRoot -Parent)
 
-$excludeArgs = @()
-foreach ($p in $Exclude) { $excludeArgs += "--exclude"; $excludeArgs += $p }
+$packages = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages | ForEach-Object { $_.name } | Where-Object { $Exclude -notcontains $_ } | Sort-Object
 
 function Invoke-Step {
     param([string]$Name, [string[]]$CargoArgs)
@@ -28,7 +27,12 @@ function Invoke-Step {
 }
 
 Invoke-Step "fmt" @("fmt", "--all", "--check")
-Invoke-Step "clippy" (@("clippy", "--workspace", "--all-targets") + $excludeArgs + @("--", "-D", "warnings"))
-Invoke-Step "test" (@("test", "--workspace") + $excludeArgs)
+# One cargo invocation per package: building cutmark-audio (eframe glow) together with the video crates (eframe wgpu) unifies eframe features and breaks the build.
+foreach ($p in $packages) {
+    Invoke-Step "clippy $p" @("clippy", "-p", $p, "--all-targets", "--", "-D", "warnings")
+}
+foreach ($p in $packages) {
+    Invoke-Step "test $p" @("test", "-p", $p)
+}
 Invoke-Step "deny" @("deny", "check", "--hide-inclusion-graph")
 Write-Host "ALL CHECKS PASSED"
