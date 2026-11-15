@@ -20,7 +20,7 @@ fn main() -> eframe::Result<()> {
     crate::io::recent::migrate_old_config();
 
     let options = eframe::NativeOptions {
-        renderer: eframe::Renderer::Glow,
+        renderer: eframe::Renderer::Wgpu,
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title(crate::app::APP_NAME)
             .with_inner_size([1400.0, 850.0])

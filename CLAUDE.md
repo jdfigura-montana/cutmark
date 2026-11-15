@@ -32,7 +32,7 @@ Commercial, Windows-only Rust suite. This repo is private.
 12. Done means scripts\check.ps1 passes, plus a release build of the app the task touched.
 13. No CI changes without asking. No workflows, jobs, triggers, matrix entries, retries or schedules.
 14. One command at a time in PowerShell. No && chaining.
-15. Never build, check, clippy or test cutmark-audio and the video crates in one cargo command (no --workspace, no -p cutmark-audio -p cutmark-video). Their eframe features conflict when unified. Use scripts\check.ps1 or one -p per command.
+15. Every app uses the eframe wgpu renderer. Never enable the eframe glow feature: it changes eframe::App::on_exit and breaks any build that includes a wgpu crate.
 
 ## Code conventions
 - Errors: thiserror enums in libraries. anyhow only in main.rs and app.rs. No unwrap or expect outside tests and main.rs; the lint enforces it in new crates.
