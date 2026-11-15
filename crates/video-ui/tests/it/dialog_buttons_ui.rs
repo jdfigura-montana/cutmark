@@ -6,12 +6,12 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Sender, channel};
 use std::time::{Duration, Instant};
 
+use cutmark_video_ui::FilmcraftApp;
+use cutmark_video_ui::control::ControlRequest;
 use egui::CursorIcon;
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_engine::autosave::AutosaveConfig;
-use cutmark_video_ui::FilmcraftApp;
-use cutmark_video_ui::control::ControlRequest;
 use serde_json::{Value, json};
 
 struct Driver {

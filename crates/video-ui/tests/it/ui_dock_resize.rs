@@ -1,11 +1,11 @@
 //! Shared pane resizing in the full application, including application shortcut ownership.
 
-use egui::{Event, Id, Key, Modifiers, PointerButton, Rect, pos2, vec2};
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
 use cutmark_video_ui::FilmcraftApp;
 use cutmark_video_ui::dock::{DockNode, PanelKind, SplitSize};
 use cutmark_video_ui::theme::ThemeKind;
+use egui::{Event, Id, Key, Modifiers, PointerButton, Rect, pos2, vec2};
+use egui_kittest::Harness;
+use filmcraft_engine::Session;
 use serde_json::json;
 
 fn step(h: &mut Harness<'_, FilmcraftApp>) {

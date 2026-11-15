@@ -2,10 +2,10 @@
 //! `UiState::show_status_bar` default to on, and an app that embeds Cutmark Video can turn them off
 //! to give the panels the whole window.
 
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
 use cutmark_video_ui::FilmcraftApp;
 use cutmark_video_ui::state::UiState;
+use egui_kittest::Harness;
+use filmcraft_engine::Session;
 use serde_json::json;
 
 const W: f32 = 1600.0;

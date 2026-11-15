@@ -4,10 +4,10 @@
 //! transition where it was until the release deletes it (Premiere) — an Option-drag adds a
 //! traveling copy while the original stays.
 
+use cutmark_video_ui::FilmcraftApp;
 use egui::{Event, Modifiers, PointerButton, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
-use cutmark_video_ui::FilmcraftApp;
 use serde_json::json;
 
 fn step(h: &mut Harness<'static, FilmcraftApp>) {

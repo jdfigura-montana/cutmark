@@ -1,15 +1,15 @@
 //! Geometry and reachability checks against the production monitor renderer.
 
-use egui::{Event, Modifiers, PointerButton, Rect, pos2, vec2};
-use egui_kittest::Harness;
-use egui_kittest::kittest::{NodeT, Queryable};
-use filmcraft_engine::Session;
 use cutmark_video_ui::{
     FilmcraftApp,
     dock::{self, DockNode, PanelKind, SeqTabs},
     panels::monitor::{self, Which},
     theme::{self, ThemeKind},
 };
+use egui::{Event, Modifiers, PointerButton, Rect, pos2, vec2};
+use egui_kittest::Harness;
+use egui_kittest::kittest::{NodeT, Queryable};
+use filmcraft_engine::Session;
 use serde_json::json;
 
 fn harness(width: f32, kind: ThemeKind, which: Which) -> Harness<'static, FilmcraftApp> {

@@ -3,11 +3,11 @@
 
 use std::sync::mpsc::{Sender, channel};
 
+use cutmark_video_ui::FilmcraftApp;
+use cutmark_video_ui::control::ControlRequest;
 use egui::{Modifiers, Pos2, Rect, pos2};
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
-use cutmark_video_ui::FilmcraftApp;
-use cutmark_video_ui::control::ControlRequest;
 use serde_json::{Value, json};
 
 struct Driver {

@@ -1,7 +1,7 @@
+use cutmark_video_ui::FilmcraftApp;
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_time::Tick;
-use cutmark_video_ui::FilmcraftApp;
 use serde_json::json;
 
 fn step(h: &mut Harness<'static, FilmcraftApp>) {
@@ -113,9 +113,9 @@ fn audio_file_drag_places_only_audio() {
 
 #[test]
 fn clear_in_out_shortcut_addresses_the_focused_monitor_and_is_undoable() {
+    use cutmark_video_ui::dock::PanelKind;
     use filmcraft_engine::clip_ops::source_view;
     use filmcraft_engine::project::ItemId;
-    use cutmark_video_ui::dock::PanelKind;
     let mut h = harness(5);
     let start = Tick::from_seconds_f64(1.0);
     let out = Tick::from_seconds_f64(3.0);
@@ -281,8 +281,8 @@ fn source_marker_navigation_and_clear_shortcuts_leave_program_alone() {
 
 #[test]
 fn program_range_handles_share_behavior_and_leave_source_marks_alone() {
-    use filmcraft_engine::{clip_ops::source_view, project::ItemId};
     use cutmark_video_ui::dock::PanelKind;
+    use filmcraft_engine::{clip_ops::source_view, project::ItemId};
     for id in ["program.range.in", "program.range.out", "program.range.body"] {
         let mut h = marked_harness();
         h.state_mut()

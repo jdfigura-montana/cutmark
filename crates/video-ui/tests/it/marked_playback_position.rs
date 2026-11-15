@@ -1,7 +1,7 @@
+use cutmark_video_ui::{FilmcraftApp, menus};
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_time::Tick;
-use cutmark_video_ui::{FilmcraftApp, menus};
 use serde_json::json;
 
 #[test]

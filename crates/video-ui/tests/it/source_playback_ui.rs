@@ -1,10 +1,10 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use cutmark_video_ui::{AudioOut, FilmcraftApp, dock::PanelKind, menus};
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_time::Tick;
-use cutmark_video_ui::{AudioOut, FilmcraftApp, dock::PanelKind, menus};
 use serde_json::json;
 
 fn app(item: u64) -> FilmcraftApp {

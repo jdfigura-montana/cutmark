@@ -1,7 +1,7 @@
+use cutmark_video_ui::{FilmcraftApp, dock::PanelKind, menus};
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_time::{FrameRate, Tick};
-use cutmark_video_ui::{FilmcraftApp, dock::PanelKind, menus};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 

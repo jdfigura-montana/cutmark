@@ -40,9 +40,9 @@ mod window_raise;
 
 use args::{Cli, Launch};
 use chrono::TimeZone;
+use cutmark_video_ui::FilmcraftApp;
 use filmcraft_engine::Session;
 use filmcraft_engine::autosave::AutosaveConfig;
-use cutmark_video_ui::FilmcraftApp;
 use serde_json::json;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

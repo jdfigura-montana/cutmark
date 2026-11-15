@@ -2,14 +2,14 @@
 
 use std::sync::Arc;
 
-use egui::{Event, Id, Key, Modifiers, vec2};
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
 use cutmark_video_ui::{
     FilmcraftApp,
     dock::{DockNode, PanelKind},
     state::Tool,
 };
+use egui::{Event, Id, Key, Modifiers, vec2};
+use egui_kittest::Harness;
+use filmcraft_engine::Session;
 use serde_json::json;
 
 fn key(h: &mut Harness<'_, FilmcraftApp>, key: Key, modifiers: Modifiers) {

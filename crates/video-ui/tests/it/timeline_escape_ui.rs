@@ -2,13 +2,13 @@
 
 use std::sync::mpsc::{Sender, channel};
 
+use cutmark_video_ui::FilmcraftApp;
+use cutmark_video_ui::control::ControlRequest;
+use cutmark_video_ui::panels::timeline::Drag;
 use egui::pos2;
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_project::ClipId;
-use cutmark_video_ui::FilmcraftApp;
-use cutmark_video_ui::control::ControlRequest;
-use cutmark_video_ui::panels::timeline::Drag;
 use serde_json::{Value, json};
 
 const DUNES: &str = "Desert_Dunes.mp4";

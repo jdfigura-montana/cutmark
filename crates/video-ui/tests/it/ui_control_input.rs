@@ -5,14 +5,14 @@ use std::sync::{
     mpsc::{Sender, channel},
 };
 
-use egui::{Event, Id, Key, Modifiers, vec2};
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
 use cutmark_video_ui::{
     FilmcraftApp,
     control::ControlRequest,
     dock::{DockNode, PanelKind, SplitSize},
 };
+use egui::{Event, Id, Key, Modifiers, vec2};
+use egui_kittest::Harness;
+use filmcraft_engine::Session;
 use serde_json::{Value, json};
 
 struct Driver {

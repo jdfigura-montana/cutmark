@@ -4,10 +4,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use cutmark_video_ui::{AudioOut, FilmcraftApp};
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_time::Tick;
-use cutmark_video_ui::{AudioOut, FilmcraftApp};
 use serde_json::json;
 
 /// An output whose stream opens, then plays `per_poll` frames each time the clock is read

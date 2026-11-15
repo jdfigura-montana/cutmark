@@ -5,11 +5,11 @@
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
 use cutmark_video_ui::FilmcraftApp;
 use cutmark_video_ui::control::ControlRequest;
 use cutmark_video_ui::state::Mode;
+use egui_kittest::Harness;
+use filmcraft_engine::Session;
 use serde_json::{Value, json};
 
 /// What the save panel was asked: filter label, extensions, suggested name.

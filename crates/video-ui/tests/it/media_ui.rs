@@ -9,14 +9,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
 
+use cutmark_video_ui::FilmcraftApp;
+use cutmark_video_ui::control::ControlRequest;
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_engine::project::{ItemKind, Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
 use filmcraft_media::generators::GeneratorSource;
 use filmcraft_media::{DemoScene, Generator, MediaSource};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
-use cutmark_video_ui::FilmcraftApp;
-use cutmark_video_ui::control::ControlRequest;
 use serde_json::{Value, json};
 
 fn tmp_dir(name: &str) -> PathBuf {

@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use filmcraft_engine::settings::AudioHardwarePrefs;
 use cutmark_video_ui::{AudioDevices, AudioOut};
+use filmcraft_engine::settings::AudioHardwarePrefs;
 
 /// The playback mixer callback handed to [`AudioOut::start`].
 type Fill = Box<dyn FnMut(&mut [f32], usize) + Send>;

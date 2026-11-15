@@ -1,15 +1,15 @@
 //! Shared docking preserves Cutmark Video document state and legacy workspace files.
 
 use craft_ui::docking::{Action, Placement, Zone};
-use egui::{Event, Modifiers, PointerButton, Rect, pos2, vec2};
-use egui_kittest::Harness;
-use egui_kittest::kittest::{NodeT, Queryable};
-use filmcraft_engine::Session;
 use cutmark_video_ui::{
     FilmcraftApp,
     dock::{self, DockNode, Layout, PanelKind, SplitSize},
     menus,
 };
+use egui::{Event, Modifiers, PointerButton, Rect, pos2, vec2};
+use egui_kittest::Harness;
+use egui_kittest::kittest::{NodeT, Queryable};
+use filmcraft_engine::Session;
 use serde_json::json;
 
 fn layout() -> Layout {

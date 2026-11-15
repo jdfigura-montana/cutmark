@@ -4,9 +4,9 @@
 
 use std::path::{Path, PathBuf};
 
+use cutmark_video_ui::FilmcraftApp;
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
-use cutmark_video_ui::FilmcraftApp;
 use serde_json::json;
 
 fn step(h: &mut Harness<'static, FilmcraftApp>) {
