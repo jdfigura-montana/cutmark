@@ -1,0 +1,38 @@
+[package]
+name = "cutmark-recorder"
+description = "Cutmark Recorder: screen, webcam and audio recorder for the Cutmark suite."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cutmark-recorder"
+path = "src/main.rs"
+
+# Strict lint set, same as crates/cutmark-hotkeys: unsafe_code is "deny" so a later scoped allow is possible.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[dependencies]
+anyhow = "1.0.104"
+chrono.workspace = true
+cutmark-hotkeys = { version = "0.1.0", path = "../../crates/cutmark-hotkeys" }
+directories = "6.0.0"
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }
+egui.workspace = true
+env_logger = "0.11.11"
+global-hotkey = "0.10.0"
+log.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+ui-kit = { version = "0.1.0", path = "../../crates/ui-kit" }
