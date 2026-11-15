@@ -12,6 +12,9 @@
 #ifndef BinDir
 #define BinDir "..\..\..\target\release\"
 #endif
+#ifndef FFmpegDir
+#define FFmpegDir Root + "..\..\third_party\ffmpeg\"
+#endif
 
 [Setup]
 ; Fixed GUID, never change: upgrades in place over older installs.
@@ -39,6 +42,9 @@ WizardStyle=modern
 
 [Files]
 Source: "{#BinDir}{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#FFmpegDir}dist\bin\*.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#FFmpegDir}BUILDINFO.txt"; DestDir: "{app}\licenses"; DestName: "FFmpeg-BUILDINFO.txt"; Flags: ignoreversion
+Source: "{#FFmpegDir}dist\LICENSE.txt"; DestDir: "{app}\licenses"; DestName: "FFmpeg-LICENSE.txt"; Flags: ignoreversion
 Source: "{#Root}licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs
 Source: "{#Root}assets\fonts\LICENSE-IBMPlex.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 Source: "{#Root}assets\fonts\OFL-JetBrainsMono.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion

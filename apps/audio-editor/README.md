@@ -32,8 +32,9 @@ powershell -ExecutionPolicy Bypass -File apps\audio-editor\scripts\build-install
 
 Requires [Inno Setup 6](https://jrsoftware.org/isinfo.php) (ISCC.exe) to be installed. The script
 refuses to run while CutMark is open, builds the release exe, runs Inno Setup with the version from
-`apps\audio-editor\Cargo.toml` and writes `dist\CutMark-Setup-<version>.exe`. The installer bundles the exe plus a
-`licenses\` folder (third-party licences for the IBM Plex and JetBrains Mono fonts and LAME). The
+`apps\audio-editor\Cargo.toml` and writes `dist\CutMark-Setup-<version>.exe`. The installer bundles the exe plus the FFmpeg DLLs
+(beside the exe) and a `licenses\` folder (third-party licences for the IBM Plex and JetBrains Mono fonts and the FFmpeg
+DLLs). The
 icons can be regenerated with `python scripts\make_icon.py`.
 
 ## Keyboard shortcuts

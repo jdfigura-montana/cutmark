@@ -1,7 +1,7 @@
 """Generate THIRD-PARTY-NOTICES.txt in apps/audio-editor.
 
-Lists IBM Plex Sans + JetBrains Mono (OFL), LAME via mp3lame-encoder
-(LGPL-3.0) and the license of every crate in the cutmark-audio dependency
+Lists IBM Plex Sans + JetBrains Mono (OFL), the FFmpeg shared libraries
+(LGPL-3.0-or-later) and the license of every crate in the cutmark-audio dependency
 tree for Windows (via cargo tree), read from the extracted crate sources
 in the local cargo registry (no network). Run from the repo root:
 python apps\audio-editor\scripts\gen_notices.py
@@ -18,8 +18,8 @@ OUT = ROOT / "THIRD-PARTY-NOTICES.txt"
 REGISTRY = Path.home() / ".cargo" / "registry" / "src" / "index.crates.io-1949cf8c6b5b557f"
 INDEX = Path.home() / ".cargo" / "registry" / "index" / "index.crates.io-1949cf8c6b5b557f"
 
-# Hand-written preamble: bundled assets and the C library behind
-# mp3lame-encoder, whose crate license is covered by the crate list below.
+# Hand-written preamble: bundled assets and the FFmpeg shared libraries,
+# whose crate license is covered by the crate list below.
 PREAMBLE = """\
 Third-party notices for CutMark Audio Editor
 ====================================
@@ -34,9 +34,11 @@ Fonts (bundled under assets/fonts, licenses in the same folder):
   License: SIL Open Font License 1.1 - assets/fonts/OFL-JetBrainsMono.txt
   Copyright 2020 The JetBrains Mono Project Authors
 
-- LAME MP3 encoder, used through the mp3lame-encoder crate
-  License: LGPL-3.0 (https://www.gnu.org/licenses/lgpl-3.0.html)
-  LAME is linked as a compiled C library (mp3lame-sys) and is not modified.
+- FFmpeg 9.0.2 shared libraries (avcodec-63.dll, avdevice-63.dll, avfilter-12.dll,
+  avformat-63.dll, avutil-61.dll, swresample-7.dll, swscale-10.dll)
+  License: LGPL-3.0-or-later (https://www.gnu.org/licenses/lgpl-3.0.html)
+  Linked dynamically as separate DLL files beside the exe that the user may
+  replace; build details and source location in licenses/FFmpeg-BUILDINFO.txt.
 
 Rust crates (from the cutmark-audio dependency tree; license as declared on crates.io):
 """

@@ -11,6 +11,11 @@ if (Get-Process -Name 'cutmark-audio' -ErrorAction SilentlyContinue) {
     throw "cutmark-audio.exe is running. Close CutMark Audio Editor and try again."
 }
 
+# FFmpeg DLLs: refuse to build without them, the installer ships them.
+if (-not (Test-Path (Join-Path $ws 'third_party\ffmpeg\dist\bin\avcodec-63.dll'))) {
+    throw "FFmpeg DLLs missing. Run third_party\ffmpeg\get-ffmpeg.ps1 first."
+}
+
 # 2. Release build.
 $env:Path = "$env:USERPROFILE\.cargo\bin;" + $env:Path
 cargo build --release -p cutmark-audio

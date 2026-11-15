@@ -1,9 +1,14 @@
 Bundled third-party components in CutMark Audio Editor
 =======================================================
 
-LAME (MP3 encoder, linked via mp3lame-encoder / mp3lame-sys)
-  Licence: GNU Lesser General Public License, version 3 (LGPL-3.0)
-  Full text: LGPL-3.0.txt (this folder)
+FFmpeg 9.0.2 libraries (avcodec-63.dll, avdevice-63.dll, avfilter-12.dll,
+  avformat-63.dll, avutil-61.dll, swresample-7.dll, swscale-10.dll)
+  Licence: GNU Lesser General Public License, version 3 or later (LGPL-3.0-or-later)
+  Full texts: LGPL-3.0.txt and GPL-3.0.txt (this folder); the LGPL-3.0 text adds
+  permissions on top of the GPL-3.0 text, so both are included
+  These libraries are linked dynamically as separate DLL files beside the exe
+  and the user may replace them. Build details and the source location are in
+  FFmpeg-BUILDINFO.txt (this folder).
 
 IBM Plex Sans (fonts: IBMPlexSans-Regular.ttf, IBMPlexSans-Medium.ttf,
   IBMPlexSans-SemiBold.ttf)
