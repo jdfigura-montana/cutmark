@@ -6,6 +6,8 @@ mod app;
 mod config;
 mod engine;
 mod hotkeys;
+mod platform;
+mod tray;
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();

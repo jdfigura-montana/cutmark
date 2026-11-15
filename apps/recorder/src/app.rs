@@ -5,29 +5,52 @@ use std::collections::VecDeque;
 use crate::config::{self, Settings};
 use crate::engine::bus::{Bus, Command};
 use crate::hotkeys::Hotkeys;
+use crate::platform;
+use crate::tray::{AppEvent, Tray};
 
 /// How many recent commands the window keeps.
 const RECENT_LIMIT: usize = 20;
 
-/// The Recorder app: settings, hotkeys, the command bus and the recent-command list.
+/// The Recorder app: settings, hotkeys, the tray icon, the command bus and the recent-command list.
 pub struct RecorderApp {
     settings: Settings,
     hotkeys: Hotkeys,
+    tray: Option<Tray>,
     bus: Bus,
     recent: VecDeque<Command>,
+    /// Placeholder until phase 2 adds real recording: toggled by `Command::StartStop`.
+    recording: bool,
+    /// True when the window could not be excluded from screen capture.
+    capture_exclusion_failed: bool,
+    /// Whether the window was minimized on the previous frame, to catch the moment it becomes minimized.
+    was_minimized: bool,
 }
 
 impl RecorderApp {
-    /// Applies the suite theme, loads settings and hotkeys and builds the command bus.
+    /// Applies the suite theme, excludes the window from capture, loads settings, hotkeys and the tray icon.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         ui_kit::apply(&cc.egui_ctx);
+        let capture_exclusion_failed = match platform::exclude_from_capture(cc) {
+            Ok(()) => false,
+            Err(err) => {
+                log::warn!("could not exclude the Recorder window from screen capture: {err}");
+                true
+            }
+        };
         let settings = config::load_or_init().unwrap_or_else(|err| {
             log::error!("could not load the Recorder settings, using the defaults: {err}");
             Settings::default()
         });
         let bus = Bus::default();
         let hotkeys = Hotkeys::start(&cc.egui_ctx, bus.sender());
-        Self { settings, hotkeys, bus, recent: VecDeque::with_capacity(RECENT_LIMIT) }
+        let tray = match Tray::new(&cc.egui_ctx, bus.sender()) {
+            Ok(tray) => Some(tray),
+            Err(err) => {
+                log::warn!("running without a tray icon: {err}");
+                None
+            }
+        };
+        Self { settings, hotkeys, tray, bus, recent: VecDeque::with_capacity(RECENT_LIMIT), recording: false, capture_exclusion_failed, was_minimized: false }
     }
 
     /// Pulls hotkey presses and other queued commands off the bus and records them.
@@ -35,10 +58,50 @@ impl RecorderApp {
         self.hotkeys.pump();
         for command in self.bus.drain() {
             log::info!("command: {command:?}");
+            if matches!(command, Command::StartStop) {
+                self.set_recording(!self.recording);
+            }
             if self.recent.len() == RECENT_LIMIT {
                 self.recent.pop_front();
             }
             self.recent.push_back(command);
+        }
+    }
+
+    /// Acts on the tray menu's Show window and Quit clicks.
+    fn handle_app_events(&self, ctx: &egui::Context) {
+        let Some(tray) = &self.tray else {
+            return;
+        };
+        for event in tray.drain_events() {
+            match event {
+                AppEvent::ShowWindow => Self::show_window(ctx),
+                AppEvent::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            }
+        }
+    }
+
+    /// Brings the window back from the tray or the taskbar and focuses it.
+    fn show_window(ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+
+    /// While recording, hides the window to the tray the moment it is minimized.
+    fn hide_to_tray_when_minimized(&mut self, ctx: &egui::Context) {
+        let minimized = ctx.input(|input| input.viewport().minimized).unwrap_or(false);
+        if minimized && !self.was_minimized && self.recording && self.tray.is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+        self.was_minimized = minimized;
+    }
+
+    /// Sets the placeholder recording state and updates the tray icon to match.
+    fn set_recording(&mut self, recording: bool) {
+        self.recording = recording;
+        if let Some(tray) = &self.tray {
+            tray.set_recording(recording);
         }
     }
 
@@ -72,14 +135,21 @@ impl RecorderApp {
 
 impl eframe::App for RecorderApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         self.handle_commands();
+        self.handle_app_events(&ctx);
+        self.hide_to_tray_when_minimized(&ctx);
 
         egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("Cutmark Recorder");
             ui.label(format!("Active profile: {}", self.settings.active_profile));
+            ui.label(if self.recording { "Recording (placeholder)" } else { "Idle" });
             ui.add_space(8.0);
 
             let warn = ui.visuals().warn_fg_color;
+            if self.capture_exclusion_failed {
+                ui.colored_label(warn, "This window may appear in recordings");
+            }
             for problem in &self.hotkeys.problems {
                 ui.colored_label(warn, problem);
             }

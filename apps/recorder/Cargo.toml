@@ -32,7 +32,12 @@ egui.workspace = true
 env_logger = "0.11.11"
 global-hotkey = "0.10.0"
 log.workspace = true
+raw-window-handle = "0.6"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
+tray-icon = "0.26.1"
 ui-kit = { version = "0.1.0", path = "../../crates/ui-kit" }
+
+[target."cfg(windows)".dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
