@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "session": {
+    "id": "01a183fd-a2c0-7000-8000-000000000000",
+    "started_at": "2026-10-28T19:30:00.000Z",
+    "ended_at": "2026-10-28T19:45:30.000Z",
+    "recovered": false,
+    "writer": {
+      "app": "cutmark-recorder",
+      "version": "0.1.0"
+    },
+    "clock": {
+      "source": "capture",
+      "error_ms": 0
+    }
+  },
+  "media": [
+    {
+      "index": 0,
+      "path": "2026-10-28_ranked-grind.mkv",
+      "offset_ms": 0,
+      "duration_ms": 600000
+    },
+    {
+      "index": 1,
+      "path": "2026-10-28_ranked-grind_001.mkv",
+      "offset_ms": 600000,
+      "duration_ms": 300000
+    }
+  ],
+  "context": {
+    "game": "Example Arena",
+    "title": "Ranked grind"
+  },
+  "marks": [
+    {
+      "id": "01a183fd-d1a0-7000-8000-000000000001",
+      "type": "chapter",
+      "media": 0,
+      "t_ms": 12000,
+      "label": "Warm-up",
+      "source": "hotkey",
+      "created_at": "2026-10-28T19:30:12.000Z"
+    },
+    {
+      "id": "01a183fe-8d20-7000-8000-000000000002",
+      "type": "highlight",
+      "media": 0,
+      "t_ms": 30000,
+      "end_ms": 60000,
+      "label": "Clutch, round 3",
+      "source": "hotkey",
+      "created_at": "2026-10-28T19:31:00.000Z"
+    },
+    {
+      "id": "01a183ff-0250-7000-8000-000000000003",
+      "type": "cut",
+      "media": 0,
+      "t_ms": 90000,
+      "source": "guest",
+      "created_at": "2026-10-28T19:31:30.000Z"
+    },
+    {
+      "id": "01a183ff-7780-7000-8000-000000000004",
+      "type": "note",
+      "media": 0,
+      "t_ms": 120000,
+      "label": "Fix audio",
+      "notes": "Mic clips on the \"boss\" fight.\nRe-record the intro.",
+      "source": "ui",
+      "created_at": "2026-10-28T19:32:00.000Z"
+    },
+    {
+      "id": "01a18400-b000-7000-8000-000000000005",
+      "type": "system",
+      "media": 0,
+      "t_ms": 200000,
+      "source": "auto",
+      "created_at": "2026-10-28T19:33:20.000Z",
+      "auto": {
+        "kind": "recorder.pause",
+        "data": {}
+      }
+    },
+    {
+      "id": "01a18401-2530-7000-8000-000000000006",
+      "type": "system",
+      "media": 0,
+      "t_ms": 200000,
+      "source": "auto",
+      "created_at": "2026-10-28T19:33:50.000Z",
+      "auto": {
+        "kind": "recorder.resume",
+        "data": {}
+      }
+    },
+    {
+      "id": "01a18401-e880-7000-8000-000000000007",
+      "type": "retake",
+      "media": 0,
+      "t_ms": 250000,
+      "label": "Café take",
+      "source": "hotkey",
+      "created_at": "2026-10-28T19:34:40.000Z",
+      "script": {
+        "line": "Welcome back | everyone",
+        "position": 4
+      }
+    },
+    {
+      "id": "01a18407-5338-7000-8000-000000000008",
+      "type": "chapter",
+      "media": 1,
+      "t_ms": 5000,
+      "source": "hotkey",
+      "created_at": "2026-10-28T19:40:35.000Z"
+    },
+    {
+      "id": "01a18407-a158-7000-8000-000000000009",
+      "type": "b_roll",
+      "media": 1,
+      "t_ms": 10000,
+      "end_ms": 25000,
+      "source": "api",
+      "created_at": "2026-10-28T19:40:55.000Z"
+    }
+  ]
+}

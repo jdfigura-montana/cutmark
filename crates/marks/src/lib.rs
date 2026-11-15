@@ -3,14 +3,18 @@
 //! This is the S0 skeleton. The schema, reader, writer and exports arrive in
 //! Marks Sidecar phases 1 to 3 (see docs/suite).
 
+pub mod export;
 pub mod model;
 pub mod read;
+pub mod time;
 
+pub use export::{Chapter, chapters, csv, markdown};
 pub use model::{
     AUTO_DATA_MAX_BYTES, AutoInfo, ClockInfo, ClockSource, Context, LABEL_MAX, MARKS_MAX, Mark, MarkType, MediaEntry, NOTES_MAX, SCHEMA_VERSION,
     SCRIPT_LINE_MAX, ScriptRef, Session, Sidecar, Source, WriterInfo,
 };
 pub use read::{LoadError, Warning, discover, load};
+pub use time::{format_tc, parse_tc, session_ms, snap_to_frame};
 
 #[cfg(test)]
 mod tests {
