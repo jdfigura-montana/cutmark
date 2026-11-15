@@ -10,6 +10,7 @@ Commercial, Windows-only Rust suite. This repo is private.
 - third_party/filmcraft/: FilmCraft licenses, NOTICE and attribution. Keep intact.
 - FilmCraft reference clone (read-only, not a workspace member): C:\Users\JD_Admin\Documents\Programming_Projects\cm_suite\filmcraft
 - apps/audio-editor: the Cutmark Audio app, package cutmark-audio (arrives in S0 phase 2)
+- .clinerules/audio-editor.md: extra rules for apps/audio-editor. Read it before any task there.
 - crates/marks: shared sidecar schema, reader and writer; no UI, no audio, no video dependencies (arrives in S0 phase 4)
 - third_party/ffmpeg: LGPL FFmpeg shared DLLs, fetch script, notices (arrives in S0 phase 3)
 - docs/suite: suite specs exported as Markdown
