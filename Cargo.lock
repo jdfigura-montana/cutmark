@@ -6542,6 +6542,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ui-kit"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui",
+ "egui-phosphor",
+]
+
+[[package]]
 name = "unarray"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

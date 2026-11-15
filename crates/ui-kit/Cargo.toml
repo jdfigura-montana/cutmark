@@ -1,0 +1,24 @@
+[package]
+name = "ui-kit"
+description = "Cutmark suite base dark theme: shared palette, fonts and egui style, so every app looks like the audio editor."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# Strict lint set (S0 spec, Lints). Same as crates/cutmark-hotkeys except unsafe_code is "forbid": this crate has no unsafe code and no Win32 calls.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[dependencies]
+eframe.workspace = true
+egui.workspace = true
+egui-phosphor.workspace = true
