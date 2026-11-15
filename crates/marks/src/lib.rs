@@ -7,6 +7,7 @@ pub mod export;
 pub mod model;
 pub mod read;
 pub mod time;
+pub mod write;
 
 pub use export::{Chapter, chapters, csv, markdown};
 pub use model::{
@@ -15,6 +16,7 @@ pub use model::{
 };
 pub use read::{LoadError, Warning, discover, load};
 pub use time::{format_tc, parse_tc, session_ms, snap_to_frame};
+pub use write::{Clock, NewMark, SessionWriter, SystemClock, WriteError};
 
 #[cfg(test)]
 mod tests {
