@@ -1,2 +1,4 @@
 /target
 /filmcraft/
+/third_party/ffmpeg/dist/
+/third_party/ffmpeg/cache/
