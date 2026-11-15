@@ -468,7 +468,7 @@ fn pick_and_relink(editor: &mut Editor, id: Uuid) -> Vec<String> {
 fn sorted_items(items: &[MediaItem], sort: BinSort) -> Vec<MediaItem> {
     let mut items = items.to_vec();
     if sort == BinSort::Name {
-        items.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
+        items.sort_by_key(|a| a.display_name.to_lowercase());
     }
     items
 }
