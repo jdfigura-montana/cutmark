@@ -22,12 +22,7 @@ pub struct ChannelMeter {
 impl ChannelMeter {
     /// A zeroed meter.
     pub fn new() -> ChannelMeter {
-        ChannelMeter {
-            peak: AtomicU32::new(0),
-            sum_sq: AtomicU32::new(0),
-            frames: AtomicU32::new(0),
-            clipped: AtomicBool::new(false),
-        }
+        ChannelMeter { peak: AtomicU32::new(0), sum_sq: AtomicU32::new(0), frames: AtomicU32::new(0), clipped: AtomicBool::new(false) }
     }
 
     /// Audio thread: accumulates one block's peak, sum of squares, frame count
@@ -37,10 +32,7 @@ impl ChannelMeter {
         let bits = peak.to_bits();
         let mut cur = self.peak.load(Ordering::Relaxed);
         while f32::from_bits(cur) < peak {
-            match self
-                .peak
-                .compare_exchange_weak(cur, bits, Ordering::Relaxed, Ordering::Relaxed)
-            {
+            match self.peak.compare_exchange_weak(cur, bits, Ordering::Relaxed, Ordering::Relaxed) {
                 Ok(_) => break,
                 Err(actual) => cur = actual,
             }
@@ -49,10 +41,7 @@ impl ChannelMeter {
         let mut cur = self.sum_sq.load(Ordering::Relaxed);
         loop {
             let next = (f32::from_bits(cur) + sum_sq).to_bits();
-            match self
-                .sum_sq
-                .compare_exchange_weak(cur, next, Ordering::Relaxed, Ordering::Relaxed)
-            {
+            match self.sum_sq.compare_exchange_weak(cur, next, Ordering::Relaxed, Ordering::Relaxed) {
                 Ok(_) => break,
                 Err(actual) => cur = actual,
             }
@@ -92,10 +81,7 @@ pub struct StereoMeter {
 impl StereoMeter {
     /// A zeroed stereo meter.
     pub fn new() -> StereoMeter {
-        StereoMeter {
-            l: ChannelMeter::new(),
-            r: ChannelMeter::new(),
-        }
+        StereoMeter { l: ChannelMeter::new(), r: ChannelMeter::new() }
     }
 }
 

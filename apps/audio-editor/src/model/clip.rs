@@ -49,16 +49,7 @@ mod tests {
 
     /// A clip with the given placement and source range, no gain or fades.
     fn clip(start: u64, src_in: u64, src_out: u64) -> Clip {
-        Clip {
-            id: Uuid::new_v4(),
-            media_id: Uuid::new_v4(),
-            start,
-            src_in,
-            src_out,
-            gain_db: 0.0,
-            fade_in: 0,
-            fade_out: 0,
-        }
+        Clip { id: Uuid::new_v4(), media_id: Uuid::new_v4(), start, src_in, src_out, gain_db: 0.0, fade_in: 0, fade_out: 0 }
     }
 
     #[test]

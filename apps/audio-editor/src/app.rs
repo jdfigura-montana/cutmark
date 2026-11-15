@@ -10,10 +10,7 @@ use crate::editor::action::Action;
 use crate::editor::message::{self, Message};
 use crate::editor::transport::TransportState;
 use crate::ui::bin_panel::{self, BinPanel};
-use crate::ui::dialogs::confirm::{
-    CloseChoice, CloseConfirmDialog, ConfirmDialog, ExportCloseChoice, ExportCloseDialog,
-    RecordCloseChoice, RecordCloseDialog,
-};
+use crate::ui::dialogs::confirm::{CloseChoice, CloseConfirmDialog, ConfirmDialog, ExportCloseChoice, ExportCloseDialog, RecordCloseChoice, RecordCloseDialog};
 use crate::ui::dialogs::export::{BANNER_SECONDS, ExportBanner};
 use crate::ui::master_strip;
 use crate::ui::menu::{ProjectMenu, ProjectMenuAction};
@@ -153,18 +150,8 @@ impl App {
                     &mut self.export_banner,
                     self.pending_close.is_some(),
                 );
-                Self::intercept_window_close(
-                    ui.ctx(),
-                    editor,
-                    &mut self.pending_close,
-                    self.close_confirmed,
-                );
-                resolved = Self::run_close_prompts(
-                    &ui.ctx().clone(),
-                    editor,
-                    &mut self.messages,
-                    &mut self.pending_close,
-                );
+                Self::intercept_window_close(ui.ctx(), editor, &mut self.pending_close, self.close_confirmed);
+                resolved = Self::run_close_prompts(&ui.ctx().clone(), editor, &mut self.messages, &mut self.pending_close);
             }
         }
         if let Some(mut editor) = opened {
@@ -201,12 +188,7 @@ impl App {
     /// menu while an export runs, a take is recorded or changes are unsaved.
     /// A quit the prompts already approved (`confirmed`) is not intercepted a
     /// second time.
-    fn intercept_window_close(
-        ctx: &egui::Context,
-        editor: &Editor,
-        pending_close: &mut Option<PendingClose>,
-        confirmed: bool,
-    ) {
+    fn intercept_window_close(ctx: &egui::Context, editor: &Editor, pending_close: &mut Option<PendingClose>, confirmed: bool) {
         let wants_close = ctx.input(|i| i.viewport().close_requested());
         if wants_close && !confirmed && Self::needs_prompt(editor) {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
@@ -318,10 +300,7 @@ impl App {
         // position instead).
         editor.tick();
         editor.poll_transport();
-        let transport_active = matches!(
-            editor.transport_state(),
-            TransportState::Playing | TransportState::Previewing | TransportState::Scrubbing
-        );
+        let transport_active = matches!(editor.transport_state(), TransportState::Playing | TransportState::Previewing | TransportState::Scrubbing);
         // A take being recorded repaints every frame: the live clip grows,
         // the timecodes run and the input meter moves.
         if editor.has_pending_jobs() || transport_active || editor.is_recording() {
@@ -335,16 +314,7 @@ impl App {
         if transport_active || editor.armed_track().is_some() {
             meters.mark_active();
         }
-        let (now, dt) = ui.input(|i| {
-            (
-                i.time,
-                if i.stable_dt > 0.0 {
-                    i.stable_dt
-                } else {
-                    1.0 / 60.0
-                },
-            )
-        });
+        let (now, dt) = ui.input(|i| (i.time, if i.stable_dt > 0.0 { i.stable_dt } else { 1.0 / 60.0 }));
         let (track_readings, master_readings) = editor.read_meters();
         meters.update(&track_readings, &master_readings, now, dt);
         if meters.meter_tail() {
@@ -357,10 +327,7 @@ impl App {
             match result {
                 Ok(path) => {
                     *banner = Some(ExportBanner {
-                        name: path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| path.display().to_string()),
+                        name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string()),
                         path,
                         at: now,
                     });
@@ -388,14 +355,7 @@ impl App {
         let mut view_action = ViewMenuAction::None;
         egui::Panel::top("menu_bar")
             .exact_size(MENU_BAR_H)
-            .frame(
-                egui::Frame::new()
-                    .fill(THEME.bar_bg)
-                    .inner_margin(egui::Margin {
-                        left: 8,
-                        ..Default::default()
-                    }),
-            )
+            .frame(egui::Frame::new().fill(THEME.bar_bg).inner_margin(egui::Margin { left: 8, ..Default::default() }))
             .show(ui, |ui| {
                 (action, view_action) = menu.show(ui, editor);
             });
@@ -406,14 +366,7 @@ impl App {
         }
         egui::Panel::top("toolbar")
             .exact_size(TOOLBAR_H)
-            .frame(
-                egui::Frame::new()
-                    .fill(THEME.panel_bg)
-                    .inner_margin(egui::Margin {
-                        left: 8,
-                        ..Default::default()
-                    }),
-            )
+            .frame(egui::Frame::new().fill(THEME.panel_bg).inner_margin(egui::Margin { left: 8, ..Default::default() }))
             .show(ui, |ui| {
                 msgs.extend(toolbar::show(ui, editor));
             });
@@ -421,56 +374,32 @@ impl App {
         // Bottom: status bar.
         egui::Panel::bottom("status_bar")
             .exact_size(STATUS_BAR_H)
-            .frame(
-                egui::Frame::new()
-                    .fill(THEME.bar_bg)
-                    .inner_margin(egui::Margin {
-                        left: 8,
-                        ..Default::default()
-                    }),
-            )
+            .frame(egui::Frame::new().fill(THEME.bar_bg).inner_margin(egui::Margin { left: 8, ..Default::default() }))
             .show(ui, |ui| {
                 status_bar::show(ui, editor, banner.as_ref());
             });
 
         // Right: Master strip, fixed width.
-        egui::Panel::right("master_strip")
-            .resizable(false)
-            .exact_size(116.0)
-            .frame(egui::Frame::new().fill(THEME.panel_bg))
-            .show(ui, |ui| {
-                master_strip::show(ui, editor, meters);
-            });
+        egui::Panel::right("master_strip").resizable(false).exact_size(116.0).frame(egui::Frame::new().fill(THEME.panel_bg)).show(ui, |ui| {
+            master_strip::show(ui, editor, meters);
+        });
 
         // Left: Media Bin panel, resizable between 200 and 400 px, 236 default.
-        egui::Panel::left("media_bin")
-            .resizable(true)
-            .default_size(236.0)
-            .size_range(200.0..=400.0)
-            .frame(egui::Frame::new().fill(THEME.panel_bg))
-            .show(ui, |ui| {
+        egui::Panel::left("media_bin").resizable(true).default_size(236.0).size_range(200.0..=400.0).frame(egui::Frame::new().fill(THEME.panel_bg)).show(
+            ui,
+            |ui| {
                 ui.take_available_space();
                 msgs.extend(media_messages(bin.show(ui, editor)));
-            });
+            },
+        );
 
         // Center: timeline, filling the remainder.
         egui::CentralPanel::default().show(ui, |ui| {
-            msgs.extend(media_messages(timeline::show(
-                ui,
-                editor,
-                view_action,
-                meters,
-            )));
+            msgs.extend(media_messages(timeline::show(ui, editor, view_action, meters)));
         });
 
         // Files dropped anywhere on the window go to the importer.
-        let dropped: Vec<PathBuf> = ui.input(|i| {
-            i.raw
-                .dropped_files
-                .iter()
-                .map(|f| f.path().to_path_buf())
-                .collect()
-        });
+        let dropped: Vec<PathBuf> = ui.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
         if !dropped.is_empty() {
             msgs.extend(media_messages(editor.import_files(dropped)));
         }
@@ -484,43 +413,14 @@ impl App {
         // else is ignored. An open prompt owns Esc and Space, so they do not
         // reach the take then.
         let recording = editor.is_recording();
-        if recording
-            && !ui.ctx().egui_wants_keyboard_input()
-            && !close_pending
-            && !messages.as_ref().is_some_and(|dialog| dialog.open)
-            && !menu.modal_open()
-        {
+        if recording && !ui.ctx().egui_wants_keyboard_input() && !close_pending && !messages.as_ref().is_some_and(|dialog| dialog.open) && !menu.modal_open() {
             Self::handle_recording_keys(ui, editor, menu);
         }
 
         // Editor shortcuts, only when no text field has keyboard focus, and
         // never while an export locks the project or a take is recorded.
         if !ui.ctx().egui_wants_keyboard_input() && !editor.is_locked() && !recording {
-            let (
-                ctrl,
-                shift,
-                n,
-                o,
-                s,
-                e,
-                i,
-                z,
-                y,
-                t,
-                r,
-                a,
-                c,
-                x,
-                v,
-                escape,
-                del,
-                back,
-                g,
-                l,
-                m,
-                comma,
-                period,
-            ) = ui.input(|i| {
+            let (ctrl, shift, n, o, s, e, i, z, y, t, r, a, c, x, v, escape, del, back, g, l, m, comma, period) = ui.input(|i| {
                 (
                     i.modifiers.ctrl,
                     i.modifiers.shift,
@@ -576,10 +476,7 @@ impl App {
                     msgs.push(Message::recording(error.to_string()));
                 }
             } else if ctrl && shift && t {
-                let _ = editor.apply(Action::AddTrack {
-                    index: None,
-                    name: None,
-                });
+                let _ = editor.apply(Action::AddTrack { index: None, name: None });
             } else if ctrl && s {
                 menu.save(editor);
             } else if del || back {
@@ -641,8 +538,7 @@ impl App {
                 } else if i.key_pressed(egui::Key::Space)
                     && i.modifiers.shift
                     && !i.modifiers.ctrl
-                    && let crate::editor::selection::Selection::Range { start, end, .. } =
-                        editor.selection().clone()
+                    && let crate::editor::selection::Selection::Range { start, end, .. } = editor.selection().clone()
                 {
                     // Play selection: plays the range once, then returns to its
                     // start. Without a range, Shift+Space does nothing.
@@ -665,10 +561,7 @@ impl App {
         msgs.extend(editor.take_job_errors());
         if !msgs.is_empty() {
             let text: Vec<&str> = msgs.iter().map(|m| m.text.as_str()).collect();
-            *messages = Some(ConfirmDialog::new(
-                message::dialog_title(&msgs),
-                text.join("\n"),
-            ));
+            *messages = Some(ConfirmDialog::new(message::dialog_title(&msgs), text.join("\n")));
         }
         if let Some(dialog) = messages {
             dialog.show(&ui.ctx().clone());
@@ -708,9 +601,7 @@ impl App {
     /// SPEC's message shows verbatim.
     fn op_message(error: &crate::editor::editor::EditorError) -> String {
         let text = error.to_string();
-        text.strip_prefix("invalid operation: ")
-            .unwrap_or(&text)
-            .to_string()
+        text.strip_prefix("invalid operation: ").unwrap_or(&text).to_string()
     }
 
     /// Delete / Backspace: removes a selected marker, else the clip selection
@@ -724,18 +615,10 @@ impl App {
         }
         match editor.selection().clone() {
             crate::editor::selection::Selection::Clips(ids) => {
-                let _ = editor.apply(Action::DeleteClips {
-                    clip_ids: ids,
-                    ripple: editor.view.ripple,
-                });
+                let _ = editor.apply(Action::DeleteClips { clip_ids: ids, ripple: editor.view.ripple });
             }
             crate::editor::selection::Selection::Range { start, end, tracks } => {
-                let _ = editor.apply(Action::DeleteRange {
-                    s: start,
-                    e: end,
-                    track_ids: tracks,
-                    ripple: editor.view.ripple,
-                });
+                let _ = editor.apply(Action::DeleteRange { s: start, e: end, track_ids: tracks, ripple: editor.view.ripple });
                 editor.clear_selection();
                 editor.set_playhead(start);
             }
@@ -745,13 +628,7 @@ impl App {
 
     /// Handles Ctrl+N (New Project dialog) and Ctrl+O (Open picker) on the start screen.
     fn handle_start_shortcuts(ui: &egui::Ui, start: &mut StartScreen) {
-        let (ctrl, n, o) = ui.input(|i| {
-            (
-                i.modifiers.ctrl,
-                i.key_pressed(egui::Key::N),
-                i.key_pressed(egui::Key::O),
-            )
-        });
+        let (ctrl, n, o) = ui.input(|i| (i.modifiers.ctrl, i.key_pressed(egui::Key::N), i.key_pressed(egui::Key::O)));
         if ctrl && n {
             *start = StartScreen::with_new_dialog();
         } else if ctrl && o {
@@ -765,12 +642,7 @@ impl App {
     fn update_title(&mut self, ui: &egui::Ui) {
         let title = match &self.screen {
             Screen::Start(_) => APP_NAME.to_string(),
-            Screen::Editing(editor) => format!(
-                "{}{} - {}",
-                if editor.dirty { "*" } else { "" },
-                editor.project.name,
-                APP_NAME
-            ),
+            Screen::Editing(editor) => format!("{}{} - {}", if editor.dirty { "*" } else { "" }, editor.project.name, APP_NAME),
         };
         if title != self.title {
             self.title = title.clone();
@@ -786,12 +658,7 @@ mod tests {
     use crate::model::project::{BitDepth, Project, ViewState};
     use crate::ui::test_util::{Headless, Out};
 
-    const ACTIONS: [PendingClose; 4] = [
-        PendingClose::Quit,
-        PendingClose::New,
-        PendingClose::Open,
-        PendingClose::Close,
-    ];
+    const ACTIONS: [PendingClose; 4] = [PendingClose::Quit, PendingClose::New, PendingClose::Open, PendingClose::Close];
 
     /// An app editing a dirty project in a real folder (so Save can work),
     /// driven frame by frame through the real `App::run`.
@@ -805,20 +672,9 @@ mod tests {
         fn new() -> Rig {
             let dir = tempfile::tempdir().expect("tempdir");
             let paths = create_layout(dir.path(), "Test 2").expect("layout");
-            let mut editor = Editor::with_project(
-                Project::new("Test 2".to_string(), 48_000, BitDepth::Int24),
-                ViewState::default(),
-                paths,
-            );
+            let mut editor = Editor::with_project(Project::new("Test 2".to_string(), 48_000, BitDepth::Int24), ViewState::default(), paths);
             editor.dirty = true;
-            Rig {
-                h: Headless::new(1280.0, 800.0),
-                app: App {
-                    screen: Screen::Editing(Box::new(editor)),
-                    ..App::default()
-                },
-                _dir: dir,
-            }
+            Rig { h: Headless::new(1280.0, 800.0), app: App { screen: Screen::Editing(Box::new(editor)), ..App::default() }, _dir: dir }
         }
 
         fn frame(&mut self) -> Out {
@@ -838,8 +694,7 @@ mod tests {
             if pending == PendingClose::Quit {
                 return self.window_x();
             }
-            let mut screen =
-                std::mem::replace(&mut self.app.screen, Screen::Start(StartScreen::default()));
+            let mut screen = std::mem::replace(&mut self.app.screen, Screen::Start(StartScreen::default()));
             self.app.request_close(&mut screen, pending);
             self.app.screen = screen;
             self.frame()
@@ -849,10 +704,7 @@ mod tests {
         fn click(&mut self, label: &str) -> Out {
             let _ = self.frame();
             let out = self.frame();
-            let target = out
-                .text_rect(label)
-                .unwrap_or_else(|| panic!("no {label} button on screen"))
-                .center();
+            let target = out.text_rect(label).unwrap_or_else(|| panic!("no {label} button on screen")).center();
             let app = &mut self.app;
             self.h.click(target, |ui| app.run(ui))
         }
@@ -879,8 +731,7 @@ mod tests {
         let Screen::Editing(editor) = &mut rig.app.screen else {
             panic!("editor screen");
         };
-        let project =
-            crate::model::fixtures::project_with_clips(&[&[(0, 478_080)], &[(268_800, 297_600)]]);
+        let project = crate::model::fixtures::project_with_clips(&[&[(0, 478_080)], &[(268_800, 297_600)]]);
         let media_id = project.media[0].id;
         let samples: Vec<f32> = (0..1_000_000usize)
             .flat_map(|i| {
@@ -889,13 +740,7 @@ mod tests {
             })
             .collect();
         let peaks = crate::io::peaks::build(&samples, 2);
-        editor.media_store.insert(
-            media_id,
-            crate::io::import::Loaded {
-                samples: samples.into(),
-                peaks: peaks.into(),
-            },
-        );
+        editor.media_store.insert(media_id, crate::io::import::Loaded { samples: samples.into(), peaks: peaks.into() });
         editor.project = std::sync::Arc::new(project);
         editor.view.playhead = 100_000;
         rig
@@ -911,13 +756,7 @@ mod tests {
     fn tap_with(rig: &mut Rig, key: egui::Key, modifiers: egui::Modifiers) {
         rig.h.set_modifiers(modifiers);
         for pressed in [true, false] {
-            let event = egui::Event::Key {
-                key,
-                physical_key: Some(key),
-                pressed,
-                repeat: false,
-                modifiers,
-            };
+            let event = egui::Event::Key { key, physical_key: Some(key), pressed, repeat: false, modifiers };
             let app = &mut rig.app;
             let _ = rig.h.frame(vec![event], |ui| app.run(ui));
         }
@@ -928,24 +767,14 @@ mod tests {
     /// an empty track 2 (the test input is armed, nothing records yet).
     fn recording_rig() -> Rig {
         let (editor, dir) = crate::ui::test_util::armed_editor(&[&[(0, 480_000)], &[]], "Test 2");
-        Rig {
-            h: Headless::new(1280.0, 800.0),
-            app: App {
-                screen: Screen::Editing(Box::new(editor)),
-                ..App::default()
-            },
-            _dir: dir,
-        }
+        Rig { h: Headless::new(1280.0, 800.0), app: App { screen: Screen::Editing(Box::new(editor)), ..App::default() }, _dir: dir }
     }
 
     /// Runs frames of the real app until `done` holds; fails after 10 s.
     fn frames_until(rig: &mut Rig, what: &str, done: impl Fn(&Rig) -> bool) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !done(rig) {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "timed out waiting for {what}"
-            );
+            assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
             let _ = rig.frame();
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
@@ -963,12 +792,7 @@ mod tests {
 
     /// Names of the bin items of the editor.
     fn bin_names(rig: &Rig) -> Vec<String> {
-        rig.editor()
-            .project
-            .media
-            .iter()
-            .map(|item| item.display_name.clone())
-            .collect()
+        rig.editor().project.media.iter().map(|item| item.display_name.clone()).collect()
     }
 
     #[test]
@@ -993,9 +817,7 @@ mod tests {
     fn left_for_start(rig: &Rig, pending: PendingClose) -> bool {
         match (&rig.app.screen, pending) {
             (Screen::Start(start), PendingClose::New) => start.dialog_is_open(),
-            (Screen::Start(start), PendingClose::Open | PendingClose::Close) => {
-                !start.dialog_is_open()
-            }
+            (Screen::Start(start), PendingClose::Open | PendingClose::Close) => !start.dialog_is_open(),
             _ => false,
         }
     }
@@ -1060,9 +882,7 @@ mod tests {
 
         tap(&mut rig, egui::Key::Space);
         assert!(!rig.editor().take_is_live(), "Space ended the take");
-        frames_until(&mut rig, "the take to be placed", |r| {
-            !r.editor().is_recording()
-        });
+        frames_until(&mut rig, "the take to be placed", |r| !r.editor().is_recording());
 
         assert!(bin_names(&rig).contains(&"Take 1".to_string()));
         assert_eq!(rig.editor().undo_label(), Some("Record"));
@@ -1080,20 +900,12 @@ mod tests {
         start_take(&mut rig, 4_800);
 
         tap(&mut rig, egui::Key::Escape);
-        frames_until(&mut rig, "the take to be discarded", |r| {
-            !r.editor().is_recording()
-        });
+        frames_until(&mut rig, "the take to be discarded", |r| !r.editor().is_recording());
 
         assert_eq!(bin_names(&rig), before, "no bin item");
         assert!(!rig.editor_mut().undo(), "no undo step");
         assert!(!rig.editor().dirty);
-        assert!(
-            !matches!(
-                rig.editor().selection(),
-                crate::editor::selection::Selection::None
-            ),
-            "Esc was consumed by the take, it did not clear the selection"
-        );
+        assert!(!matches!(rig.editor().selection(), crate::editor::selection::Selection::None), "Esc was consumed by the take, it did not clear the selection");
     }
 
     #[test]
@@ -1105,24 +917,15 @@ mod tests {
             let _ = rig.frame();
         }
         let idle = rig.frame();
-        assert!(
-            idle.text_rect("Recording").is_none(),
-            "no title painted before the key"
-        );
+        assert!(idle.text_rect("Recording").is_none(), "no title painted before the key");
         tap_with(&mut rig, egui::Key::R, egui::Modifiers::CTRL);
         let mut out = rig.frame();
         for _ in 0..3 {
             out = rig.frame();
         }
         assert!(!rig.editor().is_recording());
-        assert!(
-            out.text_rect("Arm a track first").is_some(),
-            "the messages dialog says why"
-        );
-        assert!(
-            out.text_rect("Recording").is_some(),
-            "the dialog is titled Recording"
-        );
+        assert!(out.text_rect("Arm a track first").is_some(), "the messages dialog says why");
+        assert!(out.text_rect("Recording").is_some(), "the dialog is titled Recording");
         assert!(out.text_rect("Media").is_none(), "and no longer Media");
     }
 
@@ -1133,56 +936,25 @@ mod tests {
         start_take(&mut rig, 2_400);
         let _ = rig.frame();
         let start = rig.editor().recording_status().expect("recording").start;
-        assert_eq!(
-            rig.editor().view.playhead,
-            start + 2_400,
-            "the record position"
-        );
+        assert_eq!(rig.editor().view.playhead, start + 2_400, "the record position");
 
         tap(&mut rig, egui::Key::M);
-        let markers: Vec<u64> = rig
-            .editor()
-            .project
-            .markers
-            .iter()
-            .map(|marker| marker.position)
-            .collect();
+        let markers: Vec<u64> = rig.editor().project.markers.iter().map(|marker| marker.position).collect();
         assert_eq!(markers, [start + 2_400], "M marked the record position");
 
         let clips = rig.editor().project.tracks[0].clips.clone();
         let (ripple, snap) = (rig.editor().view.ripple, rig.editor().view.snap);
         let selection = rig.editor().selection().clone();
-        for key in [
-            egui::Key::Delete,
-            egui::Key::Backspace,
-            egui::Key::S,
-            egui::Key::R,
-            egui::Key::N,
-            egui::Key::Home,
-            egui::Key::End,
-            egui::Key::P,
-        ] {
+        for key in [egui::Key::Delete, egui::Key::Backspace, egui::Key::S, egui::Key::R, egui::Key::N, egui::Key::Home, egui::Key::End, egui::Key::P] {
             tap(&mut rig, key);
         }
         for key in [egui::Key::Z, egui::Key::Y, egui::Key::A] {
             tap_with(&mut rig, key, egui::Modifiers::CTRL);
         }
-        assert_eq!(
-            rig.editor().project.markers.len(),
-            1,
-            "Ctrl+Z undid nothing"
-        );
+        assert_eq!(rig.editor().project.markers.len(), 1, "Ctrl+Z undid nothing");
         assert_eq!(rig.editor().project.tracks[0].clips, clips, "Delete and S");
-        assert_eq!(
-            (rig.editor().view.ripple, rig.editor().view.snap),
-            (ripple, snap),
-            "R and N toggled nothing"
-        );
-        assert_eq!(
-            rig.editor().selection(),
-            &selection,
-            "Ctrl+A changed nothing"
-        );
+        assert_eq!((rig.editor().view.ripple, rig.editor().view.snap), (ripple, snap), "R and N toggled nothing");
+        assert_eq!(rig.editor().selection(), &selection, "Ctrl+A changed nothing");
 
         // Ctrl+R again does not start a second take or complain.
         tap_with(&mut rig, egui::Key::R, egui::Modifiers::CTRL);
@@ -1191,15 +963,8 @@ mod tests {
             out = rig.frame();
         }
         assert!(rig.editor().take_is_live());
-        assert_eq!(
-            rig.editor().recording_status().map(|s| s.start),
-            Some(start),
-            "still the same take"
-        );
-        assert!(
-            out.text_rect("Recording in progress").is_none(),
-            "no dialog"
-        );
+        assert_eq!(rig.editor().recording_status().map(|s| s.start), Some(start), "still the same take");
+        assert!(out.text_rect("Recording in progress").is_none(), "no dialog");
         assert!(out.text_rect("Arm a track first").is_none());
     }
 
@@ -1214,11 +979,8 @@ mod tests {
         tap(&mut rig, egui::Key::M);
         assert!(rig.editor().dirty, "the marker is an unsaved change");
         let json = rig.editor().paths.project_json();
-        let saved_markers = |json: &std::path::Path| {
-            crate::io::project_file::load(json)
-                .map(|(_, project, _)| project.markers.len())
-                .expect("project.json loads")
-        };
+        let saved_markers =
+            |json: &std::path::Path| crate::io::project_file::load(json).map(|(_, project, _)| project.markers.len()).expect("project.json loads");
         assert!(!json.exists(), "nothing saved yet");
 
         tap_with(&mut rig, egui::Key::S, egui::Modifiers::CTRL);
@@ -1231,15 +993,9 @@ mod tests {
         // The take goes on: more audio arrives, then Space keeps it.
         crate::ui::test_util::feed_take(rig.editor_mut(), 2_400, 0.5, 4_800);
         let _ = rig.frame();
-        assert_eq!(
-            rig.editor().recording_status().map(|s| (s.start, s.frames)),
-            Some((start, 4_800)),
-            "same take, still growing"
-        );
+        assert_eq!(rig.editor().recording_status().map(|s| (s.start, s.frames)), Some((start, 4_800)), "same take, still growing");
         tap(&mut rig, egui::Key::Space);
-        frames_until(&mut rig, "the take to be placed", |r| {
-            !r.editor().is_recording()
-        });
+        frames_until(&mut rig, "the take to be placed", |r| !r.editor().is_recording());
         assert!(bin_names(&rig).contains(&"Take 1".to_string()));
         assert_eq!(rig.editor().undo_label(), Some("Record"));
     }
@@ -1262,14 +1018,8 @@ mod tests {
             for _ in 0..3 {
                 let _ = rig.frame();
             }
-            assert!(
-                rig.app.pending_close.is_none(),
-                "{key:?} + {modifiers:?} opened a close prompt"
-            );
-            assert!(
-                !rig.app.menu.modal_open(),
-                "{key:?} + {modifiers:?} opened a dialog"
-            );
+            assert!(rig.app.pending_close.is_none(), "{key:?} + {modifiers:?} opened a close prompt");
+            assert!(!rig.app.menu.modal_open(), "{key:?} + {modifiers:?} opened a dialog");
         }
         assert!(rig.editor().take_is_live(), "the take was not disturbed");
         assert!(rig.editor().dirty, "nothing was saved");
@@ -1277,10 +1027,7 @@ mod tests {
 
     /// The painted live clip: the rect with the solid `record_red` border.
     fn live_clip_rect(out: &Out) -> Option<egui::Rect> {
-        out.rects()
-            .into_iter()
-            .find(|r| r.stroke.color == THEME.record_red && r.stroke.width > 0.0)
-            .map(|r| r.rect)
+        out.rects().into_iter().find(|r| r.stroke.color == THEME.record_red && r.stroke.width > 0.0).map(|r| r.rect)
     }
 
     #[test]
@@ -1297,24 +1044,10 @@ mod tests {
         start_take(&mut rig, 24_000);
         let out = rig.frame();
 
-        let lane_left = out
-            .rects()
-            .into_iter()
-            .filter(|r| r.fill == THEME.lane_a)
-            .map(|r| r.rect.left())
-            .fold(f32::INFINITY, f32::min);
+        let lane_left = out.rects().into_iter().filter(|r| r.fill == THEME.lane_a).map(|r| r.rect.left()).fold(f32::INFINITY, f32::min);
         let live = live_clip_rect(&out).expect("the live clip is painted");
-        assert!(
-            (live.left() - (lane_left + 200.0)).abs() < 0.01,
-            "starts at the record start: {} vs {}",
-            live.left(),
-            lane_left + 200.0
-        );
-        assert!(
-            (live.width() - 240.0).abs() < 0.01,
-            "24,000 frames at 100 spp: {}",
-            live.width()
-        );
+        assert!((live.left() - (lane_left + 200.0)).abs() < 0.01, "starts at the record start: {} vs {}", live.left(), lane_left + 200.0);
+        assert!((live.width() - 240.0).abs() < 0.01, "24,000 frames at 100 spp: {}", live.width());
 
         // It grows with the frames and keeps its left edge.
         crate::ui::test_util::feed_take(rig.editor_mut(), 12_000, 0.5, 36_000);
@@ -1328,14 +1061,7 @@ mod tests {
     #[test]
     fn the_view_pages_to_follow_the_take_past_the_project_end() {
         let (editor, dir) = crate::ui::test_util::armed_editor(&[&[(0, 10_000)], &[]], "Test 2");
-        let mut rig = Rig {
-            h: Headless::new(1280.0, 800.0),
-            app: App {
-                screen: Screen::Editing(Box::new(editor)),
-                ..App::default()
-            },
-            _dir: dir,
-        };
+        let mut rig = Rig { h: Headless::new(1280.0, 800.0), app: App { screen: Screen::Editing(Box::new(editor)), ..App::default() }, _dir: dir };
         {
             let editor = rig.editor_mut();
             editor.view.samples_per_pixel = 100.0;
@@ -1348,11 +1074,7 @@ mod tests {
         assert_eq!(editor.view.playhead, 90_000, "the record position");
         // The project is 10,000 samples long: without counting the take the
         // view could not scroll past about 7,200.
-        assert!(
-            editor.view.scroll_x > 20_000 && editor.view.scroll_x <= 90_000,
-            "scroll_x {}",
-            editor.view.scroll_x
-        );
+        assert!(editor.view.scroll_x > 20_000 && editor.view.scroll_x <= 90_000, "scroll_x {}", editor.view.scroll_x);
     }
 
     #[test]
@@ -1371,31 +1093,21 @@ mod tests {
         // Toolbar: the record position 1.5 s; status bar: elapsed 0.5 s.
         assert!(out.text_rect("00:00:01.500").is_some(), "toolbar timecode");
         assert!(out.text_rect("00:00:00.500").is_some(), "elapsed time");
-        let rec = out
-            .texts()
-            .into_iter()
-            .find(|t| t.text == "REC")
-            .expect("REC readout");
+        let rec = out.texts().into_iter().find(|t| t.text == "REC").expect("REC readout");
         assert_eq!(rec.color, THEME.record_red);
         assert!(out.text_rect("PLAYHEAD").is_none(), "REC replaces PLAYHEAD");
     }
 
     /// The toolbar's glyphs (above y = 80), left to right.
     fn toolbar_glyphs(out: &Out, glyph: &str) -> Vec<crate::ui::test_util::TextItem> {
-        let mut found: Vec<_> = out
-            .texts()
-            .into_iter()
-            .filter(|t| t.text == glyph && t.rect.center().y < 80.0)
-            .collect();
+        let mut found: Vec<_> = out.texts().into_iter().filter(|t| t.text == glyph && t.rect.center().y < 80.0).collect();
         found.sort_by(|a, b| a.rect.center().x.total_cmp(&b.rect.center().x));
         found
     }
 
     /// The red disc of the Record button: a filled circle of its diameter.
     fn record_disc(out: &Out) -> Option<egui::epaint::CircleShape> {
-        out.circles().into_iter().find(|c| {
-            c.fill == THEME.record_red && (c.radius * 2.0 - THEME.record_btn_d).abs() < 0.01
-        })
+        out.circles().into_iter().find(|c| c.fill == THEME.record_red && (c.radius * 2.0 - THEME.record_btn_d).abs() < 0.01)
     }
 
     #[test]
@@ -1434,9 +1146,7 @@ mod tests {
         let app = &mut rig.app;
         let _ = rig.h.click(at, |ui| app.run(ui));
         assert!(!rig.editor().take_is_live(), "the button stopped the take");
-        frames_until(&mut rig, "the take to be placed", |r| {
-            !r.editor().is_recording()
-        });
+        frames_until(&mut rig, "the take to be placed", |r| !r.editor().is_recording());
         assert!(bin_names(&rig).contains(&"Take 1".to_string()));
         let out = rig.frame();
         assert!(record_disc(&out).is_none(), "red fill is gone");
@@ -1455,25 +1165,15 @@ mod tests {
             let app = &mut rig.app;
             let _ = rig.h.click(at, |ui| app.run(ui));
             assert!(!rig.editor().take_is_live(), "slot {slot} ended the take");
-            frames_until(&mut rig, "the take to be placed", |r| {
-                !r.editor().is_recording()
-            });
-            assert!(
-                bin_names(&rig).contains(&"Take 1".to_string()),
-                "slot {slot}"
-            );
+            frames_until(&mut rig, "the take to be placed", |r| !r.editor().is_recording());
+            assert!(bin_names(&rig).contains(&"Take 1".to_string()), "slot {slot}");
         }
     }
 
     /// Drags the primary button from `from` to `to` over a few frames of the
     /// real app.
     fn drag(rig: &mut Rig, from: egui::Pos2, to: egui::Pos2) {
-        let button = |pos, pressed| egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::NONE,
-        };
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
         let middle = from + (to - from) * 0.5;
         let steps = [
             vec![egui::Event::PointerMoved(from)],
@@ -1506,23 +1206,10 @@ mod tests {
         for (r, expect_range) in [(&mut idle, true), (&mut rig, false)] {
             let out = r.frame();
             // Track 2 is empty and has the alternate lane shade.
-            let lane = out
-                .rects()
-                .into_iter()
-                .filter(|rect| rect.fill == THEME.lane_b)
-                .map(|rect| rect.rect)
-                .next()
-                .expect("a lane");
+            let lane = out.rects().into_iter().filter(|rect| rect.fill == THEME.lane_b).map(|rect| rect.rect).next().expect("a lane");
             let y = lane.center().y;
-            drag(
-                r,
-                egui::pos2(lane.left() + 200.0, y),
-                egui::pos2(lane.left() + 400.0, y),
-            );
-            let selected = !matches!(
-                r.editor().selection(),
-                crate::editor::selection::Selection::None
-            );
+            drag(r, egui::pos2(lane.left() + 200.0, y), egui::pos2(lane.left() + 400.0, y));
+            let selected = !matches!(r.editor().selection(), crate::editor::selection::Selection::None);
             assert_eq!(selected, expect_range, "range selected: {expect_range}");
         }
         assert!(rig.editor().take_is_live());
@@ -1546,43 +1233,29 @@ mod tests {
         assert!(first.cancelled_close(), "the window stays open");
         let _ = rig.frame();
         let out = rig.frame();
-        assert!(
-            out.text_rect("A recording is in progress.").is_some(),
-            "the new dialog"
-        );
+        assert!(out.text_rect("A recording is in progress.").is_some(), "the new dialog");
         for label in ["Keep Take", "Discard", "Cancel"] {
             assert!(out.text_rect(label).is_some(), "{label} button");
         }
-        let (keep, discard, cancel) = (
-            out.text_rect("Keep Take").unwrap().center().x,
-            out.text_rect("Discard").unwrap().center().x,
-            out.text_rect("Cancel").unwrap().center().x,
-        );
+        let (keep, discard, cancel) =
+            (out.text_rect("Keep Take").unwrap().center().x, out.text_rect("Discard").unwrap().center().x, out.text_rect("Cancel").unwrap().center().x);
         assert!(keep < discard && discard < cancel, "left to right");
         assert!(out.text_rect("Save changes to Test 2?").is_none());
 
         let out = rig.click("Keep Take");
         assert!(!out.sent_close());
-        frames_until(&mut rig, "the take to be placed", |r| {
-            !r.editor().is_recording()
-        });
+        frames_until(&mut rig, "the take to be placed", |r| !r.editor().is_recording());
         assert!(bin_names(&rig).contains(&"Take 1".to_string()), "placed");
         let name = rig.editor().project.name.clone();
         let mut out = rig.frame();
         for _ in 0..3 {
             out = rig.frame();
         }
-        assert!(
-            out.text_rect(&format!("Save changes to {name}?")).is_some(),
-            "the unsaved-changes prompt follows"
-        );
+        assert!(out.text_rect(&format!("Save changes to {name}?")).is_some(), "the unsaved-changes prompt follows");
         assert_eq!(rig.app.pending_close, Some(PendingClose::Quit));
 
         let out = rig.click("Don't Save");
-        assert!(
-            out.sent_close() || closes_within(&mut rig, 5),
-            "then it closes"
-        );
+        assert!(out.sent_close() || closes_within(&mut rig, 5), "then it closes");
     }
 
     #[test]
@@ -1624,15 +1297,10 @@ mod tests {
             start_take(&mut rig, 4_800);
             let _ = rig.request(pending);
             let _ = rig.click("Keep Take");
-            frames_until(&mut rig, "the take to be placed", |r| {
-                !r.editor().is_recording()
-            });
+            frames_until(&mut rig, "the take to be placed", |r| !r.editor().is_recording());
             // The placed take made the project dirty: Save ends the flow.
             let _ = rig.click("Save");
-            assert!(
-                left_for_start(&rig, pending),
-                "{pending:?} after Keep + Save"
-            );
+            assert!(left_for_start(&rig, pending), "{pending:?} after Keep + Save");
         }
     }
 

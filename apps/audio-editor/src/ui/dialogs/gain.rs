@@ -61,62 +61,28 @@ pub fn request(ctx: &egui::Context, clip_id: Uuid, editor: &Editor) {
     } else {
         vec![clip_id]
     };
-    let db = editor
-        .project
-        .tracks
-        .iter()
-        .flat_map(|track| track.clips.iter())
-        .find(|clip| clip.id == clip_id)
-        .map(|clip| clip.gain_db)
-        .unwrap_or(0.0);
-    ctx.data_mut(|d| {
-        d.insert_temp(
-            egui::Id::new(DIALOG_KEY),
-            GainDialog {
-                open: true,
-                mode: GainMode::ClipGain,
-                clip_ids,
-                db,
-                error: None,
-            },
-        )
-    });
+    let db = editor.project.tracks.iter().flat_map(|track| track.clips.iter()).find(|clip| clip.id == clip_id).map(|clip| clip.gain_db).unwrap_or(0.0);
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(DIALOG_KEY), GainDialog { open: true, mode: GainMode::ClipGain, clip_ids, db, error: None }));
 }
 
 /// Opens the range Gain dialog: OK calls `Editor::apply_gain` on the current
 /// process target with the given delta. Called from the Process menu and
 /// Ctrl+G.
 pub fn request_process(ctx: &egui::Context) {
-    ctx.data_mut(|d| {
-        d.insert_temp(
-            egui::Id::new(DIALOG_KEY),
-            GainDialog {
-                open: true,
-                mode: GainMode::Gain,
-                clip_ids: Vec::new(),
-                db: 0.0,
-                error: None,
-            },
-        )
-    });
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(DIALOG_KEY), GainDialog { open: true, mode: GainMode::Gain, clip_ids: Vec::new(), db: 0.0, error: None }));
 }
 
 /// Shows the gain dialog when open. OK applies SetClipGain to every
 /// target clip as one undo step; Cancel, the backdrop or Esc dismiss it.
 /// Returns human-readable error messages from failed applies.
 pub fn show(ctx: &egui::Context, editor: &mut Editor) -> Vec<String> {
-    let Some(mut dialog) = ctx.data_mut(|d| d.remove_temp::<GainDialog>(egui::Id::new(DIALOG_KEY)))
-    else {
+    let Some(mut dialog) = ctx.data_mut(|d| d.remove_temp::<GainDialog>(egui::Id::new(DIALOG_KEY))) else {
         return Vec::new();
     };
     let mut messages = Vec::new();
     let mut ok = false;
     if dialog.open {
-        let (title, (min, max)) = if dialog.mode == GainMode::Gain {
-            ("Gain", (-24.0, 24.0))
-        } else {
-            ("Clip Gain", (-60.0, 24.0))
-        };
+        let (title, (min, max)) = if dialog.mode == GainMode::Gain { ("Gain", (-24.0, 24.0)) } else { ("Clip Gain", (-60.0, 24.0)) };
         let response = super::modal("gain_dialog").show(ctx, |ui| {
             super::card_width(ui, THEME.dialog_w);
             super::title(ui, title);
@@ -173,10 +139,7 @@ fn apply_gain(editor: &mut Editor, clip_ids: &[Uuid], db: f32) -> Vec<String> {
     editor.begin_gesture();
     let mut messages = Vec::new();
     for id in clip_ids {
-        if editor
-            .preview(Action::SetClipGain { clip_id: *id, db })
-            .is_ok()
-        {
+        if editor.preview(Action::SetClipGain { clip_id: *id, db }).is_ok() {
             // Rebase so the next clip's preview stacks on this change.
             editor.gesture_base = Some(Arc::clone(&editor.project));
         } else {

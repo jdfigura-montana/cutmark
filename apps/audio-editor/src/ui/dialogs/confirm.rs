@@ -18,11 +18,7 @@ pub struct ConfirmDialog {
 impl ConfirmDialog {
     /// Creates an open dialog with the given title and message.
     pub fn new(title: impl Into<String>, message: impl Into<String>) -> Self {
-        ConfirmDialog {
-            open: true,
-            title: title.into(),
-            message: message.into(),
-        }
+        ConfirmDialog { open: true, title: title.into(), message: message.into() }
     }
 
     /// Shows the dialog; OK, Esc or clicking the backdrop dismisses it.
@@ -75,9 +71,7 @@ pub struct CloseConfirmDialog {
 impl CloseConfirmDialog {
     /// Creates the prompt for the given project name.
     pub fn new(project_name: &str) -> Self {
-        CloseConfirmDialog {
-            message: format!("Save changes to {project_name}?"),
-        }
+        CloseConfirmDialog { message: format!("Save changes to {project_name}?") }
     }
 
     /// Shows the modal; Save / Don't Save / Cancel. Enter saves, Esc, the
@@ -94,9 +88,7 @@ impl CloseConfirmDialog {
                 if super::footer_button(ui, "Save", super::FooterButton::Primary, true).clicked() {
                     choice = Some(CloseChoice::Save);
                 }
-                if super::footer_button(ui, "Don't Save", super::FooterButton::Destructive, true)
-                    .clicked()
-                {
+                if super::footer_button(ui, "Don't Save", super::FooterButton::Destructive, true).clicked() {
                     choice = Some(CloseChoice::DontSave);
                 }
                 if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
@@ -140,19 +132,10 @@ impl ExportCloseDialog {
             super::description(ui, "An export is in progress. Cancel it and close?");
             super::before_form(ui);
             super::footer(ui, |ui| {
-                if super::footer_button(ui, "Keep Exporting", super::FooterButton::Primary, true)
-                    .clicked()
-                {
+                if super::footer_button(ui, "Keep Exporting", super::FooterButton::Primary, true).clicked() {
                     choice = Some(ExportCloseChoice::KeepExporting);
                 }
-                if super::footer_button(
-                    ui,
-                    "Cancel Export and Close",
-                    super::FooterButton::Cancel,
-                    true,
-                )
-                .clicked()
-                {
+                if super::footer_button(ui, "Cancel Export and Close", super::FooterButton::Cancel, true).clicked() {
                     choice = Some(ExportCloseChoice::CancelExport);
                 }
             });
@@ -192,14 +175,10 @@ impl RecordCloseDialog {
             super::description(ui, "A recording is in progress.");
             super::before_form(ui);
             super::footer(ui, |ui| {
-                if super::footer_button(ui, "Keep Take", super::FooterButton::Primary, true)
-                    .clicked()
-                {
+                if super::footer_button(ui, "Keep Take", super::FooterButton::Primary, true).clicked() {
                     choice = Some(RecordCloseChoice::KeepTake);
                 }
-                if super::footer_button(ui, "Discard", super::FooterButton::Destructive, true)
-                    .clicked()
-                {
+                if super::footer_button(ui, "Discard", super::FooterButton::Destructive, true).clicked() {
                     choice = Some(RecordCloseChoice::Discard);
                 }
                 if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
@@ -225,11 +204,7 @@ mod tests {
     use crate::ui::test_util::Headless;
 
     /// Frames the unsaved-changes prompt in `h`, remembering the first choice.
-    fn show_prompt(
-        h: &mut Headless,
-        events: Vec<egui::Event>,
-        got: &mut Option<CloseChoice>,
-    ) -> crate::ui::test_util::Out {
+    fn show_prompt(h: &mut Headless, events: Vec<egui::Event>, got: &mut Option<CloseChoice>) -> crate::ui::test_util::Out {
         let dialog = CloseConfirmDialog::new("Test 2");
         h.frame(events, |ui| {
             if let Some(choice) = dialog.show(ui.ctx()) {
@@ -272,20 +247,12 @@ mod tests {
         assert!((dont.left() - save.right() - THEME.space_md).abs() < tol);
         assert!((cancel.left() - dont.right() - THEME.space_md).abs() < tol);
         let line = out.footer_line().expect("footer divider");
-        assert!(
-            (cancel.right() - line.right()).abs() < tol,
-            "Cancel ends {} short of the content edge",
-            line.right() - cancel.right()
-        );
+        assert!((cancel.right() - line.right()).abs() < tol, "Cancel ends {} short of the content edge", line.right() - cancel.right());
     }
 
     #[test]
     fn clicking_each_footer_button_returns_its_choice() {
-        for (label, expected) in [
-            ("Save", CloseChoice::Save),
-            ("Don't Save", CloseChoice::DontSave),
-            ("Cancel", CloseChoice::Cancel),
-        ] {
+        for (label, expected) in [("Save", CloseChoice::Save), ("Don't Save", CloseChoice::DontSave), ("Cancel", CloseChoice::Cancel)] {
             let mut h = Headless::new(1280.0, 800.0);
             let mut got = None;
             for _ in 0..2 {

@@ -17,12 +17,7 @@ use crate::model::project::BitDepth;
 /// the target path.
 pub fn write_f32(path: &Path, samples: &[f32], channels: u16, rate: u32) -> Result<(), IoError> {
     let tmp = path.with_extension("wav.tmp");
-    let spec = WavSpec {
-        channels,
-        sample_rate: rate,
-        bits_per_sample: 32,
-        sample_format: SampleFormat::Float,
-    };
+    let spec = WavSpec { channels, sample_rate: rate, bits_per_sample: 32, sample_format: SampleFormat::Float };
     let result = (|| -> Result<(), hound::Error> {
         let mut writer = WavWriter::create(&tmp, spec)?;
         for &s in samples {
@@ -46,24 +41,16 @@ pub fn write_f32(path: &Path, samples: &[f32], channels: u16, rate: u32) -> Resu
 
 /// Reads a 32-bit float WAV into interleaved f32 samples.
 pub fn read_f32(path: &Path) -> Result<Decoded, IoError> {
-    let reader =
-        WavReader::open(path).map_err(|e| IoError::Decode(format!("cannot open WAV: {e}")))?;
+    let reader = WavReader::open(path).map_err(|e| IoError::Decode(format!("cannot open WAV: {e}")))?;
     let spec = reader.spec();
     if spec.sample_format != SampleFormat::Float || spec.bits_per_sample != 32 {
-        return Err(IoError::Decode(format!(
-            "expected a 32-bit float WAV, found {} bits {:?}",
-            spec.bits_per_sample, spec.sample_format
-        )));
+        return Err(IoError::Decode(format!("expected a 32-bit float WAV, found {} bits {:?}", spec.bits_per_sample, spec.sample_format)));
     }
     let mut samples = Vec::new();
     for sample in reader.into_samples::<f32>() {
         samples.push(sample.map_err(|e| IoError::Decode(format!("bad WAV data: {e}")))?);
     }
-    Ok(Decoded {
-        samples,
-        channels: spec.channels,
-        rate: spec.sample_rate,
-    })
+    Ok(Decoded { samples, channels: spec.channels, rate: spec.sample_rate })
 }
 
 /// Full scale of 16-bit samples (2^15 - 1, the same rule as 24-bit).
@@ -97,31 +84,16 @@ struct WavSink {
 }
 
 /// Opens a WAV sink writing `<path>.part`; used by `export::open_sink`.
-pub(super) fn open_sink(
-    path: &Path,
-    depth: BitDepth,
-    format: &ExportFormat,
-) -> Result<Box<dyn AudioSink>, IoError> {
+pub(super) fn open_sink(path: &Path, depth: BitDepth, format: &ExportFormat) -> Result<Box<dyn AudioSink>, IoError> {
     let (bits_per_sample, sample_format) = match depth {
         BitDepth::Int16 => (16, SampleFormat::Int),
         BitDepth::Int24 => (24, SampleFormat::Int),
         BitDepth::Float32 => (32, SampleFormat::Float),
     };
-    let spec = WavSpec {
-        channels: format.channels,
-        sample_rate: format.in_rate,
-        bits_per_sample,
-        sample_format,
-    };
+    let spec = WavSpec { channels: format.channels, sample_rate: format.in_rate, bits_per_sample, sample_format };
     let guard = PartGuard::new(path);
     let writer = WavWriter::create(guard.part_path(), spec).map_err(wav_error)?;
-    Ok(Box::new(WavSink {
-        writer,
-        depth,
-        channels: usize::from(format.channels),
-        rng: Xorshift64(0x9E37_79B9_7F4A_7C15),
-        guard,
-    }))
+    Ok(Box::new(WavSink { writer, depth, channels: usize::from(format.channels), rng: Xorshift64(0x9E37_79B9_7F4A_7C15), guard }))
 }
 
 /// Maps a hound error to an IoError, keeping real I/O errors as such.
@@ -191,21 +163,12 @@ mod tests {
 
     /// Opens a WAV sink at 48 kHz for the tests below.
     fn open_wav(path: &Path, depth: BitDepth, channels: u16) -> Box<dyn AudioSink> {
-        let format = ExportFormat {
-            kind: ExportKind::Wav(depth),
-            channels,
-            in_rate: 48_000,
-        };
+        let format = ExportFormat { kind: ExportKind::Wav(depth), channels, in_rate: 48_000 };
         open_export_sink(path, &format).unwrap()
     }
 
     /// Writes `samples` through a WAV sink and returns the finished file's path.
-    fn export_wav(
-        dir: &Path,
-        depth: BitDepth,
-        channels: u16,
-        samples: &[f32],
-    ) -> std::path::PathBuf {
+    fn export_wav(dir: &Path, depth: BitDepth, channels: u16, samples: &[f32]) -> std::path::PathBuf {
         let path = dir.join("out.wav");
         let mut sink = open_wav(&path, depth, channels);
         sink.write(samples).unwrap();
@@ -236,11 +199,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = export_wav(dir.path(), BitDepth::Int16, 1, &[0.0; 20_000]);
 
-        let values: Vec<i32> = WavReader::open(&path)
-            .unwrap()
-            .samples::<i16>()
-            .map(|s| i32::from(s.unwrap()))
-            .collect();
+        let values: Vec<i32> = WavReader::open(&path).unwrap().samples::<i16>().map(|s| i32::from(s.unwrap())).collect();
         assert_eq!(values.len(), 20_000);
         assert!(values.iter().all(|v| (-1..=1).contains(v)));
         // Dither must actually be present, not just rounded silence.
@@ -254,31 +213,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = export_wav(dir.path(), BitDepth::Int16, 1, &[1.5, -1.5]);
 
-        let values: Vec<i16> = WavReader::open(&path)
-            .unwrap()
-            .samples::<i16>()
-            .map(|s| s.unwrap())
-            .collect();
+        let values: Vec<i16> = WavReader::open(&path).unwrap().samples::<i16>().map(|s| s.unwrap()).collect();
         assert_eq!(values, vec![32_767, -32_768]);
     }
 
     #[test]
     fn int24_rounds_exactly_without_dither() {
         let dir = tempfile::tempdir().unwrap();
-        let path = export_wav(
-            dir.path(),
-            BitDepth::Int24,
-            2,
-            &[0.5, -0.5, 1.5, -1.5, 0.0, 1.0],
-        );
+        let path = export_wav(dir.path(), BitDepth::Int24, 2, &[0.5, -0.5, 1.5, -1.5, 0.0, 1.0]);
 
         let mut reader = WavReader::open(&path).unwrap();
         assert_eq!(reader.spec().bits_per_sample, 24);
         let values: Vec<i32> = reader.samples::<i32>().map(|s| s.unwrap()).collect();
-        assert_eq!(
-            values,
-            vec![4_194_304, -4_194_304, 8_388_607, -8_388_608, 0, 8_388_607]
-        );
+        assert_eq!(values, vec![4_194_304, -4_194_304, 8_388_607, -8_388_608, 0, 8_388_607]);
     }
 
     #[test]
@@ -306,11 +253,7 @@ mod tests {
         }
         sink.finish().unwrap();
 
-        let values: Vec<f32> = WavReader::open(&path)
-            .unwrap()
-            .samples::<f32>()
-            .map(|s| s.unwrap())
-            .collect();
+        let values: Vec<f32> = WavReader::open(&path).unwrap().samples::<f32>().map(|s| s.unwrap()).collect();
         assert_eq!(values, all);
     }
 

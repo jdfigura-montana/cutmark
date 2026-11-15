@@ -71,9 +71,5 @@ pub enum IoError {
 
 /// Returns true if the path is an existing file named project.json.
 pub(crate) fn is_project_json(path: &Path) -> bool {
-    path.is_file()
-        && path
-            .file_name()
-            .map(|n| n == "project.json")
-            .unwrap_or(false)
+    path.is_file() && path.file_name().map(|n| n == "project.json").unwrap_or(false)
 }

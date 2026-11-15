@@ -78,10 +78,7 @@ impl ExportDialog {
             bit_depth: depth,
             kbps: 192,
             mono: false,
-            path: editor
-                .default_export_path(ExportKind::Wav(depth))
-                .to_string_lossy()
-                .into_owned(),
+            path: editor.default_export_path(ExportKind::Wav(depth)).to_string_lossy().into_owned(),
             confirmed: None,
             overwrite_ask: None,
             error: None,
@@ -127,12 +124,7 @@ impl ExportDialog {
                 });
                 let was_mp3 = self.mp3;
                 super::form_row(ui, "Format", |ui| {
-                    super::segmented(
-                        ui,
-                        "export_fmt",
-                        &[(false, "WAV"), (true, "MP3")],
-                        &mut self.mp3,
-                    );
+                    super::segmented(ui, "export_fmt", &[(false, "WAV"), (true, "MP3")], &mut self.mp3);
                 });
                 if self.mp3 != was_mp3 {
                     self.path = swap_extension(&self.path, self.extension());
@@ -144,49 +136,29 @@ impl ExportDialog {
                             super::segmented(
                                 ui,
                                 "export_depth",
-                                &[
-                                    (BitDepth::Int16, "16-bit"),
-                                    (BitDepth::Int24, "24-bit"),
-                                    (BitDepth::Float32, "32-bit float"),
-                                ],
+                                &[(BitDepth::Int16, "16-bit"), (BitDepth::Int24, "24-bit"), (BitDepth::Float32, "32-bit float")],
                                 &mut self.bit_depth,
                             );
                         });
                     }
                     ExportKind::Mp3 { .. } => {
                         super::form_row(ui, "Bitrate", |ui| {
-                            super::segmented(
-                                ui,
-                                "export_kbps",
-                                &[(128, "128"), (192, "192"), (256, "256"), (320, "320")],
-                                &mut self.kbps,
-                            );
+                            super::segmented(ui, "export_kbps", &[(128, "128"), (192, "192"), (256, "256"), (320, "320")], &mut self.kbps);
                             ui.add_space(THEME.space_xs);
                             ui.label(
-                                egui::RichText::new(format!(
-                                    "kbps \u{2014} exports at {} kHz",
-                                    rate_khz(mp3_rate(editor.project.sample_rate))
-                                ))
-                                .color(THEME.text_muted)
-                                .size(THEME.dialog_desc_size),
+                                egui::RichText::new(format!("kbps \u{2014} exports at {} kHz", rate_khz(mp3_rate(editor.project.sample_rate))))
+                                    .color(THEME.text_muted)
+                                    .size(THEME.dialog_desc_size),
                             );
                         });
                     }
                 }
                 super::form_row(ui, "Channels", |ui| {
-                    super::segmented(
-                        ui,
-                        "export_channels",
-                        &[(false, "Stereo"), (true, "Mono")],
-                        &mut self.mono,
-                    );
+                    super::segmented(ui, "export_channels", &[(false, "Stereo"), (true, "Mono")], &mut self.mono);
                 });
                 super::form_row(ui, "File", |ui| {
                     let browse = super::with_browse(ui, |ui| {
-                        ui.add_sized(
-                            [ui.available_width(), THEME.field_h],
-                            egui::TextEdit::singleline(&mut self.path).id_salt("export_path"),
-                        );
+                        ui.add_sized([ui.available_width(), THEME.field_h], egui::TextEdit::singleline(&mut self.path).id_salt("export_path"));
                     });
                     if browse {
                         self.browse(editor);
@@ -197,14 +169,7 @@ impl ExportDialog {
                 }
             });
             super::footer(ui, |ui| {
-                if super::footer_button(
-                    ui,
-                    "Export",
-                    super::FooterButton::Primary,
-                    !editor.is_locked(),
-                )
-                .clicked()
-                {
+                if super::footer_button(ui, "Export", super::FooterButton::Primary, !editor.is_locked()).clicked() {
                     self.try_export(editor);
                 }
                 if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
@@ -236,16 +201,11 @@ impl ExportDialog {
             super::card_width(ui, THEME.dialog_w);
             super::title(ui, "Overwrite?");
             ui.add_space(THEME.space_xs);
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.display().to_string());
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
             super::description(ui, &format!("\"{name}\" already exists. Overwrite it?"));
             super::before_form(ui);
             super::footer(ui, |ui| {
-                if super::footer_button(ui, "Overwrite", super::FooterButton::Primary, true)
-                    .clicked()
-                {
+                if super::footer_button(ui, "Overwrite", super::FooterButton::Primary, true).clicked() {
                     choice = Some(true);
                 }
                 if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
@@ -293,27 +253,13 @@ impl ExportDialog {
             self.overwrite_ask = Some(path);
             return;
         }
-        let format = ExportFormat {
-            kind: self.kind(),
-            channels: if self.mono { 1 } else { 2 },
-            in_rate: editor.project.sample_rate,
-        };
-        let settings = ExportSettings {
-            path,
-            format,
-            start,
-            end,
-            tracks,
-        };
+        let format = ExportFormat { kind: self.kind(), channels: if self.mono { 1 } else { 2 }, in_rate: editor.project.sample_rate };
+        let settings = ExportSettings { path, format, start, end, tracks };
         match editor.start_export(settings) {
             Ok(()) => self.open = false,
             Err(error) => {
                 let text = error.to_string();
-                self.error = Some(
-                    text.strip_prefix("invalid operation: ")
-                        .unwrap_or(&text)
-                        .to_string(),
-                );
+                self.error = Some(text.strip_prefix("invalid operation: ").unwrap_or(&text).to_string());
             }
         }
     }
@@ -332,11 +278,7 @@ impl ExportDialog {
 
     /// The chosen file kind from the format toggles.
     fn kind(&self) -> ExportKind {
-        if self.mp3 {
-            ExportKind::Mp3 { kbps: self.kbps }
-        } else {
-            ExportKind::Wav(self.bit_depth)
-        }
+        if self.mp3 { ExportKind::Mp3 { kbps: self.kbps } } else { ExportKind::Wav(self.bit_depth) }
     }
 
     /// The file extension of the chosen format.
@@ -350,10 +292,7 @@ impl ExportDialog {
         let mut dialog = rfd::FileDialog::new()
             .set_title("Export")
             .set_directory(editor.paths.exports())
-            .add_filter(
-                if self.mp3 { "MP3 audio" } else { "WAV audio" },
-                &[self.extension()],
-            );
+            .add_filter(if self.mp3 { "MP3 audio" } else { "WAV audio" }, &[self.extension()]);
         if let Some(name) = file_name(&self.path) {
             dialog = dialog.set_file_name(name);
         }
@@ -378,14 +317,7 @@ pub fn show_progress(ctx: &egui::Context, editor: &mut Editor) {
             super::card_width(ui, THEME.dialog_w);
             super::title(ui, "Exporting");
             ui.add_space(THEME.space_xs);
-            super::description(
-                ui,
-                if status.pass == 1 {
-                    "Checking levels..."
-                } else {
-                    "Writing file..."
-                },
-            );
+            super::description(ui, if status.pass == 1 { "Checking levels..." } else { "Writing file..." });
             super::before_form(ui);
             progress_bar(ui, status.frac);
             super::footer(ui, |ui| {
@@ -401,15 +333,10 @@ pub fn show_progress(ctx: &egui::Context, editor: &mut Editor) {
             super::card_width(ui, THEME.dialog_w);
             super::warning_title(ui, "Clipping");
             ui.add_space(THEME.space_xs);
-            super::description(
-                ui,
-                &format!("The mix peaks at +{db:.1} dBFS and will clip."),
-            );
+            super::description(ui, &format!("The mix peaks at +{db:.1} dBFS and will clip."));
             super::before_form(ui);
             super::footer(ui, |ui| {
-                if super::footer_button(ui, "Export Anyway", super::FooterButton::Destructive, true)
-                    .clicked()
-                {
+                if super::footer_button(ui, "Export Anyway", super::FooterButton::Destructive, true).clicked() {
                     editor.export_continue();
                 }
                 if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
@@ -439,21 +366,9 @@ fn progress_bar(ui: &mut egui::Ui, frac: f32) {
         let painter = ui.painter();
         painter.rect_filled(rect, 3.0, THEME.recessed_a);
         if frac > 0.0 {
-            painter.rect_filled(
-                egui::Rect::from_min_max(
-                    rect.min,
-                    egui::pos2(rect.min.x + rect.width() * frac, rect.max.y),
-                ),
-                3.0,
-                THEME.accent,
-            );
+            painter.rect_filled(egui::Rect::from_min_max(rect.min, egui::pos2(rect.min.x + rect.width() * frac, rect.max.y)), 3.0, THEME.accent);
         }
-        ui.label(
-            egui::RichText::new(format!("{}%", (frac * 100.0).round() as i32))
-                .font(Theme::mono(11.0))
-                .color(THEME.text_normal)
-                .size(11.0),
-        );
+        ui.label(egui::RichText::new(format!("{}%", (frac * 100.0).round() as i32)).font(Theme::mono(11.0)).color(THEME.text_normal).size(11.0));
     });
 }
 
@@ -465,21 +380,13 @@ fn has_range(editor: &Editor) -> bool {
 /// Replaces a `.wav`/`.mp3` extension in `path` with `ext`; any other path is
 /// left unchanged.
 fn swap_extension(path: &str, ext: &str) -> String {
-    if ends_with_audio_extension(path) {
-        format!("{}.{}", &path[..path.len() - 4], ext)
-    } else {
-        path.to_string()
-    }
+    if ends_with_audio_extension(path) { format!("{}.{}", &path[..path.len() - 4], ext) } else { path.to_string() }
 }
 
 /// `path` with its extension forced to `ext`: a wav/mp3 extension is
 /// replaced, a missing one is appended.
 fn with_extension(path: &str, ext: &str) -> String {
-    if ends_with_audio_extension(path) {
-        format!("{}.{}", &path[..path.len() - 4], ext)
-    } else {
-        format!("{path}.{ext}")
-    }
+    if ends_with_audio_extension(path) { format!("{}.{}", &path[..path.len() - 4], ext) } else { format!("{path}.{ext}") }
 }
 
 /// True when `path` ends in `.wav` or `.mp3` (case-insensitive).
@@ -494,18 +401,12 @@ fn file_name(path: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    std::path::Path::new(trimmed)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
+    std::path::Path::new(trimmed).file_name().map(|n| n.to_string_lossy().into_owned())
 }
 
 /// A sample rate in kHz, formatted like "48" or "44.1".
 fn rate_khz(rate: u32) -> String {
-    if rate.is_multiple_of(1000) {
-        (rate / 1000).to_string()
-    } else {
-        format!("{:.1}", rate as f32 / 1000.0)
-    }
+    if rate.is_multiple_of(1000) { (rate / 1000).to_string() } else { format!("{:.1}", rate as f32 / 1000.0) }
 }
 
 #[cfg(test)]
@@ -521,9 +422,7 @@ mod tests {
         let mut editor = Editor::with_project(
             Project::new("Test 2".to_string(), 48_000, BitDepth::Int24),
             ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
+            ProjectPaths { root: PathBuf::from("unused") },
         );
         let mut dialog = ExportDialog::new_open(&editor);
         // The modal's first frame is hidden while egui measures it and it
@@ -539,15 +438,8 @@ mod tests {
             .map(|r| r.rect)
             .max_by(|a, b| a.area().total_cmp(&b.area()))
             .expect("the dialog card is painted");
-        assert!(
-            card.height() < 640.0,
-            "card is {} px tall on an 800 px window",
-            card.height()
-        );
-        assert!(
-            card.top() > 0.0 && card.bottom() < 800.0,
-            "card is on screen"
-        );
+        assert!(card.height() < 640.0, "card is {} px tall on an 800 px window", card.height());
+        assert!(card.top() > 0.0 && card.bottom() < 800.0, "card is on screen");
 
         // The title is the first "Export", the footer button the last one.
         let texts = out.texts();
@@ -557,80 +449,36 @@ mod tests {
         let footer_export = exports[1].rect;
         let format = out.text_rect("Format").expect("Format row label");
         let cancel = out.text_rect("Cancel").expect("footer Cancel button");
-        for (name, rect) in [
-            ("title", title),
-            ("Format row", format),
-            ("footer Export", footer_export),
-            ("footer Cancel", cancel),
-        ] {
-            assert!(
-                card.contains_rect(rect),
-                "{name} {rect:?} must sit inside the card {card:?}"
-            );
+        for (name, rect) in [("title", title), ("Format row", format), ("footer Export", footer_export), ("footer Cancel", cancel)] {
+            assert!(card.contains_rect(rect), "{name} {rect:?} must sit inside the card {card:?}");
         }
 
         // Rows are laid out one under another, not stacked on one spot.
         let scope = out.text_rect("Scope").expect("Scope row label");
         let channels = out.text_rect("Channels").expect("Channels row label");
         let file = out.text_rect("File").expect("File row label");
-        let ys = [
-            title.center().y,
-            scope.center().y,
-            format.center().y,
-            channels.center().y,
-            file.center().y,
-            footer_export.center().y,
-        ];
-        assert!(
-            ys.windows(2).all(|pair| pair[0] + 10.0 < pair[1]),
-            "rows must run top to bottom: {ys:?}"
-        );
-        assert!(
-            footer_export.center().x < cancel.center().x,
-            "Export then Cancel, left to right"
-        );
+        let ys = [title.center().y, scope.center().y, format.center().y, channels.center().y, file.center().y, footer_export.center().y];
+        assert!(ys.windows(2).all(|pair| pair[0] + 10.0 < pair[1]), "rows must run top to bottom: {ys:?}");
+        assert!(footer_export.center().x < cancel.center().x, "Export then Cancel, left to right");
 
         // The card is exactly export_dialog_w wide with equal padding on
         // both sides of the content (the footer divider spans the content).
         let tol = 0.6;
         let line = out.footer_line().expect("footer divider");
-        assert!(
-            (card.width() - THEME.export_dialog_w).abs() < tol,
-            "card is {} wide",
-            card.width()
-        );
+        assert!((card.width() - THEME.export_dialog_w).abs() < tol, "card is {} wide", card.width());
         let (pad_left, pad_right) = (line.left() - card.left(), card.right() - line.right());
-        assert!(
-            (pad_left - pad_right).abs() < tol,
-            "padding {pad_left} left vs {pad_right} right"
-        );
+        assert!((pad_left - pad_right).abs() < tol, "padding {pad_left} left vs {pad_right} right");
 
         // Footer buttons: 8 px apart, the last one flush with the content.
-        let export_button = out
-            .filled_rect_at(footer_export.center())
-            .expect("footer Export button");
-        let cancel_button = out
-            .filled_rect_at(cancel.center())
-            .expect("footer Cancel button");
-        assert!(
-            (cancel_button.left() - export_button.right() - THEME.space_md).abs() < tol,
-            "gap is {}",
-            cancel_button.left() - export_button.right()
-        );
-        assert!(
-            (cancel_button.right() - line.right()).abs() < tol,
-            "Cancel ends {} short of the content edge",
-            line.right() - cancel_button.right()
-        );
+        let export_button = out.filled_rect_at(footer_export.center()).expect("footer Export button");
+        let cancel_button = out.filled_rect_at(cancel.center()).expect("footer Cancel button");
+        assert!((cancel_button.left() - export_button.right() - THEME.space_md).abs() < tol, "gap is {}", cancel_button.left() - export_button.right());
+        assert!((cancel_button.right() - line.right()).abs() < tol, "Cancel ends {} short of the content edge", line.right() - cancel_button.right());
 
         // The Browse button is flush with the content's right edge too.
         let browse = out.text_rect("Browse...").expect("Browse button text");
         let browse_button = out.filled_rect_at(browse.center()).expect("Browse button");
-        assert!(
-            (browse_button.right() - line.right()).abs() < tol,
-            "Browse ends {} short of the content edge",
-            line.right() - browse_button.right()
-        );
+        assert!((browse_button.right() - line.right()).abs() < tol, "Browse ends {} short of the content edge", line.right() - browse_button.right());
     }
 
     #[test]

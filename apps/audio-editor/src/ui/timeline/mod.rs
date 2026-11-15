@@ -38,10 +38,8 @@ pub enum ViewMenuAction {
 }
 
 /// Ruler tick step, in seconds, from the coarsest-fitting list.
-const TICK_STEPS: [f64; 21] = [
-    0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0,
-    120.0, 300.0, 600.0, 1800.0, 3600.0,
-];
+const TICK_STEPS: [f64; 21] =
+    [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0, 3600.0];
 
 /// Geometry of the timeline lane area for one frame.
 pub struct Geom {
@@ -69,10 +67,7 @@ impl Geom {
 
     /// First and one-past-last visible sample.
     pub fn visible_range(&self) -> (u64, u64) {
-        (
-            self.scroll_x,
-            self.scroll_x + (self.lane_width as f64 * self.spp).ceil() as u64,
-        )
+        (self.scroll_x, self.scroll_x + (self.lane_width as f64 * self.spp).ceil() as u64)
     }
 }
 
@@ -140,20 +135,13 @@ fn scroll_extent(project_length: u64, visible: u64) -> u64 {
 /// end of the take being recorded when that runs past the last clip.
 fn content_length(editor: &Editor) -> u64 {
     let length = editor.project_length();
-    editor.recording_status().map_or(length, |take| {
-        length.max(take.start.saturating_add(take.frames))
-    })
+    editor.recording_status().map_or(length, |take| length.max(take.start.saturating_add(take.frames)))
 }
 
 /// Draws the whole timeline into the remaining center space and handles its
 /// input (zoom, scroll, playhead clicks). Not a ScrollArea: everything is
 /// painted by hand over one allocated rect.
-pub fn show(
-    ui: &mut egui::Ui,
-    editor: &mut Editor,
-    view_menu: ViewMenuAction,
-    meters: &mut meter::MeterState,
-) -> Vec<String> {
+pub fn show(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction, meters: &mut meter::MeterState) -> Vec<String> {
     // The timeline owns horizontal zoom; egui's own keyboard and Ctrl+wheel
     // UI zoom must not fire here.
     ui.ctx().options_mut(|o| o.zoom_with_keyboard = false);
@@ -164,22 +152,10 @@ pub fn show(
     let lane_left = avail.left() + THEME.header_col_w;
     let lane_right = avail.right();
     let lane_width = lane_right - lane_left;
-    let ruler_rect = egui::Rect::from_min_max(
-        egui::pos2(lane_left, avail.top()),
-        egui::pos2(lane_right, avail.top() + THEME.ruler_h),
-    );
-    let header_rect = egui::Rect::from_min_max(
-        egui::pos2(avail.left(), ruler_rect.bottom()),
-        egui::pos2(lane_left, avail.bottom()),
-    );
-    let lane_rect = egui::Rect::from_min_max(
-        egui::pos2(lane_left, ruler_rect.bottom()),
-        egui::pos2(lane_right, avail.bottom() - THEME.scrollbar_h),
-    );
-    let scroll_rect = egui::Rect::from_min_max(
-        egui::pos2(lane_left, lane_rect.bottom()),
-        egui::pos2(lane_right, avail.bottom()),
-    );
+    let ruler_rect = egui::Rect::from_min_max(egui::pos2(lane_left, avail.top()), egui::pos2(lane_right, avail.top() + THEME.ruler_h));
+    let header_rect = egui::Rect::from_min_max(egui::pos2(avail.left(), ruler_rect.bottom()), egui::pos2(lane_left, avail.bottom()));
+    let lane_rect = egui::Rect::from_min_max(egui::pos2(lane_left, ruler_rect.bottom()), egui::pos2(lane_right, avail.bottom() - THEME.scrollbar_h));
+    let scroll_rect = egui::Rect::from_min_max(egui::pos2(lane_left, lane_rect.bottom()), egui::pos2(lane_right, avail.bottom()));
 
     let content_h: f32 = editor.project.tracks.iter().map(|t| t.height).sum();
     let max_scroll_y = (content_h - lane_rect.height()).max(0.0);
@@ -205,12 +181,7 @@ pub fn show(
     // the lanes, the clips and the bin drag ignore it (no seek, no scrub, no
     // selection, no edits).
     let recording = editor.is_recording();
-    let marker_g = Geom {
-        lane_left,
-        lane_width,
-        spp: editor.view.samples_per_pixel,
-        scroll_x: editor.view.scroll_x,
-    };
+    let marker_g = Geom { lane_left, lane_width, spp: editor.view.samples_per_pixel, scroll_x: editor.view.scroll_x };
     let ruler_taken = !recording && ruler::handle_markers(ui, editor, &marker_g, ruler_rect);
     handle_input(ui, editor, lane_left, lane_width, max_scroll_y, &resp);
     // Audible scrubbing on the ruler (and the playhead handle): press starts,
@@ -235,12 +206,7 @@ pub fn show(
     }
 
     let view = editor.view.clone();
-    let g = Geom {
-        lane_left,
-        lane_width,
-        spp: view.samples_per_pixel,
-        scroll_x: view.scroll_x,
-    };
+    let g = Geom { lane_left, lane_width, spp: view.samples_per_pixel, scroll_x: view.scroll_x };
     // A bin item dragged over the lanes: Esc cancels, release over a lane drops.
     let mut messages = Vec::new();
     if !recording {
@@ -258,18 +224,7 @@ pub fn show(
     let length = content_length(editor);
     let max_scroll_x = scroll_extent(length, visible).saturating_sub(visible);
 
-    draw(
-        ui,
-        editor,
-        &g,
-        ruler_rect,
-        header_rect,
-        lane_rect,
-        scroll_rect,
-        visible,
-        max_scroll_x,
-        meters,
-    );
+    draw(ui, editor, &g, ruler_rect, header_rect, lane_rect, scroll_rect, visible, max_scroll_x, meters);
     // Clip drag snap line (over the clips) and the open clip context menu.
     interaction::draw_clip_snap_line(ui, &g, lane_rect);
     messages.extend(interaction::draw_clip_menu(ui, editor));
@@ -282,11 +237,7 @@ pub fn show(
 
 /// Zooms so the whole project fits, scroll at the start.
 fn apply_fit(editor: &mut Editor, lane_width: f32) {
-    let (spp, scroll_x) = zoom_to_fit(
-        content_length(editor),
-        editor.project.sample_rate,
-        lane_width,
-    );
+    let (spp, scroll_x) = zoom_to_fit(content_length(editor), editor.project.sample_rate, lane_width);
     editor.set_view_x(spp, scroll_x);
 }
 
@@ -296,25 +247,14 @@ fn apply_view_menu(editor: &mut Editor, action: ViewMenuAction, lane_width: f32)
         ViewMenuAction::None => {}
         ViewMenuAction::ZoomToFit => apply_fit(editor, lane_width),
         ViewMenuAction::ZoomToSelection => {
-            if let crate::editor::selection::Selection::Range { start, end, .. } =
-                editor.selection()
-            {
+            if let crate::editor::selection::Selection::Range { start, end, .. } = editor.selection() {
                 let (spp, scroll_x) = zoom_to_selection(*start, *end, lane_width);
                 editor.set_view_x(spp, clamp_scroll_x(editor, spp, lane_width, scroll_x));
             }
         }
         ViewMenuAction::ZoomIn | ViewMenuAction::ZoomOut => {
-            let factor = if action == ViewMenuAction::ZoomIn {
-                1.5
-            } else {
-                1.0 / 1.5
-            };
-            let (spp, scroll_x) = zoom_at(
-                editor.view.samples_per_pixel,
-                editor.view.scroll_x,
-                factor,
-                lane_width / 2.0,
-            );
+            let factor = if action == ViewMenuAction::ZoomIn { 1.5 } else { 1.0 / 1.5 };
+            let (spp, scroll_x) = zoom_at(editor.view.samples_per_pixel, editor.view.scroll_x, factor, lane_width / 2.0);
             editor.set_view_x(spp, clamp_scroll_x(editor, spp, lane_width, scroll_x));
         }
     }
@@ -322,14 +262,7 @@ fn apply_view_menu(editor: &mut Editor, action: ViewMenuAction, lane_width: f32)
 
 /// Wheel, keyboard and click input over the timeline.
 #[allow(clippy::too_many_arguments)]
-fn handle_input(
-    ui: &egui::Ui,
-    editor: &mut Editor,
-    lane_left: f32,
-    lane_width: f32,
-    max_scroll_y: f32,
-    resp: &egui::Response,
-) {
+fn handle_input(ui: &egui::Ui, editor: &mut Editor, lane_left: f32, lane_width: f32, max_scroll_y: f32, resp: &egui::Response) {
     if !resp.hovered() {
         return;
     }
@@ -350,12 +283,7 @@ fn handle_input(
             if let Some(p) = i.pointer.latest_pos() {
                 let offset = (p.x - lane_left).clamp(0.0, lane_width);
                 let factor = if zoom > 1.0 { 1.25 } else { 1.0 / 1.25 };
-                let (spp, scroll_x) = zoom_at(
-                    editor.view.samples_per_pixel,
-                    editor.view.scroll_x,
-                    factor,
-                    offset,
-                );
+                let (spp, scroll_x) = zoom_at(editor.view.samples_per_pixel, editor.view.scroll_x, factor, offset);
                 editor.set_view_x(spp, clamp_scroll_x(editor, spp, lane_width, scroll_x));
             }
         } else if i.modifiers.alt {
@@ -373,9 +301,7 @@ fn handle_input(
             let d = i.smooth_scroll_delta().x;
             if d != 0.0 {
                 let spp = editor.view.samples_per_pixel;
-                let new_x = (editor.view.scroll_x as f64 - d as f64)
-                    .round()
-                    .clamp(0.0, f64::from(u32::MAX)) as u64;
+                let new_x = (editor.view.scroll_x as f64 - d as f64).round().clamp(0.0, f64::from(u32::MAX)) as u64;
                 editor.set_view_x(spp, clamp_scroll_x(editor, spp, lane_width, new_x));
             }
         } else {
@@ -397,24 +323,10 @@ fn handle_input(
             None
         };
         if let Some(factor) = factor {
-            let g = Geom {
-                lane_left,
-                lane_width,
-                spp: editor.view.samples_per_pixel,
-                scroll_x: editor.view.scroll_x,
-            };
+            let g = Geom { lane_left, lane_width, spp: editor.view.samples_per_pixel, scroll_x: editor.view.scroll_x };
             let playhead_x = g.sample_to_x(editor.view.playhead);
-            let offset = if playhead_x >= lane_left && playhead_x <= lane_left + lane_width {
-                playhead_x - lane_left
-            } else {
-                lane_width / 2.0
-            };
-            let (spp, scroll_x) = zoom_at(
-                editor.view.samples_per_pixel,
-                editor.view.scroll_x,
-                factor,
-                offset,
-            );
+            let offset = if playhead_x >= lane_left && playhead_x <= lane_left + lane_width { playhead_x - lane_left } else { lane_width / 2.0 };
+            let (spp, scroll_x) = zoom_at(editor.view.samples_per_pixel, editor.view.scroll_x, factor, offset);
             editor.set_view_x(spp, clamp_scroll_x(editor, spp, lane_width, scroll_x));
         }
     });
@@ -442,10 +354,7 @@ fn draw(
     max_scroll_x: u64,
     meters: &mut meter::MeterState,
 ) {
-    let all = ruler_rect
-        .union(header_rect)
-        .union(lane_rect)
-        .union(scroll_rect);
+    let all = ruler_rect.union(header_rect).union(lane_rect).union(scroll_rect);
     let painter = ui.painter_at(all);
     let visuals = ui.visuals().clone();
     let view = editor.view.clone();
@@ -460,63 +369,26 @@ fn draw(
     for (i, track) in editor.project.tracks.iter().enumerate() {
         let bottom = y + track.height;
         if bottom >= lane_rect.top() && y <= lane_rect.bottom() {
-            let track_rect = egui::Rect::from_min_max(
-                egui::pos2(g.lane_left, y),
-                egui::pos2(lane_rect.right(), bottom),
-            );
-            lane::draw(
-                &lane_painter,
-                track_rect,
-                i % 2 == 0,
-                THEME.lane_a,
-                THEME.lane_b,
-                egui::Stroke::new(THEME.hairline, THEME.border),
-            );
+            let track_rect = egui::Rect::from_min_max(egui::pos2(g.lane_left, y), egui::pos2(lane_rect.right(), bottom));
+            lane::draw(&lane_painter, track_rect, i % 2 == 0, THEME.lane_a, THEME.lane_b, egui::Stroke::new(THEME.hairline, THEME.border));
             // Clips (no waveforms yet, ui::timeline::clip_view).
             let gain_active = interaction::gain_line_active(ui.ctx());
             for clip in &track.clips {
                 let (name, offline) = media_info(editor, clip.media_id);
-                let loaded = if offline {
-                    None
-                } else {
-                    editor.media(clip.media_id)
-                };
+                let loaded = if offline { None } else { editor.media(clip.media_id) };
                 let wave_scale = editor.wave_scale();
                 let selected = matches!(
                     editor.selection(),
                     crate::editor::selection::Selection::Clips(ids) if ids.contains(&clip.id)
                 );
-                let hover = ui.input(|i| i.pointer.latest_pos()).and_then(|p| {
-                    clip_view::hit_test(clip, clip_view::clip_rect(clip, g, track_rect), g.spp, p)
-                });
-                clip_view::draw(
-                    &lane_painter,
-                    clip,
-                    name,
-                    offline,
-                    loaded,
-                    g,
-                    track_rect,
-                    i,
-                    wave_scale,
-                    selected,
-                    hover,
-                    track.mute,
-                    gain_active,
-                );
+                let hover = ui.input(|i| i.pointer.latest_pos()).and_then(|p| clip_view::hit_test(clip, clip_view::clip_rect(clip, g, track_rect), g.spp, p));
+                clip_view::draw(&lane_painter, clip, name, offline, loaded, g, track_rect, i, wave_scale, selected, hover, track.mute, gain_active);
             }
             // The take being recorded grows over this track's clips.
             if let Some(take) = editor.recording_status()
                 && take.track_id == track.id
             {
-                clip_view::draw_live(
-                    &lane_painter,
-                    &take,
-                    editor.project.sample_rate,
-                    g,
-                    track_rect,
-                    editor.wave_scale(),
-                );
+                clip_view::draw_live(&lane_painter, &take, editor.project.sample_rate, g, track_rect, editor.wave_scale());
             }
         }
         y = bottom;
@@ -530,16 +402,7 @@ fn draw(
 
     // Ruler: ticks, labels, markers and their faint lines.
     painter.rect_filled(ruler_rect, 0.0, THEME.ruler_bg);
-    ruler::draw(
-        &painter,
-        ruler_rect,
-        lane_rect,
-        g,
-        editor.project.sample_rate,
-        editor.project_length(),
-        &editor.project.markers,
-        editor.selected_marker(),
-    );
+    ruler::draw(&painter, ruler_rect, lane_rect, g, editor.project.sample_rate, editor.project_length(), &editor.project.markers, editor.selected_marker());
 
     // Range selection: a 3 px accent bar along the ruler bottom across the
     // range (the tint and boundary lines are drawn by ui::timeline::interaction).
@@ -547,14 +410,7 @@ fn draw(
         let x0 = g.sample_to_x(*start).max(g.lane_left);
         let x1 = g.sample_to_x(*end).min(lane_rect.right());
         if x1 > x0 {
-            painter.rect_filled(
-                egui::Rect::from_min_max(
-                    egui::pos2(x0, ruler_rect.bottom() - 3.0),
-                    egui::pos2(x1, ruler_rect.bottom()),
-                ),
-                0.0,
-                THEME.accent,
-            );
+            painter.rect_filled(egui::Rect::from_min_max(egui::pos2(x0, ruler_rect.bottom() - 3.0), egui::pos2(x1, ruler_rect.bottom())), 0.0, THEME.accent);
         }
     }
 
@@ -562,29 +418,14 @@ fn draw(
     let playhead_color = THEME.playhead_color;
     let ph_x = g.sample_to_x(view.playhead);
     if ph_x >= g.lane_left - 1.0 && ph_x <= lane_rect.right() + 1.0 {
-        painter.line_segment(
-            [
-                egui::pos2(ph_x, ruler_rect.top()),
-                egui::pos2(ph_x, lane_rect.bottom()),
-            ],
-            egui::Stroke::new(THEME.playhead_width, playhead_color),
-        );
+        painter
+            .line_segment([egui::pos2(ph_x, ruler_rect.top()), egui::pos2(ph_x, lane_rect.bottom())], egui::Stroke::new(THEME.playhead_width, playhead_color));
         let tri = vec![
-            egui::pos2(
-                ph_x - THEME.playhead_tri_w,
-                ruler_rect.top() + THEME.hairline,
-            ),
-            egui::pos2(
-                ph_x + THEME.playhead_tri_w,
-                ruler_rect.top() + THEME.hairline,
-            ),
+            egui::pos2(ph_x - THEME.playhead_tri_w, ruler_rect.top() + THEME.hairline),
+            egui::pos2(ph_x + THEME.playhead_tri_w, ruler_rect.top() + THEME.hairline),
             egui::pos2(ph_x, ruler_rect.top() + THEME.playhead_tri_h),
         ];
-        painter.add(egui::Shape::convex_polygon(
-            tri,
-            playhead_color,
-            egui::Stroke::NONE,
-        ));
+        painter.add(egui::Shape::convex_polygon(tri, playhead_color, egui::Stroke::NONE));
     }
 
     // Horizontal scrollbar: trough plus draggable thumb.
@@ -592,16 +433,9 @@ fn draw(
     let frac = (visible as f32 / scroll_extent(content_length(editor), visible) as f32).min(1.0);
     let thumb_w = (scroll_rect.width() * frac).max(THEME.scrollbar_thumb_min);
     let scroll_max = max_scroll_x as f32;
-    let thumb_x = g.lane_left
-        + if scroll_max > 0.0 {
-            (view.scroll_x as f32 / scroll_max) * (scroll_rect.width() - thumb_w)
-        } else {
-            0.0
-        };
-    let thumb_rect = egui::Rect::from_min_max(
-        egui::pos2(thumb_x, scroll_rect.top() + THEME.hairline),
-        egui::pos2(thumb_x + thumb_w, scroll_rect.bottom() - THEME.hairline),
-    );
+    let thumb_x = g.lane_left + if scroll_max > 0.0 { (view.scroll_x as f32 / scroll_max) * (scroll_rect.width() - thumb_w) } else { 0.0 };
+    let thumb_rect =
+        egui::Rect::from_min_max(egui::pos2(thumb_x, scroll_rect.top() + THEME.hairline), egui::pos2(thumb_x + thumb_w, scroll_rect.bottom() - THEME.hairline));
     let thumb_color = if thumb_held(ui, thumb_rect) {
         visuals.widgets.active.bg_fill
     } else if thumb_hover(ui, thumb_rect) {
@@ -610,61 +444,33 @@ fn draw(
         visuals.widgets.inactive.bg_fill
     };
     painter.rect_filled(thumb_rect, THEME.corner_round, thumb_color);
-    let thumb = ui.interact(
-        thumb_rect,
-        egui::Id::new("timeline_hscroll_thumb"),
-        egui::Sense::click_and_drag(),
-    );
+    let thumb = ui.interact(thumb_rect, egui::Id::new("timeline_hscroll_thumb"), egui::Sense::click_and_drag());
     if thumb.dragged() {
         let d = thumb.drag_delta().x;
         if d != 0.0 {
-            let new_x = (view.scroll_x as f64 - d as f64 * g.spp)
-                .round()
-                .clamp(0.0, max_scroll_x as f64) as u64;
+            let new_x = (view.scroll_x as f64 - d as f64 * g.spp).round().clamp(0.0, max_scroll_x as f64) as u64;
             editor.set_view_x(view.samples_per_pixel, new_x);
         }
     }
 
     // Track headers: grip, rename, menu, resize, controls, meter, reorder.
-    track_header::show(
-        ui,
-        editor,
-        header_rect,
-        lane_rect,
-        view.scroll_y,
-        &mut meters.tracks,
-    );
+    track_header::show(ui, editor, header_rect, lane_rect, view.scroll_y, &mut meters.tracks);
 }
 
 /// Display name and offline flag of a media item, for clip drawing.
 fn media_info(editor: &Editor, media_id: Uuid) -> (&str, bool) {
-    let name = editor
-        .project
-        .media
-        .iter()
-        .find(|media| media.id == media_id)
-        .map(|media| media.display_name.as_str())
-        .unwrap_or("");
+    let name = editor.project.media.iter().find(|media| media.id == media_id).map(|media| media.display_name.as_str()).unwrap_or("");
     (name, editor.is_media_offline(media_id))
 }
 
 /// True while the pointer hovers the scrollbar thumb.
 fn thumb_hover(ui: &egui::Ui, thumb_rect: egui::Rect) -> bool {
-    ui.input(|i| {
-        i.pointer
-            .latest_pos()
-            .is_some_and(|p| thumb_rect.contains(p))
-    })
+    ui.input(|i| i.pointer.latest_pos().is_some_and(|p| thumb_rect.contains(p)))
 }
 
 /// True while the primary button is down over the scrollbar thumb.
 fn thumb_held(ui: &egui::Ui, thumb_rect: egui::Rect) -> bool {
-    ui.input(|i| {
-        i.pointer.primary_down()
-            && i.pointer
-                .latest_pos()
-                .is_some_and(|p| thumb_rect.contains(p))
-    })
+    ui.input(|i| i.pointer.primary_down() && i.pointer.latest_pos().is_some_and(|p| thumb_rect.contains(p)))
 }
 
 #[cfg(test)]
@@ -672,12 +478,7 @@ mod tests {
     use super::*;
 
     fn geom(spp: f64, scroll_x: u64) -> Geom {
-        Geom {
-            lane_left: 10.0,
-            lane_width: 1000.0,
-            spp,
-            scroll_x,
-        }
+        Geom { lane_left: 10.0, lane_width: 1000.0, spp, scroll_x }
     }
 
     #[test]

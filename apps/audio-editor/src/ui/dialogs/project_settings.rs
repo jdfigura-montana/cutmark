@@ -22,12 +22,7 @@ pub struct ProjectSettingsDialog {
 impl ProjectSettingsDialog {
     /// Creates the dialog open, prefilled with the current name and bit depth.
     pub fn new_open(current_name: &str, current_depth: BitDepth) -> Self {
-        ProjectSettingsDialog {
-            open: true,
-            name: current_name.to_string(),
-            bit_depth: current_depth,
-            error: None,
-        }
+        ProjectSettingsDialog { open: true, name: current_name.to_string(), bit_depth: current_depth, error: None }
     }
 
     /// Shows the dialog; applies Action::SetProjectSettings through the Editor
@@ -47,11 +42,7 @@ impl ProjectSettingsDialog {
                 super::segmented(
                     ui,
                     "ps_depth",
-                    &[
-                        (BitDepth::Int16, "16-bit"),
-                        (BitDepth::Int24, "24-bit"),
-                        (BitDepth::Float32, "32-bit float"),
-                    ],
+                    &[(BitDepth::Int16, "16-bit"), (BitDepth::Int24, "24-bit"), (BitDepth::Float32, "32-bit float")],
                     &mut self.bit_depth,
                 );
             });
@@ -60,8 +51,7 @@ impl ProjectSettingsDialog {
             }
             let can_apply = !self.name.trim().is_empty();
             super::footer(ui, |ui| {
-                if super::footer_button(ui, "OK", super::FooterButton::Primary, can_apply).clicked()
-                {
+                if super::footer_button(ui, "OK", super::FooterButton::Primary, can_apply).clicked() {
                     self.try_apply(editor);
                 }
                 if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
@@ -78,12 +68,7 @@ impl ProjectSettingsDialog {
             cancel = true;
         }
         if cancel {
-            *self = ProjectSettingsDialog {
-                open: false,
-                name: String::new(),
-                bit_depth: BitDepth::Int24,
-                error: None,
-            };
+            *self = ProjectSettingsDialog { open: false, name: String::new(), bit_depth: BitDepth::Int24, error: None };
         }
     }
 
@@ -95,10 +80,7 @@ impl ProjectSettingsDialog {
     /// Applies the settings through the Editor and records the error on failure.
     fn try_apply(&mut self, editor: &mut Editor) {
         self.error = None;
-        let action = Action::SetProjectSettings {
-            name: self.name.clone(),
-            export_bit_depth: self.bit_depth,
-        };
+        let action = Action::SetProjectSettings { name: self.name.clone(), export_bit_depth: self.bit_depth };
         match editor.apply(action) {
             Ok(()) => {
                 self.open = false;

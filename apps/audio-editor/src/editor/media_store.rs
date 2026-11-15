@@ -21,10 +21,7 @@ pub struct MediaStore {
 impl MediaStore {
     /// Creates an empty store.
     pub fn new() -> MediaStore {
-        MediaStore {
-            entries: HashMap::new(),
-            offline: HashSet::new(),
-        }
+        MediaStore { entries: HashMap::new(), offline: HashSet::new() }
     }
 
     /// Loaded audio for the media id, if present.
@@ -64,18 +61,7 @@ mod tests {
         store.set_offline(id);
         assert!(store.is_offline(id));
 
-        store.insert(
-            id,
-            Loaded {
-                samples: vec![0.0; 4].into(),
-                peaks: Peaks {
-                    channels: 2,
-                    frames: 0,
-                    levels: Vec::new(),
-                }
-                .into(),
-            },
-        );
+        store.insert(id, Loaded { samples: vec![0.0; 4].into(), peaks: Peaks { channels: 2, frames: 0, levels: Vec::new() }.into() });
         assert!(!store.is_offline(id), "insert clears the offline mark");
         let loaded = store.get(id).expect("entry exists after insert");
         assert_eq!(loaded.samples.len(), 4);

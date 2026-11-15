@@ -164,12 +164,7 @@ pub struct Editor {
 
 impl Editor {
     /// Creates a project folder layout, a new Project and saves project.json.
-    pub fn create(
-        name: &str,
-        parent: &Path,
-        sample_rate: u32,
-        bit_depth: BitDepth,
-    ) -> Result<Editor, EditorError> {
+    pub fn create(name: &str, parent: &Path, sample_rate: u32, bit_depth: BitDepth) -> Result<Editor, EditorError> {
         let project_paths = paths::create_layout(parent, name)?;
         let project = Project::new(name.to_string(), sample_rate, bit_depth);
         let view = ViewState::default();
@@ -200,10 +195,7 @@ impl Editor {
             retired: Vec::new(),
             audio_error: None,
             master_meter: Arc::new(StereoMeter::new()),
-            meters: Arc::new(MeterBank {
-                track_ids: Vec::new(),
-                tracks: Vec::new(),
-            }),
+            meters: Arc::new(MeterBank { track_ids: Vec::new(), tracks: Vec::new() }),
             transport_prev: None,
             preview_item: None,
             selection: Selection::None,
@@ -299,10 +291,7 @@ impl Editor {
             retired: Vec::new(),
             audio_error: None,
             master_meter: Arc::new(StereoMeter::new()),
-            meters: Arc::new(MeterBank {
-                track_ids: Vec::new(),
-                tracks: Vec::new(),
-            }),
+            meters: Arc::new(MeterBank { track_ids: Vec::new(), tracks: Vec::new() }),
             transport_prev: None,
             preview_item: None,
             selection: Selection::None,
@@ -420,10 +409,7 @@ impl Editor {
         let Some(track) = next.tracks.iter_mut().find(|t| t.id == id) else {
             return;
         };
-        track.height = height.clamp(
-            crate::model::track::MIN_HEIGHT,
-            crate::model::track::MAX_HEIGHT,
-        );
+        track.height = height.clamp(crate::model::track::MIN_HEIGHT, crate::model::track::MAX_HEIGHT);
         if next != *self.project {
             self.project = Arc::new(next);
         }
@@ -431,13 +417,7 @@ impl Editor {
 
     /// End of the last clip on any track, in samples; 0 when there are no clips.
     pub fn project_length(&self) -> u64 {
-        self.project
-            .tracks
-            .iter()
-            .flat_map(|t| t.clips.iter())
-            .map(|c| c.start.saturating_add(c.src_out.saturating_sub(c.src_in)))
-            .max()
-            .unwrap_or(0)
+        self.project.tracks.iter().flat_map(|t| t.clips.iter()).map(|c| c.start.saturating_add(c.src_out.saturating_sub(c.src_in))).max().unwrap_or(0)
     }
 
     /// Display-only vertical waveform scale, 1.0..=16.0.
@@ -464,23 +444,11 @@ impl Editor {
             return;
         }
         let (start, end) = if a < b { (a, b) } else { (b, a) };
-        let mut ranked: Vec<(usize, Uuid)> = tracks
-            .into_iter()
-            .filter_map(|id| {
-                self.project
-                    .tracks
-                    .iter()
-                    .position(|t| t.id == id)
-                    .map(|index| (index, id))
-            })
-            .collect();
+        let mut ranked: Vec<(usize, Uuid)> =
+            tracks.into_iter().filter_map(|id| self.project.tracks.iter().position(|t| t.id == id).map(|index| (index, id))).collect();
         ranked.sort_by_key(|&(index, _)| index);
         ranked.dedup_by_key(|(index, _)| *index);
-        self.selection = Selection::Range {
-            start,
-            end,
-            tracks: ranked.into_iter().map(|(_, id)| id).collect(),
-        };
+        self.selection = Selection::Range { start, end, tracks: ranked.into_iter().map(|(_, id)| id).collect() };
     }
 
     /// Ctrl+click on a track header: adds or removes a track from the current
@@ -497,16 +465,7 @@ impl Editor {
             return;
         }
         if let Some(index) = self.project.tracks.iter().position(|t| t.id == id) {
-            let insert_at = tracks
-                .iter()
-                .filter(|t| {
-                    self.project
-                        .tracks
-                        .iter()
-                        .position(|p| p.id == **t)
-                        .is_some_and(|p| p < index)
-                })
-                .count();
+            let insert_at = tracks.iter().filter(|t| self.project.tracks.iter().position(|p| p.id == **t).is_some_and(|p| p < index)).count();
             tracks.insert(insert_at, id);
         }
     }
@@ -523,11 +482,7 @@ impl Editor {
     /// Toggles one clip in the clip selection; selects it alone when another
     /// kind of selection (or none) is active. No-op for unknown clips.
     pub fn toggle_clip(&mut self, id: Uuid) {
-        let exists = self
-            .project
-            .tracks
-            .iter()
-            .any(|t| t.clips.iter().any(|c| c.id == id));
+        let exists = self.project.tracks.iter().any(|t| t.clips.iter().any(|c| c.id == id));
         if !exists {
             return;
         }
@@ -597,11 +552,7 @@ impl Editor {
             self.selection = Selection::None;
             return;
         }
-        self.selection = Selection::Range {
-            start: 0,
-            end: length,
-            tracks,
-        };
+        self.selection = Selection::Range { start: 0, end: length, tracks };
     }
 
     /// Remembers which track was last clicked.
@@ -613,16 +564,11 @@ impl Editor {
     /// clicked track, else track 0. Missing tracks fall through.
     pub fn target_track(&self) -> usize {
         if let Selection::Range { tracks, .. } = &self.selection
-            && let Some(index) = tracks
-                .first()
-                .and_then(|id| self.project.tracks.iter().position(|t| t.id == *id))
+            && let Some(index) = tracks.first().and_then(|id| self.project.tracks.iter().position(|t| t.id == *id))
         {
             return index;
         }
-        if let Some(index) = self
-            .last_clicked_track
-            .and_then(|id| self.project.tracks.iter().position(|t| t.id == id))
-        {
+        if let Some(index) = self.last_clicked_track.and_then(|id| self.project.tracks.iter().position(|t| t.id == id)) {
             return index;
         }
         0
@@ -658,23 +604,9 @@ impl Editor {
     }
 
     /// Copies the range, then deletes it with the label "Cut".
-    pub fn cut(
-        &mut self,
-        s: u64,
-        e: u64,
-        track_ids: Vec<uuid::Uuid>,
-        ripple: bool,
-    ) -> Result<(), EditorError> {
+    pub fn cut(&mut self, s: u64, e: u64, track_ids: Vec<uuid::Uuid>, ripple: bool) -> Result<(), EditorError> {
         self.clipboard = Some(Arc::new(copy_range(&self.project, s, e, &track_ids)));
-        self.apply_labeled(
-            Action::DeleteRange {
-                s,
-                e,
-                track_ids,
-                ripple,
-            },
-            "Cut",
-        )
+        self.apply_labeled(Action::DeleteRange { s, e, track_ids, ripple }, "Cut")
     }
 
     /// The clipboard content from the last copy or cut, if any.
@@ -707,13 +639,7 @@ impl Editor {
             }
             Selection::Clips(ids) => {
                 self.clipboard = Some(Arc::new(copy_clips(&self.project, &ids)));
-                self.apply_labeled(
-                    Action::DeleteClips {
-                        clip_ids: ids,
-                        ripple: self.view.ripple,
-                    },
-                    "Cut",
-                )
+                self.apply_labeled(Action::DeleteClips { clip_ids: ids, ripple: self.view.ripple }, "Cut")
             }
             Selection::None => Ok(()),
         }
@@ -723,10 +649,7 @@ impl Editor {
     /// replaces it and puts the playhead at the range start; otherwise inserts
     /// at the playhead on the target track.
     pub fn paste(&mut self) -> Result<(), EditorError> {
-        if self
-            .clipboard()
-            .is_none_or(|c| c.tracks.iter().all(|t| t.is_empty()))
-        {
+        if self.clipboard().is_none_or(|c| c.tracks.iter().all(|t| t.is_empty())) {
             return Ok(());
         }
         match self.selection.clone() {
@@ -760,11 +683,7 @@ impl Editor {
     /// tracks; keeps the selection and does nothing without a range.
     pub fn trim_to_selection(&mut self) -> Result<(), EditorError> {
         match self.selection.clone() {
-            Selection::Range { start, end, tracks } => self.apply(Action::TrimToSelection {
-                s: start,
-                e: end,
-                track_ids: tracks,
-            }),
+            Selection::Range { start, end, tracks } => self.apply(Action::TrimToSelection { s: start, e: end, track_ids: tracks }),
             _ => Ok(()),
         }
     }
@@ -773,11 +692,7 @@ impl Editor {
     /// selected clips, else `None`.
     pub fn process_target(&self) -> Option<Target> {
         match &self.selection {
-            Selection::Range { start, end, tracks } => Some(Target::Range {
-                start: *start,
-                end: *end,
-                tracks: tracks.clone(),
-            }),
+            Selection::Range { start, end, tracks } => Some(Target::Range { start: *start, end: *end, tracks: tracks.clone() }),
             Selection::Clips(ids) => Some(Target::Clips(ids.clone())),
             Selection::None => None,
         }
@@ -789,29 +704,20 @@ impl Editor {
         let mut peaks: HashMap<Uuid, f32> = HashMap::new();
         for (track_id, clip_id) in frags {
             let entry = peaks.entry(*track_id).or_insert(0.0);
-            let Some(clip) = project
-                .tracks
-                .iter()
-                .flat_map(|track| track.clips.iter())
-                .find(|clip| clip.id == *clip_id)
-            else {
+            let Some(clip) = project.tracks.iter().flat_map(|track| track.clips.iter()).find(|clip| clip.id == *clip_id) else {
                 continue;
             };
             if self.media_store.is_offline(clip.media_id) {
                 continue;
             }
-            let (Some(loaded), Some(item)) = (
-                self.media_store.get(clip.media_id),
-                project.media.iter().find(|item| item.id == clip.media_id),
-            ) else {
+            let (Some(loaded), Some(item)) = (self.media_store.get(clip.media_id), project.media.iter().find(|item| item.id == clip.media_id)) else {
                 continue;
             };
             let channels = usize::from(item.channels).max(1);
             let len = clip.len();
             for local in 0..len {
                 let frame = (clip.src_in + local) as usize;
-                let env =
-                    db_to_linear(clip.gain_db) * fade_gain(local, len, clip.fade_in, clip.fade_out);
+                let env = db_to_linear(clip.gain_db) * fade_gain(local, len, clip.fade_in, clip.fade_out);
                 for ch in 0..channels {
                     if let Some(sample) = loaded.samples.get(frame * channels + ch) {
                         *entry = entry.max(sample.abs() * env);
@@ -836,20 +742,13 @@ impl Editor {
         let peaks = self.measure_peak(&scratch, &frags);
         let highest = peaks.values().copied().fold(0.0f32, f32::max);
         if highest <= 0.0 {
-            return Err(OpError::Invalid(
-                "Nothing to normalize: the selection is silent".to_string(),
-            )
-            .into());
+            return Err(OpError::Invalid("Nothing to normalize: the selection is silent".to_string()).into());
         }
         let deltas: Vec<(Uuid, f32)> = if per_track {
             peaks
                 .iter()
                 .map(|(id, peak)| {
-                    let delta = if *peak > 0.0 {
-                        target_dbfs - linear_to_db(*peak)
-                    } else {
-                        0.0
-                    };
+                    let delta = if *peak > 0.0 { target_dbfs - linear_to_db(*peak) } else { 0.0 };
                     (*id, delta)
                 })
                 .collect()
@@ -887,11 +786,7 @@ impl Editor {
     /// Silences the selected range on its tracks; needs a range selection.
     pub fn silence(&mut self) -> Result<(), EditorError> {
         match self.selection.clone() {
-            Selection::Range { start, end, tracks } => self.apply(Action::Silence {
-                s: start,
-                e: end,
-                track_ids: tracks,
-            }),
+            Selection::Range { start, end, tracks } => self.apply(Action::Silence { s: start, e: end, track_ids: tracks }),
             _ => Ok(()),
         }
     }
@@ -903,11 +798,7 @@ impl Editor {
     }
 
     /// Applies one action with an explicit label, overriding `action.label()`.
-    pub fn apply_labeled(
-        &mut self,
-        action: Action,
-        label: &'static str,
-    ) -> Result<(), EditorError> {
+    pub fn apply_labeled(&mut self, action: Action, label: &'static str) -> Result<(), EditorError> {
         // Adding a marker is the one edit that stays allowed while recording.
         let marker = matches!(action, Action::AddMarker { .. });
         self.check_unlocked(marker)?;
@@ -928,28 +819,17 @@ impl Editor {
 
     /// Runs one pure edit op on a clone, checks invariants, pushes undo and
     /// swaps in. Refused while an export or a recording runs.
-    fn commit(
-        &mut self,
-        label: &'static str,
-        run: impl FnOnce(&mut Project) -> Result<(), OpError>,
-    ) -> Result<(), EditorError> {
+    fn commit(&mut self, label: &'static str, run: impl FnOnce(&mut Project) -> Result<(), OpError>) -> Result<(), EditorError> {
         self.check_unlocked(false)?;
         self.run_commit(label, run)
     }
 
     /// The commit itself: the callers have already checked the locks.
-    pub(super) fn run_commit(
-        &mut self,
-        label: &'static str,
-        run: impl FnOnce(&mut Project) -> Result<(), OpError>,
-    ) -> Result<(), EditorError> {
+    pub(super) fn run_commit(&mut self, label: &'static str, run: impl FnOnce(&mut Project) -> Result<(), OpError>) -> Result<(), EditorError> {
         let mut next = (*self.project).clone();
         run(&mut next)?;
         invariants::check(&next)?;
-        self.history.push_undo(HistoryEntry {
-            label,
-            before: Arc::clone(&self.project),
-        });
+        self.history.push_undo(HistoryEntry { label, before: Arc::clone(&self.project) });
         self.project = Arc::new(next);
         self.tidy_selection();
         self.dirty = true;
@@ -961,31 +841,18 @@ impl Editor {
     /// Inserts the stored clipboard at `pos` on the receiving tracks (label "Paste").
     pub fn paste_insert_at(&mut self, pos: u64, target_track: usize) -> Result<(), EditorError> {
         let clipboard = self.require_clipboard()?;
-        self.commit("Paste", |project| {
-            paste::paste_insert(project, pos, target_track, &clipboard)
-        })
+        self.commit("Paste", |project| paste::paste_insert(project, pos, target_track, &clipboard))
     }
 
     /// Replaces the range `s..e` on the receiving tracks with the stored clipboard.
-    pub fn paste_replace_range(
-        &mut self,
-        s: u64,
-        e: u64,
-        target_track: usize,
-        ripple: bool,
-    ) -> Result<(), EditorError> {
+    pub fn paste_replace_range(&mut self, s: u64, e: u64, target_track: usize, ripple: bool) -> Result<(), EditorError> {
         let clipboard = self.require_clipboard()?;
-        self.commit("Paste", |project| {
-            paste::paste_replace(project, s, e, target_track, &clipboard, ripple)
-        })
+        self.commit("Paste", |project| paste::paste_replace(project, s, e, target_track, &clipboard, ripple))
     }
 
     /// Returns the stored clipboard, or an error when nothing was copied or cut.
     fn require_clipboard(&self) -> Result<Arc<Clipboard>, OpError> {
-        let clipboard = self
-            .clipboard
-            .clone()
-            .ok_or_else(|| OpError::Invalid("empty clipboard".into()))?;
+        let clipboard = self.clipboard.clone().ok_or_else(|| OpError::Invalid("empty clipboard".into()))?;
         if clipboard.tracks.iter().all(|clips| clips.is_empty()) {
             return Err(OpError::Invalid("empty clipboard".into()));
         }
@@ -1052,11 +919,7 @@ impl Editor {
         if self.recording.is_some() {
             return Err(EditorError::Locked(RECORD_LOCKED.to_string()));
         }
-        let base = self
-            .gesture_base
-            .as_ref()
-            .map(Arc::clone)
-            .unwrap_or_else(|| Arc::clone(&self.project));
+        let base = self.gesture_base.as_ref().map(Arc::clone).unwrap_or_else(|| Arc::clone(&self.project));
         let mut next = (*base).clone();
         action.run(&mut next)?;
         invariants::check(&next)?;
@@ -1071,10 +934,7 @@ impl Editor {
         if let Some(base) = self.gesture_base.take() {
             let label = self.gesture_label.take().unwrap_or("Edit");
             if base != self.project {
-                self.history.push_undo(HistoryEntry {
-                    label,
-                    before: base,
-                });
+                self.history.push_undo(HistoryEntry { label, before: base });
                 self.dirty = true;
                 self.autosave_generation += 1;
                 self.publish();
@@ -1118,34 +978,20 @@ impl Editor {
     fn ensure_meters(&mut self) {
         let ids: Vec<Uuid> = self.project.tracks.iter().map(|t| t.id).collect();
         if self.meters.track_ids != ids {
-            self.meters = Arc::new(MeterBank {
-                track_ids: ids,
-                tracks: self
-                    .project
-                    .tracks
-                    .iter()
-                    .map(|_| StereoMeter::new())
-                    .collect(),
-            });
+            self.meters = Arc::new(MeterBank { track_ids: ids, tracks: self.project.tracks.iter().map(|_| StereoMeter::new()).collect() });
         }
     }
 
     /// Builds a fresh MixPlan snapshot from the project and the media store.
     fn build_plan(&self) -> Arc<MixPlan> {
         let media = &self.media_store;
-        Arc::new(MixPlan::build(
-            &self.project,
-            &|id| media.get(id).map(|l| Arc::clone(&l.samples)),
-            Arc::clone(&self.meters),
-            Arc::clone(&self.master_meter),
-        ))
+        Arc::new(MixPlan::build(&self.project, &|id| media.get(id).map(|l| Arc::clone(&l.samples)), Arc::clone(&self.meters), Arc::clone(&self.master_meter)))
     }
 
     /// Drops retired mix plans older than 2 s, watches the input stream and
     /// runs the autosave; called every frame.
     pub fn tick(&mut self) {
-        self.retired
-            .retain(|(at, _)| at.elapsed() < Duration::from_secs(2));
+        self.retired.retain(|(at, _)| at.elapsed() < Duration::from_secs(2));
         self.missing_media_notice();
         self.input_tick();
         self.autosave_tick();
@@ -1181,8 +1027,7 @@ impl Editor {
         }
         self.last_autosave = Instant::now();
         if let Err(error) = autosave::write(&self.paths, &self.project, &self.view) {
-            self.job_errors
-                .push(Message::project(format!("Autosave failed: {error}")));
+            self.job_errors.push(Message::project(format!("Autosave failed: {error}")));
             return;
         }
         self.autosaved_generation = self.autosave_generation;
@@ -1201,11 +1046,7 @@ impl Editor {
             .zip(&self.meters.tracks)
             .map(|(id, m)| {
                 let playback = [m.l.take(), m.r.take()];
-                if self.armed_track == Some(*id) {
-                    (*id, self.take_input_reading())
-                } else {
-                    (*id, playback)
-                }
+                if self.armed_track == Some(*id) { (*id, self.take_input_reading()) } else { (*id, playback) }
             })
             .collect();
         let master = [self.master_meter.l.take(), self.master_meter.r.take()];
@@ -1275,11 +1116,7 @@ impl Editor {
 
     /// The item being previewed while the transport state is Previewing.
     pub fn previewing(&self) -> Option<Uuid> {
-        if self.transport_state() == TransportState::Previewing {
-            self.preview_item
-        } else {
-            None
-        }
+        if self.transport_state() == TransportState::Previewing { self.preview_item } else { None }
     }
 
     /// Bin preview progress 0.0..1.0; 0.0 when not previewing.
@@ -1290,10 +1127,7 @@ impl Editor {
         if self.transport_state() != TransportState::Previewing {
             return 0.0;
         }
-        let Some(item) = self
-            .preview_item
-            .and_then(|id| self.project.media.iter().find(|m| m.id == id))
-        else {
+        let Some(item) = self.preview_item.and_then(|id| self.project.media.iter().find(|m| m.id == id)) else {
             return 0.0;
         };
         if item.length == 0 {
@@ -1317,18 +1151,9 @@ impl Editor {
                 let job = self.next_job;
                 self.next_job += 1;
                 self.pending.insert(job, ("Import".to_string(), 0.0));
-                self.jobs.spawn_import(
-                    job,
-                    file,
-                    self.paths.clone(),
-                    Uuid::new_v4(),
-                    self.project.sample_rate,
-                );
+                self.jobs.spawn_import(job, file, self.paths.clone(), Uuid::new_v4(), self.project.sample_rate);
             } else {
-                let name = file
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| file.display().to_string());
+                let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| file.display().to_string());
                 rejected.push(name);
             }
         }
@@ -1351,8 +1176,7 @@ impl Editor {
         let job = self.next_job;
         self.next_job += 1;
         self.pending.insert(job, ("Relink".to_string(), 0.0));
-        self.jobs
-            .spawn_relink(job, src, self.paths.clone(), item, self.project.sample_rate);
+        self.jobs.spawn_relink(job, src, self.paths.clone(), item, self.project.sample_rate);
     }
 
     /// Applies a finished relink job: the length rule first, then the swap.
@@ -1362,31 +1186,15 @@ impl Editor {
     /// reported; nothing else changes. Otherwise the loaded audio replaces the
     /// store entry (clearing the offline mark) and the bin entry is updated as
     /// one undoable "Relink" step.
-    fn finish_relink(
-        &mut self,
-        item: crate::model::media::MediaItem,
-        loaded: crate::io::import::Loaded,
-    ) {
+    fn finish_relink(&mut self, item: crate::model::media::MediaItem, loaded: crate::io::import::Loaded) {
         // Length rule: run the pure op on a clone; on failure undo the copy.
         let mut probe = (*self.project).clone();
-        if let Err(error) = crate::editor::ops::media::relink_media(
-            &mut probe,
-            item.id,
-            item.file_name.clone(),
-            item.original_rate,
-            item.channels,
-            item.length,
-        ) {
+        if let Err(error) = crate::editor::ops::media::relink_media(&mut probe, item.id, item.file_name.clone(), item.original_rate, item.channels, item.length)
+        {
             let _ = std::fs::remove_file(self.paths.media().join(&item.file_name));
             let _ = std::fs::remove_file(conformed_path(&self.paths, item.id));
             let _ = std::fs::remove_file(peaks_path(&self.paths, item.id));
-            self.job_errors.push(Message::media(
-                error
-                    .to_string()
-                    .strip_prefix("invalid operation: ")
-                    .unwrap_or(&error.to_string())
-                    .to_string(),
-            ));
+            self.job_errors.push(Message::media(error.to_string().strip_prefix("invalid operation: ").unwrap_or(&error.to_string()).to_string()));
             return;
         }
         self.media_store.insert(item.id, loaded);
@@ -1403,11 +1211,7 @@ impl Editor {
 
     /// Number of bin items whose media file is missing from media/.
     pub fn offline_count(&self) -> usize {
-        self.project
-            .media
-            .iter()
-            .filter(|m| self.media_store.is_offline(m.id))
-            .count()
+        self.project.media.iter().filter(|m| self.media_store.is_offline(m.id)).count()
     }
 
     /// Drains worker-thread messages without blocking.
@@ -1431,11 +1235,7 @@ impl Editor {
                         Err(error) => self.job_errors.push(Message::media(error.to_string())),
                     }
                 }
-                JobMessage::LoadDone {
-                    job,
-                    media_id,
-                    result,
-                } => {
+                JobMessage::LoadDone { job, media_id, result } => {
                     self.pending.remove(&job);
                     match result {
                         Ok(loaded) => {
@@ -1484,11 +1284,7 @@ impl Editor {
                 JobMessage::RecordProgress { job, frames, peaks } => {
                     self.record_progress(job, frames, peaks);
                 }
-                JobMessage::RecordDone {
-                    job,
-                    consumer,
-                    outcome,
-                } => self.record_done(job, consumer, outcome),
+                JobMessage::RecordDone { job, consumer, outcome } => self.record_done(job, consumer, outcome),
             }
         }
     }
@@ -1502,8 +1298,7 @@ impl Editor {
             let job = self.next_job;
             self.next_job += 1;
             self.pending.insert(job, ("Load".to_string(), 0.0));
-            self.jobs
-                .spawn_load(job, item, self.paths.clone(), self.project.sample_rate);
+            self.jobs.spawn_load(job, item, self.paths.clone(), self.project.sample_rate);
         }
     }
 
@@ -1534,11 +1329,7 @@ impl Editor {
 
     /// Number of clips on the timeline that use the media item.
     pub fn media_usage(&self, id: Uuid) -> usize {
-        self.project
-            .tracks
-            .iter()
-            .map(|t| t.clips.iter().filter(|c| c.media_id == id).count())
-            .sum()
+        self.project.tracks.iter().map(|t| t.clips.iter().filter(|c| c.media_id == id).count()).sum()
     }
 
     /// Reveals the media item's file in media/ in Windows Explorer.
@@ -1567,36 +1358,13 @@ impl Editor {
     /// new track holding the clip (`insert` is ignored). The clip spans the full
     /// media (`src_in` 0, `src_out` = media length). Returns the error unchanged
     /// and without touching the project for unknown media or a bad track index.
-    pub fn drop_media(
-        &mut self,
-        media_id: Uuid,
-        track_index: Option<usize>,
-        start: u64,
-        insert: bool,
-    ) -> Result<(), EditorError> {
-        let media_len = self
-            .project
-            .media
-            .iter()
-            .find(|media| media.id == media_id)
-            .map(|media| media.length)
-            .ok_or(EditorError::Op(OpError::NotFound(media_id)))?;
+    pub fn drop_media(&mut self, media_id: Uuid, track_index: Option<usize>, start: u64, insert: bool) -> Result<(), EditorError> {
+        let media_len =
+            self.project.media.iter().find(|media| media.id == media_id).map(|media| media.length).ok_or(EditorError::Op(OpError::NotFound(media_id)))?;
         match track_index {
             Some(index) => {
-                let track_id = self
-                    .project
-                    .tracks
-                    .get(index)
-                    .map(|track| track.id)
-                    .ok_or(EditorError::Op(OpError::Overflow))?;
-                self.apply(Action::PlaceClip {
-                    track_id,
-                    media_id,
-                    start,
-                    src_in: 0,
-                    src_out: media_len,
-                    insert,
-                })
+                let track_id = self.project.tracks.get(index).map(|track| track.id).ok_or(EditorError::Op(OpError::Overflow))?;
+                self.apply(Action::PlaceClip { track_id, media_id, start, src_in: 0, src_out: media_len, insert })
             }
             None => self.apply(Action::PlaceClipOnNewTrack { media_id, start }),
         }
@@ -1654,9 +1422,7 @@ impl Editor {
         self.stop_preview();
         let end = settings.end.min(self.project_length());
         if settings.start >= end {
-            return Err(EditorError::Io(IoError::Export(
-                "empty export range".to_string(),
-            )));
+            return Err(EditorError::Io(IoError::Export("empty export range".to_string())));
         }
         let mut settings = settings;
         settings.end = end;
@@ -1665,11 +1431,7 @@ impl Editor {
         if let Some(keep) = &settings.tracks {
             let mut scoped = (*plan).clone();
             for (index, track) in scoped.tracks.iter_mut().enumerate() {
-                track.audible = self
-                    .project
-                    .tracks
-                    .get(index)
-                    .is_some_and(|t| keep.contains(&t.id));
+                track.audible = self.project.tracks.get(index).is_some_and(|t| keep.contains(&t.id));
             }
             plan = Arc::new(scoped);
         }
@@ -1681,25 +1443,14 @@ impl Editor {
         self.pending.insert(job, ("Export".to_string(), 0.0));
         let (decision_tx, decision_rx) = crossbeam_channel::bounded(1);
         let cancel = Arc::new(AtomicBool::new(false));
-        self.jobs
-            .spawn_export(job, plan, settings, decision_rx, Arc::clone(&cancel));
-        self.exporting = Some(ExportState {
-            pass: 1,
-            frac: 0.0,
-            peak_warning: None,
-            decision_tx,
-            cancel,
-        });
+        self.jobs.spawn_export(job, plan, settings, decision_rx, Arc::clone(&cancel));
+        self.exporting = Some(ExportState { pass: 1, frac: 0.0, peak_warning: None, decision_tx, cancel });
         Ok(())
     }
 
     /// Progress of the running export, if any.
     pub fn export_status(&self) -> Option<ExportStatus> {
-        self.exporting.as_ref().map(|state| ExportStatus {
-            pass: state.pass,
-            frac: state.frac,
-            peak_warning: state.peak_warning,
-        })
+        self.exporting.as_ref().map(|state| ExportStatus { pass: state.pass, frac: state.frac, peak_warning: state.peak_warning })
     }
 
     /// Export Anyway on the clip warning; harmless when there is no warning.
@@ -1730,11 +1481,7 @@ impl Editor {
             ExportKind::Wav(_) => "wav",
             ExportKind::Mp3 { .. } => "mp3",
         };
-        self.paths.exports().join(format!(
-            "{}.{}",
-            paths::safe_file_stem(&self.project.name),
-            extension
-        ))
+        self.paths.exports().join(format!("{}.{}", paths::safe_file_stem(&self.project.name), extension))
     }
 }
 
@@ -1782,9 +1529,7 @@ mod tests {
 
     /// Locks the recent list for the calling test.
     fn lock_recent() -> std::sync::MutexGuard<'static, ()> {
-        RECENT_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        RECENT_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Cleans the temp project root out of the real recent list after a test.
@@ -1824,19 +1569,13 @@ mod tests {
     #[test]
     fn open_errors_on_missing_project() {
         let dir = tempdir().unwrap();
-        assert!(matches!(
-            Editor::open(&dir.path().join("nothing")),
-            Err(EditorError::Io(IoError::NotAProject(_)))
-        ));
+        assert!(matches!(Editor::open(&dir.path().join("nothing")), Err(EditorError::Io(IoError::NotAProject(_)))));
     }
 
     #[test]
     fn create_errors_on_invalid_name() {
         let parent = tempdir().unwrap();
-        assert!(matches!(
-            Editor::create("a/b", parent.path(), 48_000, BitDepth::Int24),
-            Err(EditorError::Io(IoError::InvalidProjectName(_)))
-        ));
+        assert!(matches!(Editor::create("a/b", parent.path(), 48_000, BitDepth::Int24), Err(EditorError::Io(IoError::InvalidProjectName(_)))));
     }
 
     #[test]
@@ -1855,8 +1594,7 @@ mod tests {
         let _recent = lock_recent();
         let parent = tempdir().unwrap();
         let destination = tempdir().unwrap();
-        let mut editor =
-            Editor::create("Original", parent.path(), 48_000, BitDepth::Int24).unwrap();
+        let mut editor = Editor::create("Original", parent.path(), 48_000, BitDepth::Int24).unwrap();
         editor.save_as(destination.path(), "Renamed").unwrap();
 
         // New paths, new name, not dirty.
@@ -1868,8 +1606,7 @@ mod tests {
         assert_eq!(paths.root, destination.path().join("Renamed"));
 
         // The old folder still exists with its old name and old project.json.
-        let (old_paths, old_project, _) =
-            project_file::load(&parent.path().join("Original")).unwrap();
+        let (old_paths, old_project, _) = project_file::load(&parent.path().join("Original")).unwrap();
         assert_eq!(old_project.name, "Original");
         assert_eq!(old_paths.root, parent.path().join("Original"));
         drop_from_recent(&editor.paths.root);
@@ -1895,11 +1632,7 @@ mod tests {
         std::fs::write(editor.paths.media().join("gone.wav"), b"x").unwrap();
         std::fs::write(editor.paths.cache().join(format!("{id}.f32.wav")), b"x").unwrap();
         std::fs::write(editor.paths.cache().join(format!("{id}.peaks")), b"x").unwrap();
-        std::fs::write(
-            editor.paths.cache().join(format!("{gone_id}.f32.wav")),
-            b"x",
-        )
-        .unwrap();
+        std::fs::write(editor.paths.cache().join(format!("{gone_id}.f32.wav")), b"x").unwrap();
         std::fs::write(editor.paths.cache().join(format!("{gone_id}.peaks")), b"x").unwrap();
 
         editor.save().unwrap();
@@ -1909,25 +1642,10 @@ mod tests {
         assert!(!editor.paths.media().join("gone.wav").exists());
         assert!(editor.paths.cache().join(format!("{id}.f32.wav")).is_file());
         assert!(editor.paths.cache().join(format!("{id}.peaks")).is_file());
-        assert!(
-            !editor
-                .paths
-                .cache()
-                .join(format!("{gone_id}.f32.wav"))
-                .exists()
-        );
-        assert!(
-            !editor
-                .paths
-                .cache()
-                .join(format!("{gone_id}.peaks"))
-                .exists()
-        );
+        assert!(!editor.paths.cache().join(format!("{gone_id}.f32.wav")).exists());
+        assert!(!editor.paths.cache().join(format!("{gone_id}.peaks")).exists());
         let taken = editor.take_job_errors();
-        assert!(
-            taken.iter().all(|m| m.title == "Project"),
-            "cleanup messages are Project messages: {taken:?}"
-        );
+        assert!(taken.iter().all(|m| m.title == "Project"), "cleanup messages are Project messages: {taken:?}");
         let messages = texts(taken).join("\n");
         assert!(messages.contains("gone.wav"), "got: {messages}");
         assert!(messages.contains(&gone_id.to_string()), "got: {messages}");
@@ -1942,10 +1660,7 @@ mod tests {
         editor.apply(Action::RemoveMedia { id }).unwrap();
         assert!(editor.project.media.is_empty());
         editor.save().unwrap();
-        assert!(
-            editor.paths.media().join("test.wav").is_file(),
-            "undo history must keep the media file"
-        );
+        assert!(editor.paths.media().join("test.wav").is_file(), "undo history must keep the media file");
 
         // Once the history no longer holds it (as after closing the project),
         // the same Save cleans it up.
@@ -1963,10 +1678,7 @@ mod tests {
 
         editor.pending.insert(99, ("Import".to_string(), 0.5));
         editor.save().unwrap();
-        assert!(
-            editor.paths.media().join("gone.wav").is_file(),
-            "cleanup must be skipped while a job is running"
-        );
+        assert!(editor.paths.media().join("gone.wav").is_file(), "cleanup must be skipped while a job is running");
 
         editor.pending.clear();
         editor.save().unwrap();
@@ -1988,31 +1700,19 @@ mod tests {
         // A snapshot holding the extra item sits on the redo stack.
         let mut redo_project = (*editor.project).clone();
         redo_project.media.push(extra.clone());
-        editor
-            .history
-            .redo
-            .push(crate::editor::history::HistoryEntry {
-                label: "Import",
-                before: std::sync::Arc::new(redo_project),
-            });
+        editor.history.redo.push(crate::editor::history::HistoryEntry { label: "Import", before: std::sync::Arc::new(redo_project) });
         let (ids, files) = editor.referenced_media();
         assert!(ids.contains(&id));
         assert!(files.contains("test.wav"));
         assert!(ids.contains(&extra.id), "redo snapshot media must be kept");
-        assert!(
-            files.contains("extra.wav"),
-            "redo snapshot media must be kept"
-        );
+        assert!(files.contains("extra.wav"), "redo snapshot media must be kept");
 
         // Removing the item leaves it only on the undo stack, but it is kept.
         editor.history.redo.clear();
         editor.apply(Action::RemoveMedia { id }).unwrap();
         let (ids, files) = editor.referenced_media();
         assert!(ids.contains(&id), "undo snapshot media must be kept");
-        assert!(
-            files.contains("test.wav"),
-            "undo snapshot media must be kept"
-        );
+        assert!(files.contains("test.wav"), "undo snapshot media must be kept");
     }
 
     #[test]
@@ -2031,13 +1731,7 @@ mod tests {
     /// the edited project.
     fn roundtrip(project: Project, action: Action) -> Project {
         let original = project.clone();
-        let mut editor = Editor::with_project(
-            project,
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        );
+        let mut editor = Editor::with_project(project, ViewState::default(), ProjectPaths { root: PathBuf::from("unused") });
         editor.apply(action).unwrap();
         assert!(invariants::check(&editor.project).is_ok());
         assert!(editor.undo(), "undo after apply");
@@ -2062,24 +1756,14 @@ mod tests {
         let original = project.clone();
 
         let mut editor = test_editor(project);
-        editor
-            .apply(Action::RecordTake {
-                item: take,
-                track_id,
-                start: 20_000,
-                src_in: 480,
-            })
-            .unwrap();
+        editor.apply(Action::RecordTake { item: take, track_id, start: 20_000, src_in: 480 }).unwrap();
         assert_eq!(editor.undo_label(), Some("Record"));
         assert_eq!(editor.history.undo.len(), 1, "one step for item and clip");
         assert!(invariants::check(&editor.project).is_ok());
         let after = (*editor.project).clone();
         assert_eq!(after.media.len(), 2);
         assert_eq!(after.media[1].display_name, "Take 1", "named by the op");
-        assert_eq!(
-            spans(&after, 0),
-            [(0, 20_000), (20_000, 24_520), (24_520, 100_000)]
-        );
+        assert_eq!(spans(&after, 0), [(0, 20_000), (20_000, 24_520), (24_520, 100_000)]);
         assert_eq!(srcs(&after, 0)[1], (480, 5_000));
         assert_eq!(after.tracks[0].clips[1].media_id, take_id);
 
@@ -2102,33 +1786,18 @@ mod tests {
             channels: 1,
             length: 1_000,
         };
-        let result = editor.apply(Action::RecordTake {
-            item: take,
-            track_id: Uuid::new_v4(),
-            start: 0,
-            src_in: 0,
-        });
+        let result = editor.apply(Action::RecordTake { item: take, track_id: Uuid::new_v4(), start: 0, src_in: 0 });
         assert!(matches!(result, Err(EditorError::Op(OpError::NotFound(_)))));
         assert_eq!(*editor.project, original);
         assert!(editor.history.undo.is_empty());
     }
 
     fn range_target(project: &Project, start: u64, end: u64, tracks: &[usize]) -> Target {
-        Target::Range {
-            start,
-            end,
-            tracks: tracks.iter().map(|&i| project.tracks[i].id).collect(),
-        }
+        Target::Range { start, end, tracks: tracks.iter().map(|&i| project.tracks[i].id).collect() }
     }
 
     fn test_editor(project: Project) -> Editor {
-        Editor::with_project(
-            project,
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        )
+        Editor::with_project(project, ViewState::default(), ProjectPaths { root: PathBuf::from("unused") })
     }
 
     /// Stores `frames` stereo frames of constant `value` for the media id.
@@ -2137,12 +1806,7 @@ mod tests {
             media_id,
             crate::io::import::Loaded {
                 samples: vec![value; frames * 2].into(),
-                peaks: crate::model::media::Peaks {
-                    channels: 2,
-                    frames: frames as u64,
-                    levels: Vec::new(),
-                }
-                .into(),
+                peaks: crate::model::media::Peaks { channels: 2, frames: frames as u64, levels: Vec::new() }.into(),
             },
         );
     }
@@ -2151,13 +1815,7 @@ mod tests {
     fn apply_gain_range_splits_and_gains_only_the_middle() {
         let project = project_with_clips(&[&[(100, 200)]]);
         let target = range_target(&project, 150, 250, &[0]);
-        let result = roundtrip(
-            project,
-            Action::ApplyGain {
-                target,
-                delta_db: 6.0,
-            },
-        );
+        let result = roundtrip(project, Action::ApplyGain { target, delta_db: 6.0 });
         assert_eq!(spans(&result, 0), [(100, 150), (150, 250), (250, 300)]);
         let gains: Vec<f32> = result.tracks[0].clips.iter().map(|c| c.gain_db).collect();
         assert_eq!(gains, [0.0, 6.0, 0.0]);
@@ -2167,13 +1825,7 @@ mod tests {
     fn apply_gain_clamps_at_plus_24() {
         let project = project_with_clips(&[&[(100, 200)]]);
         let clip = project.tracks[0].clips[0].id;
-        let result = roundtrip(
-            project,
-            Action::ApplyGain {
-                target: Target::Clips(vec![clip]),
-                delta_db: 30.0,
-            },
-        );
+        let result = roundtrip(project, Action::ApplyGain { target: Target::Clips(vec![clip]), delta_db: 30.0 });
         assert_eq!(result.tracks[0].clips[0].gain_db, 24.0);
     }
 
@@ -2181,13 +1833,7 @@ mod tests {
     fn apply_gain_clips_target_changes_whole_clips_without_splitting() {
         let project = project_with_clips(&[&[(100, 100), (300, 100)]]);
         let ids: Vec<Uuid> = project.tracks[0].clips.iter().map(|c| c.id).collect();
-        let result = roundtrip(
-            project,
-            Action::ApplyGain {
-                target: Target::Clips(ids),
-                delta_db: -3.0,
-            },
-        );
+        let result = roundtrip(project, Action::ApplyGain { target: Target::Clips(ids), delta_db: -3.0 });
         assert_eq!(spans(&result, 0), [(100, 200), (300, 400)]);
         assert!(result.tracks[0].clips.iter().all(|c| c.gain_db == -3.0));
     }
@@ -2243,10 +1889,7 @@ mod tests {
         editor.view.ripple = true;
         editor.set_range(120, 180, vec![track]);
         editor.silence().unwrap();
-        assert_eq!(
-            spans(&editor.project, 0),
-            [(100, 120), (180, 200), (300, 350)]
-        );
+        assert_eq!(spans(&editor.project, 0), [(100, 120), (180, 200), (300, 350)]);
         assert!(editor.undo());
         assert_eq!(spans(&editor.project, 0), [(100, 200), (300, 350)]);
     }
@@ -2322,13 +1965,7 @@ mod tests {
 
     #[test]
     fn set_track_height_clamps_without_history_or_dirty() {
-        let mut editor = Editor::with_project(
-            project_with_clips(&[&[]]),
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        );
+        let mut editor = Editor::with_project(project_with_clips(&[&[]]), ViewState::default(), ProjectPaths { root: PathBuf::from("unused") });
         let id = editor.project.tracks[0].id;
         editor.set_track_height(id, 1_000.0);
         assert_eq!(editor.project.tracks[0].height, 400.0);
@@ -2338,22 +1975,13 @@ mod tests {
         assert_eq!(editor.project.tracks[0].height, 120.0);
         editor.set_track_height(Uuid::new_v4(), 200.0);
         assert_eq!(editor.project.tracks[0].height, 120.0);
-        assert!(
-            editor.history.undo_label().is_none(),
-            "track height must not create a history entry"
-        );
+        assert!(editor.history.undo_label().is_none(), "track height must not create a history entry");
         assert!(!editor.dirty);
     }
 
     #[test]
     fn add_track_roundtrip_appends_and_names() {
-        let project = roundtrip(
-            project_with_clips(&[&[]]),
-            Action::AddTrack {
-                index: None,
-                name: None,
-            },
-        );
+        let project = roundtrip(project_with_clips(&[&[]]), Action::AddTrack { index: None, name: None });
         assert_eq!(project.tracks.len(), 2);
         assert_eq!(project.tracks[1].name, "Track 2");
     }
@@ -2370,13 +1998,7 @@ mod tests {
     fn rename_track_roundtrip_sets_the_name() {
         let project = project_with_clips(&[&[]]);
         let id = project.tracks[0].id;
-        let project = roundtrip(
-            project,
-            Action::RenameTrack {
-                id,
-                name: "Bass".into(),
-            },
-        );
+        let project = roundtrip(project, Action::RenameTrack { id, name: "Bass".into() });
         assert_eq!(project.tracks[0].name, "Bass");
     }
 
@@ -2415,10 +2037,7 @@ mod tests {
 
     #[test]
     fn set_master_volume_roundtrip_sets_and_clamps() {
-        let project = roundtrip(
-            project_with_clips(&[&[]]),
-            Action::SetMasterVolume { db: -3.0 },
-        );
+        let project = roundtrip(project_with_clips(&[&[]]), Action::SetMasterVolume { db: -3.0 });
         assert!((project.master_volume_db + 3.0).abs() < f32::EPSILON);
         let project = roundtrip(project, Action::SetMasterVolume { db: 20.0 });
         assert!((project.master_volume_db - 12.0).abs() < f32::EPSILON);
@@ -2441,18 +2060,9 @@ mod tests {
     #[test]
     fn failed_action_leaves_project_and_history_unchanged() {
         let project = project_with_clips(&[&[]]);
-        let mut editor = Editor::with_project(
-            project.clone(),
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        );
+        let mut editor = Editor::with_project(project.clone(), ViewState::default(), ProjectPaths { root: PathBuf::from("unused") });
         let missing = uuid::Uuid::new_v4();
-        let result = editor.apply(Action::SetTrackVolume {
-            id: missing,
-            db: 3.0,
-        });
+        let result = editor.apply(Action::SetTrackVolume { id: missing, db: 3.0 });
         assert!(matches!(result, Err(EditorError::Op(OpError::NotFound(id))) if id == missing));
         assert_eq!(*editor.project, project);
         assert!(!editor.dirty);
@@ -2463,43 +2073,22 @@ mod tests {
 
     #[test]
     fn apply_after_undo_clears_redo() {
-        let mut editor = Editor::with_project(
-            project_with_clips(&[&[]]),
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        );
+        let mut editor = Editor::with_project(project_with_clips(&[&[]]), ViewState::default(), ProjectPaths { root: PathBuf::from("unused") });
         let id = editor.project.tracks[0].id;
-        editor
-            .apply(Action::SetTrackVolume { id, db: 1.0 })
-            .unwrap();
+        editor.apply(Action::SetTrackVolume { id, db: 1.0 }).unwrap();
         assert!(editor.undo());
         assert!(editor.redo_label().is_some());
-        editor
-            .apply(Action::SetTrackVolume { id, db: 2.0 })
-            .unwrap();
+        editor.apply(Action::SetTrackVolume { id, db: 2.0 }).unwrap();
         assert!(editor.redo_label().is_none());
         assert!(!editor.redo());
     }
 
     #[test]
     fn one_thousand_and_one_applies_keep_one_thousand_undo_steps() {
-        let mut editor = Editor::with_project(
-            project_with_clips(&[&[]]),
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        );
+        let mut editor = Editor::with_project(project_with_clips(&[&[]]), ViewState::default(), ProjectPaths { root: PathBuf::from("unused") });
         let id = editor.project.tracks[0].id;
         for i in 0..1_001 {
-            editor
-                .apply(Action::SetTrackVolume {
-                    id,
-                    db: (i % 12) as f32,
-                })
-                .unwrap();
+            editor.apply(Action::SetTrackVolume { id, db: (i % 12) as f32 }).unwrap();
         }
         assert_eq!(editor.history.undo.len(), 1_000);
         for _ in 0..1_000 {
@@ -2510,13 +2099,7 @@ mod tests {
 
     #[test]
     fn gesture_previews_end_in_one_undo_step() {
-        let mut editor = Editor::with_project(
-            project_with_clips(&[&[]]),
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        );
+        let mut editor = Editor::with_project(project_with_clips(&[&[]]), ViewState::default(), ProjectPaths { root: PathBuf::from("unused") });
         let before = (*editor.project).clone();
         let id = editor.project.tracks[0].id;
         editor.begin_gesture();
@@ -2534,19 +2117,11 @@ mod tests {
 
     #[test]
     fn cancel_gesture_restores_and_records_nothing() {
-        let mut editor = Editor::with_project(
-            project_with_clips(&[&[]]),
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        );
+        let mut editor = Editor::with_project(project_with_clips(&[&[]]), ViewState::default(), ProjectPaths { root: PathBuf::from("unused") });
         let before = (*editor.project).clone();
         let id = editor.project.tracks[0].id;
         editor.begin_gesture();
-        editor
-            .preview(Action::SetTrackVolume { id, db: 5.0 })
-            .unwrap();
+        editor.preview(Action::SetTrackVolume { id, db: 5.0 }).unwrap();
         editor.cancel_gesture();
         assert_eq!(*editor.project, before);
         assert!(editor.history.undo.is_empty());
@@ -2556,151 +2131,31 @@ mod tests {
 
     #[test]
     fn action_labels_match_the_spec() {
-        assert_eq!(
-            Action::AddTrack {
-                index: None,
-                name: None
-            }
-            .label(),
-            "Add Track"
-        );
-        assert_eq!(
-            Action::DeleteTrack {
-                id: uuid::Uuid::nil()
-            }
-            .label(),
-            "Delete Track"
-        );
-        assert_eq!(
-            Action::RenameTrack {
-                id: uuid::Uuid::nil(),
-                name: String::new()
-            }
-            .label(),
-            "Rename Track"
-        );
-        assert_eq!(
-            Action::MoveTrack {
-                id: uuid::Uuid::nil(),
-                new_index: 0
-            }
-            .label(),
-            "Move Track"
-        );
-        assert_eq!(
-            Action::SetTrackVolume {
-                id: uuid::Uuid::nil(),
-                db: 0.0
-            }
-            .label(),
-            "Track Volume"
-        );
-        assert_eq!(
-            Action::SetTrackPan {
-                id: uuid::Uuid::nil(),
-                pan: 0.0
-            }
-            .label(),
-            "Track Pan"
-        );
-        assert_eq!(
-            Action::SetTrackMute {
-                id: uuid::Uuid::nil(),
-                mute: true
-            }
-            .label(),
-            "Mute"
-        );
-        assert_eq!(
-            Action::SetTrackSolo {
-                id: uuid::Uuid::nil(),
-                solo: true
-            }
-            .label(),
-            "Solo"
-        );
-        assert_eq!(
-            Action::SoloExclusive {
-                id: uuid::Uuid::nil()
-            }
-            .label(),
-            "Solo Exclusive"
-        );
+        assert_eq!(Action::AddTrack { index: None, name: None }.label(), "Add Track");
+        assert_eq!(Action::DeleteTrack { id: uuid::Uuid::nil() }.label(), "Delete Track");
+        assert_eq!(Action::RenameTrack { id: uuid::Uuid::nil(), name: String::new() }.label(), "Rename Track");
+        assert_eq!(Action::MoveTrack { id: uuid::Uuid::nil(), new_index: 0 }.label(), "Move Track");
+        assert_eq!(Action::SetTrackVolume { id: uuid::Uuid::nil(), db: 0.0 }.label(), "Track Volume");
+        assert_eq!(Action::SetTrackPan { id: uuid::Uuid::nil(), pan: 0.0 }.label(), "Track Pan");
+        assert_eq!(Action::SetTrackMute { id: uuid::Uuid::nil(), mute: true }.label(), "Mute");
+        assert_eq!(Action::SetTrackSolo { id: uuid::Uuid::nil(), solo: true }.label(), "Solo");
+        assert_eq!(Action::SoloExclusive { id: uuid::Uuid::nil() }.label(), "Solo Exclusive");
         assert_eq!(Action::SetMasterVolume { db: 0.0 }.label(), "Master Volume");
+        assert_eq!(Action::SplitAt { pos: 0, track_ids: None }.label(), "Split");
         assert_eq!(
-            Action::SplitAt {
-                pos: 0,
-                track_ids: None
-            }
-            .label(),
-            "Split"
-        );
-        assert_eq!(
-            Action::PlaceClip {
-                track_id: uuid::Uuid::nil(),
-                media_id: uuid::Uuid::nil(),
-                start: 0,
-                src_in: 0,
-                src_out: 0,
-                insert: false
-            }
-            .label(),
+            Action::PlaceClip { track_id: uuid::Uuid::nil(), media_id: uuid::Uuid::nil(), start: 0, src_in: 0, src_out: 0, insert: false }.label(),
             "Add Clip"
         );
-        assert_eq!(
-            Action::MoveClips {
-                clip_ids: vec![],
-                delta_time: 0,
-                delta_tracks: 0
-            }
-            .label(),
-            "Move Clip"
-        );
-        assert_eq!(
-            Action::TrimClip {
-                clip_id: uuid::Uuid::nil(),
-                edge: crate::editor::ops::clip::Edge::Start,
-                new_pos: 0
-            }
-            .label(),
-            "Trim Clip"
-        );
-        assert_eq!(
-            Action::DeleteClips {
-                clip_ids: vec![],
-                ripple: false
-            }
-            .label(),
-            "Delete Clip"
-        );
-        assert_eq!(
-            Action::SetClipGain {
-                clip_id: uuid::Uuid::nil(),
-                db: 0.0
-            }
-            .label(),
-            "Clip Gain"
-        );
-        assert_eq!(
-            Action::SetClipFades {
-                clip_id: uuid::Uuid::nil(),
-                fade_in: 0,
-                fade_out: 0
-            }
-            .label(),
-            "Fades"
-        );
+        assert_eq!(Action::MoveClips { clip_ids: vec![], delta_time: 0, delta_tracks: 0 }.label(), "Move Clip");
+        assert_eq!(Action::TrimClip { clip_id: uuid::Uuid::nil(), edge: crate::editor::ops::clip::Edge::Start, new_pos: 0 }.label(), "Trim Clip");
+        assert_eq!(Action::DeleteClips { clip_ids: vec![], ripple: false }.label(), "Delete Clip");
+        assert_eq!(Action::SetClipGain { clip_id: uuid::Uuid::nil(), db: 0.0 }.label(), "Clip Gain");
+        assert_eq!(Action::SetClipFades { clip_id: uuid::Uuid::nil(), fade_in: 0, fade_out: 0 }.label(), "Fades");
     }
 
     #[test]
     fn split_at_roundtrip_all_tracks() {
-        let project = roundtrip(
-            project_with_clips(&[&[(100, 100)], &[(100, 100)]]),
-            Action::SplitAt {
-                pos: 150,
-                track_ids: None,
-            },
-        );
+        let project = roundtrip(project_with_clips(&[&[(100, 100)], &[(100, 100)]]), Action::SplitAt { pos: 150, track_ids: None });
         assert_eq!(spans(&project, 0), [(100, 150), (150, 200)]);
         assert_eq!(spans(&project, 1), [(100, 150), (150, 200)]);
     }
@@ -2709,13 +2164,7 @@ mod tests {
     fn split_at_roundtrip_single_track() {
         let target = project_with_clips(&[&[(100, 100)], &[(100, 100)]]);
         let id = target.tracks[1].id;
-        let project = roundtrip(
-            target,
-            Action::SplitAt {
-                pos: 150,
-                track_ids: Some(vec![id]),
-            },
-        );
+        let project = roundtrip(target, Action::SplitAt { pos: 150, track_ids: Some(vec![id]) });
         assert_eq!(spans(&project, 0), [(100, 200)]);
         assert_eq!(spans(&project, 1), [(100, 150), (150, 200)]);
     }
@@ -2725,13 +2174,7 @@ mod tests {
         let target = project_with_clips(&[&[]]);
         let media_id = target.media[0].id;
         let track_count = target.tracks.len();
-        let project = roundtrip(
-            target,
-            Action::PlaceClipOnNewTrack {
-                media_id,
-                start: 500,
-            },
-        );
+        let project = roundtrip(target, Action::PlaceClipOnNewTrack { media_id, start: 500 });
         // One undo step removed both the new track and its clip, so the
         // roundtrip helper (apply -> undo -> original -> redo) proves it.
         assert_eq!(project.tracks.len(), track_count + 1);
@@ -2742,13 +2185,7 @@ mod tests {
 
     /// Wraps a project in an in-memory editor for error-path tests.
     fn with_editor(project: Project) -> Editor {
-        Editor::with_project(
-            project,
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        )
+        Editor::with_project(project, ViewState::default(), ProjectPaths { root: PathBuf::from("unused") })
     }
 
     #[test]
@@ -2756,17 +2193,7 @@ mod tests {
         let target = project_with_clips(&[&[(100, 100)]]);
         let track_id = target.tracks[0].id;
         let media_id = target.media[0].id;
-        let project = roundtrip(
-            target,
-            Action::PlaceClip {
-                track_id,
-                media_id,
-                start: 150,
-                src_in: 0,
-                src_out: 100,
-                insert: false,
-            },
-        );
+        let project = roundtrip(target, Action::PlaceClip { track_id, media_id, start: 150, src_in: 0, src_out: 100, insert: false });
         assert_eq!(spans(&project, 0), [(100, 150), (150, 250)]);
     }
 
@@ -2775,17 +2202,7 @@ mod tests {
         let target = project_with_clips(&[&[(100, 100)]]);
         let track_id = target.tracks[0].id;
         let media_id = target.media[0].id;
-        let project = roundtrip(
-            target,
-            Action::PlaceClip {
-                track_id,
-                media_id,
-                start: 150,
-                src_in: 0,
-                src_out: 100,
-                insert: true,
-            },
-        );
+        let project = roundtrip(target, Action::PlaceClip { track_id, media_id, start: 150, src_in: 0, src_out: 100, insert: true });
         assert_eq!(spans(&project, 0), [(100, 150), (150, 250), (250, 300)]);
     }
 
@@ -2793,14 +2210,7 @@ mod tests {
     fn move_clip_overwrites_neighbor_roundtrip() {
         let target = project_with_clips(&[&[(100, 100), (220, 100)]]);
         let clip_id = target.tracks[0].clips[0].id;
-        let project = roundtrip(
-            target,
-            Action::MoveClips {
-                clip_ids: vec![clip_id],
-                delta_time: 50,
-                delta_tracks: 0,
-            },
-        );
+        let project = roundtrip(target, Action::MoveClips { clip_ids: vec![clip_id], delta_time: 50, delta_tracks: 0 });
         assert_eq!(spans(&project, 0), [(150, 250), (250, 320)]);
     }
 
@@ -2809,14 +2219,7 @@ mod tests {
         let target = project_with_clips(&[&[(100, 100)], &[(150, 100)], &[]]);
         let first = target.tracks[0].clips[0].id;
         let second = target.tracks[1].clips[0].id;
-        let project = roundtrip(
-            target,
-            Action::MoveClips {
-                clip_ids: vec![first, second],
-                delta_time: 0,
-                delta_tracks: 1,
-            },
-        );
+        let project = roundtrip(target, Action::MoveClips { clip_ids: vec![first, second], delta_time: 0, delta_tracks: 1 });
         assert!(project.tracks[0].clips.is_empty());
         assert_eq!(spans(&project, 1), [(100, 200)]);
         assert_eq!(spans(&project, 2), [(150, 250)]);
@@ -2828,11 +2231,7 @@ mod tests {
         let clip_id = target.tracks[0].clips[0].id;
         let original = target.clone();
         let mut editor = with_editor(target);
-        let result = editor.apply(Action::MoveClips {
-            clip_ids: vec![clip_id],
-            delta_time: -200,
-            delta_tracks: 0,
-        });
+        let result = editor.apply(Action::MoveClips { clip_ids: vec![clip_id], delta_time: -200, delta_tracks: 0 });
         assert!(matches!(result, Err(EditorError::Op(OpError::Invalid(_)))));
         assert_eq!(*editor.project, original);
     }
@@ -2843,11 +2242,7 @@ mod tests {
         let clip_id = target.tracks[0].clips[0].id;
         let original = target.clone();
         let mut editor = with_editor(target);
-        let result = editor.apply(Action::MoveClips {
-            clip_ids: vec![clip_id],
-            delta_time: 0,
-            delta_tracks: 1,
-        });
+        let result = editor.apply(Action::MoveClips { clip_ids: vec![clip_id], delta_time: 0, delta_tracks: 1 });
         assert!(matches!(result, Err(EditorError::Op(OpError::Invalid(_)))));
         assert_eq!(*editor.project, original);
     }
@@ -2856,14 +2251,7 @@ mod tests {
     fn trim_start_roundtrip() {
         let target = project_with_clips(&[&[(100, 100)]]);
         let clip_id = target.tracks[0].clips[0].id;
-        let project = roundtrip(
-            target,
-            Action::TrimClip {
-                clip_id,
-                edge: crate::editor::ops::clip::Edge::Start,
-                new_pos: 120,
-            },
-        );
+        let project = roundtrip(target, Action::TrimClip { clip_id, edge: crate::editor::ops::clip::Edge::Start, new_pos: 120 });
         assert_eq!(spans(&project, 0), [(120, 200)]);
         assert_eq!(srcs(&project, 0), [(20, 100)]);
     }
@@ -2872,14 +2260,7 @@ mod tests {
     fn trim_start_clamps_at_src_in_zero_roundtrip() {
         let target = project_with_clips(&[&[(100, 100)]]);
         let clip_id = target.tracks[0].clips[0].id;
-        let project = roundtrip(
-            target,
-            Action::TrimClip {
-                clip_id,
-                edge: crate::editor::ops::clip::Edge::Start,
-                new_pos: 50,
-            },
-        );
+        let project = roundtrip(target, Action::TrimClip { clip_id, edge: crate::editor::ops::clip::Edge::Start, new_pos: 50 });
         assert_eq!(spans(&project, 0), [(100, 200)]);
         assert_eq!(srcs(&project, 0), [(0, 100)]);
     }
@@ -2888,14 +2269,7 @@ mod tests {
     fn trim_end_stops_at_neighbor_roundtrip() {
         let target = project_with_clips(&[&[(100, 150), (250, 100)]]);
         let clip_id = target.tracks[0].clips[0].id;
-        let project = roundtrip(
-            target,
-            Action::TrimClip {
-                clip_id,
-                edge: crate::editor::ops::clip::Edge::End,
-                new_pos: 400,
-            },
-        );
+        let project = roundtrip(target, Action::TrimClip { clip_id, edge: crate::editor::ops::clip::Edge::End, new_pos: 400 });
         assert_eq!(spans(&project, 0), [(100, 250), (250, 350)]);
     }
 
@@ -2903,13 +2277,7 @@ mod tests {
     fn delete_clips_ripple_roundtrip() {
         let target = project_with_clips(&[&[(0, 100), (100, 100), (200, 100)]]);
         let clip_id = target.tracks[0].clips[1].id;
-        let project = roundtrip(
-            target,
-            Action::DeleteClips {
-                clip_ids: vec![clip_id],
-                ripple: true,
-            },
-        );
+        let project = roundtrip(target, Action::DeleteClips { clip_ids: vec![clip_id], ripple: true });
         assert_eq!(spans(&project, 0), [(0, 100), (100, 200)]);
     }
 
@@ -2917,13 +2285,7 @@ mod tests {
     fn delete_clips_without_ripple_leaves_the_gap_roundtrip() {
         let target = project_with_clips(&[&[(0, 100), (100, 100), (200, 100)]]);
         let clip_id = target.tracks[0].clips[1].id;
-        let project = roundtrip(
-            target,
-            Action::DeleteClips {
-                clip_ids: vec![clip_id],
-                ripple: false,
-            },
-        );
+        let project = roundtrip(target, Action::DeleteClips { clip_ids: vec![clip_id], ripple: false });
         assert_eq!(spans(&project, 0), [(0, 100), (200, 300)]);
     }
 
@@ -2939,14 +2301,7 @@ mod tests {
     fn set_clip_fades_clamp_on_a_short_clip_roundtrip() {
         let target = project_with_clips(&[&[(100, 10)]]);
         let clip_id = target.tracks[0].clips[0].id;
-        let project = roundtrip(
-            target,
-            Action::SetClipFades {
-                clip_id,
-                fade_in: 8,
-                fade_out: 8,
-            },
-        );
+        let project = roundtrip(target, Action::SetClipFades { clip_id, fade_in: 8, fade_out: 8 });
         let clip = &project.tracks[0].clips[0];
         assert_eq!(clip.fade_in, 2);
         assert_eq!(clip.fade_out, 8);
@@ -2955,15 +2310,7 @@ mod tests {
     fn delete_range_roundtrip() {
         let target = project_with_clips(&[&[(0, 100), (200, 100)]]);
         let track_id = target.tracks[0].id;
-        let project = roundtrip(
-            target,
-            Action::DeleteRange {
-                s: 50,
-                e: 150,
-                track_ids: vec![track_id],
-                ripple: true,
-            },
-        );
+        let project = roundtrip(target, Action::DeleteRange { s: 50, e: 150, track_ids: vec![track_id], ripple: true });
         assert_eq!(spans(&project, 0), [(0, 50), (100, 200)]);
     }
 
@@ -2971,15 +2318,7 @@ mod tests {
     fn delete_range_without_ripple_roundtrip() {
         let target = project_with_clips(&[&[(0, 100), (200, 100)]]);
         let track_id = target.tracks[0].id;
-        let project = roundtrip(
-            target,
-            Action::DeleteRange {
-                s: 50,
-                e: 150,
-                track_ids: vec![track_id],
-                ripple: false,
-            },
-        );
+        let project = roundtrip(target, Action::DeleteRange { s: 50, e: 150, track_ids: vec![track_id], ripple: false });
         assert_eq!(spans(&project, 0), [(0, 50), (200, 300)]);
     }
 
@@ -2987,14 +2326,7 @@ mod tests {
     fn trim_to_selection_roundtrip() {
         let target = project_with_clips(&[&[(0, 100), (200, 100)]]);
         let track_id = target.tracks[0].id;
-        let project = roundtrip(
-            target,
-            Action::TrimToSelection {
-                s: 50,
-                e: 250,
-                track_ids: vec![track_id],
-            },
-        );
+        let project = roundtrip(target, Action::TrimToSelection { s: 50, e: 250, track_ids: vec![track_id] });
         assert_eq!(spans(&project, 0), [(50, 100), (200, 250)]);
     }
 
@@ -3003,13 +2335,7 @@ mod tests {
         let target = project_with_clips(&[&[(0, 100), (200, 100)]]);
         let track_id = target.tracks[0].id;
         let original = target.clone();
-        let mut editor = Editor::with_project(
-            target,
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        );
+        let mut editor = Editor::with_project(target, ViewState::default(), ProjectPaths { root: PathBuf::from("unused") });
         editor.cut(50, 150, vec![track_id], true).unwrap();
         assert!(editor.dirty);
 
@@ -3026,13 +2352,7 @@ mod tests {
 
     #[test]
     fn copy_is_not_undoable_and_not_dirty() {
-        let mut editor = Editor::with_project(
-            project_with_clips(&[&[(0, 100)]]),
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        );
+        let mut editor = Editor::with_project(project_with_clips(&[&[(0, 100)]]), ViewState::default(), ProjectPaths { root: PathBuf::from("unused") });
         let track_id = editor.project.tracks[0].id;
         editor.copy(0, 100, &[track_id]);
         assert!(!editor.dirty);
@@ -3044,17 +2364,8 @@ mod tests {
     #[test]
     fn copy_selection_of_clips_keeps_track_offsets() {
         let target = project_with_clips(&[&[(100, 50)], &[], &[(200, 50)]]);
-        let mut editor = Editor::with_project(
-            target,
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        );
-        let clip_ids = vec![
-            editor.project.tracks[0].clips[0].id,
-            editor.project.tracks[2].clips[0].id,
-        ];
+        let mut editor = Editor::with_project(target, ViewState::default(), ProjectPaths { root: PathBuf::from("unused") });
+        let clip_ids = vec![editor.project.tracks[0].clips[0].id, editor.project.tracks[2].clips[0].id];
         editor.select_clips(clip_ids);
         editor.copy_selection();
         let clipboard = editor.clipboard().expect("copy stores the clipboard");
@@ -3068,24 +2379,14 @@ mod tests {
     fn cut_selection_of_clips_is_one_cut_step_and_undoes() {
         let target = project_with_clips(&[&[(0, 100), (200, 100), (400, 100)]]);
         let original = target.clone();
-        let mut editor = Editor::with_project(
-            target,
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        );
+        let mut editor = Editor::with_project(target, ViewState::default(), ProjectPaths { root: PathBuf::from("unused") });
         editor.view.ripple = true;
         let clip_id = editor.project.tracks[0].clips[1].id;
         editor.select_clips(vec![clip_id]);
 
         editor.cut_selection().unwrap();
         assert_eq!(editor.undo_label(), Some("Cut"));
-        assert_eq!(
-            spans(&editor.project, 0),
-            [(0, 100), (300, 400)],
-            "ripple on closes the gap",
-        );
+        assert_eq!(spans(&editor.project, 0), [(0, 100), (300, 400)], "ripple on closes the gap",);
 
         assert!(editor.undo(), "one undo step restores the clips");
         assert_eq!(*editor.project, original);
@@ -3101,11 +2402,7 @@ mod tests {
         editor.set_playhead(0);
 
         editor.paste().unwrap();
-        assert_eq!(
-            spans(&editor.project, 0),
-            [(0, 100), (200, 250)],
-            "replace puts the clipboard at the range start",
-        );
+        assert_eq!(spans(&editor.project, 0), [(0, 100), (200, 250)], "replace puts the clipboard at the range start",);
         assert_eq!(editor.selection(), &Selection::None, "selection cleared");
         assert_eq!(editor.view.playhead, 200, "playhead at the range start");
     }
@@ -3121,24 +2418,14 @@ mod tests {
 
         editor.paste().unwrap();
         assert_eq!(spans(&editor.project, 0), [], "track 0 untouched");
-        assert_eq!(
-            spans(&editor.project, 1),
-            [(0, 100), (100, 150)],
-            "insert at the playhead on the last clicked track",
-        );
+        assert_eq!(spans(&editor.project, 1), [(0, 100), (100, 150)], "insert at the playhead on the last clicked track",);
     }
 
     #[test]
     fn split_with_a_range_splits_only_the_range_tracks() {
         let target = project_with_clips(&[&[(0, 100)], &[(0, 100)]]);
         let track1_id = target.tracks[1].id;
-        let mut editor = Editor::with_project(
-            target,
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        );
+        let mut editor = Editor::with_project(target, ViewState::default(), ProjectPaths { root: PathBuf::from("unused") });
         editor.set_range(0, 100, vec![track1_id]);
         editor.set_playhead(50);
 
@@ -3150,13 +2437,7 @@ mod tests {
     #[test]
     fn split_without_selection_splits_every_track() {
         let target = project_with_clips(&[&[(0, 100)], &[(0, 100)]]);
-        let mut editor = Editor::with_project(
-            target,
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        );
+        let mut editor = Editor::with_project(target, ViewState::default(), ProjectPaths { root: PathBuf::from("unused") });
         editor.set_playhead(50);
 
         editor.split().unwrap();
@@ -3166,13 +2447,7 @@ mod tests {
 
     /// Wraps the target project in an editor with the clipboard already stored.
     fn paste_editor(target: Project, clipboard: Clipboard) -> Editor {
-        let mut editor = Editor::with_project(
-            target,
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        );
+        let mut editor = Editor::with_project(target, ViewState::default(), ProjectPaths { root: PathBuf::from("unused") });
         editor.clipboard = Some(Arc::new(clipboard));
         editor
     }
@@ -3251,9 +2526,7 @@ mod tests {
         let target = project_with_clips(&[&[(100, 100), (300, 100)]]);
         let clipboard = clipboard_of(&target, &[&[(0, 50)]], 0, 50);
         let editor = paste_editor(target, clipboard);
-        let project = paste_roundtrip(editor, |e| {
-            e.paste_replace_range(100, 200, 0, true).unwrap()
-        });
+        let project = paste_roundtrip(editor, |e| e.paste_replace_range(100, 200, 0, true).unwrap());
         assert_eq!(spans(&project, 0), [(100, 150), (250, 350)]);
     }
 
@@ -3262,9 +2535,7 @@ mod tests {
         let target = project_with_clips(&[&[(100, 100), (300, 100)]]);
         let clipboard = clipboard_of(&target, &[&[(0, 150)]], 0, 150);
         let editor = paste_editor(target, clipboard);
-        let project = paste_roundtrip(editor, |e| {
-            e.paste_replace_range(100, 200, 0, true).unwrap()
-        });
+        let project = paste_roundtrip(editor, |e| e.paste_replace_range(100, 200, 0, true).unwrap());
         assert_eq!(spans(&project, 0), [(100, 250), (350, 450)]);
     }
 
@@ -3273,9 +2544,7 @@ mod tests {
         let target = project_with_clips(&[&[(100, 100), (300, 100)]]);
         let clipboard = clipboard_of(&target, &[&[(0, 50)]], 0, 50);
         let editor = paste_editor(target, clipboard);
-        let project = paste_roundtrip(editor, |e| {
-            e.paste_replace_range(100, 200, 0, false).unwrap()
-        });
+        let project = paste_roundtrip(editor, |e| e.paste_replace_range(100, 200, 0, false).unwrap());
         assert_eq!(spans(&project, 0), [(100, 150), (300, 400)]);
     }
 
@@ -3284,9 +2553,7 @@ mod tests {
         let target = project_with_clips(&[&[(100, 100), (200, 100)]]);
         let clipboard = clipboard_of(&target, &[&[(0, 150)]], 0, 150);
         let editor = paste_editor(target, clipboard);
-        let project = paste_roundtrip(editor, |e| {
-            e.paste_replace_range(100, 200, 0, false).unwrap()
-        });
+        let project = paste_roundtrip(editor, |e| e.paste_replace_range(100, 200, 0, false).unwrap());
         assert_eq!(spans(&project, 0), [(100, 250), (250, 300)]);
     }
 
@@ -3301,21 +2568,9 @@ mod tests {
 
     #[test]
     fn paste_without_a_clipboard_is_an_error() {
-        let mut editor = Editor::with_project(
-            project_with_clips(&[&[]]),
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        );
-        assert!(matches!(
-            editor.paste_insert_at(0, 0),
-            Err(EditorError::Op(OpError::Invalid(_)))
-        ));
-        assert!(matches!(
-            editor.paste_replace_range(0, 10, 0, false),
-            Err(EditorError::Op(OpError::Invalid(_)))
-        ));
+        let mut editor = Editor::with_project(project_with_clips(&[&[]]), ViewState::default(), ProjectPaths { root: PathBuf::from("unused") });
+        assert!(matches!(editor.paste_insert_at(0, 0), Err(EditorError::Op(OpError::Invalid(_)))));
+        assert!(matches!(editor.paste_replace_range(0, 10, 0, false), Err(EditorError::Op(OpError::Invalid(_)))));
         assert!(!editor.dirty);
         assert!(editor.undo_label().is_none());
     }
@@ -3324,56 +2579,27 @@ mod tests {
     fn add_markers_roundtrip_sorts_and_labels() {
         let project = project_with_clips(&[&[]]);
         let project = roundtrip(project, Action::AddMarker { pos: 500 });
-        assert_eq!(
-            project
-                .markers
-                .iter()
-                .map(|m| m.position)
-                .collect::<Vec<_>>(),
-            [500]
-        );
+        assert_eq!(project.markers.iter().map(|m| m.position).collect::<Vec<_>>(), [500]);
         let project = roundtrip(project, Action::AddMarker { pos: 100 });
         let project = roundtrip(project, Action::AddMarker { pos: 300 });
-        assert_eq!(
-            project
-                .markers
-                .iter()
-                .map(|m| m.position)
-                .collect::<Vec<_>>(),
-            [100, 300, 500]
-        );
+        assert_eq!(project.markers.iter().map(|m| m.position).collect::<Vec<_>>(), [100, 300, 500]);
         assert_eq!(Action::AddMarker { pos: 0 }.label(), "Add Marker");
     }
 
     #[test]
     fn add_marker_on_existing_position_errors_and_undoes_cleanly() {
         let project = project_with_clips(&[&[]]);
-        let mut editor = Editor::with_project(
-            project.clone(),
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        );
+        let mut editor = Editor::with_project(project.clone(), ViewState::default(), ProjectPaths { root: PathBuf::from("unused") });
         editor.apply(Action::AddMarker { pos: 250 }).unwrap();
         let before = editor.project.clone();
-        assert!(matches!(
-            editor.apply(Action::AddMarker { pos: 250 }),
-            Err(EditorError::Op(OpError::Invalid(_)))
-        ));
+        assert!(matches!(editor.apply(Action::AddMarker { pos: 250 }), Err(EditorError::Op(OpError::Invalid(_)))));
         assert_eq!(*editor.project, *before, "failed add must change nothing");
         assert_eq!(*editor.project, *before, "failed add must change nothing");
     }
 
     #[test]
     fn add_marker_at_playhead_twice_adds_one_and_no_error() {
-        let mut editor = Editor::with_project(
-            project_with_clips(&[&[]]),
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        );
+        let mut editor = Editor::with_project(project_with_clips(&[&[]]), ViewState::default(), ProjectPaths { root: PathBuf::from("unused") });
         editor.set_playhead(250);
         editor.add_marker_at_playhead().unwrap();
         editor.add_marker_at_playhead().unwrap();
@@ -3383,13 +2609,7 @@ mod tests {
 
     #[test]
     fn jump_next_and_prev_markers_seek_strictly() {
-        let mut editor = Editor::with_project(
-            project_with_clips(&[&[]]),
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        );
+        let mut editor = Editor::with_project(project_with_clips(&[&[]]), ViewState::default(), ProjectPaths { root: PathBuf::from("unused") });
         editor.apply(Action::AddMarker { pos: 100 }).unwrap();
         editor.apply(Action::AddMarker { pos: 500 }).unwrap();
 
@@ -3406,21 +2626,13 @@ mod tests {
 
     #[test]
     fn delete_selected_marker_clears_selection_and_undo_restores() {
-        let mut editor = Editor::with_project(
-            project_with_clips(&[&[]]),
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        );
+        let mut editor = Editor::with_project(project_with_clips(&[&[]]), ViewState::default(), ProjectPaths { root: PathBuf::from("unused") });
         editor.set_playhead(100);
         editor.add_marker_at_playhead().unwrap();
         let id = editor.project.markers[0].id;
         editor.select_marker(Some(id));
 
-        editor
-            .apply(Action::DeleteMarkers { ids: vec![id] })
-            .unwrap();
+        editor.apply(Action::DeleteMarkers { ids: vec![id] }).unwrap();
         assert_eq!(editor.selected_marker(), None, "selection tidied");
         assert!(editor.project.markers.is_empty());
 
@@ -3436,14 +2648,7 @@ mod tests {
         let project = roundtrip(project, Action::AddMarker { pos: 300 });
         let id = project.markers[1].id;
         let project = roundtrip(project, Action::MoveMarker { id, pos: 50 });
-        assert_eq!(
-            project
-                .markers
-                .iter()
-                .map(|m| m.position)
-                .collect::<Vec<_>>(),
-            [50, 100]
-        );
+        assert_eq!(project.markers.iter().map(|m| m.position).collect::<Vec<_>>(), [50, 100]);
         assert_eq!(Action::MoveMarker { id, pos: 0 }.label(), "Move Marker");
     }
 
@@ -3455,18 +2660,8 @@ mod tests {
         let project = roundtrip(project, Action::AddMarker { pos: 300 });
         let ids = vec![project.markers[0].id, project.markers[2].id];
         let project = roundtrip(project, Action::DeleteMarkers { ids });
-        assert_eq!(
-            project
-                .markers
-                .iter()
-                .map(|m| m.position)
-                .collect::<Vec<_>>(),
-            [200]
-        );
-        assert_eq!(
-            Action::DeleteMarkers { ids: Vec::new() }.label(),
-            "Delete Marker"
-        );
+        assert_eq!(project.markers.iter().map(|m| m.position).collect::<Vec<_>>(), [200]);
+        assert_eq!(Action::DeleteMarkers { ids: Vec::new() }.label(), "Delete Marker");
     }
 
     #[test]
@@ -3475,46 +2670,17 @@ mod tests {
         let track_id = project.tracks[0].id;
         let project = roundtrip(project, Action::AddMarker { pos: 500 });
         let project = roundtrip(project, Action::AddMarker { pos: 350 });
-        let project = roundtrip(
-            project,
-            Action::DeleteRange {
-                s: 200,
-                e: 300,
-                track_ids: vec![track_id],
-                ripple: true,
-            },
-        );
+        let project = roundtrip(project, Action::DeleteRange { s: 200, e: 300, track_ids: vec![track_id], ripple: true });
         assert_eq!(spans(&project, 0), [(0, 100), (200, 300)]);
-        assert_eq!(
-            project
-                .markers
-                .iter()
-                .map(|m| m.position)
-                .collect::<Vec<_>>(),
-            [350, 500],
-            "ripple must never move markers"
-        );
+        assert_eq!(project.markers.iter().map(|m| m.position).collect::<Vec<_>>(), [350, 500], "ripple must never move markers");
     }
 
     #[test]
     fn set_project_settings_roundtrip_sets_name_and_depth() {
-        let project = roundtrip(
-            project_with_clips(&[&[]]),
-            Action::SetProjectSettings {
-                name: "Renamed".to_string(),
-                export_bit_depth: BitDepth::Float32,
-            },
-        );
+        let project = roundtrip(project_with_clips(&[&[]]), Action::SetProjectSettings { name: "Renamed".to_string(), export_bit_depth: BitDepth::Float32 });
         assert_eq!(project.name, "Renamed");
         assert_eq!(project.export_bit_depth, BitDepth::Float32);
-        assert_eq!(
-            Action::SetProjectSettings {
-                name: String::new(),
-                export_bit_depth: BitDepth::Int16
-            }
-            .label(),
-            "Project Settings"
-        );
+        assert_eq!(Action::SetProjectSettings { name: String::new(), export_bit_depth: BitDepth::Int16 }.label(), "Project Settings");
     }
 
     // ---- Task 3.5: media store, background import, media actions ----
@@ -3534,13 +2700,7 @@ mod tests {
     fn rename_media_action_roundtrip() {
         let target = project_with_clips(&[&[]]);
         let id = target.media[0].id;
-        let project = roundtrip(
-            target,
-            Action::RenameMedia {
-                id,
-                name: "New Name".to_string(),
-            },
-        );
+        let project = roundtrip(target, Action::RenameMedia { id, name: "New Name".to_string() });
         assert_eq!(project.media[0].display_name, "New Name");
     }
 
@@ -3549,22 +2709,13 @@ mod tests {
         let target = project_with_clips(&[&[(0, 100)], &[(200, 100)]]);
         let original = target.clone();
         let id = target.media[0].id;
-        let mut editor = Editor::with_project(
-            target,
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        );
+        let mut editor = Editor::with_project(target, ViewState::default(), ProjectPaths { root: PathBuf::from("unused") });
         assert_eq!(editor.media_usage(id), 2);
         editor.apply(Action::RemoveMedia { id }).unwrap();
         assert!(editor.project.media.is_empty());
         assert!(editor.project.tracks.iter().all(|t| t.clips.is_empty()));
         assert!(editor.undo(), "remove media is undoable");
-        assert_eq!(
-            *editor.project, original,
-            "undo restores the item and its clips"
-        );
+        assert_eq!(*editor.project, original, "undo restores the item and its clips");
     }
 
     #[test]
@@ -3580,33 +2731,15 @@ mod tests {
     fn rename_media_empty_name_errors() {
         let target = project_with_clips(&[&[]]);
         let id = target.media[0].id;
-        let mut editor = Editor::with_project(
-            target,
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        );
-        assert!(
-            editor
-                .apply(Action::RenameMedia {
-                    id,
-                    name: "   ".to_string(),
-                })
-                .is_err()
-        );
+        let mut editor = Editor::with_project(target, ViewState::default(), ProjectPaths { root: PathBuf::from("unused") });
+        assert!(editor.apply(Action::RenameMedia { id, name: "   ".to_string() }).is_err());
         assert_eq!(editor.project.media[0].display_name, "Test Media");
     }
 
     /// Writes a 16-bit stereo WAV with `frames` frames at 48 kHz.
     fn write_test_wav(path: &Path, frames: usize) {
         use hound::{SampleFormat, WavSpec, WavWriter};
-        let spec = WavSpec {
-            channels: 2,
-            sample_rate: 48_000,
-            bits_per_sample: 16,
-            sample_format: SampleFormat::Int,
-        };
+        let spec = WavSpec { channels: 2, sample_rate: 48_000, bits_per_sample: 16, sample_format: SampleFormat::Int };
         let mut writer = WavWriter::create(path, spec).unwrap();
         for i in 0..frames {
             let v = (i % 100) as i16;
@@ -3638,17 +2771,11 @@ mod tests {
 
         let start = std::time::Instant::now();
         while editor.has_pending_jobs() {
-            assert!(
-                start.elapsed() < std::time::Duration::from_secs(10),
-                "import job timed out"
-            );
+            assert!(start.elapsed() < std::time::Duration::from_secs(10), "import job timed out");
             editor.poll_jobs();
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        assert!(
-            editor.take_job_errors().is_empty(),
-            "no job errors expected"
-        );
+        assert!(editor.take_job_errors().is_empty(), "no job errors expected");
         assert_eq!(editor.project.media.len(), 1);
         let (media_id, display_name, length) = {
             let item = &editor.project.media[0];
@@ -3662,26 +2789,14 @@ mod tests {
 
         assert!(editor.undo(), "import is undoable");
         assert!(editor.project.media.is_empty());
-        assert!(
-            editor.media(media_id).is_some(),
-            "store keeps audio for undo"
-        );
+        assert!(editor.media(media_id).is_some(), "store keeps audio for undo");
     }
 
     #[test]
     fn relink_media_roundtrip() {
         let project = project_with_clips(&[&[(0, 100)]]);
         let id = project.media[0].id;
-        let new = roundtrip(
-            project,
-            Action::RelinkMedia {
-                id,
-                file_name: "new.wav".to_string(),
-                original_rate: 44_100,
-                channels: 1,
-                length: 500_000,
-            },
-        );
+        let new = roundtrip(project, Action::RelinkMedia { id, file_name: "new.wav".to_string(), original_rate: 44_100, channels: 1, length: 500_000 });
         let item = new.media.iter().find(|m| m.id == id).unwrap();
         assert_eq!(item.file_name, "new.wav");
         assert_eq!(item.original_rate, 44_100);
@@ -3710,14 +2825,7 @@ mod tests {
         assert!(editor.audio.is_none());
         assert!(editor.audio_status().starts_with("No audio"));
         // An edit with no engine running must not panic; publish is a no-op.
-        assert!(
-            editor
-                .apply(Action::AddTrack {
-                    index: None,
-                    name: None
-                })
-                .is_ok()
-        );
+        assert!(editor.apply(Action::AddTrack { index: None, name: None }).is_ok());
         editor.publish();
         editor.tick();
         assert!(editor.retired.is_empty());
@@ -3725,13 +2833,7 @@ mod tests {
 
     /// An in-memory editor with no audio engine.
     fn selection_editor(tracks: &[&[(u64, u64)]]) -> Editor {
-        Editor::with_project(
-            project_with_clips(tracks),
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        )
+        Editor::with_project(project_with_clips(tracks), ViewState::default(), ProjectPaths { root: PathBuf::from("unused") })
     }
 
     #[test]
@@ -3740,14 +2842,7 @@ mod tests {
         let t0 = editor.project.tracks[0].id;
         let t2 = editor.project.tracks[2].id;
         editor.set_range(500, 100, vec![t2, t0]);
-        assert_eq!(
-            editor.selection(),
-            &Selection::Range {
-                start: 100,
-                end: 500,
-                tracks: vec![t0, t2]
-            }
-        );
+        assert_eq!(editor.selection(), &Selection::Range { start: 100, end: 500, tracks: vec![t0, t2] });
     }
 
     #[test]
@@ -3852,14 +2947,7 @@ mod tests {
         let mut editor = selection_editor(&[&[(0, 100)], &[(300, 100)]]);
         editor.select_all();
         let tracks = editor.project.tracks.iter().map(|t| t.id).collect();
-        assert_eq!(
-            editor.selection(),
-            &Selection::Range {
-                start: 0,
-                end: 400,
-                tracks
-            }
-        );
+        assert_eq!(editor.selection(), &Selection::Range { start: 0, end: 400, tracks });
 
         let mut empty = selection_editor(&[]);
         empty.select_all();
@@ -3933,21 +3021,15 @@ mod tests {
         editor.tick();
         let first = autosave::autosave_path(&editor.paths);
         assert!(first.is_file());
-        let mtime = std::fs::metadata(&first)
-            .and_then(|m| m.modified())
-            .unwrap();
+        let mtime = std::fs::metadata(&first).and_then(|m| m.modified()).unwrap();
         // A second tick with no new edit must not write again.
         editor.tick();
-        let mtime2 = std::fs::metadata(&first)
-            .and_then(|m| m.modified())
-            .unwrap();
+        let mtime2 = std::fs::metadata(&first).and_then(|m| m.modified()).unwrap();
         assert_eq!(mtime, mtime2);
         // A new edit makes the next tick write again.
         make_dirty(&mut editor);
         editor.tick();
-        let mtime3 = std::fs::metadata(&first)
-            .and_then(|m| m.modified())
-            .unwrap();
+        let mtime3 = std::fs::metadata(&first).and_then(|m| m.modified()).unwrap();
         assert_ne!(mtime2, mtime3);
     }
 
@@ -3961,10 +3043,7 @@ mod tests {
         let messages = editor.take_job_errors();
         assert_eq!(messages.len(), 1, "{messages:?}");
         assert_eq!(messages[0].title, "Media");
-        assert!(
-            messages[0].text.contains("1 media files are missing"),
-            "{messages:?}"
-        );
+        assert!(messages[0].text.contains("1 media files are missing"), "{messages:?}");
     }
 
     #[test]
@@ -3976,13 +3055,7 @@ mod tests {
         std::fs::create_dir(autosave::autosave_path(&editor.paths)).unwrap();
         make_dirty(&mut editor);
         editor.tick();
-        assert!(
-            editor
-                .take_job_errors()
-                .iter()
-                .any(|e| e.title == "Project" && e.text.contains("Autosave failed")),
-            "expected an autosave job error"
-        );
+        assert!(editor.take_job_errors().iter().any(|e| e.title == "Project" && e.text.contains("Autosave failed")), "expected an autosave job error");
     }
 
     #[test]
@@ -4002,16 +3075,10 @@ mod tests {
         make_dirty(&mut editor);
         editor.tick();
         // The autosave is now newer than project.json.
-        assert!(matches!(
-            Editor::open_with_recovery_check(&editor.paths.root),
-            Ok(OpenOutcome::NeedsRecoveryChoice(_))
-        ));
+        assert!(matches!(Editor::open_with_recovery_check(&editor.paths.root), Ok(OpenOutcome::NeedsRecoveryChoice(_))));
         // After a manual save the prompt is gone.
         editor.save().unwrap();
-        assert!(matches!(
-            Editor::open_with_recovery_check(&editor.paths.root),
-            Ok(OpenOutcome::Opened(_))
-        ));
+        assert!(matches!(Editor::open_with_recovery_check(&editor.paths.root), Ok(OpenOutcome::Opened(_))));
         drop_from_recent(&editor.paths.root);
     }
 
@@ -4019,12 +3086,7 @@ mod tests {
     fn open_recovered_loads_the_autosave_marked_dirty() {
         let _recent = lock_recent();
         let (_parent, mut editor) = disk_editor("Recovered");
-        editor
-            .apply(Action::AddTrack {
-                index: None,
-                name: None,
-            })
-            .unwrap();
+        editor.apply(Action::AddTrack { index: None, name: None }).unwrap();
         assert!(editor.dirty);
         editor.tick();
         assert!(autosave::autosave_path(&editor.paths).is_file());
@@ -4058,13 +3120,7 @@ mod tests {
         assert_eq!(opened.project.name, "BadAutosave");
         // The bad autosave was set aside so the recovery prompt does not return.
         assert!(!autosave::autosave_path(&opened.paths).exists());
-        assert!(
-            opened
-                .paths
-                .autosave()
-                .join("project.autosave.old.json")
-                .is_file()
-        );
+        assert!(opened.paths.autosave().join("project.autosave.old.json").is_file());
         // The reason is queued for the message dialog.
         let messages = opened.take_job_errors();
         assert!(
@@ -4095,32 +3151,19 @@ mod tests {
             Ok(_) => panic!("an invalid project must not open"),
         }
         // The recovery check refuses it too, before any prompt.
-        assert!(matches!(
-            Editor::open_with_recovery_check(&paths.root),
-            Err(EditorError::Io(IoError::InvalidProject(_)))
-        ));
+        assert!(matches!(Editor::open_with_recovery_check(&paths.root), Err(EditorError::Io(IoError::InvalidProject(_)))));
     }
 
     #[test]
     fn reveal_media_refuses_an_unsafe_name_without_starting_explorer() {
         let parent = tempdir().unwrap();
         let paths = crate::io::paths::create_layout(parent.path(), "Reveal").unwrap();
-        for name in [
-            r"\\attacker.example\share\a.wav",
-            "boom.wav\" \"C:\\Windows\\System32\\notepad.exe",
-            r"..\..\a.wav",
-        ] {
+        for name in [r"\\attacker.example\share\a.wav", "boom.wav\" \"C:\\Windows\\System32\\notepad.exe", r"..\..\a.wav"] {
             let mut project = project_with_clips(&[&[(0, 100)]]);
             let id = project.media[0].id;
             project.media[0].file_name = name.to_string();
             let editor = Editor::with_project(project, ViewState::default(), paths.clone());
-            assert!(
-                matches!(
-                    editor.reveal_media(id),
-                    Err(EditorError::Io(IoError::UnsafePath(_)))
-                ),
-                "{name:?}"
-            );
+            assert!(matches!(editor.reveal_media(id), Err(EditorError::Io(IoError::UnsafePath(_)))), "{name:?}");
             // An id that is not in the bin does nothing.
             assert!(editor.reveal_media(Uuid::new_v4()).is_ok());
         }
@@ -4142,17 +3185,10 @@ mod tests {
             let mut project = project_with_clips(&[&[(0, 100)]]);
             project.name = name.to_string();
             let editor = Editor::with_project(project, ViewState::default(), paths.clone());
-            for (kind, extension) in [
-                (ExportKind::Wav(BitDepth::Int24), "wav"),
-                (ExportKind::Mp3 { kbps: 192 }, "mp3"),
-            ] {
+            for (kind, extension) in [(ExportKind::Wav(BitDepth::Int24), "wav"), (ExportKind::Mp3 { kbps: 192 }, "mp3")] {
                 let path = editor.default_export_path(kind);
                 assert_eq!(path.parent(), Some(paths.exports().as_path()), "{name:?}");
-                assert_eq!(
-                    path.file_name().and_then(|n| n.to_str()),
-                    Some(format!("{stem}.{extension}").as_str()),
-                    "{name:?}"
-                );
+                assert_eq!(path.file_name().and_then(|n| n.to_str()), Some(format!("{stem}.{extension}").as_str()), "{name:?}");
             }
         }
     }

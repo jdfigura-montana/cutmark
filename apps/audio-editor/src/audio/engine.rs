@@ -6,10 +6,7 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{
-    BufferSize, OutputCallbackInfo, SampleFormat, Stream, StreamConfig, SupportedBufferSize,
-    SupportedStreamConfig, SupportedStreamConfigRange,
-};
+use cpal::{BufferSize, OutputCallbackInfo, SampleFormat, Stream, StreamConfig, SupportedBufferSize, SupportedStreamConfig, SupportedStreamConfigRange};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use thiserror::Error;
 
@@ -112,11 +109,7 @@ pub fn latency_samples(out_ns: u64, in_ns: u64, offset_ms: i32, project_rate: u3
 /// buffer-size fallback. `frames` is the callback's frame count.
 fn output_latency_ns(info: &OutputCallbackInfo, frames: usize, rate: u32) -> u64 {
     let stamp = info.timestamp();
-    latency_ns(
-        stamp.playback.saturating_duration_since(stamp.callback),
-        frames,
-        rate,
-    )
+    latency_ns(stamp.playback.saturating_duration_since(stamp.callback), frames, rate)
 }
 
 /// The cpal output stream plus the shared state the audio callback reads.
@@ -142,9 +135,7 @@ pub struct Engine {
 
 /// Name of the default output device, for the start screen status bar.
 pub fn default_output_name() -> Option<String> {
-    cpal::default_host()
-        .default_output_device()
-        .and_then(|device| device_name(&device))
+    cpal::default_host().default_output_device().and_then(|device| device_name(&device))
 }
 
 impl Engine {
@@ -157,11 +148,8 @@ impl Engine {
     pub fn start(project_rate: u32) -> Result<Engine, AudioError> {
         let host = cpal::default_host();
         let device = host.default_output_device().ok_or(AudioError::NoDevice)?;
-        let configs: Vec<SupportedStreamConfigRange> = device
-            .supported_output_configs()
-            .map_err(|e| AudioError::Device(e.to_string()))?
-            .filter(|c| c.sample_format() == SampleFormat::F32)
-            .collect();
+        let configs: Vec<SupportedStreamConfigRange> =
+            device.supported_output_configs().map_err(|e| AudioError::Device(e.to_string()))?.filter(|c| c.sample_format() == SampleFormat::F32).collect();
         let name = device_name(&device).unwrap_or_else(|| UNKNOWN_DEVICE.to_string());
         // An f32 config at the project rate, else fall back to the device's
         // own default rate and resample the mix into it.
@@ -171,16 +159,11 @@ impl Engine {
                 (config, None, rate)
             }
             None => {
-                let default = device
-                    .default_output_config()
-                    .map_err(|e| AudioError::Device(e.to_string()))?;
+                let default = device.default_output_config().map_err(|e| AudioError::Device(e.to_string()))?;
                 let (supported, device_rate) = if default.sample_format() == SampleFormat::F32 {
                     (default, default.sample_rate())
                 } else {
-                    let range = configs
-                        .first()
-                        .copied()
-                        .ok_or_else(|| AudioError::NoF32(name.clone()))?;
+                    let range = configs.first().copied().ok_or_else(|| AudioError::NoF32(name.clone()))?;
                     (range.with_max_sample_rate(), range.max_sample_rate())
                 };
                 let resampler = DeviceResampler::new(project_rate, device_rate);
@@ -188,14 +171,7 @@ impl Engine {
             }
         };
         let ratio = project_rate as f64 / device_rate.max(1) as f64;
-        Self::open(
-            device,
-            supported,
-            resampler,
-            ratio,
-            device_rate,
-            project_rate,
-        )
+        Self::open(device, supported, resampler, ratio, device_rate, project_rate)
     }
 
     /// Builds the stream for the chosen device config and assembles the engine.
@@ -262,20 +238,9 @@ impl Engine {
         )?;
         stream.play()?;
 
-        let device_info = if device_rate == project_rate {
-            format!("{project_rate} Hz")
-        } else {
-            format!("{device_rate} Hz device, resampling from {project_rate} Hz")
-        };
-        Ok(Engine {
-            _stream: stream,
-            cmd_tx,
-            timeline,
-            preview,
-            shared,
-            device_info,
-            errored,
-        })
+        let device_info =
+            if device_rate == project_rate { format!("{project_rate} Hz") } else { format!("{device_rate} Hz device, resampling from {project_rate} Hz") };
+        Ok(Engine { _stream: stream, cmd_tx, timeline, preview, shared, device_info, errored })
     }
 
     /// Sends a transport command; it is dropped when the queue is full.
@@ -314,16 +279,9 @@ impl Engine {
 
 /// Picks the best f32 output config: 2 channels at the project rate first,
 /// then any channel count at the project rate, else `None`.
-fn pick_config(
-    configs: &[SupportedStreamConfigRange],
-    project_rate: u32,
-) -> Option<SupportedStreamConfig> {
+fn pick_config(configs: &[SupportedStreamConfigRange], project_rate: u32) -> Option<SupportedStreamConfig> {
     let at_rate = |c: &SupportedStreamConfigRange| c.contains_rate(project_rate);
-    configs
-        .iter()
-        .find(|c| c.channels() == 2 && at_rate(c))
-        .or_else(|| configs.iter().find(|c| at_rate(c)))
-        .and_then(|c| c.try_with_sample_rate(project_rate))
+    configs.iter().find(|c| c.channels() == 2 && at_rate(c)).or_else(|| configs.iter().find(|c| at_rate(c))).and_then(|c| c.try_with_sample_rate(project_rate))
 }
 
 /// Maps a transport state to the `Shared::state` code.
@@ -401,19 +359,10 @@ impl Callback {
             write_channels(target, stereo, self.channels);
             done += n;
         }
-        self.shared
-            .playhead
-            .store(self.player.position(), Ordering::Relaxed);
-        self.shared
-            .preview_pos
-            .store(self.player.preview_position(), Ordering::Relaxed);
-        self.shared
-            .state
-            .store(state_code(self.player.state()), Ordering::Relaxed);
-        self.shared.output_latency_ns.store(
-            output_latency_ns(info, frames, self.device_rate),
-            Ordering::Relaxed,
-        );
+        self.shared.playhead.store(self.player.position(), Ordering::Relaxed);
+        self.shared.preview_pos.store(self.player.preview_position(), Ordering::Relaxed);
+        self.shared.state.store(state_code(self.player.state()), Ordering::Relaxed);
+        self.shared.output_latency_ns.store(output_latency_ns(info, frames, self.device_rate), Ordering::Relaxed);
     }
 
     /// Largest callback chunk the scratch can serve without overflowing the
@@ -422,9 +371,7 @@ impl Callback {
         let stereo_cap = self.scratch.len() / 2;
         match self.resampler {
             None => stereo_cap,
-            Some(_) => stereo_cap
-                .min(((MAX_PULL_FRAMES as f64) / self.ratio.max(1.0)) as usize)
-                .max(1),
+            Some(_) => stereo_cap.min(((MAX_PULL_FRAMES as f64) / self.ratio.max(1.0)) as usize).max(1),
         }
     }
 }
@@ -514,19 +461,12 @@ mod tests {
             let ns = u128::from(u64::MAX) * 2 + 2_147_483_647 * 1_000_000;
             u64::try_from((ns * 192_000 + 500_000_000) / 1_000_000_000).unwrap()
         });
-        assert_eq!(
-            latency_samples(MS, 0, 0, 0),
-            0,
-            "no project rate, no samples"
-        );
+        assert_eq!(latency_samples(MS, 0, 0, 0), 0, "no project rate, no samples");
     }
 
     #[test]
     fn the_output_latency_comes_from_cpal_timestamps() {
-        let stamp = OutputStreamTimestamp {
-            callback: StreamInstant::new(7, 100_000_000),
-            playback: StreamInstant::new(7, 125_000_000),
-        };
+        let stamp = OutputStreamTimestamp { callback: StreamInstant::new(7, 100_000_000), playback: StreamInstant::new(7, 125_000_000) };
         let info = OutputCallbackInfo::new(stamp);
         assert_eq!(output_latency_ns(&info, 960, 48_000), 25 * MS);
     }
@@ -535,10 +475,7 @@ mod tests {
     fn an_unusable_output_timestamp_falls_back_to_the_buffer_size() {
         // Playback at the callback instant, or before it: no usable difference.
         for playback in [StreamInstant::new(7, 0), StreamInstant::new(6, 0)] {
-            let info = OutputCallbackInfo::new(OutputStreamTimestamp {
-                callback: StreamInstant::new(7, 0),
-                playback,
-            });
+            let info = OutputCallbackInfo::new(OutputStreamTimestamp { callback: StreamInstant::new(7, 0), playback });
             assert_eq!(output_latency_ns(&info, 960, 48_000), 20 * MS);
             // And no buffer size either: zero.
             assert_eq!(output_latency_ns(&info, 0, 48_000), 0);

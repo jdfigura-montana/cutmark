@@ -37,21 +37,14 @@ pub fn build(samples: &[f32], channels: u16) -> Peaks {
             }
         }
     }
-    let l0 = PeakLevel {
-        block_size: BASE_BLOCK,
-        data: level0,
-    };
+    let l0 = PeakLevel { block_size: BASE_BLOCK, data: level0 };
 
     // Levels 1..3: each merges 4 blocks of the level below per channel.
     let l1 = merge_level(&l0, 1024, channels);
     let l2 = merge_level(&l1, 4096, channels);
     let l3 = merge_level(&l2, 16384, channels);
 
-    Peaks {
-        channels: channels as u16,
-        frames,
-        levels: vec![l0, l1, l2, l3],
-    }
+    Peaks { channels: channels as u16, frames, levels: vec![l0, l1, l2, l3] }
 }
 
 /// Merges 4 blocks of `lower` into one block per channel at the given block size.
@@ -115,24 +108,16 @@ pub fn read(path: &Path) -> Result<Peaks, IoError> {
         Ok(slice)
     };
     let u16_le = |pos: &mut usize| -> Result<u16, IoError> {
-        Ok(u16::from_le_bytes(take(2, pos)?.try_into().map_err(
-            |_| IoError::CorruptPeaks("truncated file".to_string()),
-        )?))
+        Ok(u16::from_le_bytes(take(2, pos)?.try_into().map_err(|_| IoError::CorruptPeaks("truncated file".to_string()))?))
     };
     let u32_le = |pos: &mut usize| -> Result<u32, IoError> {
-        Ok(u32::from_le_bytes(take(4, pos)?.try_into().map_err(
-            |_| IoError::CorruptPeaks("truncated file".to_string()),
-        )?))
+        Ok(u32::from_le_bytes(take(4, pos)?.try_into().map_err(|_| IoError::CorruptPeaks("truncated file".to_string()))?))
     };
     let u64_le = |pos: &mut usize| -> Result<u64, IoError> {
-        Ok(u64::from_le_bytes(take(8, pos)?.try_into().map_err(
-            |_| IoError::CorruptPeaks("truncated file".to_string()),
-        )?))
+        Ok(u64::from_le_bytes(take(8, pos)?.try_into().map_err(|_| IoError::CorruptPeaks("truncated file".to_string()))?))
     };
     let f32_le = |pos: &mut usize| -> Result<f32, IoError> {
-        Ok(f32::from_le_bytes(take(4, pos)?.try_into().map_err(
-            |_| IoError::CorruptPeaks("truncated file".to_string()),
-        )?))
+        Ok(f32::from_le_bytes(take(4, pos)?.try_into().map_err(|_| IoError::CorruptPeaks("truncated file".to_string()))?))
     };
 
     if take(4, &mut pos)? != MAGIC {
@@ -140,22 +125,16 @@ pub fn read(path: &Path) -> Result<Peaks, IoError> {
     }
     let version = u32_le(&mut pos)?;
     if version != VERSION {
-        return Err(IoError::CorruptPeaks(format!(
-            "unsupported version {version}"
-        )));
+        return Err(IoError::CorruptPeaks(format!("unsupported version {version}")));
     }
     let channels = u16_le(&mut pos)?;
     if !(1..=MAX_PEAK_CHANNELS).contains(&channels) {
-        return Err(IoError::CorruptPeaks(format!(
-            "unsupported channel count {channels}"
-        )));
+        return Err(IoError::CorruptPeaks(format!("unsupported channel count {channels}")));
     }
     let frames = u64_le(&mut pos)?;
     let level_count = u32_le(&mut pos)?;
     if !(1..=MAX_PEAK_LEVELS).contains(&level_count) {
-        return Err(IoError::CorruptPeaks(format!(
-            "unsupported level count {level_count}"
-        )));
+        return Err(IoError::CorruptPeaks(format!("unsupported level count {level_count}")));
     }
     let mut levels = Vec::new();
     for _ in 0..level_count {
@@ -186,11 +165,7 @@ pub fn read(path: &Path) -> Result<Peaks, IoError> {
     if pos != bytes.len() {
         return Err(IoError::CorruptPeaks("trailing bytes".to_string()));
     }
-    Ok(Peaks {
-        channels,
-        frames,
-        levels,
-    })
+    Ok(Peaks { channels, frames, levels })
 }
 #[cfg(test)]
 mod tests {
@@ -198,9 +173,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn ramp(len: usize) -> Vec<f32> {
-        (0..len)
-            .map(|i| -1.0 + 2.0 * i as f32 / (len - 1) as f32)
-            .collect()
+        (0..len).map(|i| -1.0 + 2.0 * i as f32 / (len - 1) as f32).collect()
     }
 
     #[test]
@@ -335,10 +308,7 @@ mod tests {
         for blocks in [1u64 << 40, 1 << 62, 1 << 61, u64::MAX, 1] {
             for channels in [1u16, 2] {
                 let reason = read_err(&lying_file(channels, 256, blocks));
-                assert!(
-                    reason == "truncated file" || reason == "block count overflows",
-                    "{blocks} blocks, {channels} channels: {reason}"
-                );
+                assert!(reason == "truncated file" || reason == "block count overflows", "{blocks} blocks, {channels} channels: {reason}");
             }
         }
     }
@@ -346,14 +316,8 @@ mod tests {
     #[test]
     fn block_count_overflow_is_a_checked_multiply() {
         // blocks * channels * 8 wraps u64 for these, which would look small.
-        assert_eq!(
-            read_err(&lying_file(2, 256, 1 << 62)),
-            "block count overflows"
-        );
-        assert_eq!(
-            read_err(&lying_file(1, 256, u64::MAX / 4)),
-            "block count overflows"
-        );
+        assert_eq!(read_err(&lying_file(2, 256, 1 << 62)), "block count overflows");
+        assert_eq!(read_err(&lying_file(1, 256, u64::MAX / 4)), "block count overflows");
     }
 
     #[test]

@@ -38,10 +38,7 @@ mod tests {
         for db in [-60.0f32, -12.0, -3.0, -0.5, 0.0, 3.0, 12.0] {
             let lin = db_to_linear(db);
             let back = linear_to_db(lin);
-            assert!(
-                (back - db).abs() < 1e-4,
-                "round trip failed for {db}: got {back}"
-            );
+            assert!((back - db).abs() < 1e-4, "round trip failed for {db}: got {back}");
         }
     }
 }

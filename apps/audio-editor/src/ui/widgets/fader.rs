@@ -43,14 +43,7 @@ pub fn pan_text(pan: f32) -> String {
 /// fully visible at min and max. The value maps linearly over `min..max`.
 /// When `fill_from_center`, the fill grows from the midpoint (used for pan).
 /// Double-click reports `reset`; Esc during a drag reports `cancelled`.
-pub fn slider_bare(
-    ui: &mut egui::Ui,
-    id: egui::Id,
-    rect: Rect,
-    value: f32,
-    range: (f32, f32),
-    fill_from_center: bool,
-) -> SliderOutcome {
+pub fn slider_bare(ui: &mut egui::Ui, id: egui::Id, rect: Rect, value: f32, range: (f32, f32), fill_from_center: bool) -> SliderOutcome {
     let (min, max) = range;
     let resp = ui.interact(rect, id, egui::Sense::click_and_drag());
 
@@ -88,40 +81,15 @@ pub fn slider_bare(
     let half_track = THEME.track_slider_track_w * 0.5;
 
     // Track: full width for volume, from the center for pan.
-    let fill_left = if fill_from_center {
-        rect.center().x.min(thumb_x)
-    } else {
-        track_left
-    };
-    painter.rect_filled(
-        Rect::from_min_max(
-            Pos2::new(fill_left, cy - half_track),
-            Pos2::new(thumb_x, cy + half_track),
-        ),
-        half_track,
-        THEME.slider_fill,
-    );
+    let fill_left = if fill_from_center { rect.center().x.min(thumb_x) } else { track_left };
+    painter.rect_filled(Rect::from_min_max(Pos2::new(fill_left, cy - half_track), Pos2::new(thumb_x, cy + half_track)), half_track, THEME.slider_fill);
     // Unfilled remainder of the track.
-    let rest_left = if fill_from_center {
-        rect.center().x.max(thumb_x)
-    } else {
-        thumb_x
-    };
-    painter.rect_filled(
-        Rect::from_min_max(
-            Pos2::new(rest_left, cy - half_track),
-            Pos2::new(track_right, cy + half_track),
-        ),
-        half_track,
-        THEME.slider_track,
-    );
+    let rest_left = if fill_from_center { rect.center().x.max(thumb_x) } else { thumb_x };
+    painter.rect_filled(Rect::from_min_max(Pos2::new(rest_left, cy - half_track), Pos2::new(track_right, cy + half_track)), half_track, THEME.slider_track);
     // Center tick for bipolar sliders.
     if fill_from_center {
         painter.rect_filled(
-            Rect::from_min_max(
-                Pos2::new(rect.center().x - 0.5, cy - 5.0),
-                Pos2::new(rect.center().x + 0.5, cy + 5.0),
-            ),
+            Rect::from_min_max(Pos2::new(rect.center().x - 0.5, cy - 5.0), Pos2::new(rect.center().x + 0.5, cy + 5.0)),
             0.0,
             THEME.control_border,
         );
@@ -137,13 +105,7 @@ pub fn slider_bare(
 ///
 /// The value maps linearly over `min..max`, top = max. Double-click reports
 /// `reset`; Esc during a drag reports `cancelled`.
-pub fn fader_bare(
-    ui: &mut egui::Ui,
-    id: egui::Id,
-    rect: Rect,
-    value: f32,
-    range: (f32, f32),
-) -> SliderOutcome {
+pub fn fader_bare(ui: &mut egui::Ui, id: egui::Id, rect: Rect, value: f32, range: (f32, f32)) -> SliderOutcome {
     let (min, max) = range;
     let painter = ui.painter_at(rect);
     let resp = ui.interact(rect, id, egui::Sense::click_and_drag());
@@ -175,43 +137,23 @@ pub fn fader_bare(
     let half_track = THEME.track_slider_track_w * 0.5;
 
     // Track: a thin line down the center of the fader.
-    painter.rect_filled(
-        Rect::from_min_max(
-            Pos2::new(cx - half_track, rect.top()),
-            Pos2::new(cx + half_track, rect.bottom()),
-        ),
-        half_track,
-        THEME.slider_track,
-    );
+    painter.rect_filled(Rect::from_min_max(Pos2::new(cx - half_track, rect.top()), Pos2::new(cx + half_track, rect.bottom())), half_track, THEME.slider_track);
 
     // Cap: stays fully inside the rect as it travels.
     let cap_h = 12.0;
     let cap_y = rect.top() + t * (rect.height() - cap_h) + cap_h * 0.5;
     let cap = Rect::from_center_size(Pos2::new(cx, cap_y), Vec2::new(rect.width(), cap_h));
     // Small shadow under the cap.
-    painter.rect_filled(
-        cap.translate(egui::vec2(0.0, 1.0)),
-        THEME.corner_r,
-        egui::Color32::from_black_alpha(60),
-    );
+    painter.rect_filled(cap.translate(egui::vec2(0.0, 1.0)), THEME.corner_r, egui::Color32::from_black_alpha(60));
     painter.rect_filled(cap, THEME.corner_r, THEME.slider_thumb);
     // 1 px center line across the cap.
     painter.line_segment(
-        [
-            Pos2::new(cap.left() + 3.0, cap.center().y),
-            Pos2::new(cap.right() - 3.0, cap.center().y),
-        ],
+        [Pos2::new(cap.left() + 3.0, cap.center().y), Pos2::new(cap.right() - 3.0, cap.center().y)],
         Stroke::new(THEME.hairline, THEME.slider_fill),
     );
 
     if out.reset {
-        return SliderOutcome {
-            started: false,
-            value: None,
-            ended: false,
-            cancelled: false,
-            reset: true,
-        };
+        return SliderOutcome { started: false, value: None, ended: false, cancelled: false, reset: true };
     }
     out
 }

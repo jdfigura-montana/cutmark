@@ -21,14 +21,9 @@ fn sort_markers(project: &mut Project) {
 /// The marker list is kept sorted by position.
 pub fn add_marker(project: &mut Project, pos: u64) -> Result<(), OpError> {
     if occupied(project, pos) {
-        return Err(OpError::Invalid(format!(
-            "marker already at position {pos}"
-        )));
+        return Err(OpError::Invalid(format!("marker already at position {pos}")));
     }
-    project.markers.push(Marker {
-        id: Uuid::new_v4(),
-        position: pos,
-    });
+    project.markers.push(Marker { id: Uuid::new_v4(), position: pos });
     sort_markers(project);
     Ok(())
 }
@@ -38,15 +33,9 @@ pub fn add_marker(project: &mut Project, pos: u64) -> Result<(), OpError> {
 /// The marker list is re-sorted by position after the move.
 pub fn move_marker(project: &mut Project, id: Uuid, pos: u64) -> Result<(), OpError> {
     if occupied(project, pos) {
-        return Err(OpError::Invalid(format!(
-            "marker already at position {pos}"
-        )));
+        return Err(OpError::Invalid(format!("marker already at position {pos}")));
     }
-    let marker = project
-        .markers
-        .iter_mut()
-        .find(|marker| marker.id == id)
-        .ok_or(OpError::NotFound(id))?;
+    let marker = project.markers.iter_mut().find(|marker| marker.id == id).ok_or(OpError::NotFound(id))?;
     marker.position = pos;
     sort_markers(project);
     Ok(())
@@ -66,22 +55,12 @@ pub fn delete_markers(project: &mut Project, ids: &[Uuid]) -> Result<(), OpError
 
 /// Position of the last marker strictly before `pos`, if any.
 pub fn prev_marker(project: &Project, pos: u64) -> Option<u64> {
-    project
-        .markers
-        .iter()
-        .map(|marker| marker.position)
-        .filter(|&marker_pos| marker_pos < pos)
-        .max()
+    project.markers.iter().map(|marker| marker.position).filter(|&marker_pos| marker_pos < pos).max()
 }
 
 /// Position of the first marker strictly after `pos`, if any.
 pub fn next_marker(project: &Project, pos: u64) -> Option<u64> {
-    project
-        .markers
-        .iter()
-        .map(|marker| marker.position)
-        .filter(|&marker_pos| marker_pos > pos)
-        .min()
+    project.markers.iter().map(|marker| marker.position).filter(|&marker_pos| marker_pos > pos).min()
 }
 
 #[cfg(test)]
@@ -104,10 +83,7 @@ mod tests {
         let mut project = project_with_clips(&[&[]]);
         add_marker(&mut project, 250).unwrap();
         let before = project.clone();
-        assert!(matches!(
-            add_marker(&mut project, 250),
-            Err(OpError::Invalid(_))
-        ));
+        assert!(matches!(add_marker(&mut project, 250), Err(OpError::Invalid(_))));
         assert_eq!(project, before);
     }
 
@@ -129,10 +105,7 @@ mod tests {
         add_marker(&mut project, 300).unwrap();
         let before = project.clone();
         let id = project.markers[1].id;
-        assert!(matches!(
-            move_marker(&mut project, id, 100),
-            Err(OpError::Invalid(_))
-        ));
+        assert!(matches!(move_marker(&mut project, id, 100), Err(OpError::Invalid(_))));
         assert_eq!(project, before);
     }
 
@@ -141,10 +114,7 @@ mod tests {
         let mut project = project_with_clips(&[&[]]);
         add_marker(&mut project, 100).unwrap();
         let before = project.clone();
-        assert!(matches!(
-            move_marker(&mut project, Uuid::new_v4(), 200),
-            Err(OpError::NotFound(_))
-        ));
+        assert!(matches!(move_marker(&mut project, Uuid::new_v4(), 200), Err(OpError::NotFound(_))));
         assert_eq!(project, before);
     }
 
@@ -165,10 +135,7 @@ mod tests {
         let mut project = project_with_clips(&[&[]]);
         add_marker(&mut project, 100).unwrap();
         let before = project.clone();
-        assert!(matches!(
-            delete_markers(&mut project, &[Uuid::new_v4()]),
-            Err(OpError::NotFound(_))
-        ));
+        assert!(matches!(delete_markers(&mut project, &[Uuid::new_v4()]), Err(OpError::NotFound(_))));
         assert_eq!(project, before);
     }
 

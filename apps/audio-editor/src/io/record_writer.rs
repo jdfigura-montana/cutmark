@@ -47,13 +47,7 @@ struct PeakAcc {
 impl PeakAcc {
     /// An empty accumulator.
     fn new() -> Self {
-        Self {
-            min_l: f32::INFINITY,
-            max_l: f32::NEG_INFINITY,
-            min_r: f32::INFINITY,
-            max_r: f32::NEG_INFINITY,
-            count: 0,
-        }
+        Self { min_l: f32::INFINITY, max_l: f32::NEG_INFINITY, min_r: f32::INFINITY, max_r: f32::NEG_INFINITY, count: 0 }
     }
 
     /// Adds one output frame; returns the finished `[minL, maxL, minR, maxR]`
@@ -116,46 +110,22 @@ impl RecordWriter {
     /// a 24-bit WAV at `project_rate`: one channel for Mono1/Mono2, two for
     /// Stereo. Resamples from `device_rate` with a `StreamResampler` when the
     /// rates differ. All working buffers are allocated here.
-    pub fn create(
-        part_path: &Path,
-        device_rate: u32,
-        device_channels: u16,
-        channels: RecordChannels,
-        project_rate: u32,
-    ) -> Result<Self, IoError> {
+    pub fn create(part_path: &Path, device_rate: u32, device_channels: u16, channels: RecordChannels, project_rate: u32) -> Result<Self, IoError> {
         if device_channels == 0 {
-            return Err(IoError::Export(
-                "the input device reports 0 channels".to_string(),
-            ));
+            return Err(IoError::Export("the input device reports 0 channels".to_string()));
         }
         let text = part_path.to_string_lossy();
         let Some(target_text) = text.strip_suffix(".part") else {
-            return Err(IoError::Export(format!(
-                "the take path must end in .part: {}",
-                part_path.display()
-            )));
+            return Err(IoError::Export(format!("the take path must end in .part: {}", part_path.display())));
         };
         let target = PathBuf::from(target_text);
         let out_channels = match channels {
             RecordChannels::Mono1 | RecordChannels::Mono2 => 1u16,
             RecordChannels::Stereo => 2,
         };
-        let resampler = if device_rate == project_rate {
-            None
-        } else {
-            Some(StreamResampler::new(
-                out_channels,
-                device_rate,
-                project_rate,
-            )?)
-        };
+        let resampler = if device_rate == project_rate { None } else { Some(StreamResampler::new(out_channels, device_rate, project_rate)?) };
         let guard = PartGuard::new(&target);
-        let spec = WavSpec {
-            channels: out_channels,
-            sample_rate: project_rate,
-            bits_per_sample: 24,
-            sample_format: SampleFormat::Int,
-        };
+        let spec = WavSpec { channels: out_channels, sample_rate: project_rate, bits_per_sample: 24, sample_format: SampleFormat::Int };
         let writer = WavWriter::create(guard.part_path(), spec).map_err(wav_error)?;
         Ok(Self {
             writer,
@@ -178,11 +148,7 @@ impl RecordWriter {
     /// `[minL, maxL, minR, maxR]` entry to `peaks` per 1,024 output frames
     /// (mono: R = L). A group still incomplete when the take ends is dropped.
     /// Returns the output frames written so far.
-    pub fn drain(
-        &mut self,
-        consumer: &mut Consumer<f32>,
-        peaks: &mut Vec<[f32; 4]>,
-    ) -> Result<u64, IoError> {
+    pub fn drain(&mut self, consumer: &mut Consumer<f32>, peaks: &mut Vec<[f32; 4]>) -> Result<u64, IoError> {
         loop {
             let filled = consumer.pop_partial_slice(&mut self.in_buf).0.len();
             if filled == 0 {
@@ -285,11 +251,7 @@ mod tests {
 
     /// Number of 24-bit samples a written take file holds.
     fn read_wav(path: &Path) -> Vec<i32> {
-        hound::WavReader::open(path)
-            .unwrap()
-            .samples::<i32>()
-            .map(Result::unwrap)
-            .collect()
+        hound::WavReader::open(path).unwrap().samples::<i32>().map(Result::unwrap).collect()
     }
 
     /// Writes `input` (whole interleaved device frames) through a fresh ring
@@ -307,14 +269,7 @@ mod tests {
         let (pushed, rest) = producer.push_partial_slice(input);
         assert!(rest.is_empty(), "ring too small for the test input");
         assert_eq!(pushed.len(), input.len());
-        let mut writer = RecordWriter::create(
-            &dir.join(format!("{name}.wav.part")),
-            device_rate,
-            device_channels,
-            pick,
-            project_rate,
-        )
-        .unwrap();
+        let mut writer = RecordWriter::create(&dir.join(format!("{name}.wav.part")), device_rate, device_channels, pick, project_rate).unwrap();
         writer.drain(&mut consumer, &mut Vec::new()).unwrap();
         let (path, frames) = writer.finish(&mut consumer).unwrap();
         assert_eq!(path, dir.join(format!("{name}.wav")));
@@ -329,51 +284,17 @@ mod tests {
         let input = [0.1f32, 0.9, -0.2, -0.8, 0.3, -0.3];
         let want = |s: f32| (s * I24_SCALE).round() as i32;
 
-        let (samples, frames) = written_samples(
-            dir.path(),
-            "mono1",
-            RecordChannels::Mono1,
-            &input,
-            48_000,
-            2,
-            48_000,
-        );
+        let (samples, frames) = written_samples(dir.path(), "mono1", RecordChannels::Mono1, &input, 48_000, 2, 48_000);
         assert_eq!(frames, 3);
         assert_eq!(samples, [want(0.1), want(-0.2), want(0.3)]);
 
-        let (samples, frames) = written_samples(
-            dir.path(),
-            "mono2",
-            RecordChannels::Mono2,
-            &input,
-            48_000,
-            2,
-            48_000,
-        );
+        let (samples, frames) = written_samples(dir.path(), "mono2", RecordChannels::Mono2, &input, 48_000, 2, 48_000);
         assert_eq!(frames, 3);
         assert_eq!(samples, [want(0.9), want(-0.8), want(-0.3)]);
 
-        let (samples, frames) = written_samples(
-            dir.path(),
-            "stereo",
-            RecordChannels::Stereo,
-            &input,
-            48_000,
-            2,
-            48_000,
-        );
+        let (samples, frames) = written_samples(dir.path(), "stereo", RecordChannels::Stereo, &input, 48_000, 2, 48_000);
         assert_eq!(frames, 3);
-        assert_eq!(
-            samples,
-            [
-                want(0.1),
-                want(0.9),
-                want(-0.2),
-                want(-0.8),
-                want(0.3),
-                want(-0.3)
-            ]
-        );
+        assert_eq!(samples, [want(0.1), want(0.9), want(-0.2), want(-0.8), want(0.3), want(-0.3)]);
     }
 
     #[test]
@@ -381,23 +302,12 @@ mod tests {
         let dir = tempdir().unwrap();
         // 1,000 stereo frames.
         let input: Vec<f32> = (0..2000).map(|i| ((i as f32 * 0.01).sin()) * 0.9).collect();
-        let (samples, frames) = written_samples(
-            dir.path(),
-            "same",
-            RecordChannels::Stereo,
-            &input,
-            48_000,
-            2,
-            48_000,
-        );
+        let (samples, frames) = written_samples(dir.path(), "same", RecordChannels::Stereo, &input, 48_000, 2, 48_000);
         assert_eq!(frames, 1000);
         assert_eq!(samples.len(), 2000);
         for (&got, &want_in) in samples.iter().zip(input.iter()) {
             let want = to_i24(want_in);
-            assert!(
-                (got - want).abs() <= 1,
-                "got {got}, want {want} (input {want_in})"
-            );
+            assert!((got - want).abs() <= 1, "got {got}, want {want} (input {want_in})");
         }
     }
 
@@ -406,51 +316,21 @@ mod tests {
         let dir = tempdir().unwrap();
         // One second of stereo noise at 44.1 kHz, recorded as mono.
         let in_frames = 44_100usize;
-        let input: Vec<f32> = (0..in_frames * 2)
-            .map(|i| ((i as f32 * 12.9898).sin()) * 0.5)
-            .collect();
-        let (samples, frames) = written_samples(
-            dir.path(),
-            "rs",
-            RecordChannels::Mono1,
-            &input,
-            44_100,
-            2,
-            48_000,
-        );
+        let input: Vec<f32> = (0..in_frames * 2).map(|i| ((i as f32 * 12.9898).sin()) * 0.5).collect();
+        let (samples, frames) = written_samples(dir.path(), "rs", RecordChannels::Mono1, &input, 44_100, 2, 48_000);
         let want = (in_frames as u64 * 48_000 + 44_100 / 2) / 44_100;
-        assert!(
-            (frames as i64 - want as i64).abs() <= 2,
-            "frames {frames}, want {want}"
-        );
+        assert!((frames as i64 - want as i64).abs() <= 2, "frames {frames}, want {want}");
         assert_eq!(samples.len(), frames as usize, "mono output, one channel");
     }
 
     #[test]
     fn several_drains_write_the_same_file_as_one_drain() {
         let dir = tempdir().unwrap();
-        let input: Vec<f32> = (0..10_000)
-            .map(|i| ((i as f32 * 0.031).sin()) * 0.7)
-            .collect();
-        let (one, one_frames) = written_samples(
-            dir.path(),
-            "one",
-            RecordChannels::Stereo,
-            &input,
-            48_000,
-            2,
-            48_000,
-        );
+        let input: Vec<f32> = (0..10_000).map(|i| ((i as f32 * 0.031).sin()) * 0.7).collect();
+        let (one, one_frames) = written_samples(dir.path(), "one", RecordChannels::Stereo, &input, 48_000, 2, 48_000);
 
         let (mut producer, mut consumer) = rtrb::RingBuffer::new(input.len());
-        let mut writer = RecordWriter::create(
-            &dir.path().join("many.wav.part"),
-            48_000,
-            2,
-            RecordChannels::Stereo,
-            48_000,
-        )
-        .unwrap();
+        let mut writer = RecordWriter::create(&dir.path().join("many.wav.part"), 48_000, 2, RecordChannels::Stereo, 48_000).unwrap();
         let mut peaks = Vec::new();
         let _ = producer.push_partial_slice(&input[..4_000]);
         writer.drain(&mut consumer, &mut peaks).unwrap();
@@ -472,14 +352,7 @@ mod tests {
         let input: Vec<f32> = (0..frames).map(|i| i as f32 / frames as f32).collect();
         let (mut producer, mut consumer) = rtrb::RingBuffer::new(frames);
         let _ = producer.push_partial_slice(&input);
-        let mut writer = RecordWriter::create(
-            &dir.path().join("p.wav.part"),
-            48_000,
-            1,
-            RecordChannels::Mono1,
-            48_000,
-        )
-        .unwrap();
+        let mut writer = RecordWriter::create(&dir.path().join("p.wav.part"), 48_000, 1, RecordChannels::Mono1, 48_000).unwrap();
         let mut peaks = Vec::new();
         let total = writer.drain(&mut consumer, &mut peaks).unwrap();
         assert_eq!(total, 2_048);
@@ -501,20 +374,17 @@ mod tests {
         let dir = tempdir().unwrap();
 
         let part = dir.path().join("a.wav.part");
-        let writer =
-            RecordWriter::create(&part, 48_000, 2, RecordChannels::Stereo, 48_000).unwrap();
+        let writer = RecordWriter::create(&part, 48_000, 2, RecordChannels::Stereo, 48_000).unwrap();
         writer.abort();
         assert!(!part.exists());
 
         let part = dir.path().join("b.wav.part");
-        let writer =
-            RecordWriter::create(&part, 48_000, 2, RecordChannels::Stereo, 48_000).unwrap();
+        let writer = RecordWriter::create(&part, 48_000, 2, RecordChannels::Stereo, 48_000).unwrap();
         drop(writer);
         assert!(!part.exists());
 
         let part = dir.path().join("c.wav.part");
-        let mut writer =
-            RecordWriter::create(&part, 48_000, 2, RecordChannels::Stereo, 48_000).unwrap();
+        let mut writer = RecordWriter::create(&part, 48_000, 2, RecordChannels::Stereo, 48_000).unwrap();
         let (mut producer, mut consumer) = rtrb::RingBuffer::new(4);
         let _ = producer.push_partial_slice(&[0.0f32; 4]);
         writer.drain(&mut consumer, &mut Vec::new()).unwrap();
@@ -528,13 +398,7 @@ mod tests {
     #[test]
     fn create_rejects_a_path_without_the_part_suffix() {
         let dir = tempdir().unwrap();
-        let Err(error) = RecordWriter::create(
-            &dir.path().join("take.wav"),
-            48_000,
-            2,
-            RecordChannels::Stereo,
-            48_000,
-        ) else {
+        let Err(error) = RecordWriter::create(&dir.path().join("take.wav"), 48_000, 2, RecordChannels::Stereo, 48_000) else {
             panic!("create must refuse a path that does not end in .part");
         };
         assert!(error.to_string().contains(".part"), "{error}");

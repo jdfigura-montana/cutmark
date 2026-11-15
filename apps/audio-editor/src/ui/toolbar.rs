@@ -42,38 +42,12 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<Message> {
         timecode_box(ui, editor);
         ui.add_space(GROUP_GAP);
         divider(ui);
-        toggle_button(
-            ui,
-            "Ripple",
-            fill::SCISSORS,
-            editor.view.ripple,
-            "Ripple edit (R)",
-            !recording,
-            || editor.toggle_ripple(),
-        );
+        toggle_button(ui, "Ripple", fill::SCISSORS, editor.view.ripple, "Ripple edit (R)", !recording, || editor.toggle_ripple());
         divider(ui);
-        toggle_button(
-            ui,
-            "Snap",
-            fill::MAGNET,
-            editor.view.snap,
-            "Snapping (N)",
-            !recording,
-            || editor.toggle_snap(),
-        );
+        toggle_button(ui, "Snap", fill::MAGNET, editor.view.snap, "Snapping (N)", !recording, || editor.toggle_snap());
         ui.add_space(GROUP_GAP);
-        if ui
-            .add_enabled(
-                !recording,
-                egui::Button::new(format!("{} Add Track", fill::PLUS)),
-            )
-            .on_hover_text("Add a new track (Ctrl+Shift+T)")
-            .clicked()
-        {
-            let _ = editor.apply(Action::AddTrack {
-                index: None,
-                name: None,
-            });
+        if ui.add_enabled(!recording, egui::Button::new(format!("{} Add Track", fill::PLUS))).on_hover_text("Add a new track (Ctrl+Shift+T)").clicked() {
+            let _ = editor.apply(Action::AddTrack { index: None, name: None });
         }
 
         // Wave: vertical waveform scale on the right, edited as log2 so
@@ -85,34 +59,18 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<Message> {
             let scale = editor.wave_scale();
             ui.add_sized(
                 egui::vec2(40.0, 18.0),
-                egui::Label::new(
-                    egui::RichText::new(format!("{scale:.1}x"))
-                        .font(Theme::mono(13.0))
-                        .color(THEME.text_primary),
-                ),
+                egui::Label::new(egui::RichText::new(format!("{scale:.1}x")).font(Theme::mono(13.0)).color(THEME.text_primary)),
             );
             let mut log_scale = scale.log2();
-            let (slider_rect, _) =
-                ui.allocate_exact_size(egui::vec2(110.0, 18.0), egui::Sense::click_and_drag());
-            let out = fader::slider_bare(
-                ui,
-                egui::Id::new("wave_scale_slider"),
-                slider_rect,
-                log_scale,
-                (0.0, 4.0),
-                false,
-            );
+            let (slider_rect, _) = ui.allocate_exact_size(egui::vec2(110.0, 18.0), egui::Sense::click_and_drag());
+            let out = fader::slider_bare(ui, egui::Id::new("wave_scale_slider"), slider_rect, log_scale, (0.0, 4.0), false);
             if out.reset {
                 log_scale = 0.0;
             } else if let Some(v) = out.value {
                 log_scale = v;
             }
             editor.set_wave_scale(2.0_f32.powf(log_scale));
-            ui.label(
-                egui::RichText::new("WAVE SCALE")
-                    .color(THEME.text_faint)
-                    .size(10.0),
-            );
+            ui.label(egui::RichText::new("WAVE SCALE").color(THEME.text_faint).size(10.0));
         });
     });
     messages
@@ -133,41 +91,23 @@ fn transport_group(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<Message> {
         .show(ui, |ui| {
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
-                if icon_button(ui, fill::SKIP_BACK, THEME.text_normal, !recording)
-                    .on_hover_text("Jump to start (Home)")
-                    .clicked()
-                {
+                if icon_button(ui, fill::SKIP_BACK, THEME.text_normal, !recording).on_hover_text("Jump to start (Home)").clicked() {
                     editor.jump_start();
                 }
                 let playing = editor.transport_state() == TransportState::Playing || recording;
-                let (glyph, color, tooltip) = if playing {
-                    (fill::STOP, THEME.text_normal, "Stop (Space)")
-                } else {
-                    (fill::PLAY, THEME.play_green, "Play (Space)")
-                };
-                if icon_button(ui, glyph, color, true)
-                    .on_hover_text(tooltip)
-                    .clicked()
-                {
+                let (glyph, color, tooltip) =
+                    if playing { (fill::STOP, THEME.text_normal, "Stop (Space)") } else { (fill::PLAY, THEME.play_green, "Play (Space)") };
+                if icon_button(ui, glyph, color, true).on_hover_text(tooltip).clicked() {
                     editor.toggle_play();
                 }
-                if icon_button(ui, fill::PAUSE, THEME.text_normal, !recording)
-                    .on_hover_text("Pause (P)")
-                    .clicked()
-                {
+                if icon_button(ui, fill::PAUSE, THEME.text_normal, !recording).on_hover_text("Pause (P)").clicked() {
                     editor.toggle_pause();
                 }
-                if icon_button(ui, fill::STOP, THEME.text_normal, true)
-                    .on_hover_text("Stop")
-                    .clicked()
-                {
+                if icon_button(ui, fill::STOP, THEME.text_normal, true).on_hover_text("Stop").clicked() {
                     editor.stop();
                 }
                 messages.extend(record_button(ui, editor));
-                if icon_button(ui, fill::SKIP_FORWARD, THEME.text_normal, !recording)
-                    .on_hover_text("Jump to end (End)")
-                    .clicked()
-                {
+                if icon_button(ui, fill::SKIP_FORWARD, THEME.text_normal, !recording).on_hover_text("Jump to end (End)").clicked() {
                     editor.jump_end();
                 }
             });
@@ -183,10 +123,7 @@ fn transport_group(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<Message> {
 fn record_button(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<Message> {
     let live = editor.take_is_live();
     let saving = editor.is_recording() && !live;
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(THEME.record_btn_d, THEME.record_btn_d),
-        egui::Sense::click(),
-    );
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(THEME.record_btn_d, THEME.record_btn_d), egui::Sense::click());
     let painter = ui.painter();
     if live {
         painter.circle_filled(rect.center(), THEME.record_btn_d * 0.5, THEME.record_red);
@@ -198,11 +135,7 @@ fn record_button(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<Message> {
         egui::Align2::CENTER_CENTER,
         fill::RECORD,
         egui::FontId::proportional(THEME.record_btn_glyph),
-        if live {
-            THEME.on_record_glyph
-        } else {
-            THEME.record_red
-        },
+        if live { THEME.on_record_glyph } else { THEME.record_red },
     );
     let clicked = response.on_hover_text("Record (Ctrl+R)").clicked();
     let mut messages = Vec::new();
@@ -218,15 +151,8 @@ fn record_button(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<Message> {
 }
 
 /// One 34x30 icon button; a disabled one is drawn faded and ignores clicks.
-fn icon_button(
-    ui: &mut egui::Ui,
-    icon: &str,
-    color: egui::Color32,
-    enabled: bool,
-) -> egui::Response {
-    let button = egui::Button::new(egui::RichText::new(icon).color(color).size(14.0))
-        .min_size(TRANSPORT_BTN)
-        .frame(false);
+fn icon_button(ui: &mut egui::Ui, icon: &str, color: egui::Color32, enabled: bool) -> egui::Response {
+    let button = egui::Button::new(egui::RichText::new(icon).color(color).size(14.0)).min_size(TRANSPORT_BTN).frame(false);
     ui.add_enabled(enabled, button)
 }
 
@@ -241,11 +167,7 @@ fn timecode_box(ui: &mut egui::Ui, editor: &Editor) {
         .corner_radius(BOX_RADIUS)
         .inner_margin(egui::Margin::symmetric(10, 2))
         .show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(timecode)
-                    .font(Theme::mono(TIMECODE_SIZE))
-                    .color(THEME.text_primary),
-            );
+            ui.label(egui::RichText::new(timecode).font(Theme::mono(TIMECODE_SIZE)).color(THEME.text_primary));
         });
 }
 
@@ -257,30 +179,13 @@ fn divider(ui: &mut egui::Ui) {
 
 /// An icon + text toggle button: lit with accent_soft fill, an accent border
 /// and accent icon while on. Calls `toggle` when clicked.
-fn toggle_button(
-    ui: &mut egui::Ui,
-    name: &str,
-    icon: &str,
-    on: bool,
-    tooltip: &str,
-    enabled: bool,
-    toggle: impl FnOnce(),
-) {
+fn toggle_button(ui: &mut egui::Ui, name: &str, icon: &str, on: bool, tooltip: &str, enabled: bool, toggle: impl FnOnce()) {
     let icon_color = if on { THEME.accent } else { THEME.text_normal };
-    let mut button = egui::Button::new((
-        egui::RichText::new(icon).color(icon_color),
-        egui::RichText::new(format!(" {name}")),
-    ));
+    let mut button = egui::Button::new((egui::RichText::new(icon).color(icon_color), egui::RichText::new(format!(" {name}"))));
     if on {
-        button = button
-            .fill(THEME.accent_soft)
-            .stroke(egui::Stroke::new(THEME.hairline, THEME.accent));
+        button = button.fill(THEME.accent_soft).stroke(egui::Stroke::new(THEME.hairline, THEME.accent));
     }
-    if ui
-        .add_enabled(enabled, button)
-        .on_hover_text(tooltip)
-        .clicked()
-    {
+    if ui.add_enabled(enabled, button).on_hover_text(tooltip).clicked() {
         toggle();
     }
 }

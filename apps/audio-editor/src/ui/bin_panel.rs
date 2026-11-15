@@ -57,17 +57,12 @@ impl BinPanel {
         // 1 px border on the right edge of the panel.
         let outer = ui.max_rect();
         ui.painter().line_segment(
-            [
-                egui::pos2(outer.right() - 0.5, outer.top()),
-                egui::pos2(outer.right() - 0.5, outer.bottom()),
-            ],
+            [egui::pos2(outer.right() - 0.5, outer.top()), egui::pos2(outer.right() - 0.5, outer.bottom())],
             egui::Stroke::new(THEME.hairline, THEME.border),
         );
 
         // A Reveal in Bin request from another panel: select and scroll to it.
-        let reveal_request = ui
-            .ctx()
-            .data_mut(|d| d.remove_temp::<Uuid>(egui::Id::new(REVEAL_KEY)));
+        let reveal_request = ui.ctx().data_mut(|d| d.remove_temp::<Uuid>(egui::Id::new(REVEAL_KEY)));
         if let Some(id) = reveal_request {
             self.selected = Some(id);
             self.reveal = Some(id);
@@ -86,20 +81,17 @@ impl BinPanel {
         // The scroll area leaves room for the fixed drop zone (10 px above
         // it, 44 px tall, 10 px off the panel bottom).
         let scroll_h = (ui.available_height() - 10.0 - THEME.bin_drop_h - 10.0).max(80.0);
-        egui::ScrollArea::vertical()
-            .max_height(scroll_h)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = THEME.bin_row_gap;
-                for item in sorted_items(&editor.project.media, self.sort) {
-                    self.show_item(ui, editor, &item, &mut messages);
-                }
-                for (label, frac) in editor.pending_jobs() {
-                    ui.add_space(THEME.space_sm);
-                    ui.label(&label);
-                    ui.add(egui::ProgressBar::new(frac).show_percentage());
-                }
-            });
+        egui::ScrollArea::vertical().max_height(scroll_h).auto_shrink([false, false]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = THEME.bin_row_gap;
+            for item in sorted_items(&editor.project.media, self.sort) {
+                self.show_item(ui, editor, &item, &mut messages);
+            }
+            for (label, frac) in editor.pending_jobs() {
+                ui.add_space(THEME.space_sm);
+                ui.label(&label);
+                ui.add(egui::ProgressBar::new(frac).show_percentage());
+            }
+        });
 
         drop_zone(ui);
 
@@ -114,11 +106,7 @@ impl BinPanel {
             // the button height.
             ui.add_space(10.0);
             ui.set_min_height(THEME.bin_btn_h);
-            ui.add(egui::Label::new(
-                egui::RichText::new("MEDIA")
-                    .font(Theme::semibold(THEME.bin_header_size))
-                    .color(THEME.text_muted),
-            ));
+            ui.add(egui::Label::new(egui::RichText::new("MEDIA").font(Theme::semibold(THEME.bin_header_size)).color(THEME.text_muted)));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = THEME.space_sm;
 
@@ -131,22 +119,14 @@ impl BinPanel {
                     fill::CARET_DOWN
                 ))
                 .size(THEME.bin_btn_text_size);
-                let sort_button = ui
-                    .add(egui::Button::new(sort_label).min_size(egui::vec2(0.0, THEME.bin_btn_h)));
+                let sort_button = ui.add(egui::Button::new(sort_label).min_size(egui::vec2(0.0, THEME.bin_btn_h)));
                 egui::Popup::menu(&sort_button).show(|ui| {
                     ui.selectable_value(&mut self.sort, BinSort::DateAdded, "Date added");
                     ui.selectable_value(&mut self.sort, BinSort::Name, "Name");
                 });
 
-                let import_label = egui::RichText::new(format!("{} Import", fill::DOWNLOAD))
-                    .size(THEME.bin_btn_text_size);
-                if ui
-                    .add_enabled(
-                        !editor.is_recording(),
-                        egui::Button::new(import_label).min_size(egui::vec2(0.0, THEME.bin_btn_h)),
-                    )
-                    .clicked()
-                {
+                let import_label = egui::RichText::new(format!("{} Import", fill::DOWNLOAD)).size(THEME.bin_btn_text_size);
+                if ui.add_enabled(!editor.is_recording(), egui::Button::new(import_label).min_size(egui::vec2(0.0, THEME.bin_btn_h))).clicked() {
                     messages.extend(pick_and_import(editor));
                 }
             });
@@ -154,13 +134,7 @@ impl BinPanel {
     }
 
     /// Draws one bin item row with its interactions.
-    fn show_item(
-        &mut self,
-        ui: &mut egui::Ui,
-        editor: &mut Editor,
-        item: &MediaItem,
-        messages: &mut Vec<String>,
-    ) {
+    fn show_item(&mut self, ui: &mut egui::Ui, editor: &mut Editor, item: &MediaItem, messages: &mut Vec<String>) {
         let offline = editor.is_media_offline(item.id);
         let recording = editor.is_recording();
         let usage = editor.media_usage(item.id);
@@ -176,45 +150,24 @@ impl BinPanel {
         // The usage pill sits on the row's right edge; the name stops short of it.
         let pill_w = pill_width(ui, usage_text(usage));
         let row_w = ui.available_width();
-        let name_max_w = (row_w
-            - THEME.space_md
-            - THEME.bin_tile_sz
-            - THEME.space_md
-            - pill_w
-            - THEME.space_sm
-            - THEME.space_md)
-            .max(40.0);
+        let name_max_w = (row_w - THEME.space_md - THEME.bin_tile_sz - THEME.space_md - pill_w - THEME.space_sm - THEME.space_md).max(40.0);
 
         // Row background: control fill while hovered or selected.
-        let row_rect = egui::Rect::from_min_size(
-            ui.next_widget_position(),
-            egui::vec2(row_w, THEME.bin_row_h),
-        );
+        let row_rect = egui::Rect::from_min_size(ui.next_widget_position(), egui::vec2(row_w, THEME.bin_row_h));
         // Center of the NAME text line, for the usage pill; falls back to the
         // first content line when the rename field replaces the name.
-        let mut name_line_center =
-            row_rect.top() + THEME.space_md + THEME.bin_tile_sz.max(THEME.bin_name_size) * 0.5;
+        let mut name_line_center = row_rect.top() + THEME.space_md + THEME.bin_tile_sz.max(THEME.bin_name_size) * 0.5;
         let active = selected || ui.rect_contains_pointer(row_rect);
 
         let inner = egui::Frame::new()
-            .fill(if active {
-                THEME.control_fill
-            } else {
-                egui::Color32::TRANSPARENT
-            })
+            .fill(if active { THEME.control_fill } else { egui::Color32::TRANSPARENT })
             .corner_radius(THEME.bin_row_rounding)
             .inner_margin(THEME.space_md)
             .show(ui, |ui| {
-                ui.set_min_size(egui::vec2(
-                    row_w - 2.0 * THEME.space_md,
-                    THEME.bin_row_h - 2.0 * THEME.space_md,
-                ));
+                ui.set_min_size(egui::vec2(row_w - 2.0 * THEME.space_md, THEME.bin_row_h - 2.0 * THEME.space_md));
                 ui.horizontal(|ui| {
                     // 30x30 tile with the waveform icon.
-                    let (tile_rect, _) = ui.allocate_exact_size(
-                        egui::vec2(THEME.bin_tile_sz, THEME.bin_tile_sz),
-                        egui::Sense::hover(),
-                    );
+                    let (tile_rect, _) = ui.allocate_exact_size(egui::vec2(THEME.bin_tile_sz, THEME.bin_tile_sz), egui::Sense::hover());
                     let painter = ui.painter();
                     painter.rect(
                         tile_rect,
@@ -247,16 +200,8 @@ impl BinPanel {
                                     name.push_str(" (offline)");
                                 }
                                 let text = egui::RichText::new(name).size(THEME.bin_name_size);
-                                let text = if offline {
-                                    text.color(THEME.bin_offline)
-                                } else {
-                                    text.color(THEME.text_primary)
-                                };
-                                let name_response = ui.add(
-                                    egui::Label::new(text)
-                                        .sense(egui::Sense::click())
-                                        .truncate(),
-                                );
+                                let text = if offline { text.color(THEME.bin_offline) } else { text.color(THEME.text_primary) };
+                                let name_response = ui.add(egui::Label::new(text).sense(egui::Sense::click()).truncate());
                                 if name_response.clicked() {
                                     self.selected = Some(item.id);
                                 }
@@ -268,9 +213,7 @@ impl BinPanel {
                             ui.add_space(THEME.space_xs);
                             // The meta line spans the full row width under
                             // the name, out to the row's right padding.
-                            let meta = egui::RichText::new(meta_line(editor, item))
-                                .font(Theme::mono(THEME.bin_meta_size))
-                                .color(THEME.text_muted);
+                            let meta = egui::RichText::new(meta_line(editor, item)).font(Theme::mono(THEME.bin_meta_size)).color(THEME.text_muted);
                             ui.add(egui::Label::new(meta).truncate());
                         }
                     });
@@ -289,10 +232,7 @@ impl BinPanel {
             let y = row.bottom() - THEME.space_md;
             let bar = egui::Rect::from_min_max(
                 egui::pos2(row.left() + THEME.space_md, y),
-                egui::pos2(
-                    row.left() + THEME.space_md + (row.width() - 2.0 * THEME.space_md) * frac,
-                    y + THEME.bin_progress_h,
-                ),
+                egui::pos2(row.left() + THEME.space_md + (row.width() - 2.0 * THEME.space_md) * frac, y + THEME.bin_progress_h),
             );
             ui.painter().rect_filled(bar, THEME.corner_xs, THEME.accent);
         }
@@ -300,11 +240,7 @@ impl BinPanel {
         let row_response = ui.interact(
             inner.response.rect,
             egui::Id::new(("bin_row", item.id)),
-            if offline || recording {
-                egui::Sense::click()
-            } else {
-                egui::Sense::click_and_drag()
-            },
+            if offline || recording { egui::Sense::click() } else { egui::Sense::click_and_drag() },
         );
         // Online rows are drag sources for the timeline; offline ones are not,
         // and nothing is dragged to the timeline while a take is recorded.
@@ -314,62 +250,39 @@ impl BinPanel {
         if row_response.clicked() {
             self.selected = Some(item.id);
         }
-        egui::Popup::context_menu(&row_response)
-            .style(crate::ui::theme::menu_item_style as fn(&mut egui::Style))
-            .show(|ui| {
-                // Preview, Relink, Rename and Remove are off while recording.
-                if !offline
-                    && ui
-                        .add_enabled(
-                            !recording,
-                            egui::Button::new(if previewing_this {
-                                "Stop Preview"
-                            } else {
-                                "Preview"
-                            }),
-                        )
-                        .clicked()
-                {
-                    if previewing_this {
-                        editor.stop_preview();
-                    } else {
-                        editor.preview_media(item.id);
-                    }
-                    ui.close();
+        egui::Popup::context_menu(&row_response).style(crate::ui::theme::menu_item_style as fn(&mut egui::Style)).show(|ui| {
+            // Preview, Relink, Rename and Remove are off while recording.
+            if !offline && ui.add_enabled(!recording, egui::Button::new(if previewing_this { "Stop Preview" } else { "Preview" })).clicked() {
+                if previewing_this {
+                    editor.stop_preview();
+                } else {
+                    editor.preview_media(item.id);
                 }
-                if offline
-                    && ui
-                        .add_enabled(!recording, egui::Button::new("Relink..."))
-                        .clicked()
-                {
-                    ui.close();
-                    messages.extend(pick_and_relink(editor, item.id));
+                ui.close();
+            }
+            if offline && ui.add_enabled(!recording, egui::Button::new("Relink...")).clicked() {
+                ui.close();
+                messages.extend(pick_and_relink(editor, item.id));
+            }
+            if ui.add_enabled(!recording, egui::Button::new("Rename")).clicked() {
+                self.begin_rename(item);
+                ui.close();
+            }
+            if ui.button("Reveal in Explorer").clicked() {
+                if let Err(error) = editor.reveal_media(item.id) {
+                    messages.push(error.to_string());
                 }
-                if ui
-                    .add_enabled(!recording, egui::Button::new("Rename"))
-                    .clicked()
-                {
-                    self.begin_rename(item);
-                    ui.close();
+                ui.close();
+            }
+            if ui.add_enabled(!recording, egui::Button::new("Remove from Project")).clicked() {
+                ui.close();
+                if usage > 0 {
+                    self.confirm_remove = Some((item.id, usage));
+                } else if let Err(error) = editor.apply(Action::RemoveMedia { id: item.id }) {
+                    messages.push(error.to_string());
                 }
-                if ui.button("Reveal in Explorer").clicked() {
-                    if let Err(error) = editor.reveal_media(item.id) {
-                        messages.push(error.to_string());
-                    }
-                    ui.close();
-                }
-                if ui
-                    .add_enabled(!recording, egui::Button::new("Remove from Project"))
-                    .clicked()
-                {
-                    ui.close();
-                    if usage > 0 {
-                        self.confirm_remove = Some((item.id, usage));
-                    } else if let Err(error) = editor.apply(Action::RemoveMedia { id: item.id }) {
-                        messages.push(error.to_string());
-                    }
-                }
-            });
+            }
+        });
     }
 
     /// Starts an inline rename of the given item.
@@ -379,20 +292,13 @@ impl BinPanel {
         self.rename_focused_once = false;
     }
     /// Draws the inline rename text field and applies or cancels it.
-    fn rename_field(
-        &mut self,
-        ui: &mut egui::Ui,
-        editor: &mut Editor,
-        id: Uuid,
-        messages: &mut Vec<String>,
-    ) {
+    fn rename_field(&mut self, ui: &mut egui::Ui, editor: &mut Editor, id: Uuid, messages: &mut Vec<String>) {
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.renaming = None;
             return;
         }
         let width = (ui.available_width() - THEME.bin_rename_pad).max(THEME.bin_rename_min_w);
-        let response =
-            ui.add(egui::TextEdit::singleline(&mut self.rename_text).desired_width(width));
+        let response = ui.add(egui::TextEdit::singleline(&mut self.rename_text).desired_width(width));
         if !self.rename_focused_once {
             response.request_focus();
             if response.has_focus() {
@@ -401,10 +307,7 @@ impl BinPanel {
         }
         if response.lost_focus() {
             if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                match editor.apply(Action::RenameMedia {
-                    id,
-                    name: self.rename_text.clone(),
-                }) {
+                match editor.apply(Action::RenameMedia { id, name: self.rename_text.clone() }) {
                     Ok(()) => self.renaming = None,
                     Err(error) => messages.push(error.to_string()),
                 }
@@ -415,22 +318,11 @@ impl BinPanel {
     }
 
     /// Draws the remove confirmation window when one is pending.
-    fn show_remove_confirm(
-        &mut self,
-        ctx: &egui::Context,
-        editor: &mut Editor,
-        messages: &mut Vec<String>,
-    ) {
+    fn show_remove_confirm(&mut self, ctx: &egui::Context, editor: &mut Editor, messages: &mut Vec<String>) {
         let Some((id, usage)) = self.confirm_remove else {
             return;
         };
-        let Some(name) = editor
-            .project
-            .media
-            .iter()
-            .find(|m| m.id == id)
-            .map(|m| m.display_name.clone())
-        else {
+        let Some(name) = editor.project.media.iter().find(|m| m.id == id).map(|m| m.display_name.clone()) else {
             self.confirm_remove = None;
             return;
         };
@@ -441,17 +333,10 @@ impl BinPanel {
             dialogs::card_width(ui, THEME.dialog_w);
             dialogs::title(ui, "Remove from Project");
             ui.add_space(THEME.space_xs);
-            dialogs::description(
-                ui,
-                &format!(
-                    "Remove \"{name}\"? This item is used by {usage} clips. Removing it also removes those clips."
-                ),
-            );
+            dialogs::description(ui, &format!("Remove \"{name}\"? This item is used by {usage} clips. Removing it also removes those clips."));
             dialogs::before_form(ui);
             dialogs::footer(ui, |ui| {
-                if dialogs::footer_button(ui, "Remove", FooterButton::Destructive, true)
-                    .clicked()
-                {
+                if dialogs::footer_button(ui, "Remove", FooterButton::Destructive, true).clicked() {
                     remove = true;
                 }
                 if dialogs::footer_button(ui, "Cancel", FooterButton::Cancel, true).clicked() {
@@ -485,25 +370,15 @@ fn drop_zone(ui: &mut egui::Ui) {
     let margin = 10.0;
     let outer = ui.max_rect();
     let rect = egui::Rect::from_min_max(
-        egui::pos2(
-            outer.left() + margin,
-            outer.bottom() - margin - THEME.bin_drop_h,
-        ),
+        egui::pos2(outer.left() + margin, outer.bottom() - margin - THEME.bin_drop_h),
         egui::pos2(outer.right() - margin, outer.bottom() - margin),
     );
     // Advance the cursor below the zone so later widgets cannot land on it.
     let pad = (rect.top() - ui.cursor().top()).max(0.0);
     ui.allocate_exact_size(egui::vec2(1.0, pad), egui::Sense::hover());
-    ui.allocate_exact_size(
-        egui::vec2(rect.width(), rect.height()),
-        egui::Sense::hover(),
-    );
+    ui.allocate_exact_size(egui::vec2(rect.width(), rect.height()), egui::Sense::hover());
     let painter = ui.painter();
-    dashed_rect(
-        painter,
-        rect,
-        egui::Stroke::new(THEME.hairline, THEME.control_border),
-    );
+    dashed_rect(painter, rect, egui::Stroke::new(THEME.hairline, THEME.control_border));
     painter.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -544,36 +419,20 @@ fn pill_width(ui: &egui::Ui, text: String) -> f32 {
 
 /// The usage pill text, pre-laid-out for measuring and drawing.
 fn pill_galley(ui: &egui::Ui, text: String) -> std::sync::Arc<egui::Galley> {
-    ui.painter().layout_no_wrap(
-        text,
-        egui::FontId::proportional(THEME.bin_pill_text_size),
-        THEME.text_normal,
-    )
+    ui.painter().layout_no_wrap(text, egui::FontId::proportional(THEME.bin_pill_text_size), THEME.text_normal)
 }
 
 /// Draws the usage pill centered vertically on the given line (the row's
 /// NAME line) at the row's right edge.
-fn draw_pill(
-    painter: &egui::Painter,
-    row: egui::Rect,
-    galley: std::sync::Arc<egui::Galley>,
-    line_center_y: f32,
-) {
+fn draw_pill(painter: &egui::Painter, row: egui::Rect, galley: std::sync::Arc<egui::Galley>, line_center_y: f32) {
     let pill_w = galley.size().x + 12.0;
     let pill_h = THEME.bin_pill_h;
     let pill = egui::Rect::from_min_max(
-        egui::pos2(
-            row.right() - THEME.space_md - pill_w,
-            line_center_y - pill_h * 0.5,
-        ),
+        egui::pos2(row.right() - THEME.space_md - pill_w, line_center_y - pill_h * 0.5),
         egui::pos2(row.right() - THEME.space_md, line_center_y + pill_h * 0.5),
     );
     painter.rect_filled(pill, THEME.bin_pill_rounding, THEME.bin_pill_fill);
-    painter.galley(
-        pill.left_top() + egui::vec2(6.0, (pill_h - galley.size().y) * 0.5),
-        galley,
-        THEME.text_normal,
-    );
+    painter.galley(pill.left_top() + egui::vec2(6.0, (pill_h - galley.size().y) * 0.5), galley, THEME.text_normal);
 }
 
 /// Opens the import file picker (WAV and MP3) and starts one import job per file.
@@ -584,10 +443,7 @@ pub fn pick_and_import(editor: &mut Editor) -> Vec<String> {
     if editor.is_recording() {
         return Vec::new();
     }
-    let Some(files) = rfd::FileDialog::new()
-        .add_filter("Audio (WAV, MP3)", &["wav", "mp3"])
-        .pick_files()
-    else {
+    let Some(files) = rfd::FileDialog::new().add_filter("Audio (WAV, MP3)", &["wav", "mp3"]).pick_files() else {
         return Vec::new();
     };
     editor.import_files(files)
@@ -601,10 +457,7 @@ fn pick_and_relink(editor: &mut Editor, id: Uuid) -> Vec<String> {
     if editor.is_recording() {
         return Vec::new();
     }
-    let Some(file) = rfd::FileDialog::new()
-        .add_filter("Audio (WAV, MP3)", &["wav", "mp3"])
-        .pick_file()
-    else {
+    let Some(file) = rfd::FileDialog::new().add_filter("Audio (WAV, MP3)", &["wav", "mp3"]).pick_file() else {
         return Vec::new();
     };
     editor.relink(id, file);
@@ -615,11 +468,7 @@ fn pick_and_relink(editor: &mut Editor, id: Uuid) -> Vec<String> {
 fn sorted_items(items: &[MediaItem], sort: BinSort) -> Vec<MediaItem> {
     let mut items = items.to_vec();
     if sort == BinSort::Name {
-        items.sort_by(|a, b| {
-            a.display_name
-                .to_lowercase()
-                .cmp(&b.display_name.to_lowercase())
-        });
+        items.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
     }
     items
 }
@@ -633,11 +482,7 @@ fn meta_line(editor: &Editor, item: &MediaItem) -> String {
     let sec = (total_ms % 60_000) / 1000;
     let ms = total_ms % 1000;
     let channels = if item.channels <= 1 { "Mo" } else { "St" };
-    format!(
-        "{min}:{sec:02}.{ms:03} \u{B7} {}k \u{B7} {channels} \u{B7} {}",
-        item.original_rate / 1000,
-        media_format(&item.file_name)
-    )
+    format!("{min}:{sec:02}.{ms:03} \u{B7} {}k \u{B7} {channels} \u{B7} {}", item.original_rate / 1000, media_format(&item.file_name))
 }
 
 /// The original container format, taken from the file extension.
@@ -654,11 +499,7 @@ fn media_format(file_name: &str) -> &'static str {
 
 /// Human-readable usage count, e.g. "1 use" or "3 uses".
 fn usage_text(usage: usize) -> String {
-    if usage == 1 {
-        "1 use".to_string()
-    } else {
-        format!("{usage} uses")
-    }
+    if usage == 1 { "1 use".to_string() } else { format!("{usage} uses") }
 }
 
 #[cfg(test)]
@@ -666,14 +507,7 @@ mod tests {
     use super::*;
 
     fn item(name: &str) -> MediaItem {
-        MediaItem {
-            id: Uuid::new_v4(),
-            display_name: name.to_string(),
-            file_name: format!("{name}.wav"),
-            original_rate: 44_100,
-            channels: 1,
-            length: 48_000,
-        }
+        MediaItem { id: Uuid::new_v4(), display_name: name.to_string(), file_name: format!("{name}.wav"), original_rate: 44_100, channels: 1, length: 48_000 }
     }
 
     #[test]
@@ -708,15 +542,9 @@ mod tests {
     #[test]
     fn meta_line_separates_with_real_middle_dots() {
         let editor = Editor::with_project(
-            crate::model::project::Project::new(
-                "Test".to_string(),
-                48_000,
-                crate::model::project::BitDepth::Int24,
-            ),
+            crate::model::project::Project::new("Test".to_string(), 48_000, crate::model::project::BitDepth::Int24),
             crate::model::project::ViewState::default(),
-            crate::io::paths::ProjectPaths {
-                root: std::path::PathBuf::from("unused"),
-            },
+            crate::io::paths::ProjectPaths { root: std::path::PathBuf::from("unused") },
         );
         let line = meta_line(&editor, &item("tone"));
         assert_eq!(line, "0:01.000 \u{B7} 44k \u{B7} Mo \u{B7} WAV");

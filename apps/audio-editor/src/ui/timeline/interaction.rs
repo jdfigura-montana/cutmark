@@ -36,25 +36,13 @@ enum DropTarget {
 /// Handles a bin media drag each frame: Esc cancels, release over the lanes drops.
 ///
 /// Returns human-readable error messages for failed drops.
-pub fn handle_bin_drag(
-    ui: &egui::Ui,
-    editor: &mut Editor,
-    g: &Geom,
-    lane_rect: egui::Rect,
-    scroll_y: f32,
-) -> Vec<String> {
+pub fn handle_bin_drag(ui: &egui::Ui, editor: &mut Editor, g: &Geom, lane_rect: egui::Rect, scroll_y: f32) -> Vec<String> {
     let Some(payload) = egui::DragAndDrop::payload::<MediaDrag>(ui.ctx()) else {
         return Vec::new();
     };
     let media_id = payload.media_id;
-    let (pointer, released, cancelled, ctrl) = ui.input(|i| {
-        (
-            i.pointer.latest_pos(),
-            i.pointer.any_released(),
-            i.key_pressed(egui::Key::Escape),
-            i.modifiers.ctrl,
-        )
-    });
+    let (pointer, released, cancelled, ctrl) =
+        ui.input(|i| (i.pointer.latest_pos(), i.pointer.any_released(), i.key_pressed(egui::Key::Escape), i.modifiers.ctrl));
     if cancelled {
         egui::DragAndDrop::clear_payload(ui.ctx());
         return Vec::new();
@@ -88,13 +76,7 @@ pub fn handle_bin_drag(
 /// Over a track: a ghost rect at `x_to_sample(pointer)` as wide as the media.
 /// Below the last track: the same ghost in a dashed "new track" row. With Ctrl
 /// held a bright vertical insert line is also drawn at the start.
-pub fn draw_drop_ghost(
-    ui: &egui::Ui,
-    editor: &Editor,
-    g: &Geom,
-    lane_rect: egui::Rect,
-    scroll_y: f32,
-) {
+pub fn draw_drop_ghost(ui: &egui::Ui, editor: &Editor, g: &Geom, lane_rect: egui::Rect, scroll_y: f32) {
     let Some(payload) = egui::DragAndDrop::payload::<MediaDrag>(ui.ctx()) else {
         return;
     };
@@ -104,12 +86,7 @@ pub fn draw_drop_ghost(
     if p.x < g.lane_left || p.x > lane_rect.right() || p.y < lane_rect.top() {
         return;
     }
-    let Some(media) = editor
-        .project
-        .media
-        .iter()
-        .find(|media| media.id == payload.media_id)
-    else {
+    let Some(media) = editor.project.media.iter().find(|media| media.id == payload.media_id) else {
         return;
     };
     let ctrl = ui.input(|i| i.modifiers.ctrl);
@@ -123,30 +100,17 @@ pub fn draw_drop_ghost(
             let top = lane_rect.top() - scroll_y + heights_before(editor, index);
             let rect = egui::Rect::from_min_max(
                 egui::pos2(left, top + THEME.clip_margin),
-                egui::pos2(
-                    right,
-                    top + editor.project.tracks[index].height - THEME.clip_margin,
-                ),
+                egui::pos2(right, top + editor.project.tracks[index].height - THEME.clip_margin),
             );
             ghost_rect(&painter, rect);
         }
         DropTarget::NewTrack => {
             let count = editor.project.tracks.len();
             let top = lane_rect.top() - scroll_y + heights_before(editor, count);
-            let row = egui::Rect::from_min_max(
-                egui::pos2(g.lane_left, top),
-                egui::pos2(lane_rect.right(), top + THEME.new_track_h),
-            );
+            let row = egui::Rect::from_min_max(egui::pos2(g.lane_left, top), egui::pos2(lane_rect.right(), top + THEME.new_track_h));
             painter.rect_filled(row, THEME.corner_r, THEME.ghost_fill);
-            dashed_rect(
-                &painter,
-                row,
-                egui::Stroke::new(THEME.hairline, THEME.ghost_stroke),
-            );
-            let ghost = egui::Rect::from_min_max(
-                egui::pos2(left, top + THEME.clip_margin),
-                egui::pos2(right, top + THEME.new_track_h - THEME.clip_margin),
-            );
+            dashed_rect(&painter, row, egui::Stroke::new(THEME.hairline, THEME.ghost_stroke));
+            let ghost = egui::Rect::from_min_max(egui::pos2(left, top + THEME.clip_margin), egui::pos2(right, top + THEME.new_track_h - THEME.clip_margin));
             ghost_rect(&painter, ghost);
         }
         DropTarget::None => {}
@@ -154,10 +118,7 @@ pub fn draw_drop_ghost(
 
     if ctrl {
         painter.line_segment(
-            [
-                egui::pos2(left, lane_rect.top()),
-                egui::pos2(left, lane_rect.bottom()),
-            ],
+            [egui::pos2(left, lane_rect.top()), egui::pos2(left, lane_rect.bottom())],
             egui::Stroke::new(THEME.insert_line_w, THEME.insert_line_color),
         );
     }
@@ -166,12 +127,7 @@ pub fn draw_drop_ghost(
 /// Fills and strokes one ghost clip rect.
 fn ghost_rect(painter: &egui::Painter, rect: egui::Rect) {
     painter.rect_filled(rect, THEME.corner_r, THEME.ghost_fill);
-    painter.rect_stroke(
-        rect,
-        THEME.corner_r,
-        egui::Stroke::new(THEME.hairline, THEME.ghost_stroke),
-        egui::StrokeKind::Inside,
-    );
+    painter.rect_stroke(rect, THEME.corner_r, egui::Stroke::new(THEME.hairline, THEME.ghost_stroke), egui::StrokeKind::Inside);
 }
 
 /// Where a drop at window y would land, given the lane rect and vertical scroll.
@@ -193,38 +149,15 @@ fn drop_target(editor: &Editor, lane_rect: egui::Rect, scroll_y: f32, y: f32) ->
 
 /// Total height of the tracks before the given index, in points.
 fn heights_before(editor: &Editor, index: usize) -> f32 {
-    editor.project.tracks[..index]
-        .iter()
-        .map(|t| t.height)
-        .sum()
+    editor.project.tracks[..index].iter().map(|t| t.height).sum()
 }
 
 /// Draws a dashed rectangle border with fixed dash and gap lengths.
 fn dashed_rect(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
-    dashed_line(
-        painter,
-        egui::pos2(rect.left(), rect.top()),
-        egui::pos2(rect.right(), rect.top()),
-        stroke,
-    );
-    dashed_line(
-        painter,
-        egui::pos2(rect.left(), rect.bottom()),
-        egui::pos2(rect.right(), rect.bottom()),
-        stroke,
-    );
-    dashed_line(
-        painter,
-        egui::pos2(rect.left(), rect.top()),
-        egui::pos2(rect.left(), rect.bottom()),
-        stroke,
-    );
-    dashed_line(
-        painter,
-        egui::pos2(rect.right(), rect.top()),
-        egui::pos2(rect.right(), rect.bottom()),
-        stroke,
-    );
+    dashed_line(painter, egui::pos2(rect.left(), rect.top()), egui::pos2(rect.right(), rect.top()), stroke);
+    dashed_line(painter, egui::pos2(rect.left(), rect.bottom()), egui::pos2(rect.right(), rect.bottom()), stroke);
+    dashed_line(painter, egui::pos2(rect.left(), rect.top()), egui::pos2(rect.left(), rect.bottom()), stroke);
+    dashed_line(painter, egui::pos2(rect.right(), rect.top()), egui::pos2(rect.right(), rect.bottom()), stroke);
 }
 
 /// Draws one dashed line between two points.
@@ -283,17 +216,8 @@ pub struct LaneState {
 
 /// Handles all mouse interaction on the lane area: range selection drags,
 /// boundary line drags, playhead clicks and Shift+click extension.
-pub fn handle_lane_input(
-    ui: &egui::Ui,
-    editor: &mut Editor,
-    g: &Geom,
-    lane_rect: egui::Rect,
-    scroll_y: f32,
-) {
-    let mut state: LaneState = ui.ctx().data_mut(|d| {
-        d.get_temp_mut_or_default::<LaneState>(egui::Id::new(LANE_STATE_KEY))
-            .clone()
-    });
+pub fn handle_lane_input(ui: &egui::Ui, editor: &mut Editor, g: &Geom, lane_rect: egui::Rect, scroll_y: f32) {
+    let mut state: LaneState = ui.ctx().data_mut(|d| d.get_temp_mut_or_default::<LaneState>(egui::Id::new(LANE_STATE_KEY)).clone());
     let (pressed, down, released, pos, shift, ctrl, alt) = ui.input(|i| {
         (
             i.pointer.primary_pressed(),
@@ -323,13 +247,8 @@ pub fn handle_lane_input(
         && let Some(drag) = state.boundary.clone()
         && let Some(p) = pos
     {
-        let (snapped, snap_point) =
-            editor.snap_pos(g.x_to_sample(p.x), &[], None, alt, THEME.snap_px);
-        let (a, b) = if drag.start_edge {
-            (snapped, drag.other)
-        } else {
-            (drag.other, snapped)
-        };
+        let (snapped, snap_point) = editor.snap_pos(g.x_to_sample(p.x), &[], None, alt, THEME.snap_px);
+        let (a, b) = if drag.start_edge { (snapped, drag.other) } else { (drag.other, snapped) };
         editor.set_range(a, b, drag.tracks);
         state.snap_line = snap_point;
     } else if pressed
@@ -344,19 +263,10 @@ pub fn handle_lane_input(
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
     }
 
-    ui.ctx()
-        .data_mut(|d| d.insert_temp(egui::Id::new(LANE_STATE_KEY), state));
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(LANE_STATE_KEY), state));
 }
 /// A fresh press on the lanes: grab a boundary line, or remember the press.
-fn press_started(
-    editor: &mut Editor,
-    g: &Geom,
-    lane_rect: egui::Rect,
-    scroll_y: f32,
-    p: egui::Pos2,
-    ctrl: bool,
-    state: &mut LaneState,
-) {
+fn press_started(editor: &mut Editor, g: &Geom, lane_rect: egui::Rect, scroll_y: f32, p: egui::Pos2, ctrl: bool, state: &mut LaneState) {
     // Any click on a lane clears a marker selection.
     editor.select_marker(None);
     // Ctrl+click on the lanes is left for clip selection (task 6.3).
@@ -369,31 +279,16 @@ fn press_started(
     }
     // Within 4 px of a boundary line: drag that line instead of selecting.
     if let Some((start_edge, other, tracks)) = boundary_press(editor, g, lane_rect, p) {
-        state.boundary = Some(BoundaryDrag {
-            start_edge,
-            other,
-            tracks,
-        });
+        state.boundary = Some(BoundaryDrag { start_edge, other, tracks });
         return;
     }
     if let Some(track) = track_index_at(editor, lane_rect, scroll_y, p.y, false) {
-        state.press = Some(Press {
-            pos: p,
-            sample: g.x_to_sample(p.x),
-            track,
-        });
+        state.press = Some(Press { pos: p, sample: g.x_to_sample(p.x), track });
     }
 }
 
 /// Finishes a press that never became a drag: a click on the lanes.
-fn finish_click(
-    editor: &mut Editor,
-    g: &Geom,
-    press: Press,
-    p: egui::Pos2,
-    shift: bool,
-    alt: bool,
-) {
+fn finish_click(editor: &mut Editor, g: &Geom, press: Press, p: egui::Pos2, shift: bool, alt: bool) {
     // Clicks that moved 3 px or more, or with no track under the press,
     // are not lane clicks.
     let dist = ((p.x - press.pos.x).powi(2) + (p.y - press.pos.y).powi(2)).sqrt();
@@ -403,16 +298,8 @@ fn finish_click(
     let (snapped, _) = editor.snap_pos(g.x_to_sample(p.x), &[], None, alt, THEME.snap_px);
     if shift {
         // Shift+click: extend the existing range, or start one at the playhead.
-        if let crate::editor::selection::Selection::Range { start, end, tracks } =
-            editor.selection().clone()
-        {
-            let (a, b) = if (snapped as i128 - start as i128).abs()
-                <= (snapped as i128 - end as i128).abs()
-            {
-                (snapped, end)
-            } else {
-                (start, snapped)
-            };
+        if let crate::editor::selection::Selection::Range { start, end, tracks } = editor.selection().clone() {
+            let (a, b) = if (snapped as i128 - start as i128).abs() <= (snapped as i128 - end as i128).abs() { (snapped, end) } else { (start, snapped) };
             editor.set_range(a, b, tracks);
         } else {
             let track = editor.project.tracks[press.track].id;
@@ -429,29 +316,13 @@ fn finish_click(
 }
 /// One frame of range dragging: the range follows the pointer, both edges snap.
 #[allow(clippy::too_many_arguments)]
-fn drag_range(
-    editor: &mut Editor,
-    g: &Geom,
-    lane_rect: egui::Rect,
-    scroll_y: f32,
-    press: Press,
-    p: egui::Pos2,
-    alt: bool,
-    state: &mut LaneState,
-) {
+fn drag_range(editor: &mut Editor, g: &Geom, lane_rect: egui::Rect, scroll_y: f32, press: Press, p: egui::Pos2, alt: bool, state: &mut LaneState) {
     let (press_sample, snap_a) = editor.snap_pos(press.sample, &[], None, alt, THEME.snap_px);
     let (cur_sample, snap_b) = editor.snap_pos(g.x_to_sample(p.x), &[], None, alt, THEME.snap_px);
     let tracks = match track_index_at(editor, lane_rect, scroll_y, p.y, true) {
         Some(index) => {
-            let (lo, hi) = if index < press.track {
-                (index, press.track)
-            } else {
-                (press.track, index)
-            };
-            editor.project.tracks[lo..=hi]
-                .iter()
-                .map(|t| t.id)
-                .collect()
+            let (lo, hi) = if index < press.track { (index, press.track) } else { (press.track, index) };
+            editor.project.tracks[lo..=hi].iter().map(|t| t.id).collect()
         }
         None => {
             // No tracks in the project: keep whatever the selection was.
@@ -467,13 +338,7 @@ fn drag_range(
 
 /// Index of the track under window `y`, or the nearest track when `clamp`
 /// (used while dragging, so crossing the lane edges keeps the range alive).
-fn track_index_at(
-    editor: &Editor,
-    lane_rect: egui::Rect,
-    scroll_y: f32,
-    y: f32,
-    clamp: bool,
-) -> Option<usize> {
+fn track_index_at(editor: &Editor, lane_rect: egui::Rect, scroll_y: f32, y: f32, clamp: bool) -> Option<usize> {
     let count = editor.project.tracks.len();
     if count == 0 {
         return None;
@@ -494,12 +359,7 @@ fn track_index_at(
 
 /// If the press is within 4 px of a range boundary line: that line's edge,
 /// the fixed opposite edge and the range tracks (for the swap-across case).
-fn boundary_press(
-    editor: &Editor,
-    g: &Geom,
-    lane_rect: egui::Rect,
-    p: egui::Pos2,
-) -> Option<(bool, u64, Vec<uuid::Uuid>)> {
+fn boundary_press(editor: &Editor, g: &Geom, lane_rect: egui::Rect, p: egui::Pos2) -> Option<(bool, u64, Vec<uuid::Uuid>)> {
     if !lane_rect.contains(p) {
         return None;
     }
@@ -517,12 +377,7 @@ fn boundary_press(
 }
 
 /// True when the pointer hovers within 4 px of a range boundary line.
-fn boundary_hover(
-    editor: &Editor,
-    g: &Geom,
-    lane_rect: egui::Rect,
-    pos: Option<egui::Pos2>,
-) -> bool {
+fn boundary_hover(editor: &Editor, g: &Geom, lane_rect: egui::Rect, pos: Option<egui::Pos2>) -> bool {
     pos.is_some_and(|p| boundary_press(editor, g, lane_rect, p).is_some())
 }
 
@@ -530,12 +385,8 @@ fn boundary_hover(
 /// solid vertical boundary lines over the full lane height, and the snap line
 /// while a drag is snapping.
 pub fn draw_range(ui: &egui::Ui, editor: &Editor, g: &Geom, lane_rect: egui::Rect, scroll_y: f32) {
-    let state: LaneState = ui.ctx().data(|d| {
-        d.get_temp(egui::Id::new(LANE_STATE_KEY))
-            .unwrap_or_default()
-    });
-    let crate::editor::selection::Selection::Range { start, end, tracks } = editor.selection()
-    else {
+    let state: LaneState = ui.ctx().data(|d| d.get_temp(egui::Id::new(LANE_STATE_KEY)).unwrap_or_default());
+    let crate::editor::selection::Selection::Range { start, end, tracks } = editor.selection() else {
         return;
     };
     let painter = ui.painter_at(lane_rect);
@@ -546,34 +397,19 @@ pub fn draw_range(ui: &egui::Ui, editor: &Editor, g: &Geom, lane_rect: egui::Rec
         for track in &editor.project.tracks {
             let bottom = y + track.height;
             if tracks.contains(&track.id) && bottom >= lane_rect.top() && y <= lane_rect.bottom() {
-                let rect = egui::Rect::from_min_max(
-                    egui::pos2(x0, y.max(lane_rect.top())),
-                    egui::pos2(x1, bottom.min(lane_rect.bottom())),
-                );
+                let rect = egui::Rect::from_min_max(egui::pos2(x0, y.max(lane_rect.top())), egui::pos2(x1, bottom.min(lane_rect.bottom())));
                 painter.rect_filled(rect, 0.0, THEME.accent_soft);
             }
             y = bottom;
         }
         let stroke = egui::Stroke::new(THEME.range_line_w, THEME.range_line);
         for x in [x0, x1] {
-            painter.line_segment(
-                [
-                    egui::pos2(x, lane_rect.top()),
-                    egui::pos2(x, lane_rect.bottom()),
-                ],
-                stroke,
-            );
+            painter.line_segment([egui::pos2(x, lane_rect.top()), egui::pos2(x, lane_rect.bottom())], stroke);
         }
     }
     if let Some(snap) = state.snap_line {
         let x = g.sample_to_x(snap);
-        painter.line_segment(
-            [
-                egui::pos2(x, lane_rect.top()),
-                egui::pos2(x, lane_rect.bottom()),
-            ],
-            egui::Stroke::new(THEME.snap_line_w, THEME.snap_line_color),
-        );
+        painter.line_segment([egui::pos2(x, lane_rect.top()), egui::pos2(x, lane_rect.bottom())], egui::Stroke::new(THEME.snap_line_w, THEME.snap_line_color));
     }
 }
 
@@ -671,10 +507,7 @@ struct ClipState {
 
 /// Reads the clip interaction state from egui's temp storage.
 fn clip_state(ctx: &egui::Context) -> ClipState {
-    ctx.data(|d| {
-        d.get_temp(egui::Id::new(CLIP_STATE_KEY))
-            .unwrap_or_default()
-    })
+    ctx.data(|d| d.get_temp(egui::Id::new(CLIP_STATE_KEY)).unwrap_or_default())
 }
 
 /// Writes the clip interaction state back to egui's temp storage.
@@ -684,9 +517,7 @@ fn save_clip_state(ctx: &egui::Context, state: &ClipState) {
 
 /// True while a clip gain line is being dragged (for its brighter stroke).
 pub fn gain_line_active(ctx: &egui::Context) -> bool {
-    clip_state(ctx)
-        .drag
-        .is_some_and(|drag| matches!(drag, ClipDrag::Gain { .. }))
+    clip_state(ctx).drag.is_some_and(|drag| matches!(drag, ClipDrag::Gain { .. }))
 }
 
 /// True when the clip is in the current clip selection.
@@ -700,13 +531,7 @@ fn clip_selected(editor: &Editor, id: Uuid) -> bool {
 /// The topmost clip under the pointer: `(clip id, track index, zone)`.
 ///
 /// Tracks and clips are scanned in draw order, so the clip painted last wins.
-fn clip_hit(
-    editor: &Editor,
-    g: &Geom,
-    lane_rect: egui::Rect,
-    scroll_y: f32,
-    p: egui::Pos2,
-) -> Option<(Uuid, usize, Zone)> {
+fn clip_hit(editor: &Editor, g: &Geom, lane_rect: egui::Rect, scroll_y: f32, p: egui::Pos2) -> Option<(Uuid, usize, Zone)> {
     if !lane_rect.contains(p) {
         return None;
     }
@@ -714,10 +539,7 @@ fn clip_hit(
     let mut y = lane_rect.top() - scroll_y;
     for (index, track) in editor.project.tracks.iter().enumerate() {
         let bottom = y + track.height;
-        let track_rect = egui::Rect::from_min_max(
-            egui::pos2(g.lane_left, y),
-            egui::pos2(lane_rect.right(), bottom),
-        );
+        let track_rect = egui::Rect::from_min_max(egui::pos2(g.lane_left, y), egui::pos2(lane_rect.right(), bottom));
         for clip in &track.clips {
             let rect = clip_view::clip_rect(clip, g, track_rect);
             if let Some(zone) = clip_view::hit_test(clip, rect, g.spp, p) {
@@ -730,20 +552,11 @@ fn clip_hit(
 }
 
 /// Finds a clip and its on-screen rect by id anywhere in the project.
-fn clip_by_id(
-    editor: &Editor,
-    g: &Geom,
-    lane_rect: egui::Rect,
-    scroll_y: f32,
-    clip_id: Uuid,
-) -> Option<(Clip, egui::Rect)> {
+fn clip_by_id(editor: &Editor, g: &Geom, lane_rect: egui::Rect, scroll_y: f32, clip_id: Uuid) -> Option<(Clip, egui::Rect)> {
     let mut y = lane_rect.top() - scroll_y;
     for track in &editor.project.tracks {
         let bottom = y + track.height;
-        let track_rect = egui::Rect::from_min_max(
-            egui::pos2(g.lane_left, y),
-            egui::pos2(lane_rect.right(), bottom),
-        );
+        let track_rect = egui::Rect::from_min_max(egui::pos2(g.lane_left, y), egui::pos2(lane_rect.right(), bottom));
         if let Some(clip) = track.clips.iter().find(|clip| clip.id == clip_id) {
             return Some((clip.clone(), clip_view::clip_rect(clip, g, track_rect)));
         }
@@ -758,14 +571,7 @@ fn begin_clip_drag(editor: &mut Editor, press: &ClipPress) -> Option<ClipDrag> {
     match press.zone {
         Zone::LeftEdge | Zone::RightEdge => {
             editor.begin_gesture();
-            Some(ClipDrag::Trim {
-                clip_id: press.clip_id,
-                edge: if press.zone == Zone::LeftEdge {
-                    TrimEdge::Start
-                } else {
-                    TrimEdge::End
-                },
-            })
+            Some(ClipDrag::Trim { clip_id: press.clip_id, edge: if press.zone == Zone::LeftEdge { TrimEdge::Start } else { TrimEdge::End } })
         }
         Zone::Header => {
             if !clip_selected(editor, press.clip_id) {
@@ -775,50 +581,24 @@ fn begin_clip_drag(editor: &mut Editor, press: &ClipPress) -> Option<ClipDrag> {
                 crate::editor::selection::Selection::Clips(ids) => ids.clone(),
                 _ => vec![press.clip_id],
             };
-            let (base_start, base_end) = editor.project.tracks.iter().find_map(|track| {
-                track
-                    .clips
-                    .iter()
-                    .find(|clip| clip.id == press.clip_id)
-                    .map(|clip| (clip.start, clip.end()))
-            })?;
+            let (base_start, base_end) =
+                editor.project.tracks.iter().find_map(|track| track.clips.iter().find(|clip| clip.id == press.clip_id).map(|clip| (clip.start, clip.end())))?;
             editor.begin_gesture();
-            Some(ClipDrag::Move {
-                ids,
-                base_start,
-                base_end,
-                press_track: press.track_index,
-            })
+            Some(ClipDrag::Move { ids, base_start, base_end, press_track: press.track_index })
         }
         Zone::FadeInHandle => {
             editor.begin_gesture();
-            Some(ClipDrag::Fade {
-                clip_id: press.clip_id,
-                out: false,
-            })
+            Some(ClipDrag::Fade { clip_id: press.clip_id, out: false })
         }
         Zone::FadeOutHandle => {
             editor.begin_gesture();
-            Some(ClipDrag::Fade {
-                clip_id: press.clip_id,
-                out: true,
-            })
+            Some(ClipDrag::Fade { clip_id: press.clip_id, out: true })
         }
         Zone::GainLine => {
-            let base_db = editor
-                .project
-                .tracks
-                .iter()
-                .flat_map(|track| track.clips.iter())
-                .find(|clip| clip.id == press.clip_id)
-                .map(|clip| clip.gain_db)
-                .unwrap_or(0.0);
+            let base_db =
+                editor.project.tracks.iter().flat_map(|track| track.clips.iter()).find(|clip| clip.id == press.clip_id).map(|clip| clip.gain_db).unwrap_or(0.0);
             editor.begin_gesture();
-            Some(ClipDrag::Gain {
-                clip_id: press.clip_id,
-                base_db,
-                press_y: press.pos.y,
-            })
+            Some(ClipDrag::Gain { clip_id: press.clip_id, base_db, press_y: press.pos.y })
         }
         Zone::Body => None,
     }
@@ -841,12 +621,7 @@ fn run_clip_drag(
         return;
     };
     match drag {
-        ClipDrag::Move {
-            ids,
-            base_start,
-            base_end,
-            press_track,
-        } => {
+        ClipDrag::Move { ids, base_start, base_end, press_track } => {
             let mut delta = ((p.x - press.pos.x) as f64 * g.spp).round() as i64;
             // Snap the pressed clip's start or end, whichever adjusts less.
             let mut snap_point = None;
@@ -854,8 +629,7 @@ fn run_clip_drag(
             let cand_start = base_start as i64 + delta;
             let cand_end = base_end as i64 + delta;
             if cand_start >= 0 {
-                let (snapped, _) =
-                    editor.snap_pos(cand_start as u64, &ids, None, alt, THEME.snap_px);
+                let (snapped, _) = editor.snap_pos(cand_start as u64, &ids, None, alt, THEME.snap_px);
                 if snapped != cand_start as u64 {
                     options.push((snapped as i64 - cand_start, snapped));
                 }
@@ -866,22 +640,13 @@ fn run_clip_drag(
                     options.push((snapped as i64 - cand_end, snapped));
                 }
             }
-            if let Some((adjust, point)) =
-                options.into_iter().min_by_key(|(adjust, _)| adjust.abs())
-            {
+            if let Some((adjust, point)) = options.into_iter().min_by_key(|(adjust, _)| adjust.abs()) {
                 delta += adjust;
                 snap_point = Some(point);
             }
             if let Some(track) = track_index_at(editor, lane_rect, scroll_y, p.y, false) {
                 let delta_tracks = track as i64 - press_track as i64;
-                if editor
-                    .preview(Action::MoveClips {
-                        clip_ids: ids.clone(),
-                        delta_time: delta,
-                        delta_tracks: delta_tracks as i32,
-                    })
-                    .is_ok()
-                {
+                if editor.preview(Action::MoveClips { clip_ids: ids.clone(), delta_time: delta, delta_tracks: delta_tracks as i32 }).is_ok() {
                     state.snap_line = snap_point;
                 } else {
                     // Off the top or bottom track, or before 0: keep the last good preview.
@@ -892,16 +657,8 @@ fn run_clip_drag(
             }
         }
         ClipDrag::Trim { clip_id, edge } => {
-            let (new_pos, snap_point) =
-                editor.snap_pos(g.x_to_sample(p.x), &[clip_id], None, alt, THEME.snap_px);
-            if editor
-                .preview(Action::TrimClip {
-                    clip_id,
-                    edge,
-                    new_pos,
-                })
-                .is_ok()
-            {
+            let (new_pos, snap_point) = editor.snap_pos(g.x_to_sample(p.x), &[clip_id], None, alt, THEME.snap_px);
+            if editor.preview(Action::TrimClip { clip_id, edge, new_pos }).is_ok() {
                 state.snap_line = snap_point;
             } else {
                 state.snap_line = None;
@@ -911,34 +668,17 @@ fn run_clip_drag(
             let Some((clip, _rect)) = clip_by_id(editor, g, lane_rect, scroll_y, clip_id) else {
                 return;
             };
-            let (snapped, snap_point) =
-                editor.snap_pos(g.x_to_sample(p.x), &[clip_id], None, alt, THEME.snap_px);
-            let value = if out {
-                clip.end().saturating_sub(snapped)
-            } else {
-                snapped.saturating_sub(clip.start)
-            }
-            .min(clip.len());
+            let (snapped, snap_point) = editor.snap_pos(g.x_to_sample(p.x), &[clip_id], None, alt, THEME.snap_px);
+            let value = if out { clip.end().saturating_sub(snapped) } else { snapped.saturating_sub(clip.start) }.min(clip.len());
             let fade_in = if out { clip.fade_in } else { value };
             let fade_out = if out { value } else { clip.fade_out };
-            if editor
-                .preview(Action::SetClipFades {
-                    clip_id,
-                    fade_in,
-                    fade_out,
-                })
-                .is_ok()
-            {
+            if editor.preview(Action::SetClipFades { clip_id, fade_in, fade_out }).is_ok() {
                 state.snap_line = snap_point;
             } else {
                 state.snap_line = None;
             }
         }
-        ClipDrag::Gain {
-            clip_id,
-            base_db,
-            press_y,
-        } => {
+        ClipDrag::Gain { clip_id, base_db, press_y } => {
             let Some((_clip, rect)) = clip_by_id(editor, g, lane_rect, scroll_y, clip_id) else {
                 return;
             };
@@ -952,10 +692,7 @@ fn run_clip_drag(
             if shift {
                 db = (db * 10.0).round() / 10.0;
             }
-            let _ = editor.preview(Action::SetClipGain {
-                clip_id,
-                db: db.clamp(clip_view::GAIN_MIN_DB, clip_view::GAIN_MAX_DB),
-            });
+            let _ = editor.preview(Action::SetClipGain { clip_id, db: db.clamp(clip_view::GAIN_MIN_DB, clip_view::GAIN_MAX_DB) });
         }
     }
 }
@@ -966,13 +703,7 @@ fn run_clip_drag(
 /// Returns true when the press (or an active clip drag or menu) is handled
 /// here, so the lane interaction must not react to it. Clip body presses fall
 /// through to the lane interaction as before.
-pub fn handle_clip_input(
-    ui: &egui::Ui,
-    editor: &mut Editor,
-    g: &Geom,
-    lane_rect: egui::Rect,
-    scroll_y: f32,
-) -> bool {
+pub fn handle_clip_input(ui: &egui::Ui, editor: &mut Editor, g: &Geom, lane_rect: egui::Rect, scroll_y: f32) -> bool {
     let mut state = clip_state(ui.ctx());
     let (pressed, down, released, secondary, pos, ctrl, alt, shift, esc) = ui.input(|i| {
         (
@@ -1038,19 +769,13 @@ pub fn handle_clip_input(
                 state.drag = Some(drag);
             }
             if state.drag.is_some() {
-                run_clip_drag(
-                    editor, g, lane_rect, scroll_y, &press, p, alt, shift, &mut state,
-                );
+                run_clip_drag(editor, g, lane_rect, scroll_y, &press, p, alt, shift, &mut state);
             }
         }
         match &state.drag {
             Some(ClipDrag::Move { .. }) => ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing),
-            Some(ClipDrag::Trim { .. } | ClipDrag::Fade { .. }) => {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal)
-            }
-            Some(ClipDrag::Gain { .. }) => {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical)
-            }
+            Some(ClipDrag::Trim { .. } | ClipDrag::Fade { .. }) => ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal),
+            Some(ClipDrag::Gain { .. }) => ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical),
             None => {}
         }
     } else if pressed && let Some(p) = pos {
@@ -1062,32 +787,20 @@ pub fn handle_clip_input(
                 handled = true;
             }
         } else if let Some((clip_id, index, zone)) = clip_hit(editor, g, lane_rect, scroll_y, p) {
-            let double_clicked = ui.input(|i| {
-                i.pointer
-                    .button_double_clicked(egui::PointerButton::Primary)
-            });
+            let double_clicked = ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary));
             if double_clicked
                 && zone == Zone::Header
                 && let Some((clip, rect)) = clip_by_id(editor, g, lane_rect, scroll_y, clip_id)
                 && clip_view::gain_text_rect(rect).contains(p)
             {
                 // Double-click on the header gain value: inline edit.
-                state.gain_edit = Some(GainEdit {
-                    clip_id,
-                    text: format!("{:.1}", clip.gain_db),
-                    pos: clip_view::gain_text_rect(rect).min,
-                });
+                state.gain_edit = Some(GainEdit { clip_id, text: format!("{:.1}", clip.gain_db), pos: clip_view::gain_text_rect(rect).min });
                 handled = true;
             } else {
                 match zone {
                     Zone::Body => {}
                     _ => {
-                        state.press = Some(ClipPress {
-                            clip_id,
-                            track_index: index,
-                            pos: p,
-                            zone,
-                        });
+                        state.press = Some(ClipPress { clip_id, track_index: index, pos: p, zone });
                         handled = true;
                     }
                 }
@@ -1098,9 +811,7 @@ pub fn handle_clip_input(
         if let Some((_id, _index, zone)) = clip_hit(editor, g, lane_rect, scroll_y, p) {
             let icon = match zone {
                 Zone::Header => Some(egui::CursorIcon::Grab),
-                Zone::LeftEdge | Zone::RightEdge | Zone::FadeInHandle | Zone::FadeOutHandle => {
-                    Some(egui::CursorIcon::ResizeHorizontal)
-                }
+                Zone::LeftEdge | Zone::RightEdge | Zone::FadeInHandle | Zone::FadeOutHandle => Some(egui::CursorIcon::ResizeHorizontal),
                 Zone::GainLine => Some(egui::CursorIcon::ResizeVertical),
                 Zone::Body => None,
             };
@@ -1121,13 +832,7 @@ pub fn draw_clip_snap_line(ui: &egui::Ui, g: &Geom, lane_rect: egui::Rect) {
     };
     let painter = ui.painter_at(lane_rect);
     let x = g.sample_to_x(snap);
-    painter.line_segment(
-        [
-            egui::pos2(x, lane_rect.top()),
-            egui::pos2(x, lane_rect.bottom()),
-        ],
-        egui::Stroke::new(THEME.snap_line_w, THEME.snap_line_color),
-    );
+    painter.line_segment([egui::pos2(x, lane_rect.top()), egui::pos2(x, lane_rect.bottom())], egui::Stroke::new(THEME.snap_line_w, THEME.snap_line_color));
 }
 
 /// Draws the clip context menu and runs its actions.
@@ -1140,13 +845,7 @@ pub fn draw_clip_menu(ui: &egui::Ui, editor: &mut Editor) -> Vec<String> {
     let Some(menu) = state.menu else {
         return messages;
     };
-    let (esc, clicked, pointer) = ui.input(|i| {
-        (
-            i.key_pressed(egui::Key::Escape),
-            i.pointer.any_click(),
-            i.pointer.latest_pos(),
-        )
-    });
+    let (esc, clicked, pointer) = ui.input(|i| (i.key_pressed(egui::Key::Escape), i.pointer.any_click(), i.pointer.latest_pos()));
     if esc {
         state.menu = None;
         save_clip_state(ui.ctx(), &state);
@@ -1154,13 +853,7 @@ pub fn draw_clip_menu(ui: &egui::Ui, editor: &mut Editor) -> Vec<String> {
     }
 
     // Gather everything the menu entries need before any action mutates the project.
-    let info = editor.project.tracks.iter().find_map(|track| {
-        track
-            .clips
-            .iter()
-            .find(|clip| clip.id == menu.clip_id)
-            .map(|clip| (clip.clone(), track.id))
-    });
+    let info = editor.project.tracks.iter().find_map(|track| track.clips.iter().find(|clip| clip.id == menu.clip_id).map(|clip| (clip.clone(), track.id)));
     let Some((clip, track_id)) = info else {
         state.menu = None;
         save_clip_state(ui.ctx(), &state);
@@ -1179,54 +872,38 @@ pub fn draw_clip_menu(ui: &egui::Ui, editor: &mut Editor) -> Vec<String> {
     let media_id = clip.media_id;
 
     let mut close = false;
-    let response = egui::Area::new(egui::Id::new("clip_context_menu"))
-        .order(egui::Order::Foreground)
-        .fixed_pos(menu.pos)
-        .show(ui.ctx(), |ui| {
-            crate::ui::theme::menu_frame().show(ui, |ui| {
-                crate::ui::theme::menu_item_style(ui.style_mut());
-                ui.set_min_width(THEME.clip_menu_min_w);
-                if ui
-                    .add_enabled(splittable, egui::Button::new("Split"))
-                    .clicked()
-                {
-                    if let Err(error) = editor.apply(Action::SplitAt {
-                        pos: playhead,
-                        track_ids: Some(vec![track_id]),
-                    }) {
-                        messages.push(error.to_string());
-                    }
-                    close = true;
+    let response = egui::Area::new(egui::Id::new("clip_context_menu")).order(egui::Order::Foreground).fixed_pos(menu.pos).show(ui.ctx(), |ui| {
+        crate::ui::theme::menu_frame().show(ui, |ui| {
+            crate::ui::theme::menu_item_style(ui.style_mut());
+            ui.set_min_width(THEME.clip_menu_min_w);
+            if ui.add_enabled(splittable, egui::Button::new("Split")).clicked() {
+                if let Err(error) = editor.apply(Action::SplitAt { pos: playhead, track_ids: Some(vec![track_id]) }) {
+                    messages.push(error.to_string());
                 }
-                if ui.button("Delete").clicked() {
-                    if let Err(error) = editor.apply(Action::DeleteClips {
-                        clip_ids: delete_ids,
-                        ripple: editor.view.ripple,
-                    }) {
-                        messages.push(error.to_string());
-                    }
-                    close = true;
+                close = true;
+            }
+            if ui.button("Delete").clicked() {
+                if let Err(error) = editor.apply(Action::DeleteClips { clip_ids: delete_ids, ripple: editor.view.ripple }) {
+                    messages.push(error.to_string());
                 }
-                if ui.button("Clip Gain...").clicked() {
-                    dialogs::gain::request(ui.ctx(), clip.id, editor);
-                    close = true;
+                close = true;
+            }
+            if ui.button("Clip Gain...").clicked() {
+                dialogs::gain::request(ui.ctx(), clip.id, editor);
+                close = true;
+            }
+            if ui.button("Reset Fades").clicked() {
+                if let Err(error) = editor.apply(Action::SetClipFades { clip_id: clip.id, fade_in: 0, fade_out: 0 }) {
+                    messages.push(error.to_string());
                 }
-                if ui.button("Reset Fades").clicked() {
-                    if let Err(error) = editor.apply(Action::SetClipFades {
-                        clip_id: clip.id,
-                        fade_in: 0,
-                        fade_out: 0,
-                    }) {
-                        messages.push(error.to_string());
-                    }
-                    close = true;
-                }
-                if ui.button("Reveal in Bin").clicked() {
-                    bin_panel::request_reveal(ui.ctx(), media_id);
-                    close = true;
-                }
-            });
+                close = true;
+            }
+            if ui.button("Reveal in Bin").clicked() {
+                bin_panel::request_reveal(ui.ctx(), media_id);
+                close = true;
+            }
         });
+    });
     let menu_rect = response.response.rect;
     if clicked && pointer.is_some_and(|p| !menu_rect.contains(p)) {
         close = true;
@@ -1247,50 +924,36 @@ pub fn draw_gain_edit(ui: &egui::Ui, editor: &mut Editor) -> Vec<String> {
     let Some(mut edit) = state.gain_edit.take() else {
         return messages;
     };
-    if !editor
-        .project
-        .tracks
-        .iter()
-        .any(|track| track.clips.iter().any(|clip| clip.id == edit.clip_id))
-    {
+    if !editor.project.tracks.iter().any(|track| track.clips.iter().any(|clip| clip.id == edit.clip_id)) {
         save_clip_state(ui.ctx(), &state);
         return messages;
     }
     let mut apply = None;
     let mut cancel = false;
-    egui::Area::new(egui::Id::new("clip_gain_edit"))
-        .order(egui::Order::Foreground)
-        .fixed_pos(edit.pos)
-        .show(ui.ctx(), |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut edit.text)
-                        .desired_width(THEME.gain_edit_w)
-                        .font(egui::FontId::proportional(THEME.gain_edit_size)),
-                );
-                if !resp.has_focus() {
-                    resp.request_focus();
+    egui::Area::new(egui::Id::new("clip_gain_edit")).order(egui::Order::Foreground).fixed_pos(edit.pos).show(ui.ctx(), |ui| {
+        egui::Frame::popup(ui.style()).show(ui, |ui| {
+            let resp =
+                ui.add(egui::TextEdit::singleline(&mut edit.text).desired_width(THEME.gain_edit_w).font(egui::FontId::proportional(THEME.gain_edit_size)));
+            if !resp.has_focus() {
+                resp.request_focus();
+            }
+            let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if enter {
+                if let Ok(db) = edit.text.trim().parse::<f32>() {
+                    apply = Some(db);
                 }
-                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if enter {
-                    if let Ok(db) = edit.text.trim().parse::<f32>() {
-                        apply = Some(db);
-                    }
-                } else if resp.lost_focus() && !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    // Focus lost to anything else: close without a change.
-                    cancel = true;
-                }
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    cancel = true;
-                    ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-                }
-            });
+            } else if resp.lost_focus() && !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                // Focus lost to anything else: close without a change.
+                cancel = true;
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                cancel = true;
+                ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+            }
         });
+    });
     if let Some(db) = apply
-        && let Err(error) = editor.apply(Action::SetClipGain {
-            clip_id: edit.clip_id,
-            db,
-        })
+        && let Err(error) = editor.apply(Action::SetClipGain { clip_id: edit.clip_id, db })
     {
         messages.push(error.to_string());
     }

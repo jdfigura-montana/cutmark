@@ -35,11 +35,7 @@ fn has_second_channel(device_channels: Option<u16>) -> bool {
 
 /// `choice`, or Mono (input 1) when the device cannot serve it.
 fn fit_channels(choice: RecordChannels, device_channels: Option<u16>) -> RecordChannels {
-    if has_second_channel(device_channels) {
-        choice
-    } else {
-        RecordChannels::Mono1
-    }
+    if has_second_channel(device_channels) { choice } else { RecordChannels::Mono1 }
 }
 
 /// The first entry of the device list: "Windows default (<name>)".
@@ -101,12 +97,7 @@ impl AudioSettingsDialog {
                 );
             });
             super::form_row(ui, "Latency offset", |ui| {
-                super::ms_control(
-                    ui,
-                    "as_latency",
-                    &mut self.latency_ms,
-                    (MIN_LATENCY_OFFSET_MS, MAX_LATENCY_OFFSET_MS),
-                );
+                super::ms_control(ui, "as_latency", &mut self.latency_ms, (MIN_LATENCY_OFFSET_MS, MAX_LATENCY_OFFSET_MS));
             });
             if let Some(error) = &self.error {
                 ui.label(egui::RichText::new(error).color(THEME.error));
@@ -155,11 +146,7 @@ impl AudioSettingsDialog {
                 .selected_text(shown)
                 .popup_style(crate::ui::theme::menu_item_style.into())
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut self.device,
-                        None,
-                        default_label(self.default_name.as_deref()),
-                    );
+                    ui.selectable_value(&mut self.device, None, default_label(self.default_name.as_deref()));
                     for name in &self.devices {
                         ui.selectable_value(&mut self.device, Some(name.clone()), name);
                     }
@@ -174,11 +161,7 @@ impl AudioSettingsDialog {
     /// Saves the settings through the Editor; the error stays in the dialog.
     fn try_apply(&mut self, editor: &mut Editor) {
         self.error = None;
-        let config = AppConfig {
-            input_device: self.device.clone(),
-            record_channels: self.channels,
-            latency_offset_ms: self.latency_ms,
-        };
+        let config = AppConfig { input_device: self.device.clone(), record_channels: self.channels, latency_offset_ms: self.latency_ms };
         match editor.set_config(config) {
             Ok(()) => self.open = false,
             Err(error) => self.error = Some(error.to_string()),
@@ -201,13 +184,7 @@ mod tests {
     const TOL: f32 = 0.6;
 
     fn editor() -> Editor {
-        Editor::with_project(
-            Project::new("Test".to_string(), 48_000, BitDepth::Int24),
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        )
+        Editor::with_project(Project::new("Test".to_string(), 48_000, BitDepth::Int24), ViewState::default(), ProjectPaths { root: PathBuf::from("unused") })
     }
 
     /// An editor listing a 2-channel and a 1-channel input, with its config
@@ -245,11 +222,7 @@ mod tests {
         assert!(has_second_channel(None), "unknown restricts nothing");
         assert!(!has_second_channel(Some(1)));
         assert!(!has_second_channel(Some(0)));
-        for choice in [
-            RecordChannels::Mono1,
-            RecordChannels::Mono2,
-            RecordChannels::Stereo,
-        ] {
+        for choice in [RecordChannels::Mono1, RecordChannels::Mono2, RecordChannels::Stereo] {
             assert_eq!(fit_channels(choice, Some(2)), choice);
             assert_eq!(fit_channels(choice, None), choice);
             assert_eq!(fit_channels(choice, Some(1)), RecordChannels::Mono1);
@@ -258,10 +231,7 @@ mod tests {
 
     #[test]
     fn the_default_entry_names_the_windows_default_device() {
-        assert_eq!(
-            default_label(Some("Mic (USB)")),
-            "Windows default (Mic (USB))"
-        );
+        assert_eq!(default_label(Some("Mic (USB)")), "Windows default (Mic (USB))");
         assert_eq!(default_label(None), "Windows default");
     }
 
@@ -269,13 +239,7 @@ mod tests {
     fn the_dialog_opens_with_the_current_settings() {
         let dir = tempfile::tempdir().unwrap();
         let mut editor = editor_with_devices(dir.path().join("config.json"));
-        editor
-            .set_config(AppConfig {
-                input_device: Some("Mic".to_string()),
-                record_channels: RecordChannels::Stereo,
-                latency_offset_ms: -12,
-            })
-            .unwrap();
+        editor.set_config(AppConfig { input_device: Some("Mic".to_string()), record_channels: RecordChannels::Stereo, latency_offset_ms: -12 }).unwrap();
         let dialog = AudioSettingsDialog::new_open(&editor);
         assert_eq!(dialog.device.as_deref(), Some("Mic"));
         assert_eq!(dialog.channels, RecordChannels::Stereo);
@@ -290,13 +254,7 @@ mod tests {
     fn a_saved_stereo_choice_drops_to_mono_1_on_a_one_channel_device() {
         let dir = tempfile::tempdir().unwrap();
         let mut editor = editor_with_devices(dir.path().join("config.json"));
-        editor
-            .set_config(AppConfig {
-                input_device: Some("Line".to_string()),
-                record_channels: RecordChannels::Stereo,
-                latency_offset_ms: 0,
-            })
-            .unwrap();
+        editor.set_config(AppConfig { input_device: Some("Line".to_string()), record_channels: RecordChannels::Stereo, latency_offset_ms: 0 }).unwrap();
         let dialog = AudioSettingsDialog::new_open(&editor);
         assert_eq!(dialog.channels, RecordChannels::Mono1);
     }
@@ -310,48 +268,28 @@ mod tests {
         let out = h.settle(|ui| dialog.show(ui.ctx(), &mut editor));
 
         let card = card(&out);
-        assert!(
-            (card.width() - THEME.dialog_w).abs() < TOL,
-            "card is {} wide",
-            card.width()
-        );
+        assert!((card.width() - THEME.dialog_w).abs() < TOL, "card is {} wide", card.width());
         assert!(card.top() > 0.0 && card.bottom() < 800.0, "card on screen");
 
         // Same footer as the other dialogs: "OK  Cancel", 8 px apart, the
         // last button flush with the content edge, equal card padding.
         let line = out.footer_line().expect("footer divider");
         let (pad_left, pad_right) = (line.left() - card.left(), card.right() - line.right());
-        assert!(
-            (pad_left - pad_right).abs() < TOL,
-            "{pad_left} vs {pad_right}"
-        );
+        assert!((pad_left - pad_right).abs() < TOL, "{pad_left} vs {pad_right}");
         let (ok, cancel) = (button(&out, "OK"), button(&out, "Cancel"));
         assert!(ok.center().x < cancel.center().x, "OK then Cancel");
-        assert!(
-            (cancel.left() - ok.right() - THEME.space_md).abs() < TOL,
-            "gap is {}",
-            cancel.left() - ok.right()
-        );
+        assert!((cancel.left() - ok.right() - THEME.space_md).abs() < TOL, "gap is {}", cancel.left() - ok.right());
         assert!((cancel.right() - line.right()).abs() < TOL);
 
         // Everything sits inside the card, top to bottom.
-        let rows: Vec<egui::Rect> = [
-            "Audio Settings",
-            "Input device",
-            "Record channels",
-            "Latency offset",
-        ]
-        .iter()
-        .map(|label| out.text_rect(label).unwrap_or_else(|| panic!("{label}")))
-        .collect();
+        let rows: Vec<egui::Rect> = ["Audio Settings", "Input device", "Record channels", "Latency offset"]
+            .iter()
+            .map(|label| out.text_rect(label).unwrap_or_else(|| panic!("{label}")))
+            .collect();
         for rect in &rows {
             assert!(card.contains_rect(*rect), "{rect:?} inside {card:?}");
         }
-        assert!(
-            rows.windows(2)
-                .all(|pair| pair[0].center().y + 10.0 < pair[1].center().y),
-            "rows run top to bottom: {rows:?}"
-        );
+        assert!(rows.windows(2).all(|pair| pair[0].center().y + 10.0 < pair[1].center().y), "rows run top to bottom: {rows:?}");
         // The controls never push past the card's content edge.
         // (The typed value paints its number and its " ms" suffix as two runs.)
         for label in ["Mono (input 1)", "Mono (input 2)", "Stereo", "+0", " ms"] {
@@ -359,14 +297,8 @@ mod tests {
             assert!(rect.right() <= line.right() + TOL, "{label} {rect:?}");
         }
         let (value, suffix) = (out.text_rect("+0").unwrap(), out.text_rect(" ms").unwrap());
-        assert!(
-            value.right() <= suffix.left() + TOL,
-            "+0 then ms, left to right"
-        );
-        assert!(
-            out.text_rect("Windows default (Mic)").is_some(),
-            "the combo shows the default entry"
-        );
+        assert!(value.right() <= suffix.left() + TOL, "+0 then ms, left to right");
+        assert!(out.text_rect("Windows default (Mic)").is_some(), "the combo shows the default entry");
     }
 
     #[test]
@@ -374,21 +306,10 @@ mod tests {
         let mut h = Headless::new(1280.0, 800.0);
         let dir = tempfile::tempdir().unwrap();
         let mut editor = editor_with_devices(dir.path().join("config.json"));
-        editor
-            .set_config(AppConfig {
-                input_device: Some("Line".to_string()),
-                ..AppConfig::default()
-            })
-            .unwrap();
+        editor.set_config(AppConfig { input_device: Some("Line".to_string()), ..AppConfig::default() }).unwrap();
         let mut dialog = AudioSettingsDialog::new_open(&editor);
         let out = h.settle(|ui| dialog.show(ui.ctx(), &mut editor));
-        let rect_of = |label: &str| {
-            out.texts()
-                .into_iter()
-                .find(|t| t.text == label)
-                .map(|t| t.rect)
-                .unwrap_or_else(|| panic!("{label}"))
-        };
+        let rect_of = |label: &str| out.texts().into_iter().find(|t| t.text == label).map(|t| t.rect).unwrap_or_else(|| panic!("{label}"));
         // A click on a disabled segment changes nothing.
         let stereo = rect_of("Stereo").center();
         let _ = h.click(stereo, |ui| dialog.show(ui.ctx(), &mut editor));
@@ -438,11 +359,7 @@ mod tests {
         let ok = button(&out, "OK").center();
         let _ = h.click(ok, |ui| dialog.show(ui.ctx(), &mut editor));
         assert!(dialog.is_closed());
-        let want = AppConfig {
-            input_device: None,
-            record_channels: RecordChannels::Stereo,
-            latency_offset_ms: 40,
-        };
+        let want = AppConfig { input_device: None, record_channels: RecordChannels::Stereo, latency_offset_ms: 40 };
         assert_eq!(editor.config(), &want);
         assert_eq!(config::load_from(&path), want);
     }
@@ -461,40 +378,24 @@ mod tests {
         // The error is set while handling the click, so it paints one frame
         // later: in red, inside the card, and the card stays 420 wide.
         let out = h.settle(|ui| dialog.show(ui.ctx(), &mut editor));
-        let shown = out
-            .texts()
-            .into_iter()
-            .find(|t| t.text == error)
-            .expect("the error is painted in the dialog");
+        let shown = out.texts().into_iter().find(|t| t.text == error).expect("the error is painted in the dialog");
         assert_eq!(shown.color, THEME.error);
         let card = card(&out);
-        assert!(
-            card.contains_rect(shown.rect),
-            "{:?} inside {card:?}",
-            shown.rect
-        );
+        assert!(card.contains_rect(shown.rect), "{:?} inside {card:?}", shown.rect);
         assert!((card.width() - THEME.dialog_w).abs() < TOL);
     }
 
     #[test]
     fn enter_confirms_and_escape_cancels() {
         let dir = tempfile::tempdir().unwrap();
-        let key = |key| egui::Event::Key {
-            key,
-            physical_key: Some(key),
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        };
+        let key = |key| egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
 
         let mut h = Headless::new(1280.0, 800.0);
         let mut editor = editor_with_devices(dir.path().join("config.json"));
         let mut dialog = AudioSettingsDialog::new_open(&editor);
         dialog.latency_ms = 7;
         let _ = h.settle(|ui| dialog.show(ui.ctx(), &mut editor));
-        let _ = h.frame(vec![key(egui::Key::Enter)], |ui| {
-            dialog.show(ui.ctx(), &mut editor)
-        });
+        let _ = h.frame(vec![key(egui::Key::Enter)], |ui| dialog.show(ui.ctx(), &mut editor));
         assert!(dialog.is_closed());
         assert_eq!(editor.config().latency_offset_ms, 7);
 
@@ -502,9 +403,7 @@ mod tests {
         let mut dialog = AudioSettingsDialog::new_open(&editor);
         dialog.latency_ms = 50;
         let _ = h.settle(|ui| dialog.show(ui.ctx(), &mut editor));
-        let _ = h.frame(vec![key(egui::Key::Escape)], |ui| {
-            dialog.show(ui.ctx(), &mut editor)
-        });
+        let _ = h.frame(vec![key(egui::Key::Escape)], |ui| dialog.show(ui.ctx(), &mut editor));
         assert!(dialog.is_closed());
         assert_eq!(editor.config().latency_offset_ms, 7, "Esc discards");
     }

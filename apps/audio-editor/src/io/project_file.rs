@@ -27,11 +27,7 @@ pub struct ProjectFile {
 /// Saves the project pretty-printed to project.json: writes project.json.tmp
 /// in the root, then renames it over project.json.
 pub fn save(paths: &ProjectPaths, project: &Project, view: &ViewState) -> Result<(), IoError> {
-    let file = ProjectFile {
-        format_version: FORMAT_VERSION,
-        project: project.clone(),
-        view: view.clone(),
-    };
+    let file = ProjectFile { format_version: FORMAT_VERSION, project: project.clone(), view: view.clone() };
     let json = serde_json::to_string_pretty(&file)?;
     let tmp = paths.root.join("project.json.tmp");
     let target = paths.project_json();
@@ -50,13 +46,9 @@ pub fn save(paths: &ProjectPaths, project: &Project, view: &ViewState) -> Result
 pub(super) fn finish_load(mut project: Project) -> Result<Project, IoError> {
     validate::clamp_track_heights(&mut project);
     if paths::validate_project_name(&project.name).is_err() {
-        return Err(IoError::InvalidProject(format!(
-            "the project name {:?} is not allowed",
-            project.name.chars().take(48).collect::<String>()
-        )));
+        return Err(IoError::InvalidProject(format!("the project name {:?} is not allowed", project.name.chars().take(48).collect::<String>())));
     }
-    validate::validate_loaded(&project)
-        .map_err(|error| IoError::InvalidProject(error.to_string()))?;
+    validate::validate_loaded(&project).map_err(|error| IoError::InvalidProject(error.to_string()))?;
     Ok(project)
 }
 
@@ -81,10 +73,7 @@ pub fn load(path: &Path) -> Result<(ProjectPaths, Project, ViewState), IoError> 
     let text = fs::read_to_string(&json_path)?;
     let file: ProjectFile = serde_json::from_str(&text)?;
     if file.format_version > FORMAT_VERSION {
-        return Err(IoError::UnsupportedVersion {
-            found: file.format_version,
-            max: FORMAT_VERSION,
-        });
+        return Err(IoError::UnsupportedVersion { found: file.format_version, max: FORMAT_VERSION });
     }
     let project = finish_load(file.project)?;
     Ok((ProjectPaths { root }, project, file.view))
@@ -93,11 +82,7 @@ pub fn load(path: &Path) -> Result<(ProjectPaths, Project, ViewState), IoError> 
 /// Copies a whole project folder to parent/new_name: validates the name, errors
 /// if the target exists, then copies every file and folder recursively.
 /// Returns the paths of the new project folder.
-pub fn copy_project(
-    from: &ProjectPaths,
-    parent: &Path,
-    new_name: &str,
-) -> Result<ProjectPaths, IoError> {
+pub fn copy_project(from: &ProjectPaths, parent: &Path, new_name: &str) -> Result<ProjectPaths, IoError> {
     paths::validate_project_name(new_name)?;
     let target_root = parent.join(new_name);
     if target_root.exists() {
@@ -132,16 +117,8 @@ mod tests {
 
     fn sample() -> (Project, ViewState) {
         (
-            Project::new(
-                "My Project".to_string(),
-                48_000,
-                crate::model::project::BitDepth::Int24,
-            ),
-            ViewState {
-                scroll_x: 4_096,
-                playhead: 12_345,
-                ..ViewState::default()
-            },
+            Project::new("My Project".to_string(), 48_000, crate::model::project::BitDepth::Int24),
+            ViewState { scroll_x: 4_096, playhead: 12_345, ..ViewState::default() },
         )
     }
 
@@ -177,8 +154,7 @@ mod tests {
 
     /// A project with media, a track and two clips.
     fn full_project() -> Project {
-        let mut project =
-            crate::model::fixtures::project_with_clips(&[&[(0, 1_000), (2_000, 500)]]);
+        let mut project = crate::model::fixtures::project_with_clips(&[&[(0, 1_000), (2_000, 500)]]);
         project.tracks[0].volume_db = -3.5;
         project.tracks[0].pan = 0.25;
         project.tracks[0].clips[0].gain_db = 2.0;
@@ -224,32 +200,12 @@ mod tests {
         type Break = fn(&mut Project);
         let cases: [(&str, Break, &str); 12] = [
             ("sample rate 0", |p| p.sample_rate = 0, "sample rate 0 Hz"),
-            (
-                "sample rate too high",
-                |p| p.sample_rate = 384_000,
-                "384000",
-            ),
+            ("sample rate too high", |p| p.sample_rate = 384_000, "384000"),
             ("3 channels", |p| p.media[0].channels = 3, "3 channels"),
-            (
-                "UNC file name",
-                |p| p.media[0].file_name = r"\\attacker.example\share\a.wav".to_string(),
-                "path separator",
-            ),
-            (
-                "absolute file name",
-                |p| p.media[0].file_name = r"C:\Windows\win.ini".to_string(),
-                "path separator",
-            ),
-            (
-                "parent file name",
-                |p| p.media[0].file_name = "..".to_string(),
-                "not a plain file name",
-            ),
-            (
-                "reserved file name",
-                |p| p.media[0].file_name = "con.wav".to_string(),
-                "reserved Windows device name",
-            ),
+            ("UNC file name", |p| p.media[0].file_name = r"\\attacker.example\share\a.wav".to_string(), "path separator"),
+            ("absolute file name", |p| p.media[0].file_name = r"C:\Windows\win.ini".to_string(), "path separator"),
+            ("parent file name", |p| p.media[0].file_name = "..".to_string(), "not a plain file name"),
+            ("reserved file name", |p| p.media[0].file_name = "con.wav".to_string(), "reserved Windows device name"),
             (
                 "src_out before src_in",
                 |p| {
@@ -266,30 +222,15 @@ mod tests {
                 },
                 "24 hour limit",
             ),
-            (
-                "track volume out of range",
-                |p| p.tracks[0].volume_db = 40.0,
-                "track 1 volume",
-            ),
-            (
-                "clip gain out of range",
-                |p| p.tracks[0].clips[0].gain_db = -200.0,
-                "clip on track 1",
-            ),
-            (
-                "bad project name",
-                |p| p.name = "CON".to_string(),
-                "project name",
-            ),
+            ("track volume out of range", |p| p.tracks[0].volume_db = 40.0, "track 1 volume"),
+            ("clip gain out of range", |p| p.tracks[0].clips[0].gain_db = -200.0, "clip on track 1"),
+            ("bad project name", |p| p.name = "CON".to_string(), "project name"),
         ];
         for (what, break_it, expected) in cases {
             let mut project = full_project();
             break_it(&mut project);
             let text = load_error(&project);
-            assert!(
-                text.starts_with("This project file is invalid: "),
-                "{what}: {text}"
-            );
+            assert!(text.starts_with("This project file is invalid: "), "{what}: {text}");
             assert!(text.contains(expected), "{what}: {text}");
         }
     }
@@ -297,9 +238,7 @@ mod tests {
     #[test]
     fn too_many_tracks_do_not_open() {
         let mut project = full_project();
-        project.tracks = (0..1_001)
-            .map(|i| crate::model::track::Track::new(format!("T{i}")))
-            .collect();
+        project.tracks = (0..1_001).map(|i| crate::model::track::Track::new(format!("T{i}"))).collect();
         assert!(load_error(&project).contains("too many tracks"));
     }
 
@@ -334,10 +273,7 @@ mod tests {
         let text = fs::read_to_string(paths.project_json()).unwrap();
         let text = text.replace("\"format_version\": 1", "\"format_version\": 999");
         fs::write(paths.project_json(), text).unwrap();
-        assert!(matches!(
-            load(&paths.root),
-            Err(IoError::UnsupportedVersion { found: 999, max: 1 })
-        ));
+        assert!(matches!(load(&paths.root), Err(IoError::UnsupportedVersion { found: 999, max: 1 })));
     }
 
     #[test]
@@ -353,14 +289,8 @@ mod tests {
         let copied = copy_project(&paths, destination.path(), "Copy").unwrap();
 
         assert_eq!(copied.root, destination.path().join("Copy"));
-        assert_eq!(
-            fs::read(copied.media().join("conformed").join("song.wav")).unwrap(),
-            b"wav"
-        );
-        assert_eq!(
-            fs::read(copied.cache().join("peaks.bin")).unwrap(),
-            b"peaks"
-        );
+        assert_eq!(fs::read(copied.media().join("conformed").join("song.wav")).unwrap(), b"wav");
+        assert_eq!(fs::read(copied.cache().join("peaks.bin")).unwrap(), b"peaks");
         assert!(copied.project_json().is_file());
     }
 
@@ -368,19 +298,13 @@ mod tests {
     fn copy_project_errors_if_target_exists() {
         let parent = tempdir().unwrap();
         let paths = create_layout(parent.path(), "Proj").unwrap();
-        assert!(matches!(
-            copy_project(&paths, parent.path(), "Proj"),
-            Err(IoError::FolderExists(_))
-        ));
+        assert!(matches!(copy_project(&paths, parent.path(), "Proj"), Err(IoError::FolderExists(_))));
     }
 
     #[test]
     fn copy_project_errors_on_invalid_name() {
         let parent = tempdir().unwrap();
         let paths = create_layout(parent.path(), "Proj").unwrap();
-        assert!(matches!(
-            copy_project(&paths, parent.path(), "a/b"),
-            Err(IoError::InvalidProjectName(_))
-        ));
+        assert!(matches!(copy_project(&paths, parent.path(), "a/b"), Err(IoError::InvalidProjectName(_))));
     }
 }

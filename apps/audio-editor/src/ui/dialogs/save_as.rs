@@ -23,12 +23,7 @@ impl SaveAsDialog {
     /// Creates the dialog open, prefilled with the current project name and
     /// the parent of the current project folder.
     pub fn new_open(current_name: &str, current_root: &std::path::Path) -> Self {
-        SaveAsDialog {
-            open: true,
-            name: current_name.to_string(),
-            parent: current_root.parent().map(|p| p.to_path_buf()),
-            error: None,
-        }
+        SaveAsDialog { open: true, name: current_name.to_string(), parent: current_root.parent().map(|p| p.to_path_buf()), error: None }
     }
 
     /// Shows the dialog; runs Editor::save_as and closes on success.
@@ -49,14 +44,7 @@ impl SaveAsDialog {
                     None => String::new(),
                 };
                 let browse = super::with_browse(ui, |ui| {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(folder_text)
-                                .color(THEME.text_normal)
-                                .size(THEME.dialog_label_size),
-                        )
-                        .truncate(),
-                    );
+                    ui.add(egui::Label::new(egui::RichText::new(folder_text).color(THEME.text_normal).size(THEME.dialog_label_size)).truncate());
                 });
                 if browse {
                     self.parent = rfd::FileDialog::new().pick_folder();
@@ -67,9 +55,7 @@ impl SaveAsDialog {
             }
             let can_save = !self.name.trim().is_empty() && self.parent.is_some();
             super::footer(ui, |ui| {
-                if super::footer_button(ui, "Save", super::FooterButton::Primary, can_save)
-                    .clicked()
-                {
+                if super::footer_button(ui, "Save", super::FooterButton::Primary, can_save).clicked() {
                     self.try_save_as(editor);
                 }
                 if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
@@ -86,12 +72,7 @@ impl SaveAsDialog {
             cancel = true;
         }
         if cancel {
-            *self = SaveAsDialog {
-                open: false,
-                name: String::new(),
-                parent: None,
-                error: None,
-            };
+            *self = SaveAsDialog { open: false, name: String::new(), parent: None, error: None };
         }
     }
 
@@ -129,9 +110,7 @@ mod tests {
         let mut editor = Editor::with_project(
             Project::new("Test 2".to_string(), 48_000, BitDepth::Int24),
             ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
+            ProjectPaths { root: PathBuf::from("unused") },
         );
         let long = "C:/Users/someone/Documents/Programming_Projects/Audio_Editor/projects/a/very/deep/folder/tree/Test 2";
         let mut dialog = SaveAsDialog::new_open("Test 2", std::path::Path::new(long));
@@ -139,16 +118,7 @@ mod tests {
         let line = out.footer_line().expect("footer divider");
         let text = out.text_rect("Browse...").expect("Browse button text");
         let browse = out.filled_rect_at(text.center()).expect("Browse button");
-        assert!(
-            (browse.right() - line.right()).abs() < 0.6,
-            "Browse ends {} short of the content edge",
-            line.right() - browse.right()
-        );
-        assert!(
-            out.texts()
-                .iter()
-                .all(|t| t.rect.right() <= line.right() + 0.6),
-            "no text runs past the card content"
-        );
+        assert!((browse.right() - line.right()).abs() < 0.6, "Browse ends {} short of the content edge", line.right() - browse.right());
+        assert!(out.texts().iter().all(|t| t.rect.right() <= line.right() + 0.6), "no text runs past the card content");
     }
 }

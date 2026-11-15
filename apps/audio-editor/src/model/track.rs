@@ -36,16 +36,7 @@ pub struct Track {
 impl Track {
     /// Creates an empty track: volume 0.0 dB, pan centered, not muted or soloed, 96 px high.
     pub fn new(name: String) -> Track {
-        Track {
-            id: Uuid::new_v4(),
-            name,
-            volume_db: 0.0,
-            pan: 0.0,
-            mute: false,
-            solo: false,
-            height: DEFAULT_HEIGHT,
-            clips: Vec::new(),
-        }
+        Track { id: Uuid::new_v4(), name, volume_db: 0.0, pan: 0.0, mute: false, solo: false, height: DEFAULT_HEIGHT, clips: Vec::new() }
     }
 
     /// Sorts the clips by start position.

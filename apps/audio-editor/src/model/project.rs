@@ -39,15 +39,7 @@ pub struct Project {
 impl Project {
     /// Creates an empty project with the given name, sample rate and export bit depth.
     pub fn new(name: String, sample_rate: u32, export_bit_depth: BitDepth) -> Project {
-        Project {
-            name,
-            sample_rate,
-            export_bit_depth,
-            master_volume_db: 0.0,
-            media: Vec::new(),
-            tracks: Vec::new(),
-            markers: Vec::new(),
-        }
+        Project { name, sample_rate, export_bit_depth, master_volume_db: 0.0, media: Vec::new(), tracks: Vec::new(), markers: Vec::new() }
     }
 }
 
@@ -86,14 +78,7 @@ fn default_true() -> bool {
 
 impl Default for ViewState {
     fn default() -> Self {
-        ViewState {
-            samples_per_pixel: 1024.0,
-            scroll_x: 0,
-            scroll_y: 0.0,
-            playhead: 0,
-            snap: true,
-            ripple: false,
-        }
+        ViewState { samples_per_pixel: 1024.0, scroll_x: 0, scroll_y: 0.0, playhead: 0, snap: true, ripple: false }
     }
 }
 
@@ -143,21 +128,9 @@ mod tests {
                 mute: false,
                 solo: true,
                 height: 80.0,
-                clips: vec![Clip {
-                    id: clip_id,
-                    media_id,
-                    start: 1000,
-                    src_in: 0,
-                    src_out: 5000,
-                    gain_db: 2.0,
-                    fade_in: 10,
-                    fade_out: 20,
-                }],
+                clips: vec![Clip { id: clip_id, media_id, start: 1000, src_in: 0, src_out: 5000, gain_db: 2.0, fade_in: 10, fade_out: 20 }],
             }],
-            markers: vec![Marker {
-                id: marker_id,
-                position: 999,
-            }],
+            markers: vec![Marker { id: marker_id, position: 999 }],
         };
 
         let json = serde_json::to_string(&project).unwrap();

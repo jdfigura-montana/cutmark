@@ -21,26 +21,17 @@ pub struct Message {
 impl Message {
     /// A recording message ("Arm a track first", "Recording too short.", ...).
     pub fn recording(text: impl Into<String>) -> Message {
-        Message {
-            title: TITLE_RECORDING,
-            text: text.into(),
-        }
+        Message { title: TITLE_RECORDING, text: text.into() }
     }
 
     /// A media message (import, relink, missing files).
     pub fn media(text: impl Into<String>) -> Message {
-        Message {
-            title: TITLE_MEDIA,
-            text: text.into(),
-        }
+        Message { title: TITLE_MEDIA, text: text.into() }
     }
 
     /// A project message (autosave, unused-media cleanup).
     pub fn project(text: impl Into<String>) -> Message {
-        Message {
-            title: TITLE_PROJECT,
-            text: text.into(),
-        }
+        Message { title: TITLE_PROJECT, text: text.into() }
     }
 }
 
@@ -73,21 +64,9 @@ mod tests {
 
     #[test]
     fn the_dialog_title_is_the_shared_title_or_messages() {
-        assert_eq!(
-            dialog_title(&[Message::recording("a")]),
-            "Recording",
-            "one message"
-        );
-        assert_eq!(
-            dialog_title(&[Message::project("a"), Message::project("b")]),
-            "Project",
-            "same title"
-        );
-        assert_eq!(
-            dialog_title(&[Message::project("a"), Message::recording("b")]),
-            "Messages",
-            "different titles"
-        );
+        assert_eq!(dialog_title(&[Message::recording("a")]), "Recording", "one message");
+        assert_eq!(dialog_title(&[Message::project("a"), Message::project("b")]), "Project", "same title");
+        assert_eq!(dialog_title(&[Message::project("a"), Message::recording("b")]), "Messages", "different titles");
         assert_eq!(dialog_title(&[]), "Messages", "nothing to show");
     }
 }

@@ -51,16 +51,7 @@ pub struct FakeInput {
 impl Default for FakeInput {
     /// No devices, a healthy 48 kHz mono stream, no latency, nothing dropped.
     fn default() -> Self {
-        FakeInput {
-            default: None,
-            devices: Vec::new(),
-            open_fails: false,
-            lost: false,
-            rate: 48_000,
-            channels: 1,
-            latency_ns: 0,
-            dropped_frames: 0,
-        }
+        FakeInput { default: None, devices: Vec::new(), open_fails: false, lost: false, rate: 48_000, channels: 1, latency_ns: 0, dropped_frames: 0 }
     }
 }
 
@@ -148,28 +139,20 @@ pub struct RecordStatus<'a> {
 
 /// Ring buffer size in samples: two seconds of whole device frames.
 fn ring_capacity(rate: u32, channels: u16) -> usize {
-    2usize
-        .saturating_mul(rate as usize)
-        .saturating_mul(usize::from(channels))
+    2usize.saturating_mul(rate as usize).saturating_mul(usize::from(channels))
 }
 
 /// Milliseconds of audio `frames` device frames make at `rate` Hz, rounded up
 /// so any loss shows as at least 1 ms.
 fn dropped_ms(frames: u64, rate: u32) -> u64 {
-    frames
-        .saturating_mul(1_000)
-        .div_ceil(u64::from(rate.max(1)))
+    frames.saturating_mul(1_000).div_ceil(u64::from(rate.max(1)))
 }
 
 /// What the Editor starts with: the app config and where it is saved, plus the
 /// input test double. Test builds never touch the real config file or any
 /// real input device; the running app reads the config once.
 pub(super) fn initial_state() -> (AppConfig, Option<PathBuf>, Option<FakeInput>) {
-    if cfg!(test) {
-        (AppConfig::default(), None, Some(FakeInput::default()))
-    } else {
-        (config::load(), config::default_path(), None)
-    }
+    if cfg!(test) { (AppConfig::default(), None, Some(FakeInput::default())) } else { (config::load(), config::default_path(), None) }
 }
 
 /// The input channels a Record channels setting records.
@@ -189,9 +172,7 @@ fn fallback_notice(wanted: Option<&str>, fell_back: bool, noted: &AtomicBool) ->
     if !fell_back || noted.swap(true, Ordering::Relaxed) {
         return None;
     }
-    Some(format!(
-        "Input device {name} not found. Using the default input."
-    ))
+    Some(format!("Input device {name} not found. Using the default input."))
 }
 
 impl Editor {
@@ -230,9 +211,7 @@ impl Editor {
         }
         match self.open_input() {
             Ok(()) => self.armed_track = Some(track_id),
-            Err(error) => self.job_errors.push(Message::recording(format!(
-                "Could not arm the track: {error}"
-            ))),
+            Err(error) => self.job_errors.push(Message::recording(format!("Could not arm the track: {error}"))),
         }
     }
 
@@ -266,11 +245,9 @@ impl Editor {
         let live_take = self.recording.as_ref().is_some_and(|rec| !rec.stopping);
         if live_take {
             self.stop_recording();
-            self.job_errors
-                .push(Message::recording("Recording stopped: input device lost."));
+            self.job_errors.push(Message::recording("Recording stopped: input device lost."));
         } else {
-            self.job_errors
-                .push(Message::recording("Input device lost."));
+            self.job_errors.push(Message::recording("Input device lost."));
         }
         self.disarm();
     }
@@ -303,12 +280,7 @@ impl Editor {
         // that will be opened.
         let (_, rate, channels) = input::probe_input(device)?;
         let (producer, consumer) = RingBuffer::new(ring_capacity(rate, channels));
-        let stream = InputStream::open(
-            device,
-            input_pick(self.config.record_channels),
-            Arc::clone(&self.input_meter),
-            producer,
-        )?;
+        let stream = InputStream::open(device, input_pick(self.config.record_channels), Arc::clone(&self.input_meter), producer)?;
         if let Some(notice) = fallback_notice(device, stream.fell_back(), &FALLBACK_NOTED) {
             self.job_errors.push(Message::recording(notice));
         }
@@ -328,10 +300,7 @@ impl Editor {
             return Err(EditorError::Locked(SETTINGS_LOCKED.to_string()));
         }
         let config = config.clamped();
-        let path = self
-            .config_path
-            .clone()
-            .ok_or_else(config::no_config_folder)?;
+        let path = self.config_path.clone().ok_or_else(config::no_config_folder)?;
         config::save_to(&config, &path)?;
         self.config = config;
         if self.armed_track.is_some() {
@@ -339,9 +308,7 @@ impl Editor {
             self.input = None;
             if let Err(error) = self.open_input() {
                 self.disarm();
-                return Err(EditorError::Input(format!(
-                    "Could not reopen the input: {error}. The track was disarmed."
-                )));
+                return Err(EditorError::Input(format!("Could not reopen the input: {error}. The track was disarmed.")));
             }
         }
         Ok(())
@@ -370,13 +337,8 @@ impl Editor {
         match &self.fake_input {
             Some(fake) => {
                 let known = |name: &str| fake.devices.iter().any(|(d, _)| d == name);
-                let name = device
-                    .filter(|name| known(name))
-                    .or(fake.default.as_deref())?;
-                fake.devices
-                    .iter()
-                    .find(|(d, _)| d == name)
-                    .map(|(_, channels)| *channels)
+                let name = device.filter(|name| known(name)).or(fake.default.as_deref())?;
+                fake.devices.iter().find(|(d, _)| d == name).map(|(_, channels)| *channels)
             }
             None => input::device_channels(device),
         }
@@ -398,11 +360,7 @@ impl Editor {
     /// input callback would while recording. The samples must fit in the ring.
     #[cfg(test)]
     pub fn push_input_frames(&mut self, samples: &[f32]) {
-        let producer = self
-            .ring
-            .as_mut()
-            .and_then(|ring| ring.producer.as_mut())
-            .expect("an armed track with a test ring");
+        let producer = self.ring.as_mut().and_then(|ring| ring.producer.as_mut()).expect("an armed track with a test ring");
         let (_, rest) = producer.push_partial_slice(samples);
         assert!(rest.is_empty(), "the test ring is full");
     }
@@ -440,13 +398,7 @@ impl Editor {
     /// recorded so far (record start + frames) while it is live, the record
     /// start once Stop or Esc returned it. None when nothing is recording.
     pub fn record_playhead(&self) -> Option<u64> {
-        self.recording.as_ref().map(|rec| {
-            if rec.stopping {
-                rec.start
-            } else {
-                rec.start.saturating_add(rec.frames)
-            }
-        })
+        self.recording.as_ref().map(|rec| if rec.stopping { rec.start } else { rec.start.saturating_add(rec.frames) })
     }
 
     /// Starts recording on the armed track from the playhead, with every
@@ -465,13 +417,8 @@ impl Editor {
             return Err(EditorError::Record("Arm a track first".to_string()));
         };
         let not_ready = || EditorError::Record("The input is not ready yet".to_string());
-        let (device_rate, device_channels, input_latency_ns) =
-            self.input_format().ok_or_else(not_ready)?;
-        if !self
-            .ring
-            .as_ref()
-            .is_some_and(|ring| ring.consumer.is_some())
-        {
+        let (device_rate, device_channels, input_latency_ns) = self.input_format().ok_or_else(not_ready)?;
+        if !self.ring.as_ref().is_some_and(|ring| ring.consumer.is_some()) {
             return Err(not_ready());
         }
 
@@ -479,18 +426,8 @@ impl Editor {
         let file_name = paths::record_file_name(&self.paths.media(), chrono::Local::now());
         let mut part = self.paths.media_file(&file_name)?.into_os_string();
         part.push(".part");
-        let writer = RecordWriter::create(
-            &PathBuf::from(part),
-            device_rate,
-            device_channels,
-            self.config.record_channels,
-            project_rate,
-        )?;
-        let Some((ring_id, consumer)) = self
-            .ring
-            .as_mut()
-            .and_then(|ring| ring.consumer.take().map(|consumer| (ring.id, consumer)))
-        else {
+        let writer = RecordWriter::create(&PathBuf::from(part), device_rate, device_channels, self.config.record_channels, project_rate)?;
+        let Some((ring_id, consumer)) = self.ring.as_mut().and_then(|ring| ring.consumer.take().map(|consumer| (ring.id, consumer))) else {
             writer.abort();
             return Err(not_ready());
         };
@@ -498,15 +435,8 @@ impl Editor {
         // A bin preview stops here; a scrub is ended by the Play below.
         self.stop_preview();
         let start = self.view.playhead;
-        let output_ns = self.audio.as_ref().map_or(0, |engine| {
-            engine.shared().output_latency_ns.load(Ordering::Relaxed)
-        });
-        let latency = latency_samples(
-            output_ns,
-            input_latency_ns,
-            self.config.latency_offset_ms,
-            project_rate,
-        );
+        let output_ns = self.audio.as_ref().map_or(0, |engine| engine.shared().output_latency_ns.load(Ordering::Relaxed));
+        let latency = latency_samples(output_ns, input_latency_ns, self.config.latency_offset_ms, project_rate);
 
         let job = self.next_job;
         self.next_job += 1;
@@ -533,11 +463,7 @@ impl Editor {
             job,
             ring_id,
             device_rate,
-            channels: if self.config.record_channels == RecordChannels::Stereo {
-                2
-            } else {
-                1
-            },
+            channels: if self.config.record_channels == RecordChannels::Stereo { 2 } else { 1 },
             frames: 0,
             peaks: Vec::new(),
             dropped: 0,
@@ -611,11 +537,7 @@ impl Editor {
     fn input_format(&self) -> Option<(u32, u16, u64)> {
         match (&self.fake_input, &self.input) {
             (Some(fake), _) => Some((fake.rate, fake.channels, fake.latency_ns)),
-            (None, Some(stream)) => Some((
-                stream.device_rate(),
-                stream.device_channels(),
-                stream.latency_ns(),
-            )),
+            (None, Some(stream)) => Some((stream.device_rate(), stream.device_channels(), stream.latency_ns())),
             (None, None) => None,
         }
     }
@@ -658,13 +580,9 @@ impl Editor {
         }
         match outcome {
             TakeOutcome::Finished { item, loaded } => self.place_take(&rec, item, loaded),
-            TakeOutcome::TooShort => self
-                .job_errors
-                .push(Message::recording("Recording too short.")),
+            TakeOutcome::TooShort => self.job_errors.push(Message::recording("Recording too short.")),
             TakeOutcome::Cancelled => {}
-            TakeOutcome::Failed(message) => self.job_errors.push(Message::recording(format!(
-                "The recording failed: {message}"
-            ))),
+            TakeOutcome::Failed(message) => self.job_errors.push(Message::recording(format!("The recording failed: {message}"))),
         }
     }
 
@@ -675,18 +593,11 @@ impl Editor {
         let (id, file_name) = (item.id, item.file_name.clone());
         // In the store before the edit publishes its mix plan, like an import.
         self.media_store.insert(id, loaded);
-        let action = Action::RecordTake {
-            item,
-            track_id: rec.track_id,
-            start: rec.start,
-            src_in: rec.latency,
-        };
+        let action = Action::RecordTake { item, track_id: rec.track_id, start: rec.start, src_in: rec.latency };
         match self.apply(action) {
             Ok(()) if rec.dropped > 0 => {
                 let ms = dropped_ms(rec.dropped, rec.device_rate);
-                self.job_errors.push(Message::recording(format!(
-                    "The recording dropped {ms} ms of audio."
-                )));
+                self.job_errors.push(Message::recording(format!("The recording dropped {ms} ms of audio.")));
             }
             Ok(()) => {}
             Err(error) => {
@@ -716,13 +627,7 @@ mod tests {
     /// An editor over `count` empty tracks; no device is ever opened.
     fn editor_with_tracks(count: usize) -> Editor {
         let tracks: Vec<&[(u64, u64)]> = vec![&[]; count];
-        Editor::with_project(
-            project_with_clips(&tracks),
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        )
+        Editor::with_project(project_with_clips(&tracks), ViewState::default(), ProjectPaths { root: PathBuf::from("unused") })
     }
 
     fn track_id(editor: &Editor, index: usize) -> Uuid {
@@ -784,12 +689,7 @@ mod tests {
     #[test]
     fn undo_and_redo_that_remove_the_armed_track_disarm() {
         let mut editor = editor_with_tracks(1);
-        editor
-            .apply(Action::AddTrack {
-                index: None,
-                name: None,
-            })
-            .unwrap();
+        editor.apply(Action::AddTrack { index: None, name: None }).unwrap();
         let added = track_id(&editor, 1);
 
         // Undo removes the added track.
@@ -817,10 +717,7 @@ mod tests {
         editor.toggle_arm(b);
         editor.toggle_arm(b);
         assert!(!editor.dirty);
-        assert_eq!(
-            (editor.history.undo.len(), editor.history.redo.len()),
-            before
-        );
+        assert_eq!((editor.history.undo.len(), editor.history.redo.len()), before);
         assert_eq!(editor.undo_label(), None);
         assert!(Arc::ptr_eq(&project, &editor.project), "project untouched");
     }
@@ -829,18 +726,12 @@ mod tests {
     fn an_open_failure_leaves_the_track_disarmed_and_reports_it() {
         let mut editor = editor_with_tracks(1);
         let id = track_id(&editor, 0);
-        editor.set_fake_input(FakeInput {
-            open_fails: true,
-            ..FakeInput::default()
-        });
+        editor.set_fake_input(FakeInput { open_fails: true, ..FakeInput::default() });
         editor.toggle_arm(id);
         assert_eq!(editor.armed_track(), None);
         let messages = editor.take_job_errors();
         assert_eq!(messages.len(), 1);
-        assert!(
-            messages[0].text.starts_with("Could not arm the track: "),
-            "{messages:?}"
-        );
+        assert!(messages[0].text.starts_with("Could not arm the track: "), "{messages:?}");
         assert_eq!(messages[0].title, "Recording");
     }
 
@@ -850,23 +741,13 @@ mod tests {
         let id = track_id(&editor, 0);
         editor.toggle_arm(id);
         editor.tick();
-        assert_eq!(
-            editor.armed_track(),
-            Some(id),
-            "a healthy input stays armed"
-        );
+        assert_eq!(editor.armed_track(), Some(id), "a healthy input stays armed");
         assert!(editor.take_job_errors().is_empty());
 
-        editor.set_fake_input(FakeInput {
-            lost: true,
-            ..FakeInput::default()
-        });
+        editor.set_fake_input(FakeInput { lost: true, ..FakeInput::default() });
         editor.tick();
         assert_eq!(editor.armed_track(), None);
-        assert_eq!(
-            editor.take_job_errors(),
-            vec![Message::recording("Input device lost.")]
-        );
+        assert_eq!(editor.take_job_errors(), vec![Message::recording("Input device lost.")]);
         // Nothing armed: the lost flag alone says nothing.
         editor.tick();
         assert!(editor.take_job_errors().is_empty());
@@ -891,17 +772,9 @@ mod tests {
         let reading = |id: Uuid| tracks.iter().find(|(t, _)| *t == id).unwrap().1;
         let armed = reading(a);
         assert_eq!((armed[0].0, armed[0].3), (0.9, false), "input left");
-        assert_eq!(
-            (armed[1].0, armed[1].3),
-            (1.0, true),
-            "input right, clipped"
-        );
+        assert_eq!((armed[1].0, armed[1].3), (1.0, true), "input right, clipped");
         let other = reading(b);
-        assert_eq!(
-            (other[0].0, other[1].0),
-            (0.2, 0.2),
-            "unarmed keeps playback"
-        );
+        assert_eq!((other[0].0, other[1].0), (0.2, 0.2), "unarmed keeps playback");
 
         // Both accumulators were emptied.
         let (tracks, _) = editor.read_meters();
@@ -933,11 +806,7 @@ mod tests {
             latency_offset_ms: 250, // clamped
         };
         editor.set_config(config).unwrap();
-        let want = AppConfig {
-            input_device: Some("Line In".to_string()),
-            record_channels: RecordChannels::Stereo,
-            latency_offset_ms: 100,
-        };
+        let want = AppConfig { input_device: Some("Line In".to_string()), record_channels: RecordChannels::Stereo, latency_offset_ms: 100 };
         assert_eq!(editor.config(), &want);
         assert_eq!(config::load_from(&path), want);
         assert!(!editor.dirty, "settings are not part of the project");
@@ -946,10 +815,7 @@ mod tests {
     #[test]
     fn set_config_without_a_config_path_fails_and_changes_nothing() {
         let mut editor = editor_with_tracks(1);
-        let config = AppConfig {
-            record_channels: RecordChannels::Mono2,
-            ..AppConfig::default()
-        };
+        let config = AppConfig { record_channels: RecordChannels::Mono2, ..AppConfig::default() };
         assert!(editor.set_config(config).is_err());
         assert_eq!(editor.config(), &AppConfig::default());
     }
@@ -965,14 +831,8 @@ mod tests {
         editor.set_config(AppConfig::default()).unwrap();
         assert_eq!(editor.armed_track(), Some(id), "reopen worked");
 
-        editor.set_fake_input(FakeInput {
-            open_fails: true,
-            ..FakeInput::default()
-        });
-        let config = AppConfig {
-            record_channels: RecordChannels::Stereo,
-            ..AppConfig::default()
-        };
+        editor.set_fake_input(FakeInput { open_fails: true, ..FakeInput::default() });
+        let config = AppConfig { record_channels: RecordChannels::Stereo, ..AppConfig::default() };
         let error = editor.set_config(config.clone()).unwrap_err().to_string();
         assert!(error.contains("The track was disarmed."), "{error}");
         assert_eq!(editor.armed_track(), None);
@@ -1002,10 +862,7 @@ mod tests {
         assert_eq!(fallback_notice(Some("USB Mic"), false, &noted), None);
         assert!(!noted.load(Ordering::Relaxed));
         // First fallback: the notice with the saved name.
-        assert_eq!(
-            fallback_notice(Some("USB Mic"), true, &noted).as_deref(),
-            Some("Input device USB Mic not found. Using the default input.")
-        );
+        assert_eq!(fallback_notice(Some("USB Mic"), true, &noted).as_deref(), Some("Input device USB Mic not found. Using the default input."));
         // Every later fallback in the same launch is silent.
         assert_eq!(fallback_notice(Some("USB Mic"), true, &noted), None);
         assert_eq!(fallback_notice(Some("Other"), true, &noted), None);
@@ -1041,14 +898,10 @@ mod tests {
 
     /// A project folder on disk with the given tracks and clips; the first
     /// track is armed on the test input `fake`.
-    fn recording_editor_with(
-        tracks: &[&[(u64, u64)]],
-        fake: FakeInput,
-    ) -> (Editor, tempfile::TempDir) {
+    fn recording_editor_with(tracks: &[&[(u64, u64)]], fake: FakeInput) -> (Editor, tempfile::TempDir) {
         let parent = tempdir().unwrap();
         let paths = paths::create_layout(parent.path(), "Rec").unwrap();
-        let mut editor =
-            Editor::with_project(project_with_clips(tracks), ViewState::default(), paths);
+        let mut editor = Editor::with_project(project_with_clips(tracks), ViewState::default(), paths);
         editor.set_fake_input(fake);
         let first = editor.project.tracks[0].id;
         editor.toggle_arm(first);
@@ -1078,9 +931,7 @@ mod tests {
     /// written `total` frames (the take's frame count so far).
     fn push_mono(editor: &mut Editor, frames: usize, value: f32, total: u64) {
         editor.push_input_frames(&vec![value; frames]);
-        wait_until(editor, "the writer to catch up", |e| {
-            e.recording_status().is_some_and(|s| s.frames == total)
-        });
+        wait_until(editor, "the writer to catch up", |e| e.recording_status().is_some_and(|s| s.frames == total));
     }
 
     /// Stops the take and waits until it has been placed (or dropped).
@@ -1091,23 +942,14 @@ mod tests {
 
     /// Names of the files in a project folder, sorted.
     fn files_in(dir: PathBuf) -> Vec<String> {
-        let mut names: Vec<String> = std::fs::read_dir(dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
+        let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
         names.sort();
         names
     }
 
     /// The bin item with this display name.
     fn bin_item(editor: &Editor, name: &str) -> MediaItem {
-        editor
-            .project
-            .media
-            .iter()
-            .find(|item| item.display_name == name)
-            .cloned()
-            .unwrap_or_else(|| panic!("no bin item named {name}"))
+        editor.project.media.iter().find(|item| item.display_name == name).cloned().unwrap_or_else(|| panic!("no bin item named {name}"))
     }
 
     /// `Err(Locked)` with the recording message?
@@ -1120,11 +962,7 @@ mod tests {
         assert_eq!(ring_capacity(48_000, 1), 96_000);
         assert_eq!(ring_capacity(44_100, 2), 176_400);
         assert_eq!(ring_capacity(0, 2), 0);
-        assert_eq!(ring_capacity(u32::MAX, u16::MAX), {
-            2usize
-                .saturating_mul(u32::MAX as usize)
-                .saturating_mul(usize::from(u16::MAX))
-        });
+        assert_eq!(ring_capacity(u32::MAX, u16::MAX), { 2usize.saturating_mul(u32::MAX as usize).saturating_mul(usize::from(u16::MAX)) });
     }
 
     #[test]
@@ -1133,11 +971,7 @@ mod tests {
         assert_eq!(dropped_ms(960, 48_000), 20);
         assert_eq!(dropped_ms(1, 48_000), 1, "any loss shows as at least 1 ms");
         assert_eq!(dropped_ms(48_001, 48_000), 1_001);
-        assert_eq!(
-            dropped_ms(10, 0),
-            10_000,
-            "a zero rate cannot divide by zero"
-        );
+        assert_eq!(dropped_ms(10, 0), 10_000, "a zero rate cannot divide by zero");
     }
 
     #[test]
@@ -1154,10 +988,7 @@ mod tests {
     #[test]
     fn a_finished_take_is_one_record_step_with_the_latency_hidden() {
         // L = 10 ms offset (480) + 5 ms measured input latency (240) = 720.
-        let fake = FakeInput {
-            latency_ns: 5_000_000,
-            ..FakeInput::default()
-        };
+        let fake = FakeInput { latency_ns: 5_000_000, ..FakeInput::default() };
         let (mut editor, _dir) = recording_editor_with(&[&[], &[]], fake);
         editor.config.latency_offset_ms = 10;
         let armed = editor.armed_track().unwrap();
@@ -1166,19 +997,12 @@ mod tests {
         editor.start_recording().unwrap();
         assert!(editor.is_recording());
         let status = editor.recording_status().unwrap();
-        assert_eq!(
-            (status.track_id, status.start, status.frames),
-            (armed, 1_000, 0)
-        );
+        assert_eq!((status.track_id, status.start, status.frames), (armed, 1_000, 0));
 
         push_mono(&mut editor, 4_800, 0.5, 4_800);
         let status = editor.recording_status().unwrap();
         assert_eq!(status.peaks.len(), 4, "one entry per 1,024 frames");
-        assert!(
-            status.peaks.iter().all(|p| *p == [0.5; 4]),
-            "{:?}",
-            status.peaks
-        );
+        assert!(status.peaks.iter().all(|p| *p == [0.5; 4]), "{:?}", status.peaks);
         assert!(editor.take_job_errors().is_empty());
 
         finish_take(&mut editor);
@@ -1189,32 +1013,16 @@ mod tests {
         assert!(editor.dirty);
         // The bin item and the one clip.
         let take = bin_item(&editor, "Take 1");
-        assert_eq!(
-            (take.channels, take.length, take.original_rate),
-            (1, 4_800, 48_000)
-        );
-        assert_eq!(
-            editor.project.media.len(),
-            2,
-            "the fixture's item plus the take"
-        );
-        assert!(
-            editor.project.tracks[1].clips.is_empty(),
-            "only the armed track"
-        );
+        assert_eq!((take.channels, take.length, take.original_rate), (1, 4_800, 48_000));
+        assert_eq!(editor.project.media.len(), 2, "the fixture's item plus the take");
+        assert!(editor.project.tracks[1].clips.is_empty(), "only the armed track");
         let clips = &editor.project.tracks[0].clips;
         assert_eq!(clips.len(), 1);
         let clip = &clips[0];
-        assert_eq!(
-            (clip.media_id, clip.start, clip.src_in, clip.src_out),
-            (take.id, 1_000, 720, 4_800)
-        );
+        assert_eq!((clip.media_id, clip.start, clip.src_in, clip.src_out), (take.id, 1_000, 720, 4_800));
         // The take is a real WAV in media/, with its cache, and the audio is loaded.
         assert!(take.file_name.starts_with("rec-") && take.file_name.ends_with(".wav"));
-        assert_eq!(
-            files_in(editor.paths.media()),
-            std::slice::from_ref(&take.file_name)
-        );
+        assert_eq!(files_in(editor.paths.media()), std::slice::from_ref(&take.file_name));
         assert_eq!(files_in(editor.paths.cache()).len(), 2);
         let loaded = editor.media(take.id).expect("the take is loaded");
         assert_eq!(loaded.samples.len(), 4_800);
@@ -1240,19 +1048,10 @@ mod tests {
         finish_take(&mut editor);
 
         let (first, second) = (bin_item(&editor, "Take 1"), bin_item(&editor, "Take 2"));
-        assert_ne!(
-            first.file_name, second.file_name,
-            "two files, even in one second"
-        );
+        assert_ne!(first.file_name, second.file_name, "two files, even in one second");
         assert_eq!(editor.history.undo.len(), 2);
         let clips = &editor.project.tracks[0].clips;
-        assert_eq!(
-            clips
-                .iter()
-                .map(|c| (c.start, c.media_id))
-                .collect::<Vec<_>>(),
-            [(500, first.id), (10_000, second.id)]
-        );
+        assert_eq!(clips.iter().map(|c| (c.start, c.media_id)).collect::<Vec<_>>(), [(500, first.id), (10_000, second.id)]);
     }
 
     #[test]
@@ -1267,10 +1066,7 @@ mod tests {
 
         assert!(editor.undo());
         assert_eq!(editor.project.media.len(), 1, "the bin item is gone");
-        assert!(
-            editor.project.tracks[0].clips.is_empty(),
-            "and so is the clip"
-        );
+        assert!(editor.project.tracks[0].clips.is_empty(), "and so is the clip");
 
         // Redo could bring the take back, so Save keeps its files...
         editor.save().unwrap();
@@ -1295,20 +1091,12 @@ mod tests {
         assert_eq!(files_in(editor.paths.media()).len(), 1, "the .part exists");
 
         editor.cancel_recording();
-        wait_until(&mut editor, "the take to be discarded", |e| {
-            !e.is_recording()
-        });
+        wait_until(&mut editor, "the take to be discarded", |e| !e.is_recording());
 
-        assert!(
-            Arc::ptr_eq(&editor.project, &before),
-            "the project is untouched"
-        );
+        assert!(Arc::ptr_eq(&editor.project, &before), "the project is untouched");
         assert!(editor.history.undo.is_empty());
         assert!(!editor.dirty);
-        assert!(
-            files_in(editor.paths.media()).is_empty(),
-            "no .part, no wav"
-        );
+        assert!(files_in(editor.paths.media()).is_empty(), "no .part, no wav");
         assert!(files_in(editor.paths.cache()).is_empty());
         assert!(editor.take_job_errors().is_empty());
 
@@ -1344,21 +1132,11 @@ mod tests {
         push_mono(&mut editor, 480, 0.5, 480);
         finish_take(&mut editor);
 
-        assert_eq!(
-            editor.take_job_errors(),
-            [Message::recording("Recording too short.")],
-            "a Recording message"
-        );
+        assert_eq!(editor.take_job_errors(), [Message::recording("Recording too short.")], "a Recording message");
         assert!(Arc::ptr_eq(&editor.project, &before));
         assert!(editor.history.undo.is_empty());
-        assert!(
-            files_in(editor.paths.media()).is_empty(),
-            "the file is deleted"
-        );
-        assert!(
-            files_in(editor.paths.cache()).is_empty(),
-            "and no cache was built"
-        );
+        assert!(files_in(editor.paths.media()).is_empty(), "the file is deleted");
+        assert!(files_in(editor.paths.cache()).is_empty(), "and no cache was built");
         assert!(!editor.is_recording());
 
         // One frame longer than L has one audible frame.
@@ -1404,9 +1182,7 @@ mod tests {
         assert!(!editor.is_recording());
 
         std::fs::create_dir(editor.paths.media()).unwrap();
-        editor
-            .start_recording()
-            .expect("the ring consumer is still here");
+        editor.start_recording().expect("the ring consumer is still here");
         push_mono(&mut editor, 1_000, 0.5, 1_000);
         finish_take(&mut editor);
         assert_eq!(bin_item(&editor, "Take 1").length, 1_000);
@@ -1415,23 +1191,13 @@ mod tests {
     #[test]
     fn dropped_frames_are_reported_after_the_take() {
         // 960 frames at 48 kHz = 20 ms.
-        let fake = FakeInput {
-            dropped_frames: 960,
-            ..FakeInput::default()
-        };
+        let fake = FakeInput { dropped_frames: 960, ..FakeInput::default() };
         let (mut editor, _dir) = recording_editor_with(&[&[]], fake);
         editor.start_recording().unwrap();
         push_mono(&mut editor, 2_000, 0.5, 2_000);
         finish_take(&mut editor);
-        assert_eq!(
-            editor.take_job_errors(),
-            [Message::recording("The recording dropped 20 ms of audio.")]
-        );
-        assert_eq!(
-            bin_item(&editor, "Take 1").length,
-            2_000,
-            "the take is kept"
-        );
+        assert_eq!(editor.take_job_errors(), [Message::recording("The recording dropped 20 ms of audio.")]);
+        assert_eq!(bin_item(&editor, "Take 1").length, 2_000, "the take is kept");
     }
 
     #[test]
@@ -1447,11 +1213,7 @@ mod tests {
         assert!(editor.ring.is_none());
         wait_until(&mut editor, "the take to finish", |e| !e.is_recording());
 
-        assert_eq!(
-            editor.take_job_errors(),
-            [Message::recording("Recording stopped: input device lost.")],
-            "one message, not two"
-        );
+        assert_eq!(editor.take_job_errors(), [Message::recording("Recording stopped: input device lost.")], "one message, not two");
         let take = bin_item(&editor, "Take 1");
         assert_eq!(take.length, 2_400);
         assert_eq!(editor.project.tracks[0].clips.len(), 1);
@@ -1477,15 +1239,8 @@ mod tests {
         editor.fake_input.as_mut().unwrap().lost = true;
         editor.tick();
         wait_until(&mut editor, "the take to finish", |e| !e.is_recording());
-        assert_eq!(
-            editor.take_job_errors(),
-            [Message::recording("Input device lost.")]
-        );
-        assert_eq!(
-            bin_item(&editor, "Take 1").length,
-            1_000,
-            "the take is kept"
-        );
+        assert_eq!(editor.take_job_errors(), [Message::recording("Input device lost.")]);
+        assert_eq!(bin_item(&editor, "Take 1").length, 1_000, "the take is kept");
     }
 
     #[test]
@@ -1499,22 +1254,11 @@ mod tests {
         // The writer thread says it failed (a full disk, say) while the take
         // is still recording.
         let consumer = RingBuffer::<f32>::new(1).1;
-        editor
-            .jobs
-            .tx
-            .send(JobMessage::RecordDone {
-                job,
-                consumer,
-                outcome: TakeOutcome::Failed("disk full".to_string()),
-            })
-            .unwrap();
+        editor.jobs.tx.send(JobMessage::RecordDone { job, consumer, outcome: TakeOutcome::Failed("disk full".to_string()) }).unwrap();
         editor.poll_jobs();
 
         assert!(!editor.is_recording(), "capture is over");
-        assert_eq!(
-            editor.take_job_errors(),
-            [Message::recording("The recording failed: disk full")]
-        );
+        assert_eq!(editor.take_job_errors(), [Message::recording("The recording failed: disk full")]);
         assert!(editor.history.undo.is_empty());
         assert_eq!(editor.project.media.len(), 1);
         assert!(editor.ring.as_ref().is_some_and(|r| r.consumer.is_some()));
@@ -1539,14 +1283,8 @@ mod tests {
         finish_take(&mut editor);
 
         // The take's clip covers 20,000..24,320 (4,800 - 480 audible frames).
-        assert_eq!(
-            spans(&editor.project, 0),
-            [(0, 20_000), (20_000, 24_320), (24_320, 100_000)]
-        );
-        assert_eq!(
-            srcs(&editor.project, 0),
-            [(0, 20_000), (480, 4_800), (24_320, 100_000)]
-        );
+        assert_eq!(spans(&editor.project, 0), [(0, 20_000), (20_000, 24_320), (24_320, 100_000)]);
+        assert_eq!(srcs(&editor.project, 0), [(0, 20_000), (480, 4_800), (24_320, 100_000)]);
         assert!(editor.undo(), "one step undoes the whole take");
         assert_eq!(spans(&editor.project, 0), [(0, 100_000)]);
     }
@@ -1568,10 +1306,7 @@ mod tests {
         assert_eq!(srcs(&editor.project, 0), [(0, 1_000), (1_000, 3_000)]);
         let (first, second) = (bin_item(&editor, "Take 1"), bin_item(&editor, "Take 2"));
         let clips = &editor.project.tracks[0].clips;
-        assert_eq!(
-            (clips[0].media_id, clips[1].media_id),
-            (second.id, first.id)
-        );
+        assert_eq!((clips[0].media_id, clips[1].media_id), (second.id, first.id));
         assert!(editor.undo(), "the retake is one undo step");
         assert_eq!(spans(&editor.project, 0), [(0, 3_000)]);
     }
@@ -1617,46 +1352,31 @@ mod tests {
         assert_eq!(editor.view.playhead, 3_000);
         editor.cancel_recording();
         assert_eq!(editor.view.playhead, 2_000);
-        wait_until(&mut editor, "the take to be discarded", |e| {
-            !e.is_recording()
-        });
+        wait_until(&mut editor, "the take to be discarded", |e| !e.is_recording());
         assert_eq!(editor.view.playhead, 2_000);
     }
 
     #[test]
     fn a_stereo_take_reports_two_lanes() {
-        let fake = FakeInput {
-            channels: 2,
-            ..FakeInput::default()
-        };
+        let fake = FakeInput { channels: 2, ..FakeInput::default() };
         let (mut editor, _dir) = recording_editor_with(&[&[]], fake);
         editor.config.record_channels = RecordChannels::Stereo;
         editor.start_recording().unwrap();
         assert_eq!(editor.recording_status().unwrap().channels, 2);
         editor.cancel_recording();
-        wait_until(&mut editor, "the take to be discarded", |e| {
-            !e.is_recording()
-        });
+        wait_until(&mut editor, "the take to be discarded", |e| !e.is_recording());
     }
 
     #[test]
     fn a_stereo_take_keeps_both_channels() {
-        let fake = FakeInput {
-            channels: 2,
-            ..FakeInput::default()
-        };
+        let fake = FakeInput { channels: 2, ..FakeInput::default() };
         let (mut editor, _dir) = recording_editor_with(&[&[]], fake);
         editor.config.record_channels = RecordChannels::Stereo;
         editor.start_recording().unwrap();
         let frames: Vec<f32> = (0..2_000).flat_map(|_| [0.25, -0.5]).collect();
         editor.push_input_frames(&frames);
-        wait_until(&mut editor, "the writer to catch up", |e| {
-            e.recording_status().is_some_and(|s| s.frames == 2_000)
-        });
-        assert_eq!(
-            editor.recording_status().unwrap().peaks[0],
-            [0.25, 0.25, -0.5, -0.5]
-        );
+        wait_until(&mut editor, "the writer to catch up", |e| e.recording_status().is_some_and(|s| s.frames == 2_000));
+        assert_eq!(editor.recording_status().unwrap().peaks[0], [0.25, 0.25, -0.5, -0.5]);
         finish_take(&mut editor);
 
         let take = bin_item(&editor, "Take 1");
@@ -1667,70 +1387,38 @@ mod tests {
 
     #[test]
     fn a_device_at_another_rate_is_resampled_to_the_project_rate() {
-        let fake = FakeInput {
-            rate: 44_100,
-            ..FakeInput::default()
-        };
+        let fake = FakeInput { rate: 44_100, ..FakeInput::default() };
         let (mut editor, _dir) = recording_editor_with(&[&[]], fake);
         editor.start_recording().unwrap();
         editor.push_input_frames(&vec![0.25; 44_100]);
         // The resampler holds frames back until it is flushed, so wait on the
         // ring being drained rather than on a frame count.
-        wait_until(&mut editor, "the ring to drain", |e| {
-            e.recording_status().is_some_and(|s| s.frames > 40_000)
-        });
+        wait_until(&mut editor, "the ring to drain", |e| e.recording_status().is_some_and(|s| s.frames > 40_000));
         finish_take(&mut editor);
         let take = bin_item(&editor, "Take 1");
-        assert!(
-            take.length.abs_diff(48_000) <= 2,
-            "one second at 44.1 kHz is one second at 48 kHz, got {}",
-            take.length
-        );
-        assert_eq!(
-            take.original_rate, 48_000,
-            "the file is written at the project rate"
-        );
+        assert!(take.length.abs_diff(48_000) <= 2, "one second at 44.1 kHz is one second at 48 kHz, got {}", take.length);
+        assert_eq!(take.original_rate, 48_000, "the file is written at the project rate");
     }
 
     #[test]
     fn editing_is_locked_while_recording_except_adding_a_marker() {
         let (mut editor, _dir) = recording_editor(&[&[(0, 1_000)], &[]]);
         let track = editor.project.tracks[1].id;
-        editor
-            .apply(Action::SetTrackMute {
-                id: track,
-                mute: true,
-            })
-            .unwrap();
+        editor.apply(Action::SetTrackMute { id: track, mute: true }).unwrap();
         editor.copy(0, 500, &[editor.project.tracks[0].id]);
         editor.start_recording().unwrap();
         let before = Arc::clone(&editor.project);
         let history = editor.history.undo.len();
 
         // Every edit is refused and changes nothing.
-        let add_track = Action::AddTrack {
-            index: None,
-            name: None,
-        };
+        let add_track = Action::AddTrack { index: None, name: None };
         assert!(is_locked(&editor.apply(add_track)));
         assert!(is_locked(&editor.apply(Action::DeleteTrack { id: track })));
-        assert!(is_locked(
-            &editor.apply(Action::SetMasterVolume { db: -6.0 })
-        ));
-        assert!(
-            is_locked(&editor.paste_insert_at(0, 0)),
-            "paste goes through commit"
-        );
+        assert!(is_locked(&editor.apply(Action::SetMasterVolume { db: -6.0 })));
+        assert!(is_locked(&editor.paste_insert_at(0, 0)), "paste goes through commit");
         assert!(is_locked(&editor.split()));
-        assert!(is_locked(&editor.cut(
-            0,
-            500,
-            vec![editor.project.tracks[0].id],
-            false
-        )));
-        assert!(is_locked(
-            &editor.preview(Action::SetMasterVolume { db: -3.0 })
-        ));
+        assert!(is_locked(&editor.cut(0, 500, vec![editor.project.tracks[0].id], false)));
+        assert!(is_locked(&editor.preview(Action::SetMasterVolume { db: -3.0 })));
         assert!(Arc::ptr_eq(&editor.project, &before));
         assert_eq!(editor.history.undo.len(), history);
 
@@ -1753,13 +1441,8 @@ mod tests {
         assert!(editor.dirty);
 
         editor.cancel_recording();
-        wait_until(&mut editor, "the take to be discarded", |e| {
-            !e.is_recording()
-        });
-        assert!(
-            editor.apply(Action::SetMasterVolume { db: -6.0 }).is_ok(),
-            "unlocked again"
-        );
+        wait_until(&mut editor, "the take to be discarded", |e| !e.is_recording());
+        assert!(editor.apply(Action::SetMasterVolume { db: -6.0 }).is_ok(), "unlocked again");
     }
 
     #[test]
@@ -1788,20 +1471,14 @@ mod tests {
         editor.toggle_arm(armed);
         assert_eq!(editor.armed_track(), Some(armed));
         let error = editor.set_config(AppConfig::default()).unwrap_err();
-        assert!(
-            matches!(&error, EditorError::Locked(m) if m == "Can't change this while recording")
-        );
+        assert!(matches!(&error, EditorError::Locked(m) if m == "Can't change this while recording"));
         assert_eq!(editor.config(), &config);
 
         // Nothing else can start.
         assert!(is_locked(&editor.start_recording()));
         let export = ExportSettings {
             path: editor.paths.exports().join("x.wav"),
-            format: ExportFormat {
-                kind: ExportKind::Wav(BitDepth::Float32),
-                channels: 2,
-                in_rate: 48_000,
-            },
+            format: ExportFormat { kind: ExportKind::Wav(BitDepth::Float32), channels: 2, in_rate: 48_000 },
             start: 0,
             end: 1_000,
             tracks: None,
@@ -1812,9 +1489,7 @@ mod tests {
         assert!(editor.pending_jobs().is_empty());
 
         editor.cancel_recording();
-        wait_until(&mut editor, "the take to be discarded", |e| {
-            !e.is_recording()
-        });
+        wait_until(&mut editor, "the take to be discarded", |e| !e.is_recording());
     }
 
     #[test]
@@ -1830,9 +1505,7 @@ mod tests {
             }
             // Stopped, but still locked until the take is placed.
             assert!(editor.is_recording());
-            assert!(is_locked(
-                &editor.apply(Action::SetMasterVolume { db: -6.0 })
-            ));
+            assert!(is_locked(&editor.apply(Action::SetMasterVolume { db: -6.0 })));
             wait_until(&mut editor, "the take to finish", |e| !e.is_recording());
             assert_eq!(bin_item(&editor, "Take 1").length, 1_000);
             assert_eq!(editor.undo_label(), Some("Record"));
@@ -1850,10 +1523,7 @@ mod tests {
         // Autosave keeps running: a marker makes the project dirty.
         editor.add_marker_at_playhead().unwrap();
         editor.tick();
-        assert!(
-            !files_in(editor.paths.autosave()).is_empty(),
-            "autosave wrote"
-        );
+        assert!(!files_in(editor.paths.autosave()).is_empty(), "autosave wrote");
 
         // Save works, but the unused-media cleanup waits: the take's own
         // files (and this junk) must survive until the take is placed.
@@ -1868,10 +1538,7 @@ mod tests {
         finish_take(&mut editor);
         editor.save().unwrap();
         let take = bin_item(&editor, "Take 1");
-        assert_eq!(
-            files_in(editor.paths.media()),
-            std::slice::from_ref(&take.file_name)
-        );
+        assert_eq!(files_in(editor.paths.media()), std::slice::from_ref(&take.file_name));
     }
 
     #[test]

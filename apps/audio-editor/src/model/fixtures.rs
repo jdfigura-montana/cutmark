@@ -28,16 +28,7 @@ pub fn project_with_clips(tracks: &[&[(u64, u64)]]) -> Project {
             let mut track = Track::new(format!("Track {}", index + 1));
             track.clips = placements
                 .iter()
-                .map(|&(start, len)| Clip {
-                    id: Uuid::new_v4(),
-                    media_id,
-                    start,
-                    src_in: 0,
-                    src_out: len,
-                    gain_db: 0.0,
-                    fade_in: 0,
-                    fade_out: 0,
-                })
+                .map(|&(start, len)| Clip { id: Uuid::new_v4(), media_id, start, src_in: 0, src_out: len, gain_db: 0.0, fade_in: 0, fade_out: 0 })
                 .collect();
             track
         })
@@ -51,18 +42,10 @@ pub fn project_with_clips(tracks: &[&[(u64, u64)]]) -> Project {
 
 /// Returns `(start, end)` of each clip on the given track index.
 pub fn spans(project: &Project, track: usize) -> Vec<(u64, u64)> {
-    project.tracks[track]
-        .clips
-        .iter()
-        .map(|clip| (clip.start, clip.end()))
-        .collect()
+    project.tracks[track].clips.iter().map(|clip| (clip.start, clip.end())).collect()
 }
 
 /// Returns `(src_in, src_out)` of each clip on the given track index.
 pub fn srcs(project: &Project, track: usize) -> Vec<(u64, u64)> {
-    project.tracks[track]
-        .clips
-        .iter()
-        .map(|clip| (clip.src_in, clip.src_out))
-        .collect()
+    project.tracks[track].clips.iter().map(|clip| (clip.src_in, clip.src_out)).collect()
 }

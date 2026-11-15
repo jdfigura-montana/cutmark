@@ -62,11 +62,7 @@ pub fn level_minmax(level: &PeakLevel, channels: u16, ch: u16, from: u64, to: u6
         min = min.min(e[0]);
         max = max.max(e[1]);
     }
-    if min.is_finite() && max.is_finite() {
-        (min, max)
-    } else {
-        (0.0, 0.0)
-    }
+    if min.is_finite() && max.is_finite() { (min, max) } else { (0.0, 0.0) }
 }
 
 /// Min and max over raw interleaved samples of one channel across frames
@@ -111,16 +107,7 @@ pub fn envelope(clip: &Clip, local: u64) -> f32 {
 /// Offline or missing media is never passed here; track volume does not
 /// affect the drawing. On a muted track everything draws at 45% opacity.
 #[allow(clippy::too_many_arguments)]
-pub fn draw(
-    painter: &egui::Painter,
-    clip: &Clip,
-    loaded: &Loaded,
-    g: &Geom,
-    body: egui::Rect,
-    wave_scale: f32,
-    color: egui::Color32,
-    muted: bool,
-) {
+pub fn draw(painter: &egui::Painter, clip: &Clip, loaded: &Loaded, g: &Geom, body: egui::Rect, wave_scale: f32, color: egui::Color32, muted: bool) {
     if body.height() < 1.0 {
         return;
     }
@@ -138,32 +125,9 @@ pub fn draw(
 
     let wave_color = dim(color);
     if g.spp < 1.0 {
-        draw_samples(
-            clip,
-            loaded,
-            g,
-            body,
-            channels,
-            lane_h,
-            wave_scale,
-            wave_color,
-            &mut shapes,
-        );
+        draw_samples(clip, loaded, g, body, channels, lane_h, wave_scale, wave_color, &mut shapes);
     } else {
-        draw_columns(
-            clip,
-            loaded,
-            level,
-            g,
-            x_left,
-            x_right,
-            body.top(),
-            channels,
-            lane_h,
-            wave_scale,
-            wave_color,
-            &mut shapes,
-        );
+        draw_columns(clip, loaded, level, g, x_left, x_right, body.top(), channels, lane_h, wave_scale, wave_color, &mut shapes);
     }
 
     painter.add(egui::Shape::Vec(shapes));
@@ -172,38 +136,20 @@ pub fn draw(
 /// The lane guides under a waveform: a faint center line per lane in the wave
 /// color at alpha 0x33 and, for two lanes, a 1 px black 35% divider between L
 /// and R. `scale` is the track's opacity factor (0.45 when muted).
-fn guides(
-    body: egui::Rect,
-    channels: usize,
-    x_left: f32,
-    x_right: f32,
-    color: egui::Color32,
-    scale: f32,
-) -> Vec<egui::Shape> {
+fn guides(body: egui::Rect, channels: usize, x_left: f32, x_right: f32, color: egui::Color32, scale: f32) -> Vec<egui::Shape> {
     let lane_h = body.height() / channels as f32;
-    let center = egui::Color32::from_rgba_unmultiplied(
-        color.r(),
-        color.g(),
-        color.b(),
-        (0x33 as f32 * scale) as u8,
-    );
+    let center = egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), (0x33 as f32 * scale) as u8);
     let divider = egui::Color32::from_rgba_unmultiplied(0, 0, 0, (89.0 * scale) as u8);
     let mut shapes: Vec<egui::Shape> = Vec::new();
     // Faint center line per lane.
     for lane in 0..channels {
         let cy = body.top() + lane_h * (lane as f32 + 0.5);
-        shapes.push(egui::Shape::line_segment(
-            [egui::pos2(x_left, cy), egui::pos2(x_right, cy)],
-            egui::Stroke::new(THEME.hairline, center),
-        ));
+        shapes.push(egui::Shape::line_segment([egui::pos2(x_left, cy), egui::pos2(x_right, cy)], egui::Stroke::new(THEME.hairline, center)));
     }
     // Divider between the two lanes of stereo media.
     if channels == 2 {
         let dy = body.top() + lane_h;
-        shapes.push(egui::Shape::line_segment(
-            [egui::pos2(x_left, dy), egui::pos2(x_right, dy)],
-            egui::Stroke::new(THEME.hairline, divider),
-        ));
+        shapes.push(egui::Shape::line_segment([egui::pos2(x_left, dy), egui::pos2(x_right, dy)], egui::Stroke::new(THEME.hairline, divider)));
     }
     shapes
 }
@@ -229,17 +175,10 @@ pub fn live_column(peaks: &[[f32; 4]], rel_from: u64, rel_to: u64) -> Option<[f3
     if first >= peaks.len() {
         return None;
     }
-    let last = usize::try_from(last)
-        .unwrap_or(usize::MAX)
-        .min(peaks.len() - 1);
+    let last = usize::try_from(last).unwrap_or(usize::MAX).min(peaks.len() - 1);
     let mut entry = peaks[first];
     for next in &peaks[first + 1..=last] {
-        entry = [
-            entry[0].min(next[0]),
-            entry[1].max(next[1]),
-            entry[2].min(next[2]),
-            entry[3].max(next[3]),
-        ];
+        entry = [entry[0].min(next[0]), entry[1].max(next[1]), entry[2].min(next[2]), entry[3].max(next[3])];
     }
     Some(entry)
 }
@@ -248,14 +187,7 @@ pub fn live_column(peaks: &[[f32; 4]], rel_from: u64, rel_to: u64) -> Option<[f3
 /// from the writer's peak entries: filled min/max columns in `color`, one lane
 /// for a mono take and two (L above R) for a stereo take, with the same lane
 /// guides as a clip. `wave_scale` is the view's vertical waveform scale.
-pub fn draw_live(
-    painter: &egui::Painter,
-    status: &RecordStatus<'_>,
-    g: &Geom,
-    body: egui::Rect,
-    wave_scale: f32,
-    color: egui::Color32,
-) {
+pub fn draw_live(painter: &egui::Painter, status: &RecordStatus<'_>, g: &Geom, body: egui::Rect, wave_scale: f32, color: egui::Color32) {
     if body.height() < 1.0 {
         return;
     }
@@ -263,14 +195,8 @@ pub fn draw_live(
     let lane_h = body.height() / channels as f32;
     let end = status.start.saturating_add(status.frames);
     // Only the visible columns: the take may start far off screen.
-    let x_left = g
-        .sample_to_x(status.start)
-        .max(body.left())
-        .max(g.lane_left);
-    let x_right = g
-        .sample_to_x(end)
-        .min(body.right())
-        .min(g.lane_left + g.lane_width);
+    let x_left = g.sample_to_x(status.start).max(body.left()).max(g.lane_left);
+    let x_right = g.sample_to_x(end).min(body.right()).min(g.lane_left + g.lane_width);
     let mut shapes = guides(body, channels, x_left, x_right, color, 1.0);
     let first_col = (x_left - g.lane_left) as i64;
     let last_col = (x_right - g.lane_left).ceil() as i64;
@@ -294,11 +220,7 @@ pub fn draw_live(
             if y_min == y_max {
                 continue;
             }
-            shapes.push(egui::Shape::rect_filled(
-                egui::Rect::from_min_max(egui::pos2(x, y_min), egui::pos2(x + 1.0, y_max)),
-                0.0,
-                color,
-            ));
+            shapes.push(egui::Shape::rect_filled(egui::Rect::from_min_max(egui::pos2(x, y_min), egui::pos2(x + 1.0, y_max)), 0.0, color));
         }
     }
     painter.add(egui::Shape::Vec(shapes));
@@ -339,20 +261,8 @@ fn draw_columns(
         let env = envelope(clip, local) * wave_scale;
         for lane in 0..channels {
             let (min, max) = match level {
-                Some(i) => level_minmax(
-                    &loaded.peaks.levels[i],
-                    peak_channels,
-                    lane as u16,
-                    src_from,
-                    src_to,
-                ),
-                None => samples_minmax(
-                    &loaded.samples,
-                    peak_channels,
-                    lane as u16,
-                    src_from,
-                    src_to,
-                ),
+                Some(i) => level_minmax(&loaded.peaks.levels[i], peak_channels, lane as u16, src_from, src_to),
+                None => samples_minmax(&loaded.samples, peak_channels, lane as u16, src_from, src_to),
             };
             let top = body_top + lane_h * lane as f32;
             let cy = top + lane_h * 0.5;
@@ -363,11 +273,7 @@ fn draw_columns(
                 continue;
             }
             // Filled solid column in the track color.
-            shapes.push(egui::Shape::rect_filled(
-                egui::Rect::from_min_max(egui::pos2(x, y_min), egui::pos2(x + 1.0, y_max)),
-                0.0,
-                stroke.color,
-            ));
+            shapes.push(egui::Shape::rect_filled(egui::Rect::from_min_max(egui::pos2(x, y_min), egui::pos2(x + 1.0, y_max)), 0.0, stroke.color));
         }
     }
 }
@@ -402,28 +308,19 @@ fn draw_samples(
             if x < body.left() - 1.0 || x > body.right() + 1.0 {
                 continue;
             }
-            let y = (cy - sample * envelope(clip, frame - clip.src_in) * wave_scale * half)
-                .clamp(top, top + lane_h);
+            let y = (cy - sample * envelope(clip, frame - clip.src_in) * wave_scale * half).clamp(top, top + lane_h);
             points.push(egui::pos2(x, y));
         }
         if points.len() > 1 {
             if g.spp < 0.125 {
                 for &p in &points {
-                    shapes.push(egui::Shape::circle_filled(
-                        p,
-                        THEME.wave_dot_r,
-                        stroke.color,
-                    ));
+                    shapes.push(egui::Shape::circle_filled(p, THEME.wave_dot_r, stroke.color));
                 }
             }
             shapes.push(egui::Shape::line(points, stroke));
         } else if g.spp < 0.125 {
             for &p in &points {
-                shapes.push(egui::Shape::circle_filled(
-                    p,
-                    THEME.wave_dot_r,
-                    stroke.color,
-                ));
+                shapes.push(egui::Shape::circle_filled(p, THEME.wave_dot_r, stroke.color));
             }
         }
     }
@@ -434,9 +331,7 @@ mod tests {
     use crate::io::peaks;
 
     fn ramp(len: usize) -> Vec<f32> {
-        (0..len)
-            .map(|i| -1.0 + 2.0 * i as f32 / (len - 1) as f32)
-            .collect()
+        (0..len).map(|i| -1.0 + 2.0 * i as f32 / (len - 1) as f32).collect()
     }
 
     fn sample_peaks() -> Peaks {
@@ -474,10 +369,7 @@ mod tests {
     #[test]
     fn level_minmax_with_block_size_zero_draws_nothing() {
         // A corrupt level used to divide by zero here.
-        let level = PeakLevel {
-            block_size: 0,
-            data: vec![[-1.0, 1.0]; 8],
-        };
+        let level = PeakLevel { block_size: 0, data: vec![[-1.0, 1.0]; 8] };
         assert_eq!(level_minmax(&level, 1, 0, 0, 1), (0.0, 0.0));
         assert_eq!(level_minmax(&level, 2, 1, 0, 4_096), (0.0, 0.0));
         assert_eq!(level_minmax(&level, 1, 0, 1_000, u64::MAX), (0.0, 0.0));
@@ -505,27 +397,14 @@ mod tests {
     }
 
     fn test_clip(gain_db: f32, fade_in: u64, fade_out: u64) -> Clip {
-        Clip {
-            id: uuid::Uuid::nil(),
-            media_id: uuid::Uuid::nil(),
-            start: 0,
-            src_in: 0,
-            src_out: 1_000,
-            gain_db,
-            fade_in,
-            fade_out,
-        }
+        Clip { id: uuid::Uuid::nil(), media_id: uuid::Uuid::nil(), start: 0, src_in: 0, src_out: 1_000, gain_db, fade_in, fade_out }
     }
 
     // ---- The live waveform ----
 
     /// Three peak entries: L runs +-0.1, +-0.3, +-0.5 and R +-0.2, +-0.4, +-0.6.
     fn three_entries() -> [[f32; 4]; 3] {
-        [
-            [-0.1, 0.1, -0.2, 0.2],
-            [-0.3, 0.3, -0.4, 0.4],
-            [-0.5, 0.5, -0.6, 0.6],
-        ]
+        [[-0.1, 0.1, -0.2, 0.2], [-0.3, 0.3, -0.4, 0.4], [-0.5, 0.5, -0.6, 0.6]]
     }
 
     #[test]
@@ -547,15 +426,8 @@ mod tests {
     fn live_column_combines_the_entries_a_wide_column_covers() {
         let peaks = three_entries();
         // 3,072 frames cover all three entries.
-        assert_eq!(
-            live_column(&peaks, 0, 3_072),
-            Some([-0.5, 0.5, -0.6, 0.6]),
-            "min of the mins, max of the maxes, per side"
-        );
-        assert_eq!(
-            live_column(&peaks, 1_024, 3_072),
-            Some([-0.5, 0.5, -0.6, 0.6])
-        );
+        assert_eq!(live_column(&peaks, 0, 3_072), Some([-0.5, 0.5, -0.6, 0.6]), "min of the mins, max of the maxes, per side");
+        assert_eq!(live_column(&peaks, 1_024, 3_072), Some([-0.5, 0.5, -0.6, 0.6]));
         assert_eq!(live_column(&peaks, 0, 2_048), Some([-0.3, 0.3, -0.4, 0.4]));
     }
 
@@ -573,29 +445,14 @@ mod tests {
     fn live_columns(channels: u16) -> Vec<egui::Rect> {
         // Eight entries (8,192 frames): L +-1.0, R +-0.5.
         let peaks = vec![[-1.0, 1.0, -0.5, 0.5]; 8];
-        let status = RecordStatus {
-            track_id: uuid::Uuid::nil(),
-            start: 0,
-            frames: 8_192,
-            channels,
-            peaks: &peaks,
-        };
-        let g = Geom {
-            lane_left: 0.0,
-            lane_width: 400.0,
-            spp: 32.0,
-            scroll_x: 0,
-        };
+        let status = RecordStatus { track_id: uuid::Uuid::nil(), start: 0, frames: 8_192, channels, peaks: &peaks };
+        let g = Geom { lane_left: 0.0, lane_width: 400.0, spp: 32.0, scroll_x: 0 };
         let body = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(256.0, 40.0));
         let mut h = crate::ui::test_util::Headless::new(400.0, 200.0);
         let out = h.frame(Vec::new(), |ui| {
             draw_live(ui.painter(), &status, &g, body, 1.0, THEME.record_red);
         });
-        out.rects()
-            .into_iter()
-            .filter(|r| r.fill == THEME.record_red)
-            .map(|r| r.rect)
-            .collect()
+        out.rects().into_iter().filter(|r| r.fill == THEME.record_red).map(|r| r.rect).collect()
     }
 
     #[test]
@@ -625,29 +482,14 @@ mod tests {
         // 3 entries written, 5,000 frames recorded: columns past the third
         // entry (3,072 frames = 96 px) draw nothing yet.
         let peaks = three_entries();
-        let status = RecordStatus {
-            track_id: uuid::Uuid::nil(),
-            start: 0,
-            frames: 5_000,
-            channels: 1,
-            peaks: &peaks,
-        };
-        let g = Geom {
-            lane_left: 0.0,
-            lane_width: 400.0,
-            spp: 32.0,
-            scroll_x: 0,
-        };
+        let status = RecordStatus { track_id: uuid::Uuid::nil(), start: 0, frames: 5_000, channels: 1, peaks: &peaks };
+        let g = Geom { lane_left: 0.0, lane_width: 400.0, spp: 32.0, scroll_x: 0 };
         let body = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(160.0, 40.0));
         let mut h = crate::ui::test_util::Headless::new(400.0, 200.0);
         let out = h.frame(Vec::new(), |ui| {
             draw_live(ui.painter(), &status, &g, body, 1.0, THEME.record_red);
         });
-        let columns: Vec<_> = out
-            .rects()
-            .into_iter()
-            .filter(|r| r.fill == THEME.record_red)
-            .collect();
+        let columns: Vec<_> = out.rects().into_iter().filter(|r| r.fill == THEME.record_red).collect();
         assert_eq!(columns.len(), 96, "3,072 frames / 32 spp");
         assert!(columns.iter().all(|r| r.rect.right() <= 96.5));
     }

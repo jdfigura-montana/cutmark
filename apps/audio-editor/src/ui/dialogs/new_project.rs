@@ -26,24 +26,14 @@ pub struct NewProjectDialog {
 
 impl Default for NewProjectDialog {
     fn default() -> Self {
-        NewProjectDialog {
-            open: false,
-            name: String::new(),
-            parent: None,
-            sample_rate_khz: 48,
-            bit_depth: BitDepth::Int24,
-            error: None,
-        }
+        NewProjectDialog { open: false, name: String::new(), parent: None, sample_rate_khz: 48, bit_depth: BitDepth::Int24, error: None }
     }
 }
 
 impl NewProjectDialog {
     /// Creates the dialog already open, e.g. from the start screen or Project > New.
     pub fn new_open() -> Self {
-        NewProjectDialog {
-            open: true,
-            ..NewProjectDialog::default()
-        }
+        NewProjectDialog { open: true, ..NewProjectDialog::default() }
     }
     /// Shows the dialog; returns the created Editor when the user succeeds.
     pub fn show(&mut self, ctx: &egui::Context) -> Option<Editor> {
@@ -65,41 +55,20 @@ impl NewProjectDialog {
                         None => String::new(),
                     };
                     let browse = super::with_browse(ui, |ui| {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(folder_text)
-                                    .color(THEME.text_normal)
-                                    .size(THEME.dialog_label_size),
-                            )
-                            .truncate(),
-                        );
+                        ui.add(egui::Label::new(egui::RichText::new(folder_text).color(THEME.text_normal).size(THEME.dialog_label_size)).truncate());
                     });
                     if browse {
                         self.parent = rfd::FileDialog::new().pick_folder();
                     }
                 });
                 super::form_row(ui, "Sample rate", |ui| {
-                    super::segmented(
-                        ui,
-                        "np_rate",
-                        &[
-                            (44, "44 kHz"),
-                            (48, "48 kHz"),
-                            (88, "88 kHz"),
-                            (96, "96 kHz"),
-                        ],
-                        &mut self.sample_rate_khz,
-                    );
+                    super::segmented(ui, "np_rate", &[(44, "44 kHz"), (48, "48 kHz"), (88, "88 kHz"), (96, "96 kHz")], &mut self.sample_rate_khz);
                 });
                 super::form_row(ui, "Bit depth", |ui| {
                     super::segmented(
                         ui,
                         "np_depth",
-                        &[
-                            (BitDepth::Int16, "16-bit"),
-                            (BitDepth::Int24, "24-bit"),
-                            (BitDepth::Float32, "32-bit float"),
-                        ],
+                        &[(BitDepth::Int16, "16-bit"), (BitDepth::Int24, "24-bit"), (BitDepth::Float32, "32-bit float")],
                         &mut self.bit_depth,
                     );
                 });
@@ -108,14 +77,10 @@ impl NewProjectDialog {
                 }
                 let can_create = !self.name.trim().is_empty() && self.parent.is_some();
                 super::footer(ui, |ui| {
-                    if super::footer_button(ui, "Create", super::FooterButton::Primary, can_create)
-                        .clicked()
-                    {
+                    if super::footer_button(ui, "Create", super::FooterButton::Primary, can_create).clicked() {
                         self.try_create(&mut created);
                     }
-                    if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true)
-                        .clicked()
-                    {
+                    if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
                         cancel = true;
                     }
                 });
@@ -130,10 +95,7 @@ impl NewProjectDialog {
             }
         }
         if cancel {
-            *self = NewProjectDialog {
-                open: false,
-                ..NewProjectDialog::default()
-            };
+            *self = NewProjectDialog { open: false, ..NewProjectDialog::default() };
         }
         created
     }
@@ -149,10 +111,7 @@ impl NewProjectDialog {
         match Editor::create(&self.name, &parent, sample_rate, self.bit_depth) {
             Ok(editor) => {
                 *created = Some(editor);
-                *self = NewProjectDialog {
-                    open: false,
-                    ..NewProjectDialog::default()
-                };
+                *self = NewProjectDialog { open: false, ..NewProjectDialog::default() };
             }
             Err(error) => self.error = Some(error.to_string()),
         }

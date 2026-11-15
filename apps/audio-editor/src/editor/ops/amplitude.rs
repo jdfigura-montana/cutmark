@@ -27,41 +27,24 @@ pub enum Target {
 
 /// Returns a mutable reference to the track with the given id.
 fn track_mut(project: &mut Project, id: Uuid) -> Result<&mut Track, OpError> {
-    project
-        .tracks
-        .iter_mut()
-        .find(|track| track.id == id)
-        .ok_or(OpError::NotFound(id))
+    project.tracks.iter_mut().find(|track| track.id == id).ok_or(OpError::NotFound(id))
 }
 
 /// Returns a reference to the track with the given id.
 fn track_ref(project: &Project, id: Uuid) -> Result<&Track, OpError> {
-    project
-        .tracks
-        .iter()
-        .find(|track| track.id == id)
-        .ok_or(OpError::NotFound(id))
+    project.tracks.iter().find(|track| track.id == id).ok_or(OpError::NotFound(id))
 }
 
 /// Returns a mutable reference to the clip with the given id anywhere in the project.
 fn clip_mut(project: &mut Project, clip_id: Uuid) -> Option<&mut Clip> {
-    project
-        .tracks
-        .iter_mut()
-        .flat_map(|track| track.clips.iter_mut())
-        .find(|clip| clip.id == clip_id)
+    project.tracks.iter_mut().flat_map(|track| track.clips.iter_mut()).find(|clip| clip.id == clip_id)
 }
 
 /// Splits every listed track's clips at `start` and at `end`.
 ///
 /// Unknown track ids return [`OpError::NotFound`]; splits inside the already
 /// split tracks are no-ops.
-pub fn split_edges(
-    project: &mut Project,
-    start: u64,
-    end: u64,
-    tracks: &[Uuid],
-) -> Result<(), OpError> {
+pub fn split_edges(project: &mut Project, start: u64, end: u64, tracks: &[Uuid]) -> Result<(), OpError> {
     for &id in tracks {
         let track = track_mut(project, id)?;
         split_clip_at(track, start);
@@ -108,10 +91,7 @@ pub fn fragments(project: &Project, target: &Target) -> Vec<(Uuid, Uuid)> {
 fn require_clips(project: &Project, target: &Target) -> Result<(), OpError> {
     if let Target::Clips(ids) = target {
         for id in ids {
-            let found = project
-                .tracks
-                .iter()
-                .any(|track| track.clips.iter().any(|clip| clip.id == *id));
+            let found = project.tracks.iter().any(|track| track.clips.iter().any(|clip| clip.id == *id));
             if !found {
                 return Err(OpError::NotFound(*id));
             }
@@ -147,11 +127,7 @@ pub fn apply_gain(project: &mut Project, target: &Target, delta_db: f32) -> Resu
 ///
 /// Same splitting rule as [`apply_gain`]; fragments on tracks missing from
 /// `deltas` get 0.0.
-pub fn normalize(
-    project: &mut Project,
-    target: &Target,
-    deltas: &[(Uuid, f32)],
-) -> Result<(), OpError> {
+pub fn normalize(project: &mut Project, target: &Target, deltas: &[(Uuid, f32)]) -> Result<(), OpError> {
     if let Target::Clips(_) = target {
         require_clips(project, target)?;
     }
@@ -163,11 +139,7 @@ pub fn normalize(
         Target::Clips(_) => fragments(project, target),
     };
     for (track_id, clip_id) in &frags {
-        let delta = deltas
-            .iter()
-            .find(|(id, _)| id == track_id)
-            .map(|(_, delta)| *delta)
-            .unwrap_or(0.0);
+        let delta = deltas.iter().find(|(id, _)| id == track_id).map(|(_, delta)| *delta).unwrap_or(0.0);
         let clip = clip_mut(project, *clip_id).ok_or(OpError::NotFound(*clip_id))?;
         clip.gain_db = (clip.gain_db + delta).clamp(-60.0, 24.0);
     }
@@ -176,20 +148,11 @@ pub fn normalize(
 
 /// Validates that a fade range sits inside one clip per track (or no clip at
 /// all, which skips the track); returns the error otherwise.
-fn validate_fade_range(
-    project: &Project,
-    start: u64,
-    end: u64,
-    tracks: &[Uuid],
-) -> Result<(), OpError> {
+fn validate_fade_range(project: &Project, start: u64, end: u64, tracks: &[Uuid]) -> Result<(), OpError> {
     const MSG: &str = "Fade range must be inside a single clip on each track";
     for &id in tracks {
         let track = track_ref(project, id)?;
-        let overlapping: Vec<&Clip> = track
-            .clips
-            .iter()
-            .filter(|clip| clip.start < end && clip.end() > start)
-            .collect();
+        let overlapping: Vec<&Clip> = track.clips.iter().filter(|clip| clip.start < end && clip.end() > start).collect();
         match overlapping.as_slice() {
             [] => {}
             [clip] => {
@@ -212,11 +175,7 @@ fn fade(project: &mut Project, target: &Target, fade_in: bool) -> Result<(), OpE
             let length = end.saturating_sub(*start);
             for &id in tracks {
                 let track = track_ref(project, id)?;
-                let fragment = track
-                    .clips
-                    .iter()
-                    .find(|clip| clip.start == *start && clip.end() == *end)
-                    .map(|clip| clip.id);
+                let fragment = track.clips.iter().find(|clip| clip.start == *start && clip.end() == *end).map(|clip| clip.id);
                 if let Some(clip_id) = fragment {
                     let clip = clip_mut(project, clip_id).ok_or(OpError::NotFound(clip_id))?;
                     if fade_in {
@@ -231,17 +190,8 @@ fn fade(project: &mut Project, target: &Target, fade_in: bool) -> Result<(), OpE
         }
         Target::Clips(ids) => {
             for id in ids.clone() {
-                let track = project
-                    .tracks
-                    .iter()
-                    .find(|track| track.clips.iter().any(|clip| clip.id == id))
-                    .ok_or(OpError::NotFound(id))?;
-                let length = track
-                    .clips
-                    .iter()
-                    .find(|clip| clip.id == id)
-                    .map(|clip| clip.len())
-                    .unwrap_or(0);
+                let track = project.tracks.iter().find(|track| track.clips.iter().any(|clip| clip.id == id)).ok_or(OpError::NotFound(id))?;
+                let length = track.clips.iter().find(|clip| clip.id == id).map(|clip| clip.len()).unwrap_or(0);
                 let (fade_in_len, fade_out_len) = if fade_in { (length, 0) } else { (0, length) };
                 crate::editor::ops::clip::set_clip_fades(project, id, fade_in_len, fade_out_len)?;
             }
@@ -264,12 +214,7 @@ pub fn fade_out(project: &mut Project, target: &Target) -> Result<(), OpError> {
 
 /// Clears the clip content in `start..end` on each listed track; nothing
 /// moves, whatever the Ripple toggle says.
-pub fn silence(
-    project: &mut Project,
-    start: u64,
-    end: u64,
-    tracks: &[Uuid],
-) -> Result<(), OpError> {
+pub fn silence(project: &mut Project, start: u64, end: u64, tracks: &[Uuid]) -> Result<(), OpError> {
     for &id in tracks {
         let track = track_mut(project, id)?;
         clear_range(track, start, end);
@@ -288,11 +233,7 @@ mod tests {
         let track = project.tracks[0].id;
         split_edges(&mut project, 150, 250, &[track]).unwrap();
         assert_eq!(spans(&project, 0), [(100, 150), (150, 250), (250, 300)]);
-        let target = Target::Range {
-            start: 150,
-            end: 250,
-            tracks: vec![track],
-        };
+        let target = Target::Range { start: 150, end: 250, tracks: vec![track] };
         let frags = fragments(&project, &target);
         assert_eq!(frags.len(), 1);
         assert_eq!(frags[0].0, track);
@@ -313,11 +254,7 @@ mod tests {
         let mut project = project_with_clips(&[&[(100, 50), (150, 50)]]);
         let track = project.tracks[0].id;
         let before = project.clone();
-        let target = Target::Range {
-            start: 120,
-            end: 180,
-            tracks: vec![track],
-        };
+        let target = Target::Range { start: 120, end: 180, tracks: vec![track] };
         assert!(matches!(
             fade_in(&mut project, &target),
             Err(OpError::Invalid(message)) if message.contains("single clip")

@@ -64,9 +64,7 @@ const FORBIDDEN_NAME_CHARS: &[char] = &['<', '>', ':', '"', '/', '\\', '|', '?',
 /// COM1 ...).
 pub fn validate_project_name(name: &str) -> Result<(), IoError> {
     let bad = name.trim().is_empty()
-        || name
-            .chars()
-            .any(|c| FORBIDDEN_NAME_CHARS.contains(&c) || c.is_control())
+        || name.chars().any(|c| FORBIDDEN_NAME_CHARS.contains(&c) || c.is_control())
         || name.ends_with(['.', ' '])
         || is_reserved_device_name(name);
     if bad {
@@ -85,11 +83,7 @@ const MAX_STEM_CHARS: usize = 120;
 /// name, so `<stem>.wav` always names a plain file in the folder it is joined to.
 pub fn safe_file_stem(name: &str) -> String {
     let last = name.rsplit(['\\', '/', ':']).next().unwrap_or("");
-    let cleaned: String = last
-        .chars()
-        .filter(|c| !FORBIDDEN_NAME_CHARS.contains(c) && !c.is_control())
-        .take(MAX_STEM_CHARS)
-        .collect();
+    let cleaned: String = last.chars().filter(|c| !FORBIDDEN_NAME_CHARS.contains(c) && !c.is_control()).take(MAX_STEM_CHARS).collect();
     let cleaned = cleaned.trim_end_matches(['.', ' ']);
     if cleaned.trim().is_empty() || is_reserved_device_name(cleaned) {
         return "export".to_string();
@@ -119,21 +113,11 @@ pub fn unique_media_name(media_dir: &Path, file_name: &str) -> String {
     if !is_taken(file_name) {
         return file_name.to_string();
     }
-    let stem = Path::new(file_name)
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "media".to_string());
-    let ext = Path::new(file_name)
-        .extension()
-        .map(|e| e.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let stem = Path::new(file_name).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "media".to_string());
+    let ext = Path::new(file_name).extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
     let mut n = 2u32;
     loop {
-        let candidate = if ext.is_empty() {
-            format!("{stem} ({n})")
-        } else {
-            format!("{stem} ({n}).{ext}")
-        };
+        let candidate = if ext.is_empty() { format!("{stem} ({n})") } else { format!("{stem} ({n}).{ext}") };
         if !is_taken(&candidate) {
             return candidate;
         }
@@ -144,10 +128,7 @@ pub fn unique_media_name(media_dir: &Path, file_name: &str) -> String {
 /// File name for a new take in media/: "rec-YYYYMMDD-HHMMSS.wav", with the
 /// same " (2)"-style clash suffix as [`unique_media_name`] when taken.
 pub fn record_file_name(media_dir: &Path, now: DateTime<Local>) -> String {
-    unique_media_name(
-        media_dir,
-        &format!("rec-{}.wav", now.format("%Y%m%d-%H%M%S")),
-    )
+    unique_media_name(media_dir, &format!("rec-{}.wav", now.format("%Y%m%d-%H%M%S")))
 }
 
 /// Path of the conformed 32-bit float WAV for a media id: cache/<id>.f32.wav.
@@ -170,12 +151,7 @@ pub fn peaks_path(paths: &ProjectPaths, media_id: Uuid) -> PathBuf {
 /// not match the two patterns are left alone, and autosave/ and exports/ are
 /// never touched. Returns one message per removed file and, for individual
 /// failures, an error message; failures never make the caller's Save fail.
-pub fn cleanup_unused(
-    paths: &ProjectPaths,
-    keep_ids: &HashSet<Uuid>,
-    keep_files: &HashSet<String>,
-    recycle: bool,
-) -> Vec<String> {
+pub fn cleanup_unused(paths: &ProjectPaths, keep_ids: &HashSet<Uuid>, keep_files: &HashSet<String>, recycle: bool) -> Vec<String> {
     let mut messages = Vec::new();
     cleanup_media(paths, keep_files, recycle, &mut messages);
     cleanup_cache(paths, keep_ids, &mut messages);
@@ -183,12 +159,7 @@ pub fn cleanup_unused(
 }
 
 /// Removes unreferenced regular files from media/, skipping *.part names.
-fn cleanup_media(
-    paths: &ProjectPaths,
-    keep_files: &HashSet<String>,
-    recycle: bool,
-    messages: &mut Vec<String>,
-) {
+fn cleanup_media(paths: &ProjectPaths, keep_files: &HashSet<String>, recycle: bool, messages: &mut Vec<String>) {
     let Ok(entries) = fs::read_dir(paths.media()) else {
         return;
     };
@@ -233,21 +204,13 @@ fn cleanup_cache(paths: &ProjectPaths, keep_ids: &HashSet<Uuid>, messages: &mut 
 
 /// The media id of a cache name `<uuid>.f32.wav` or `<uuid>.peaks`, if it matches.
 fn cache_id(name: &str) -> Option<Uuid> {
-    let stem = if let Some(stem) = name.strip_suffix(".f32.wav") {
-        stem
-    } else {
-        name.strip_suffix(".peaks")?
-    };
+    let stem = if let Some(stem) = name.strip_suffix(".f32.wav") { stem } else { name.strip_suffix(".peaks")? };
     Uuid::parse_str(stem).ok()
 }
 
 /// Removes one unused file, collecting the name or a failure message.
 fn remove_unused(path: &Path, name: &str, recycle: bool, messages: &mut Vec<String>) {
-    let result = if recycle {
-        trash::delete(path).map_err(|error| error.to_string())
-    } else {
-        fs::remove_file(path).map_err(|error| error.to_string())
-    };
+    let result = if recycle { trash::delete(path).map_err(|error| error.to_string()) } else { fs::remove_file(path).map_err(|error| error.to_string()) };
     match result {
         Ok(()) => messages.push(format!("Removed unused file: {name}")),
         Err(error) => messages.push(format!("Cleanup could not remove {name}: {error}")),
@@ -260,9 +223,7 @@ fn remove_unused(path: &Path, name: &str, recycle: bool, messages: &mut Vec<Stri
 fn reveal_arg(path: &Path) -> Result<String, IoError> {
     let text = path.display().to_string();
     if text.contains('"') {
-        return Err(IoError::UnsafePath(
-            "the path contains a quote character".to_string(),
-        ));
+        return Err(IoError::UnsafePath("the path contains a quote character".to_string()));
     }
     Ok(format!("/select,\"{text}\""))
 }
@@ -271,9 +232,7 @@ fn reveal_arg(path: &Path) -> Result<String, IoError> {
 /// `C:\Windows\explorer.exe` when SystemRoot is unset or empty. Never a bare
 /// name, so no search order (application folder, PATH) decides what runs.
 fn explorer_exe(system_root: Option<OsString>) -> PathBuf {
-    let root = system_root
-        .filter(|root| !root.is_empty())
-        .unwrap_or_else(|| OsString::from("C:\\Windows"));
+    let root = system_root.filter(|root| !root.is_empty()).unwrap_or_else(|| OsString::from("C:\\Windows"));
     PathBuf::from(root).join("explorer.exe")
 }
 
@@ -306,10 +265,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let now = Local.with_ymd_and_hms(2026, 11, 14, 9, 5, 3).unwrap();
         fs::write(dir.path().join("rec-20261114-090503.wav"), b"x").unwrap();
-        assert_eq!(
-            record_file_name(dir.path(), now),
-            "rec-20261114-090503 (2).wav"
-        );
+        assert_eq!(record_file_name(dir.path(), now), "rec-20261114-090503 (2).wav");
     }
 
     #[test]
@@ -327,32 +283,19 @@ mod tests {
     fn create_layout_errors_when_folder_exists() {
         let parent = tempdir().unwrap();
         create_layout(parent.path(), "Proj").unwrap();
-        assert!(matches!(
-            create_layout(parent.path(), "Proj"),
-            Err(IoError::FolderExists(_))
-        ));
+        assert!(matches!(create_layout(parent.path(), "Proj"), Err(IoError::FolderExists(_))));
     }
 
     #[test]
     fn validate_project_name_rejects_bad_names() {
         for bad in ["", "   ", "a/b", "a:b"] {
-            assert!(
-                validate_project_name(bad).is_err(),
-                "expected rejection of {bad:?}"
-            );
+            assert!(validate_project_name(bad).is_err(), "expected rejection of {bad:?}");
         }
     }
 
     #[test]
     fn validate_project_name_accepts_simple_names() {
-        for name in [
-            "My Project",
-            "CONSOLE",
-            "Comet",
-            "a.b",
-            "Song 2",
-            "r\u{e9}sum\u{e9}",
-        ] {
+        for name in ["My Project", "CONSOLE", "Comet", "a.b", "Song 2", "r\u{e9}sum\u{e9}"] {
             assert!(validate_project_name(name).is_ok(), "{name:?}");
         }
     }
@@ -380,49 +323,24 @@ mod tests {
             "a*b",
             "a\"b", // the old forbidden set still applies
         ] {
-            assert!(
-                matches!(
-                    validate_project_name(bad),
-                    Err(IoError::InvalidProjectName(_))
-                ),
-                "expected rejection of {bad:?}"
-            );
+            assert!(matches!(validate_project_name(bad), Err(IoError::InvalidProjectName(_))), "expected rejection of {bad:?}");
         }
     }
 
     #[test]
     fn create_layout_rejects_a_reserved_name() {
         let parent = tempdir().unwrap();
-        assert!(matches!(
-            create_layout(parent.path(), "NUL"),
-            Err(IoError::InvalidProjectName(_))
-        ));
+        assert!(matches!(create_layout(parent.path(), "NUL"), Err(IoError::InvalidProjectName(_))));
         assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 0);
     }
 
     #[test]
     fn media_file_joins_only_plain_names() {
         let dir = tempdir().unwrap();
-        let paths = ProjectPaths {
-            root: dir.path().to_path_buf(),
-        };
-        assert_eq!(
-            paths.media_file("boom.wav").unwrap(),
-            dir.path().join("media").join("boom.wav")
-        );
-        for bad in [
-            r"\\attacker.example\share\a.wav",
-            r"C:\Windows\win.ini",
-            r"\Windows\win.ini",
-            r"..\..\a.wav",
-            "a\"b.wav",
-            "nul.wav",
-            "",
-        ] {
-            assert!(
-                matches!(paths.media_file(bad), Err(IoError::UnsafePath(_))),
-                "{bad:?} must not be joined"
-            );
+        let paths = ProjectPaths { root: dir.path().to_path_buf() };
+        assert_eq!(paths.media_file("boom.wav").unwrap(), dir.path().join("media").join("boom.wav"));
+        for bad in [r"\\attacker.example\share\a.wav", r"C:\Windows\win.ini", r"\Windows\win.ini", r"..\..\a.wav", "a\"b.wav", "nul.wav", ""] {
+            assert!(matches!(paths.media_file(bad), Err(IoError::UnsafePath(_))), "{bad:?} must not be joined");
         }
     }
 
@@ -441,9 +359,7 @@ mod tests {
         assert_eq!(safe_file_stem("a\u{7}b\nc"), "abc");
         assert_eq!(safe_file_stem("name. . "), "name");
         // Nothing usable, or a device name, falls back.
-        for name in [
-            "", "   ", ".", "..", r"..\..", r"a\", "CON", "nul", "com1 ", "<>",
-        ] {
+        for name in ["", "   ", ".", "..", r"..\..", r"a\", "CON", "nul", "com1 ", "<>"] {
             assert_eq!(safe_file_stem(name), "export", "{name:?}");
         }
         // The result is bounded.
@@ -457,24 +373,15 @@ mod tests {
         // The injection from the audit: a quote that closes the argument early.
         let injected = Path::new("C:\\p\\media\\boom.wav\" \"C:\\Windows\\System32\\notepad.exe");
         assert!(matches!(reveal_arg(injected), Err(IoError::UnsafePath(_))));
-        assert!(matches!(
-            reveal_in_explorer(injected),
-            Err(IoError::UnsafePath(_))
-        ));
+        assert!(matches!(reveal_in_explorer(injected), Err(IoError::UnsafePath(_))));
     }
 
     #[test]
     fn explorer_is_started_by_absolute_path() {
-        assert_eq!(
-            explorer_exe(Some(OsString::from(r"D:\Win"))),
-            PathBuf::from(r"D:\Win\explorer.exe")
-        );
+        assert_eq!(explorer_exe(Some(OsString::from(r"D:\Win"))), PathBuf::from(r"D:\Win\explorer.exe"));
         // SystemRoot unset or empty falls back to C:\Windows.
         for missing in [None, Some(OsString::new())] {
-            assert_eq!(
-                explorer_exe(missing),
-                PathBuf::from(r"C:\Windows\explorer.exe")
-            );
+            assert_eq!(explorer_exe(missing), PathBuf::from(r"C:\Windows\explorer.exe"));
         }
         assert!(explorer_exe(std::env::var_os("SystemRoot")).is_absolute());
     }
@@ -496,14 +403,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let paths = create_layout(dir.path(), "P2").unwrap();
         let id = Uuid::new_v4();
-        assert_eq!(
-            conformed_path(&paths, id),
-            paths.cache().join(format!("{}.f32.wav", id))
-        );
-        assert_eq!(
-            peaks_path(&paths, id),
-            paths.cache().join(format!("{}.peaks", id))
-        );
+        assert_eq!(conformed_path(&paths, id), paths.cache().join(format!("{}.f32.wav", id)));
+        assert_eq!(peaks_path(&paths, id), paths.cache().join(format!("{}.peaks", id)));
     }
 
     /// Writes `content` to `dir/name` and asserts nothing else.
@@ -575,9 +476,6 @@ mod tests {
         // The failure is reported as a message, not an error of the call.
         assert!(paths.media().join("locked.wav").is_file());
         let joined = messages.join("\n");
-        assert!(
-            joined.contains("Cleanup could not remove locked.wav"),
-            "got: {joined}"
-        );
+        assert!(joined.contains("Cleanup could not remove locked.wav"), "got: {joined}");
     }
 }

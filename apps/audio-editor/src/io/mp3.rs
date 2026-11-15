@@ -10,10 +10,7 @@ use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::num::NonZeroU32;
 use std::path::Path;
 
-use mp3lame_encoder::{
-    Bitrate, Builder, Encoder, FlushGap, InterleavedPcm, Mode, MonoPcm, Quality, VbrMode,
-    max_required_buffer_size,
-};
+use mp3lame_encoder::{Bitrate, Builder, Encoder, FlushGap, InterleavedPcm, Mode, MonoPcm, Quality, VbrMode, max_required_buffer_size};
 
 use super::IoError;
 use super::export::{AudioSink, ExportFormat, PartGuard, check_whole_frames, mp3_rate};
@@ -43,16 +40,10 @@ impl Lame {
             256 => Bitrate::Kbps256,
             320 => Bitrate::Kbps320,
             other => {
-                return Err(IoError::Export(format!(
-                    "unsupported MP3 bitrate: {other} kbps"
-                )));
+                return Err(IoError::Export(format!("unsupported MP3 bitrate: {other} kbps")));
             }
         };
-        let mode = if channels == 1 {
-            Mode::Mono
-        } else {
-            Mode::JointStereo
-        };
+        let mode = if channels == 1 { Mode::Mono } else { Mode::JointStereo };
         let build = |e| IoError::Export(format!("MP3 encoder setup failed: {e}"));
         let encoder = Builder::new()
             .ok_or_else(|| IoError::Export("could not create the MP3 encoder".to_string()))?
@@ -75,12 +66,7 @@ impl Lame {
             .build()
             .map_err(build)?;
         let ch = usize::from(channels);
-        Ok(Self {
-            encoder,
-            channels: ch,
-            scratch: Vec::with_capacity(ENCODE_FRAMES * ch),
-            out: Vec::with_capacity(max_required_buffer_size(ENCODE_FRAMES)),
-        })
+        Ok(Self { encoder, channels: ch, scratch: Vec::with_capacity(ENCODE_FRAMES * ch), out: Vec::with_capacity(max_required_buffer_size(ENCODE_FRAMES)) })
     }
 
     /// Encodes whole interleaved frames and writes the output to `file`.
@@ -88,22 +74,13 @@ impl Lame {
         for block in samples.chunks(ENCODE_FRAMES * self.channels) {
             // Overs would only distort inside the encoder; NaN must never reach it.
             self.scratch.clear();
-            self.scratch.extend(block.iter().map(|&s| {
-                if s.is_finite() {
-                    s.clamp(-1.0, 1.0)
-                } else {
-                    0.0
-                }
-            }));
+            self.scratch.extend(block.iter().map(|&s| if s.is_finite() { s.clamp(-1.0, 1.0) } else { 0.0 }));
             self.out.clear();
-            self.out
-                .reserve(max_required_buffer_size(block.len() / self.channels));
+            self.out.reserve(max_required_buffer_size(block.len() / self.channels));
             let result = if self.channels == 1 {
-                self.encoder
-                    .encode_to_vec(MonoPcm(self.scratch.as_slice()), &mut self.out)
+                self.encoder.encode_to_vec(MonoPcm(self.scratch.as_slice()), &mut self.out)
             } else {
-                self.encoder
-                    .encode_to_vec(InterleavedPcm(self.scratch.as_slice()), &mut self.out)
+                self.encoder.encode_to_vec(InterleavedPcm(self.scratch.as_slice()), &mut self.out)
             };
             result.map_err(|e| IoError::Export(format!("MP3 encode failed: {e}")))?;
             file.write_all(&self.out)?;
@@ -115,9 +92,7 @@ impl Lame {
     fn flush(&mut self, file: &mut impl Write) -> Result<(), IoError> {
         self.out.clear();
         self.out.reserve(max_required_buffer_size(0));
-        self.encoder
-            .flush_to_vec::<FlushGap>(&mut self.out)
-            .map_err(|e| IoError::Export(format!("MP3 flush failed: {e}")))?;
+        self.encoder.flush_to_vec::<FlushGap>(&mut self.out).map_err(|e| IoError::Export(format!("MP3 flush failed: {e}")))?;
         file.write_all(&self.out)?;
         Ok(())
     }
@@ -154,33 +129,14 @@ struct Mp3Sink {
 }
 
 /// Opens an MP3 sink writing `<path>.part`; used by `export::open_sink`.
-pub(super) fn open_sink(
-    path: &Path,
-    kbps: u32,
-    format: &ExportFormat,
-) -> Result<Box<dyn AudioSink>, IoError> {
+pub(super) fn open_sink(path: &Path, kbps: u32, format: &ExportFormat) -> Result<Box<dyn AudioSink>, IoError> {
     let out_rate = mp3_rate(format.in_rate);
     let lame = Lame::new(format.channels, out_rate, kbps)?;
-    let resampler = if out_rate == format.in_rate {
-        None
-    } else {
-        Some(StreamResampler::new(
-            format.channels,
-            format.in_rate,
-            out_rate,
-        )?)
-    };
+    let resampler = if out_rate == format.in_rate { None } else { Some(StreamResampler::new(format.channels, format.in_rate, out_rate)?) };
     let guard = PartGuard::new(path);
     let file = BufWriter::with_capacity(FILE_BUFFER, File::create(guard.part_path())?);
     let channels = usize::from(format.channels);
-    Ok(Box::new(Mp3Sink {
-        lame,
-        channels,
-        resampler,
-        resampled: Vec::with_capacity(ENCODE_FRAMES * channels),
-        file,
-        guard,
-    }))
+    Ok(Box::new(Mp3Sink { lame, channels, resampler, resampled: Vec::with_capacity(ENCODE_FRAMES * channels), file, guard }))
 }
 
 impl AudioSink for Mp3Sink {
@@ -197,14 +153,7 @@ impl AudioSink for Mp3Sink {
     }
 
     fn finish(self: Box<Self>) -> Result<(), IoError> {
-        let Mp3Sink {
-            mut lame,
-            mut resampler,
-            mut resampled,
-            mut file,
-            guard,
-            ..
-        } = *self;
+        let Mp3Sink { mut lame, mut resampler, mut resampled, mut file, guard, .. } = *self;
         if let Some(resampler) = resampler.as_mut() {
             resampled.clear();
             resampler.finish(&mut resampled)?;
@@ -232,19 +181,10 @@ mod tests {
 
     /// Writes `seconds` of a 0.5-amplitude 440 Hz sine (same in every channel)
     /// through an MP3 sink in odd-sized blocks and returns the decoded file.
-    fn export_sine(
-        rate: u32,
-        channels: u16,
-        kbps: u32,
-        seconds: u32,
-    ) -> (tempfile::TempDir, std::path::PathBuf) {
+    fn export_sine(rate: u32, channels: u16, kbps: u32, seconds: u32) -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("out.mp3");
-        let format = ExportFormat {
-            kind: ExportKind::Mp3 { kbps },
-            channels,
-            in_rate: rate,
-        };
+        let format = ExportFormat { kind: ExportKind::Mp3 { kbps }, channels, in_rate: rate };
         let mut sink = open_export_sink(&path, &format).unwrap();
         let total = (rate * seconds) as usize;
         let sine: Vec<f32> = (0..total)
@@ -264,17 +204,13 @@ mod tests {
     /// Counts sign changes in channel 0 of an interleaved buffer.
     fn zero_crossings(samples: &[f32], channels: usize) -> usize {
         let left: Vec<f32> = samples.iter().step_by(channels).copied().collect();
-        left.windows(2)
-            .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
-            .count()
+        left.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count()
     }
 
     /// Peak of channel 0 away from the first and last 2,000 frames.
     fn middle_peak(samples: &[f32], channels: usize) -> f32 {
         let frames = samples.len() / channels;
-        (2000..frames - 2000)
-            .map(|i| samples[i * channels].abs())
-            .fold(0.0, f32::max)
+        (2000..frames - 2000).map(|i| samples[i * channels].abs()).fold(0.0, f32::max)
     }
 
     #[test]
@@ -286,10 +222,7 @@ mod tests {
         let frames = decoded.samples.len() / 2;
         // LAME writes the Info tag with encoder delay and padding and the
         // decoder trims them, so the length is exact, not just roughly 1 s.
-        assert!(
-            (47_998..=48_002).contains(&frames),
-            "decoded {frames} frames"
-        );
+        assert!((47_998..=48_002).contains(&frames), "decoded {frames} frames");
 
         // The signal is the right level and the right pitch.
         let peak = middle_peak(&decoded.samples, 2);
@@ -318,10 +251,7 @@ mod tests {
         assert_eq!(decoded.rate, 48_000);
         assert_eq!(decoded.channels, 2);
         let frames = decoded.samples.len() / 2;
-        assert!(
-            (47_998..=48_002).contains(&frames),
-            "decoded {frames} frames"
-        );
+        assert!((47_998..=48_002).contains(&frames), "decoded {frames} frames");
 
         // Still 440 Hz at the full level after resampling.
         let peak = middle_peak(&decoded.samples, 2);
@@ -336,10 +266,7 @@ mod tests {
         let decoded = decode_file(&path, &mut |_| {}).unwrap();
         assert_eq!(decoded.rate, 44_100);
         let frames = decoded.samples.len() / 2;
-        assert!(
-            (44_098..=44_102).contains(&frames),
-            "decoded {frames} frames"
-        );
+        assert!((44_098..=44_102).contains(&frames), "decoded {frames} frames");
     }
 
     #[test]
@@ -348,11 +275,7 @@ mod tests {
         let decoded = decode_file(&path, &mut |_| {}).unwrap();
         assert_eq!(decoded.rate, 48_000);
         assert_eq!(decoded.channels, 1);
-        assert!(
-            (47_998..=48_002).contains(&decoded.samples.len()),
-            "decoded {} frames",
-            decoded.samples.len()
-        );
+        assert!((47_998..=48_002).contains(&decoded.samples.len()), "decoded {} frames", decoded.samples.len());
         let peak = middle_peak(&decoded.samples, 1);
         assert!((0.4..=0.6).contains(&peak), "peak was {peak}");
     }
@@ -371,11 +294,7 @@ mod tests {
     fn overs_and_nan_do_not_break_the_stream() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("out.mp3");
-        let format = ExportFormat {
-            kind: ExportKind::Mp3 { kbps: 192 },
-            channels: 2,
-            in_rate: 48_000,
-        };
+        let format = ExportFormat { kind: ExportKind::Mp3 { kbps: 192 }, channels: 2, in_rate: 48_000 };
         let mut sink = open_export_sink(&path, &format).unwrap();
         let mut block = vec![0.0_f32; 9600];
         block[10] = 4.0;
@@ -391,11 +310,7 @@ mod tests {
     fn empty_export_still_finishes() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("out.mp3");
-        let format = ExportFormat {
-            kind: ExportKind::Mp3 { kbps: 192 },
-            channels: 2,
-            in_rate: 96_000,
-        };
+        let format = ExportFormat { kind: ExportKind::Mp3 { kbps: 192 }, channels: 2, in_rate: 96_000 };
         open_export_sink(&path, &format).unwrap().finish().unwrap();
         assert!(path.is_file());
         assert!(!dir.path().join("out.mp3.part").exists());

@@ -26,26 +26,14 @@ pub struct NormalizeDialog {
 /// Opens the Normalize dialog with the default target (-1.0 dBFS) and
 /// per-track normalization off.
 pub fn request(ctx: &egui::Context) {
-    ctx.data_mut(|d| {
-        d.insert_temp(
-            egui::Id::new(DIALOG_KEY),
-            NormalizeDialog {
-                open: true,
-                target_dbfs: -1.0,
-                per_track: false,
-                error: None,
-            },
-        )
-    });
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(DIALOG_KEY), NormalizeDialog { open: true, target_dbfs: -1.0, per_track: false, error: None }));
 }
 
 /// Shows the Normalize dialog when open. OK calls `Editor::normalize` (one
 /// undo step); errors show in red inside the dialog and keep it open.
 /// Cancel, the backdrop or Esc dismisses it.
 pub fn show(ctx: &egui::Context, editor: &mut Editor) -> Vec<String> {
-    let Some(mut dialog) =
-        ctx.data_mut(|d| d.remove_temp::<NormalizeDialog>(egui::Id::new(DIALOG_KEY)))
-    else {
+    let Some(mut dialog) = ctx.data_mut(|d| d.remove_temp::<NormalizeDialog>(egui::Id::new(DIALOG_KEY))) else {
         return Vec::new();
     };
     let mut ok = false;

@@ -21,68 +21,25 @@ pub fn show(ui: &mut egui::Ui, editor: &Editor, export: Option<&ExportBanner>) {
         ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
         match editor.recording_status().filter(|_| editor.take_is_live()) {
             Some(take) => {
-                ui.label(
-                    egui::RichText::new("REC")
-                        .font(Theme::mono(SIZE))
-                        .color(THEME.record_red),
-                );
-                ui.label(
-                    egui::RichText::new(samples_to_timecode(take.frames, rate))
-                        .font(Theme::mono(SIZE))
-                        .color(THEME.text_primary),
-                );
+                ui.label(egui::RichText::new("REC").font(Theme::mono(SIZE)).color(THEME.record_red));
+                ui.label(egui::RichText::new(samples_to_timecode(take.frames, rate)).font(Theme::mono(SIZE)).color(THEME.text_primary));
             }
             None => {
-                ui.label(
-                    egui::RichText::new("PLAYHEAD")
-                        .font(Theme::mono(SIZE))
-                        .color(THEME.text_muted),
-                );
-                ui.label(
-                    egui::RichText::new(samples_to_timecode(editor.view.playhead, rate))
-                        .font(Theme::mono(SIZE))
-                        .color(THEME.text_primary),
-                );
+                ui.label(egui::RichText::new("PLAYHEAD").font(Theme::mono(SIZE)).color(THEME.text_muted));
+                ui.label(egui::RichText::new(samples_to_timecode(editor.view.playhead, rate)).font(Theme::mono(SIZE)).color(THEME.text_primary));
             }
         }
         if let Selection::Range { start, end, .. } = editor.selection() {
             let t = |samples: u64| samples_to_timecode(samples, rate);
-            ui.label(
-                egui::RichText::new("SEL")
-                    .font(Theme::mono(SIZE))
-                    .color(THEME.text_muted),
-            );
-            ui.label(
-                egui::RichText::new(t(*start))
-                    .font(Theme::mono(SIZE))
-                    .color(THEME.text_primary),
-            );
-            ui.label(
-                egui::RichText::new("to")
-                    .font(Theme::mono(SIZE))
-                    .color(THEME.text_muted),
-            );
-            ui.label(
-                egui::RichText::new(t(*end))
-                    .font(Theme::mono(SIZE))
-                    .color(THEME.text_primary),
-            );
-            ui.label(
-                egui::RichText::new(t(end.saturating_sub(*start)))
-                    .font(Theme::mono(SIZE))
-                    .color(THEME.accent),
-            );
+            ui.label(egui::RichText::new("SEL").font(Theme::mono(SIZE)).color(THEME.text_muted));
+            ui.label(egui::RichText::new(t(*start)).font(Theme::mono(SIZE)).color(THEME.text_primary));
+            ui.label(egui::RichText::new("to").font(Theme::mono(SIZE)).color(THEME.text_muted));
+            ui.label(egui::RichText::new(t(*end)).font(Theme::mono(SIZE)).color(THEME.text_primary));
+            ui.label(egui::RichText::new(t(end.saturating_sub(*start))).font(Theme::mono(SIZE)).color(THEME.accent));
         }
         if let Some(export) = export {
-            ui.label(
-                egui::RichText::new(format!("Exported {}", export.name))
-                    .font(Theme::mono(SIZE))
-                    .color(THEME.text_muted),
-            );
-            if ui
-                .link(egui::RichText::new("Reveal").font(Theme::mono(SIZE)))
-                .clicked()
-            {
+            ui.label(egui::RichText::new(format!("Exported {}", export.name)).font(Theme::mono(SIZE)).color(THEME.text_muted));
+            if ui.link(egui::RichText::new("Reveal").font(Theme::mono(SIZE))).clicked() {
                 editor.reveal_file(&export.path);
             }
         }
@@ -95,16 +52,8 @@ pub fn show(ui: &mut egui::Ui, editor: &Editor, export: Option<&ExportBanner>) {
             ui.spacing_mut().item_spacing.x = 22.0;
             toggle_readout(ui, "RIPPLE", on_off(editor.view.ripple), editor.view.ripple);
             toggle_readout(ui, "SNAP", on_off(editor.view.snap), editor.view.snap);
-            ui.label(
-                egui::RichText::new(bit_depth(editor.project.export_bit_depth))
-                    .font(Theme::mono(SIZE))
-                    .color(THEME.text_primary),
-            );
-            ui.label(
-                egui::RichText::new(format!("{} kHz", rate / 1000))
-                    .font(Theme::mono(SIZE))
-                    .color(THEME.text_primary),
-            );
+            ui.label(egui::RichText::new(bit_depth(editor.project.export_bit_depth)).font(Theme::mono(SIZE)).color(THEME.text_primary));
+            ui.label(egui::RichText::new(format!("{} kHz", rate / 1000)).font(Theme::mono(SIZE)).color(THEME.text_primary));
         });
     });
 }
@@ -129,24 +78,12 @@ pub fn show_start(ui: &mut egui::Ui, device: Option<&str>) {
     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
         if let Some(device) = device {
-            ui.label(
-                egui::RichText::new("OUTPUT")
-                    .font(Theme::mono(SIZE))
-                    .color(THEME.text_muted),
-            );
-            ui.label(
-                egui::RichText::new(device)
-                    .font(Theme::mono(SIZE))
-                    .color(THEME.text_primary),
-            );
+            ui.label(egui::RichText::new("OUTPUT").font(Theme::mono(SIZE)).color(THEME.text_muted));
+            ui.label(egui::RichText::new(device).font(Theme::mono(SIZE)).color(THEME.text_primary));
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(12.0);
-            ui.label(
-                egui::RichText::new("NO PROJECT OPEN")
-                    .font(Theme::mono(SIZE))
-                    .color(THEME.text_muted),
-            );
+            ui.label(egui::RichText::new("NO PROJECT OPEN").font(Theme::mono(SIZE)).color(THEME.text_muted));
         });
     });
 }
@@ -159,11 +96,7 @@ fn toggle_readout(ui: &mut egui::Ui, label: &str, value: &str, on: bool) {
     let format = |color| egui::TextFormat::simple(Theme::mono(SIZE), color);
     job.append(label, 0.0, format(THEME.text_muted));
     job.append(" ", 0.0, format(THEME.text_muted));
-    job.append(
-        value,
-        0.0,
-        format(if on { THEME.accent } else { THEME.text_primary }),
-    );
+    job.append(value, 0.0, format(if on { THEME.accent } else { THEME.text_primary }));
     let galley = ui.ctx().fonts_mut(|fonts| fonts.layout_job(job));
     let (rect, _) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
     ui.painter().galley(rect.min, galley, THEME.text_primary);

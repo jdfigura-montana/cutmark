@@ -40,22 +40,12 @@ pub fn render(plan: &MixPlan, start: u64, out: &mut [f32], meter: bool) {
         // Clips on one track never overlap, so one accumulator spans all clips.
         let mut acc = TrackAccum::default();
         // First clip whose end is past `start`; clips are sorted by start.
-        let first = track
-            .clips
-            .partition_point(|c| c.start.saturating_add(c.len) <= start);
+        let first = track.clips.partition_point(|c| c.start.saturating_add(c.len) <= start);
         for clip in &track.clips[first..] {
             if clip.start >= block_end {
                 break;
             }
-            mix_clip(
-                clip,
-                start,
-                track.gain_l,
-                track.gain_r,
-                out,
-                meter,
-                &mut acc,
-            );
+            mix_clip(clip, start, track.gain_l, track.gain_r, out, meter, &mut acc);
         }
         if meter
             && acc.frames > 0
@@ -74,25 +64,13 @@ pub fn render(plan: &MixPlan, start: u64, out: &mut [f32], meter: bool) {
         for [l, r] in out.as_chunks::<2>().0 {
             accumulate(&mut acc, *l, *r);
         }
-        plan.master
-            .l
-            .add(acc.peak_l, acc.sq_l, frames as u32, acc.clipped);
-        plan.master
-            .r
-            .add(acc.peak_r, acc.sq_r, frames as u32, acc.clipped);
+        plan.master.l.add(acc.peak_l, acc.sq_l, frames as u32, acc.clipped);
+        plan.master.r.add(acc.peak_r, acc.sq_r, frames as u32, acc.clipped);
     }
 }
 
 /// Adds one clip's contribution to the output block, reading safely past the buffer end as 0.0.
-fn mix_clip(
-    clip: &ClipPlan,
-    start: u64,
-    gain_l: f32,
-    gain_r: f32,
-    out: &mut [f32],
-    meter: bool,
-    acc: &mut TrackAccum,
-) {
+fn mix_clip(clip: &ClipPlan, start: u64, gain_l: f32, gain_r: f32, out: &mut [f32], meter: bool, acc: &mut TrackAccum) {
     let samples: Option<&[f32]> = clip.samples.as_deref();
     let clip_end = clip.start.saturating_add(clip.len);
     let block_end = start.saturating_add((out.len() / 2) as u64);
@@ -181,12 +159,7 @@ mod tests {
             rate: 48_000,
             length: clip.start.saturating_add(clip.len),
             master_gain,
-            tracks: vec![TrackPlan {
-                audible: true,
-                gain_l,
-                gain_r,
-                clips: vec![clip],
-            }],
+            tracks: vec![TrackPlan { audible: true, gain_l, gain_r, clips: vec![clip] }],
             meters: bank(1),
             master: Arc::new(StereoMeter::new()),
         }
@@ -194,29 +167,11 @@ mod tests {
 
     /// A meter bank with `n` anonymous track meters.
     fn bank(n: usize) -> Arc<MeterBank> {
-        Arc::new(MeterBank {
-            track_ids: (0..n).map(|_| Uuid::new_v4()).collect(),
-            tracks: (0..n).map(|_| StereoMeter::new()).collect(),
-        })
+        Arc::new(MeterBank { track_ids: (0..n).map(|_| Uuid::new_v4()).collect(), tracks: (0..n).map(|_| StereoMeter::new()).collect() })
     }
 
-    fn mono_clip(
-        start: u64,
-        len: u64,
-        src_in: u64,
-        gain: f32,
-        samples: Option<Arc<[f32]>>,
-    ) -> ClipPlan {
-        ClipPlan {
-            start,
-            len,
-            src_in,
-            channels: 1,
-            gain,
-            fade_in: 0,
-            fade_out: 0,
-            samples,
-        }
+    fn mono_clip(start: u64, len: u64, src_in: u64, gain: f32, samples: Option<Arc<[f32]>>) -> ClipPlan {
+        ClipPlan { start, len, src_in, channels: 1, gain, fade_in: 0, fade_out: 0, samples }
     }
 
     fn const_samples(value: f32, frames: usize, channels: u16) -> Arc<[f32]> {
@@ -231,12 +186,7 @@ mod tests {
 
     #[test]
     fn mono_clip_at_start_100_plays_only_between_100_and_200() {
-        let plan = one_clip_plan(
-            mono_clip(100, 100, 0, 1.0, Some(const_samples(0.5, 100, 1))),
-            PAN_CENTER,
-            PAN_CENTER,
-            1.0,
-        );
+        let plan = one_clip_plan(mono_clip(100, 100, 0, 1.0, Some(const_samples(0.5, 100, 1))), PAN_CENTER, PAN_CENTER, 1.0);
         let out = render_all(&plan, 0, 300);
         for f in 0..300 {
             let (l, r) = (out[f * 2], out[f * 2 + 1]);
@@ -253,12 +203,7 @@ mod tests {
     #[test]
     fn clip_gain_plus_six_db_doubles_the_output() {
         let gain = db_to_linear(6.0206);
-        let plan = one_clip_plan(
-            mono_clip(0, 100, 0, gain, Some(const_samples(0.5, 100, 1))),
-            1.0,
-            1.0,
-            1.0,
-        );
+        let plan = one_clip_plan(mono_clip(0, 100, 0, gain, Some(const_samples(0.5, 100, 1))), 1.0, 1.0, 1.0);
         let out = render_all(&plan, 0, 100);
         assert!((out[0] - 1.0).abs() < 1e-3, "{}", out[0]);
         assert!((out[1] - 1.0).abs() < 1e-3, "{}", out[1]);
@@ -266,12 +211,7 @@ mod tests {
 
     #[test]
     fn pan_hard_left_sends_nothing_right() {
-        let plan = one_clip_plan(
-            mono_clip(0, 100, 0, 1.0, Some(const_samples(0.5, 100, 1))),
-            1.0,
-            0.0,
-            1.0,
-        );
+        let plan = one_clip_plan(mono_clip(0, 100, 0, 1.0, Some(const_samples(0.5, 100, 1))), 1.0, 0.0, 1.0);
         let out = render_all(&plan, 0, 100);
         assert!((out[0] - 0.5).abs() < 1e-5);
         assert_eq!(out[1], 0.0);
@@ -311,18 +251,8 @@ mod tests {
             length: 100,
             master_gain: 1.0,
             tracks: vec![
-                TrackPlan {
-                    audible: true,
-                    gain_l: 1.0,
-                    gain_r: 1.0,
-                    clips: vec![clip()],
-                },
-                TrackPlan {
-                    audible: true,
-                    gain_l: 1.0,
-                    gain_r: 1.0,
-                    clips: vec![clip()],
-                },
+                TrackPlan { audible: true, gain_l: 1.0, gain_r: 1.0, clips: vec![clip()] },
+                TrackPlan { audible: true, gain_l: 1.0, gain_r: 1.0, clips: vec![clip()] },
             ],
             meters: bank(2),
             master: Arc::new(StereoMeter::new()),
@@ -338,12 +268,7 @@ mod tests {
             rate: 48_000,
             length: 100,
             master_gain: 1.0,
-            tracks: vec![TrackPlan {
-                audible: false,
-                gain_l: 1.0,
-                gain_r: 1.0,
-                clips: vec![clip],
-            }],
+            tracks: vec![TrackPlan { audible: false, gain_l: 1.0, gain_r: 1.0, clips: vec![clip] }],
             meters: bank(1),
             master: Arc::new(StereoMeter::new()),
         };
@@ -359,37 +284,19 @@ mod tests {
             length: 100,
             master_gain: 1.0,
             tracks: vec![
-                TrackPlan {
-                    audible: false,
-                    gain_l: 1.0,
-                    gain_r: 1.0,
-                    clips: vec![mono_clip(0, 100, 0, 1.0, Some(samples()))],
-                },
-                TrackPlan {
-                    audible: true,
-                    gain_l: 1.0,
-                    gain_r: 1.0,
-                    clips: vec![mono_clip(0, 100, 0, 1.0, Some(samples()))],
-                },
+                TrackPlan { audible: false, gain_l: 1.0, gain_r: 1.0, clips: vec![mono_clip(0, 100, 0, 1.0, Some(samples()))] },
+                TrackPlan { audible: true, gain_l: 1.0, gain_r: 1.0, clips: vec![mono_clip(0, 100, 0, 1.0, Some(samples()))] },
             ],
             meters: bank(2),
             master: Arc::new(StereoMeter::new()),
         };
         let out = render_all(&plan, 0, 100);
-        assert!(
-            (out[0] - 0.5).abs() < 1e-5,
-            "only the soloed track is heard"
-        );
+        assert!((out[0] - 0.5).abs() < 1e-5, "only the soloed track is heard");
     }
 
     #[test]
     fn master_gain_scales_the_whole_mix() {
-        let plan = one_clip_plan(
-            mono_clip(0, 100, 0, 1.0, Some(const_samples(0.5, 100, 1))),
-            1.0,
-            1.0,
-            0.5,
-        );
+        let plan = one_clip_plan(mono_clip(0, 100, 0, 1.0, Some(const_samples(0.5, 100, 1))), 1.0, 1.0, 0.5);
         let out = render_all(&plan, 0, 100);
         assert!((out[0] - 0.25).abs() < 1e-5);
         assert!((out[1] - 0.25).abs() < 1e-5);
@@ -397,13 +304,7 @@ mod tests {
 
     #[test]
     fn rendering_in_blocks_matches_one_big_call() {
-        let mut clip = mono_clip(
-            50,
-            200,
-            10,
-            db_to_linear(-3.0),
-            Some(const_samples(0.4, 256, 2)),
-        );
+        let mut clip = mono_clip(50, 200, 10, db_to_linear(-3.0), Some(const_samples(0.4, 256, 2)));
         clip.fade_in = 30;
         clip.fade_out = 60;
         let plan = one_clip_plan(clip, PAN_CENTER, PAN_CENTER, 0.8);
@@ -420,12 +321,7 @@ mod tests {
     #[test]
     fn src_past_the_buffer_reads_zero_without_panicking() {
         // Clip is 100 frames long but the buffer holds only 50 mono frames.
-        let plan = one_clip_plan(
-            mono_clip(0, 100, 0, 1.0, Some(const_samples(0.5, 50, 1))),
-            1.0,
-            1.0,
-            1.0,
-        );
+        let plan = one_clip_plan(mono_clip(0, 100, 0, 1.0, Some(const_samples(0.5, 50, 1))), 1.0, 1.0, 1.0);
         let out = render_all(&plan, 0, 100);
         for f in 0..50 {
             assert!((out[f * 2] - 0.5).abs() < 1e-6, "frame {f}");
@@ -446,21 +342,8 @@ mod tests {
     #[test]
     fn stereo_clip_reads_l_and_r_separately() {
         let samples: Arc<[f32]> = Arc::from([0.1f32, 0.9].repeat(50).into_boxed_slice());
-        let plan = one_clip_plan(
-            ClipPlan {
-                start: 0,
-                len: 50,
-                src_in: 0,
-                channels: 2,
-                gain: 1.0,
-                fade_in: 0,
-                fade_out: 0,
-                samples: Some(samples),
-            },
-            1.0,
-            1.0,
-            1.0,
-        );
+        let plan =
+            one_clip_plan(ClipPlan { start: 0, len: 50, src_in: 0, channels: 2, gain: 1.0, fade_in: 0, fade_out: 0, samples: Some(samples) }, 1.0, 1.0, 1.0);
         let out = render_all(&plan, 0, 50);
         assert!((out[0] - 0.1).abs() < 1e-6);
         assert!((out[1] - 0.9).abs() < 1e-6);
@@ -468,12 +351,7 @@ mod tests {
 
     #[test]
     fn meters_measure_track_and_master_after_gains() {
-        let plan = one_clip_plan(
-            mono_clip(0, 100, 0, 1.0, Some(const_samples(0.5, 100, 1))),
-            PAN_CENTER,
-            PAN_CENTER,
-            0.5,
-        );
+        let plan = one_clip_plan(mono_clip(0, 100, 0, 1.0, Some(const_samples(0.5, 100, 1))), PAN_CENTER, PAN_CENTER, 0.5);
         let expected = 0.5 * PAN_CENTER;
         let out = render_all(&plan, 0, 100);
         let _ = out;
@@ -498,12 +376,7 @@ mod tests {
             rate: 48_000,
             length: 100,
             master_gain: 1.0,
-            tracks: vec![TrackPlan {
-                audible: false,
-                gain_l: 1.0,
-                gain_r: 1.0,
-                clips: vec![mono_clip(0, 100, 0, 1.0, Some(const_samples(0.5, 100, 1)))],
-            }],
+            tracks: vec![TrackPlan { audible: false, gain_l: 1.0, gain_r: 1.0, clips: vec![mono_clip(0, 100, 0, 1.0, Some(const_samples(0.5, 100, 1)))] }],
             meters: bank(1),
             master: Arc::new(StereoMeter::new()),
         };
@@ -517,12 +390,7 @@ mod tests {
 
     #[test]
     fn a_sample_at_unity_sets_clipped() {
-        let plan = one_clip_plan(
-            mono_clip(0, 100, 0, 1.0, Some(const_samples(1.0, 100, 1))),
-            1.0,
-            1.0,
-            1.0,
-        );
+        let plan = one_clip_plan(mono_clip(0, 100, 0, 1.0, Some(const_samples(1.0, 100, 1))), 1.0, 1.0, 1.0);
         let _ = render_all(&plan, 0, 100);
         assert!(plan.meters.tracks[0].l.take().3);
         assert!(plan.master.r.take().3);
@@ -539,10 +407,7 @@ mod tests {
         assert!(out.iter().all(|s| s.is_finite()));
 
         // Source offset so large that `src_in + local` and `src * 2` would overflow.
-        let stereo = ClipPlan {
-            channels: 2,
-            ..mono_clip(10, 100, u64::MAX - 3, 1.0, Some(const_samples(0.5, 100, 2)))
-        };
+        let stereo = ClipPlan { channels: 2, ..mono_clip(10, 100, u64::MAX - 3, 1.0, Some(const_samples(0.5, 100, 2))) };
         let plan = one_clip_plan(stereo, 1.0, 1.0, 1.0);
         let out = render_all(&plan, 0, 200);
         // Every read lands past the buffer end: silence, not a wrapped read.

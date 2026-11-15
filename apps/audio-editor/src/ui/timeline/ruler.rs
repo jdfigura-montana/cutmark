@@ -58,10 +58,7 @@ struct MarkerState {
 
 /// Reads the marker interaction state from egui's temp storage.
 fn marker_state(ctx: &egui::Context) -> MarkerState {
-    ctx.data(|d| {
-        d.get_temp(egui::Id::new(MARKER_STATE_KEY))
-            .unwrap_or_default()
-    })
+    ctx.data(|d| d.get_temp(egui::Id::new(MARKER_STATE_KEY)).unwrap_or_default())
 }
 
 /// Writes the marker interaction state back to egui's temp storage.
@@ -98,12 +95,7 @@ fn brighten(color: egui::Color32, t: f32) -> egui::Color32 {
 ///
 /// Returns true when a marker interaction occupies the pointer this frame, so
 /// the plain ruler click (playhead) must not also fire.
-pub fn handle_markers(
-    ui: &egui::Ui,
-    editor: &mut Editor,
-    g: &Geom,
-    ruler_rect: egui::Rect,
-) -> bool {
+pub fn handle_markers(ui: &egui::Ui, editor: &mut Editor, g: &Geom, ruler_rect: egui::Rect) -> bool {
     let mut state = marker_state(ui.ctx());
     let (pressed, down, released, secondary, pos, alt, esc) = ui.input(|i| {
         (
@@ -147,18 +139,10 @@ pub fn handle_markers(
         let dist = ((p.x - press.pos.x).powi(2) + (p.y - press.pos.y).powi(2)).sqrt();
         if dist >= THEME.drag_start_px
             && state.drag.is_none()
-            && let Some(base) = editor
-                .project
-                .markers
-                .iter()
-                .find(|m| m.id == press.id)
-                .map(|m| m.position)
+            && let Some(base) = editor.project.markers.iter().find(|m| m.id == press.id).map(|m| m.position)
         {
             editor.begin_gesture();
-            state.drag = Some(MarkerDrag {
-                id: press.id,
-                last_good: base,
-            });
+            state.drag = Some(MarkerDrag { id: press.id, last_good: base });
         }
         if let Some(drag) = state.drag {
             let raw = g.x_to_sample(p.x);
@@ -168,24 +152,12 @@ pub fn handle_markers(
             } else {
                 raw
             };
-            if editor
-                .preview(Action::MoveMarker {
-                    id: drag.id,
-                    pos: target,
-                })
-                .is_ok()
-            {
-                state.drag = Some(MarkerDrag {
-                    id: drag.id,
-                    last_good: target,
-                });
+            if editor.preview(Action::MoveMarker { id: drag.id, pos: target }).is_ok() {
+                state.drag = Some(MarkerDrag { id: drag.id, last_good: target });
             } else {
                 // Another marker sits there: keep the last good position.
                 let last = drag.last_good;
-                let _ = editor.preview(Action::MoveMarker {
-                    id: drag.id,
-                    pos: last,
-                });
+                let _ = editor.preview(Action::MoveMarker { id: drag.id, pos: last });
             }
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
         }
@@ -229,10 +201,7 @@ struct ScrubState {
 
 /// Reads the scrub state from egui's temp storage.
 fn scrub_state(ctx: &egui::Context) -> ScrubState {
-    ctx.data(|d| {
-        d.get_temp(egui::Id::new(SCRUB_STATE_KEY))
-            .unwrap_or_default()
-    })
+    ctx.data(|d| d.get_temp(egui::Id::new(SCRUB_STATE_KEY)).unwrap_or_default())
 }
 
 /// Writes the scrub state back to egui's temp storage.
@@ -249,27 +218,11 @@ fn save_scrub_state(ctx: &egui::Context, state: ScrubState) {
 /// at the last target. When the pointer comes within [`SCRUB_EDGE_PX`] of a
 /// lane edge the view scrolls in that direction, faster the closer it gets.
 /// Requests a repaint every frame while scrubbing.
-pub fn handle_scrub(
-    ui: &egui::Ui,
-    editor: &mut Editor,
-    ruler_rect: egui::Rect,
-    markers_taken: bool,
-) {
+pub fn handle_scrub(ui: &egui::Ui, editor: &mut Editor, ruler_rect: egui::Rect, markers_taken: bool) {
     let mut scrub = scrub_state(ui.ctx());
-    let (pressed, down, released, pos) = ui.input(|i| {
-        (
-            i.pointer.primary_pressed(),
-            i.pointer.primary_down(),
-            i.pointer.any_released(),
-            i.pointer.latest_pos(),
-        )
-    });
-    let g = Geom {
-        lane_left: ruler_rect.left(),
-        lane_width: ruler_rect.width(),
-        spp: editor.view.samples_per_pixel,
-        scroll_x: editor.view.scroll_x,
-    };
+    let (pressed, down, released, pos) =
+        ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down(), i.pointer.any_released(), i.pointer.latest_pos()));
+    let g = Geom { lane_left: ruler_rect.left(), lane_width: ruler_rect.width(), spp: editor.view.samples_per_pixel, scroll_x: editor.view.scroll_x };
 
     if released {
         if scrub.active {
@@ -291,24 +244,11 @@ pub fn handle_scrub(
                 (0.0, 0.0)
             };
             if dir != 0.0 {
-                let dt = ui.input(|i| {
-                    if i.stable_dt > 0.0 {
-                        i.stable_dt
-                    } else {
-                        1.0 / 60.0
-                    }
-                });
+                let dt = ui.input(|i| if i.stable_dt > 0.0 { i.stable_dt } else { 1.0 / 60.0 });
                 let spp = editor.view.samples_per_pixel;
                 let delta = (SCRUB_EDGE_SPEED_PX * t * t * dt * spp as f32) as u64;
-                let new_x = if dir < 0.0 {
-                    editor.view.scroll_x.saturating_sub(delta)
-                } else {
-                    editor.view.scroll_x.saturating_add(delta)
-                };
-                editor.set_view_x(
-                    spp,
-                    super::clamp_scroll_x(editor, spp, ruler_rect.width(), new_x),
-                );
+                let new_x = if dir < 0.0 { editor.view.scroll_x.saturating_sub(delta) } else { editor.view.scroll_x.saturating_add(delta) };
+                editor.set_view_x(spp, super::clamp_scroll_x(editor, spp, ruler_rect.width(), new_x));
             }
             // The target follows the pointer, so a scroll also scrubs on.
             let target = g.x_to_sample(p.x);
@@ -328,10 +268,7 @@ pub fn handle_scrub(
     {
         let pos_sample = g.x_to_sample(p.x);
         editor.scrub_start(pos_sample);
-        scrub = ScrubState {
-            active: true,
-            last: pos_sample,
-        };
+        scrub = ScrubState { active: true, last: pos_sample };
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
         ui.ctx().request_repaint();
     } else if !down
@@ -353,13 +290,7 @@ pub fn draw_marker_menu(ui: &egui::Ui, editor: &mut Editor) {
     let Some(menu) = state.menu else {
         return;
     };
-    let (esc, clicked, pointer) = ui.input(|i| {
-        (
-            i.key_pressed(egui::Key::Escape),
-            i.pointer.any_click(),
-            i.pointer.latest_pos(),
-        )
-    });
+    let (esc, clicked, pointer) = ui.input(|i| (i.key_pressed(egui::Key::Escape), i.pointer.any_click(), i.pointer.latest_pos()));
     if esc {
         state.menu = None;
         save_marker_state(ui.ctx(), &state);
@@ -373,19 +304,16 @@ pub fn draw_marker_menu(ui: &egui::Ui, editor: &mut Editor) {
     }
 
     let mut close = false;
-    let response = egui::Area::new(egui::Id::new("marker_context_menu"))
-        .order(egui::Order::Foreground)
-        .fixed_pos(menu.pos)
-        .show(ui.ctx(), |ui| {
-            crate::ui::theme::menu_frame().show(ui, |ui| {
-                crate::ui::theme::menu_item_style(ui.style_mut());
-                ui.set_min_width(THEME.clip_menu_min_w);
-                if ui.button("Delete Marker").clicked() {
-                    let _ = editor.apply(Action::DeleteMarkers { ids: vec![menu.id] });
-                    close = true;
-                }
-            });
+    let response = egui::Area::new(egui::Id::new("marker_context_menu")).order(egui::Order::Foreground).fixed_pos(menu.pos).show(ui.ctx(), |ui| {
+        crate::ui::theme::menu_frame().show(ui, |ui| {
+            crate::ui::theme::menu_item_style(ui.style_mut());
+            ui.set_min_width(THEME.clip_menu_min_w);
+            if ui.button("Delete Marker").clicked() {
+                let _ = editor.apply(Action::DeleteMarkers { ids: vec![menu.id] });
+                close = true;
+            }
         });
+    });
     let menu_rect = response.response.rect;
     if clicked && pointer.is_some_and(|p| !menu_rect.contains(p)) {
         close = true;
@@ -429,19 +357,10 @@ pub fn draw(
             if x > ruler_rect.right() + 1.0 {
                 break;
             }
-            painter.line_segment(
-                [
-                    egui::pos2(x, ruler_rect.bottom() - THEME.ruler_tick_h),
-                    egui::pos2(x, ruler_rect.bottom()),
-                ],
-                stroke,
-            );
+            painter.line_segment([egui::pos2(x, ruler_rect.bottom() - THEME.ruler_tick_h), egui::pos2(x, ruler_rect.bottom())], stroke);
             let tc = ruler_label(step, m, rate, over_hour);
             painter.text(
-                egui::pos2(
-                    x + THEME.ruler_label_pad_x,
-                    ruler_rect.top() + THEME.ruler_label_pad_y,
-                ),
+                egui::pos2(x + THEME.ruler_label_pad_x, ruler_rect.top() + THEME.ruler_label_pad_y),
                 egui::Align2::LEFT_TOP,
                 tc,
                 Theme::mono(THEME.ruler_label_size),
@@ -455,13 +374,7 @@ pub fn draw(
                     if mx > ruler_rect.right() {
                         break;
                     }
-                    painter.line_segment(
-                        [
-                            egui::pos2(mx, ruler_rect.bottom() - THEME.ruler_minor_tick_h),
-                            egui::pos2(mx, ruler_rect.bottom()),
-                        ],
-                        stroke,
-                    );
+                    painter.line_segment([egui::pos2(mx, ruler_rect.bottom() - THEME.ruler_minor_tick_h), egui::pos2(mx, ruler_rect.bottom())], stroke);
                 }
             }
         }
@@ -476,36 +389,19 @@ pub fn draw(
             continue;
         }
         let is_selected = Some(marker.id) == selected;
-        let marker_color = if is_selected {
-            brighten(THEME.marker_color, 0.55)
-        } else {
-            THEME.marker_color
-        };
-        let line_color = if is_selected {
-            brighten(THEME.marker_color, 0.45)
-        } else {
-            THEME.marker_color
-        };
+        let marker_color = if is_selected { brighten(THEME.marker_color, 0.55) } else { THEME.marker_color };
+        let line_color = if is_selected { brighten(THEME.marker_color, 0.45) } else { THEME.marker_color };
         painter.add(egui::Shape::convex_polygon(
             vec![
-                egui::pos2(
-                    x - THEME.marker_tri_w,
-                    ruler_rect.bottom() - THEME.marker_tri_h,
-                ),
-                egui::pos2(
-                    x + THEME.marker_tri_w,
-                    ruler_rect.bottom() - THEME.marker_tri_h,
-                ),
+                egui::pos2(x - THEME.marker_tri_w, ruler_rect.bottom() - THEME.marker_tri_h),
+                egui::pos2(x + THEME.marker_tri_w, ruler_rect.bottom() - THEME.marker_tri_h),
                 egui::pos2(x, ruler_rect.bottom()),
             ],
             marker_color,
             egui::Stroke::NONE,
         ));
         painter.line_segment(
-            [
-                egui::pos2(x, ruler_rect.bottom()),
-                egui::pos2(x, lane_rect.bottom()),
-            ],
+            [egui::pos2(x, ruler_rect.bottom()), egui::pos2(x, lane_rect.bottom())],
             egui::Stroke::new(THEME.hairline, line_color.gamma_multiply(0.35)),
         );
     }

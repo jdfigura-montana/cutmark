@@ -731,21 +731,11 @@ impl Default for Theme {
             modal_shade: egui::Color32::from_black_alpha(140),
             card_radius: 10.0,
             card_pad: 20.0,
-            card_shadow: egui::Shadow {
-                offset: [0, 4],
-                blur: 16,
-                spread: 0,
-                color: egui::Color32::from_black_alpha(90),
-            },
+            card_shadow: egui::Shadow { offset: [0, 4], blur: 16, spread: 0, color: egui::Color32::from_black_alpha(90) },
             menu_radius: 8.0,
             menu_pad: 6.0,
             menu_item_radius: 5.0,
-            menu_shadow: egui::Shadow {
-                offset: [0, 4],
-                blur: 12,
-                spread: 0,
-                color: egui::Color32::from_black_alpha(90),
-            },
+            menu_shadow: egui::Shadow { offset: [0, 4], blur: 12, spread: 0, color: egui::Color32::from_black_alpha(90) },
             menu_right_pad: 8.0,
             unsaved_dot_d: 6.0,
             field_h: 30.0,
@@ -777,10 +767,7 @@ impl Default for Theme {
             start_logo_h: 40.0,
             start_bar_w: 4.0,
             start_bar_pitch: 6.0,
-            start_bar_heights: [
-                8.0, 16.0, 26.0, 34.0, 22.0, 30.0, 38.0, 24.0, 14.0, 28.0, 36.0, 20.0, 30.0, 18.0,
-                10.0, 24.0, 32.0, 16.0, 8.0, 12.0,
-            ],
+            start_bar_heights: [8.0, 16.0, 26.0, 34.0, 22.0, 30.0, 38.0, 24.0, 14.0, 28.0, 36.0, 20.0, 30.0, 18.0, 10.0, 24.0, 32.0, 16.0, 8.0, 12.0],
             start_title_gap: 20.0,
             start_buttons_gap: 40.0,
             start_btn_h: 52.0,
@@ -831,43 +818,23 @@ fn font_definitions() -> egui::FontDefinitions {
         ("JetBrainsMono-Regular", JB_MONO_REGULAR),
         ("JetBrainsMono-Medium", JB_MONO_MEDIUM),
     ] {
-        fonts
-            .font_data
-            .insert(key.into(), egui::FontData::from_static(bytes).into());
+        fonts.font_data.insert(key.into(), egui::FontData::from_static(bytes).into());
     }
     // IBM Plex Sans is the proportional face, JetBrains Mono the monospace
     // face; phosphor stays in every family list as the glyph fallback.
     {
-        let proportional = fonts
-            .families
-            .entry(egui::FontFamily::Proportional)
-            .or_default();
+        let proportional = fonts.families.entry(egui::FontFamily::Proportional).or_default();
         proportional.insert(0, "IBMPlexSans-Medium".into());
         proportional.insert(0, "IBMPlexSans-Regular".into());
-        let monospace = fonts
-            .families
-            .entry(egui::FontFamily::Monospace)
-            .or_default();
+        let monospace = fonts.families.entry(egui::FontFamily::Monospace).or_default();
         monospace.insert(0, "JetBrainsMono-Medium".into());
         monospace.insert(0, "JetBrainsMono-Regular".into());
         monospace.push(PHOSPHOR_FONT.into());
     }
-    fonts.families.insert(
-        egui::FontFamily::Name(MEDIUM_FAMILY.into()),
-        vec![
-            "IBMPlexSans-Medium".into(),
-            "IBMPlexSans-Regular".into(),
-            PHOSPHOR_FONT.into(),
-        ],
-    );
-    fonts.families.insert(
-        egui::FontFamily::Name(SEMIBOLD_FAMILY.into()),
-        vec![
-            "IBMPlexSans-SemiBold".into(),
-            "IBMPlexSans-Medium".into(),
-            PHOSPHOR_FONT.into(),
-        ],
-    );
+    fonts.families.insert(egui::FontFamily::Name(MEDIUM_FAMILY.into()), vec!["IBMPlexSans-Medium".into(), "IBMPlexSans-Regular".into(), PHOSPHOR_FONT.into()]);
+    fonts
+        .families
+        .insert(egui::FontFamily::Name(SEMIBOLD_FAMILY.into()), vec!["IBMPlexSans-SemiBold".into(), "IBMPlexSans-Medium".into(), PHOSPHOR_FONT.into()]);
     fonts
 }
 
@@ -901,13 +868,7 @@ pub fn apply(ctx: &egui::Context) {
     // strokes from the border tokens and its text from the text tokens.
     let text = t.text_normal;
     v.override_text_color = Some(text);
-    for w in [
-        &mut v.widgets.noninteractive,
-        &mut v.widgets.inactive,
-        &mut v.widgets.hovered,
-        &mut v.widgets.active,
-        &mut v.widgets.open,
-    ] {
+    for w in [&mut v.widgets.noninteractive, &mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
         w.corner_radius = t.control_rounding.into();
     }
     v.widgets.noninteractive.bg_fill = t.panel_bg;
@@ -937,15 +898,8 @@ pub fn apply(ctx: &egui::Context) {
         style.spacing.button_padding = egui::vec2(t.space_md, t.space_sm);
         style.spacing.menu_margin = egui::Margin::same(t.menu_pad as i8);
         style.spacing.window_margin = t.space_md.into();
-        let heading_size = style
-            .text_styles
-            .get(&egui::TextStyle::Heading)
-            .map(|font| font.size)
-            .unwrap_or(18.0);
-        style.text_styles.insert(
-            egui::TextStyle::Heading,
-            egui::FontId::new(heading_size, egui::FontFamily::Name(SEMIBOLD_FAMILY.into())),
-        );
+        let heading_size = style.text_styles.get(&egui::TextStyle::Heading).map(|font| font.size).unwrap_or(18.0);
+        style.text_styles.insert(egui::TextStyle::Heading, egui::FontId::new(heading_size, egui::FontFamily::Name(SEMIBOLD_FAMILY.into())));
     });
 
     ctx.set_visuals(v);
@@ -971,12 +925,7 @@ pub fn menu_item_style(style: &mut egui::Style) {
     eframe::egui::containers::menu::menu_style(style);
     style.spacing.button_padding = egui::vec2(8.0, 5.0);
     let t = &*THEME;
-    for w in [
-        &mut style.visuals.widgets.inactive,
-        &mut style.visuals.widgets.hovered,
-        &mut style.visuals.widgets.active,
-        &mut style.visuals.widgets.open,
-    ] {
+    for w in [&mut style.visuals.widgets.inactive, &mut style.visuals.widgets.hovered, &mut style.visuals.widgets.active, &mut style.visuals.widgets.open] {
         w.corner_radius = t.menu_item_radius.into();
     }
     style.visuals.widgets.hovered.bg_fill = t.control_fill;
@@ -1001,11 +950,9 @@ pub fn debug_window(ctx: &egui::Context) {
     if !open {
         return;
     }
-    egui::Window::new("Style (F12)")
-        .default_width(420.0)
-        .show(ctx, |ui| {
-            ctx.style_ui(ui, ctx.theme());
-        });
+    egui::Window::new("Style (F12)").default_width(420.0).show(ctx, |ui| {
+        ctx.style_ui(ui, ctx.theme());
+    });
 }
 
 #[cfg(test)]
@@ -1039,16 +986,8 @@ mod tests {
                 ("WAVEFORM", egui_phosphor::fill::WAVEFORM),
             ] {
                 let c = icon.chars().next().unwrap();
-                assert!(
-                    !bare_fonts.has_glyph(&id, c),
-                    "{name} (U+{:04X}) resolves WITHOUT phosphor in {family:?}: the probe is blind",
-                    c as u32
-                );
-                assert!(
-                    fonts.has_glyph(&id, c),
-                    "{name} (U+{:04X}) missing in family {family:?}",
-                    c as u32
-                );
+                assert!(!bare_fonts.has_glyph(&id, c), "{name} (U+{:04X}) resolves WITHOUT phosphor in {family:?}: the probe is blind", c as u32);
+                assert!(fonts.has_glyph(&id, c), "{name} (U+{:04X}) missing in family {family:?}", c as u32);
             }
         }
     }
@@ -1067,15 +1006,8 @@ mod tests {
         assert_eq!(t.meter_green, egui::Color32::from_rgb(0x3D, 0xBE, 0x6B));
         assert_eq!(t.space_xs, 4.0);
         assert_eq!(t.space_md, 8.0);
-        assert_eq!(
-            t.accent,
-            egui::Color32::from_rgb(0x4C, 0x9B, 0xE8),
-            "one accent for selection, lit toggles, range lines and focus"
-        );
-        assert_eq!(
-            t.accent_soft,
-            egui::Color32::from_rgba_unmultiplied(0x4C, 0x9B, 0xE8, 0x2E)
-        );
+        assert_eq!(t.accent, egui::Color32::from_rgb(0x4C, 0x9B, 0xE8), "one accent for selection, lit toggles, range lines and focus");
+        assert_eq!(t.accent_soft, egui::Color32::from_rgba_unmultiplied(0x4C, 0x9B, 0xE8, 0x2E));
         assert_eq!(t.selection_border, t.accent);
         assert_eq!(t.snap_line_color, t.accent);
         assert_eq!(t.playhead_color, egui::Color32::from_rgb(0xFF, 0x6B, 0x5C));
@@ -1085,10 +1017,7 @@ mod tests {
         assert_eq!(t.on_record_glyph, egui::Color32::WHITE);
         assert_eq!((t.record_btn_d, t.record_btn_glyph), (28.0, 16.0));
         assert_eq!((t.clip_body_alpha, t.clip_header_alpha), (0x22, 0x66));
-        assert_eq!(
-            (t.track_ms_w, t.track_ms_h, t.track_ms_gap),
-            (22.0, 20.0, 4.0)
-        );
+        assert_eq!((t.track_ms_w, t.track_ms_h, t.track_ms_gap), (22.0, 20.0, 4.0));
         assert_eq!(t.menu_right_pad, 8.0);
         assert_eq!(t.app_bg, egui::Color32::from_rgb(0x16, 0x18, 0x1C));
         assert_eq!(t.lane_a, egui::Color32::from_rgb(0x1B, 0x1E, 0x23));

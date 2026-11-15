@@ -67,10 +67,7 @@ impl MixPlan {
             length: 0,
             master_gain: 1.0,
             tracks: Vec::new(),
-            meters: Arc::new(MeterBank {
-                track_ids: Vec::new(),
-                tracks: Vec::new(),
-            }),
+            meters: Arc::new(MeterBank { track_ids: Vec::new(), tracks: Vec::new() }),
             master: Arc::new(StereoMeter::new()),
         }
     }
@@ -78,12 +75,7 @@ impl MixPlan {
     /// Builds a plan from the project, pulling each clip's samples through `media`.
     /// The closure returns the conformed interleaved samples for a media id, or None when offline.
     /// `meters` must hold one stereo meter per project track, in project order.
-    pub fn build(
-        project: &Project,
-        media: &dyn Fn(Uuid) -> Option<Arc<[f32]>>,
-        meters: Arc<MeterBank>,
-        master: Arc<StereoMeter>,
-    ) -> MixPlan {
+    pub fn build(project: &Project, media: &dyn Fn(Uuid) -> Option<Arc<[f32]>>, meters: Arc<MeterBank>, master: Arc<StereoMeter>) -> MixPlan {
         let any_solo = project.tracks.iter().any(|t| t.solo);
         let mut tracks = Vec::with_capacity(project.tracks.len());
         for track in &project.tracks {
@@ -97,52 +89,22 @@ impl MixPlan {
                     start: clip.start,
                     len: clip.len(),
                     src_in: clip.src_in,
-                    channels: project
-                        .media
-                        .iter()
-                        .find(|m| m.id == clip.media_id)
-                        .map(|m| m.channels)
-                        .unwrap_or(1),
+                    channels: project.media.iter().find(|m| m.id == clip.media_id).map(|m| m.channels).unwrap_or(1),
                     gain: db_to_linear(clip.gain_db),
                     fade_in: clip.fade_in,
                     fade_out: clip.fade_out,
                     samples: media(clip.media_id),
                 })
                 .collect();
-            tracks.push(TrackPlan {
-                audible,
-                gain_l: vol * angle.cos(),
-                gain_r: vol * angle.sin(),
-                clips,
-            });
+            tracks.push(TrackPlan { audible, gain_l: vol * angle.cos(), gain_r: vol * angle.sin(), clips });
         }
-        let length = project
-            .tracks
-            .iter()
-            .flat_map(|t| t.clips.iter())
-            .map(|c| c.end())
-            .max()
-            .unwrap_or(0);
-        MixPlan {
-            rate: project.sample_rate,
-            length,
-            master_gain: db_to_linear(project.master_volume_db),
-            tracks,
-            meters,
-            master,
-        }
+        let length = project.tracks.iter().flat_map(|t| t.clips.iter()).map(|c| c.end()).max().unwrap_or(0);
+        MixPlan { rate: project.sample_rate, length, master_gain: db_to_linear(project.master_volume_db), tracks, meters, master }
     }
 
     /// Builds a one-track, one-clip plan for previewing a bin item at unity gain.
     /// The meter bank has no tracks; only the master meter is written.
-    pub fn preview(
-        media_len: u64,
-        channels: u16,
-        samples: Arc<[f32]>,
-        rate: u32,
-        master_volume_db: f32,
-        master: Arc<StereoMeter>,
-    ) -> MixPlan {
+    pub fn preview(media_len: u64, channels: u16, samples: Arc<[f32]>, rate: u32, master_volume_db: f32, master: Arc<StereoMeter>) -> MixPlan {
         MixPlan {
             rate,
             length: media_len,
@@ -151,21 +113,9 @@ impl MixPlan {
                 audible: true,
                 gain_l: 1.0,
                 gain_r: 1.0,
-                clips: vec![ClipPlan {
-                    start: 0,
-                    len: media_len,
-                    src_in: 0,
-                    channels,
-                    gain: 1.0,
-                    fade_in: 0,
-                    fade_out: 0,
-                    samples: Some(samples),
-                }],
+                clips: vec![ClipPlan { start: 0, len: media_len, src_in: 0, channels, gain: 1.0, fade_in: 0, fade_out: 0, samples: Some(samples) }],
             }],
-            meters: Arc::new(MeterBank {
-                track_ids: Vec::new(),
-                tracks: Vec::new(),
-            }),
+            meters: Arc::new(MeterBank { track_ids: Vec::new(), tracks: Vec::new() }),
             master,
         }
     }
@@ -180,14 +130,7 @@ mod tests {
     use crate::model::track::Track;
 
     fn media_item(id: Uuid, channels: u16, length: u64) -> MediaItem {
-        MediaItem {
-            id,
-            display_name: "M".to_string(),
-            file_name: "m.wav".to_string(),
-            original_rate: 48_000,
-            channels,
-            length,
-        }
+        MediaItem { id, display_name: "M".to_string(), file_name: "m.wav".to_string(), original_rate: 48_000, channels, length }
     }
 
     #[test]
@@ -212,73 +155,30 @@ mod tests {
         let mut panned = Track::new("p".to_string());
         panned.pan = -1.0;
         let mut normal = Track::new("n".to_string());
-        normal.clips = vec![Clip {
-            id: Uuid::new_v4(),
-            media_id: offline,
-            start: 10,
-            src_in: 0,
-            src_out: 100,
-            gain_db: 0.0,
-            fade_in: 0,
-            fade_out: 0,
-        }];
+        normal.clips = vec![Clip { id: Uuid::new_v4(), media_id: offline, start: 10, src_in: 0, src_out: 100, gain_db: 0.0, fade_in: 0, fade_out: 0 }];
         let mut online_track = Track::new("o".to_string());
-        online_track.clips = vec![Clip {
-            id: Uuid::new_v4(),
-            media_id: online,
-            start: 0,
-            src_in: 0,
-            src_out: 1000,
-            gain_db: 0.0,
-            fade_in: 0,
-            fade_out: 0,
-        }];
+        online_track.clips = vec![Clip { id: Uuid::new_v4(), media_id: online, start: 0, src_in: 0, src_out: 1000, gain_db: 0.0, fade_in: 0, fade_out: 0 }];
         project.media = vec![media_item(online, 2, 1000), media_item(offline, 1, 500)];
         project.tracks = vec![muted, soloed, panned, normal, online_track];
 
-        let media_map: std::collections::HashMap<Uuid, Arc<[f32]>> =
-            [(online, Arc::from(vec![0.0f32; 2000].into_boxed_slice()))]
-                .into_iter()
-                .collect();
+        let media_map: std::collections::HashMap<Uuid, Arc<[f32]>> = [(online, Arc::from(vec![0.0f32; 2000].into_boxed_slice()))].into_iter().collect();
         let lookup = |id: Uuid| media_map.get(&id).cloned();
-        let meters = std::sync::Arc::new(MeterBank {
-            track_ids: vec![Uuid::new_v4(); 5],
-            tracks: (0..5).map(|_| StereoMeter::new()).collect(),
-        });
+        let meters = std::sync::Arc::new(MeterBank { track_ids: vec![Uuid::new_v4(); 5], tracks: (0..5).map(|_| StereoMeter::new()).collect() });
         let master = std::sync::Arc::new(StereoMeter::new());
 
-        let plan = MixPlan::build(
-            &project,
-            &lookup,
-            std::sync::Arc::clone(&meters),
-            std::sync::Arc::clone(&master),
-        );
+        let plan = MixPlan::build(&project, &lookup, std::sync::Arc::clone(&meters), std::sync::Arc::clone(&master));
         assert!((plan.master_gain - 0.5).abs() < 1e-3);
         assert_eq!(plan.length, 1000);
         assert!(!plan.tracks[0].audible, "muted track is not audible");
         assert!(plan.tracks[1].audible, "soloed track is audible");
-        assert!(
-            !plan.tracks[2].audible,
-            "non-soloed track is silent while solo is active"
-        );
-        assert!(
-            !plan.tracks[3].audible,
-            "non-soloed track is silent while solo is active"
-        );
-        assert!(
-            !plan.tracks[4].audible,
-            "non-soloed track is silent while solo is active"
-        );
+        assert!(!plan.tracks[2].audible, "non-soloed track is silent while solo is active");
+        assert!(!plan.tracks[3].audible, "non-soloed track is silent while solo is active");
+        assert!(!plan.tracks[4].audible, "non-soloed track is silent while solo is active");
 
         // Without any solo, every unmuted track is audible.
         let mut no_solo = project.clone();
         no_solo.tracks[1].solo = false;
-        let plan2 = MixPlan::build(
-            &no_solo,
-            &lookup,
-            std::sync::Arc::clone(&meters),
-            std::sync::Arc::clone(&master),
-        );
+        let plan2 = MixPlan::build(&no_solo, &lookup, std::sync::Arc::clone(&meters), std::sync::Arc::clone(&master));
         for (i, t) in plan2.tracks.iter().enumerate() {
             assert_eq!(t.audible, i != 0, "track {i} audibility with no solo");
         }
@@ -298,15 +198,7 @@ mod tests {
     fn center_pan_gives_minus_three_db_per_side() {
         let mut project = Project::new("P".to_string(), 48_000, BitDepth::Int24);
         project.tracks = vec![Track::new("c".to_string())];
-        let plan = MixPlan::build(
-            &project,
-            &|_| None,
-            Arc::new(MeterBank {
-                track_ids: Vec::new(),
-                tracks: Vec::new(),
-            }),
-            Arc::new(StereoMeter::new()),
-        );
+        let plan = MixPlan::build(&project, &|_| None, Arc::new(MeterBank { track_ids: Vec::new(), tracks: Vec::new() }), Arc::new(StereoMeter::new()));
         assert!((plan.tracks[0].gain_l - 0.707_106_77).abs() < 1e-5);
         assert!((plan.tracks[0].gain_r - 0.707_106_77).abs() < 1e-5);
     }
@@ -314,14 +206,7 @@ mod tests {
     #[test]
     fn preview_is_one_unity_track_one_clip() {
         let samples: Arc<[f32]> = Arc::from(vec![0.5f32; 8].into_boxed_slice());
-        let plan = MixPlan::preview(
-            4,
-            2,
-            samples,
-            48_000,
-            -6.0206,
-            std::sync::Arc::new(StereoMeter::new()),
-        );
+        let plan = MixPlan::preview(4, 2, samples, 48_000, -6.0206, std::sync::Arc::new(StereoMeter::new()));
         assert_eq!(plan.length, 4);
         assert!((plan.master_gain - 0.5).abs() < 1e-3);
         assert_eq!(plan.tracks.len(), 1);

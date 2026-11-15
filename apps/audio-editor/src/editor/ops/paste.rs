@@ -41,12 +41,7 @@ fn pasted_clip(source: &Clip, pos: u64) -> Clip {
 ///
 /// Clips under `pos` split; later clips on each receiving track shift right by the
 /// clipboard length, whatever the Ripple toggle says.
-pub fn paste_insert(
-    project: &mut Project,
-    pos: u64,
-    target_track: usize,
-    clipboard: &Arc<Clipboard>,
-) -> Result<(), OpError> {
+pub fn paste_insert(project: &mut Project, pos: u64, target_track: usize, clipboard: &Arc<Clipboard>) -> Result<(), OpError> {
     let length = clipboard.length.min(i64::MAX as u64) as i64;
     for (k, clips) in clipboard.tracks.iter().enumerate() {
         let track = receiving_track(project, target_track, k);
@@ -64,14 +59,7 @@ pub fn paste_insert(
 ///
 /// Ripple on: later clips shift by the clipboard-length difference. Ripple off:
 /// the clipboard overwrites from `s`, possibly past `e`.
-pub fn paste_replace(
-    project: &mut Project,
-    s: u64,
-    e: u64,
-    target_track: usize,
-    clipboard: &Arc<Clipboard>,
-    ripple: bool,
-) -> Result<(), OpError> {
+pub fn paste_replace(project: &mut Project, s: u64, e: u64, target_track: usize, clipboard: &Arc<Clipboard>, ripple: bool) -> Result<(), OpError> {
     let length = clipboard.length;
     for (k, clips) in clipboard.tracks.iter().enumerate() {
         let track = receiving_track(project, target_track, k);

@@ -59,11 +59,7 @@ enum Pending {
     Seek { to: u64 },
     /// Begin (or restart) timeline playback; `open_ended` is a recording take
     /// that does not stop at the end of the project.
-    StartPlay {
-        from: u64,
-        range_end: Option<u64>,
-        open_ended: bool,
-    },
+    StartPlay { from: u64, range_end: Option<u64>, open_ended: bool },
     /// Begin preview playback from its start.
     StartPreview,
     /// The preview material ended on its own.
@@ -243,9 +239,7 @@ impl Player {
                 return;
             }
             if self.pending.is_none() {
-                let remaining = self
-                    .play_end(timeline, preview)
-                    .saturating_sub(self.render_pos());
+                let remaining = self.play_end(timeline, preview).saturating_sub(self.render_pos());
                 if remaining == 0 {
                     self.finish();
                     continue;
@@ -261,19 +255,11 @@ impl Player {
                     self.ramp_pos = 0;
                     self.ramp_total = remaining as u32;
                     self.ramp_from = gain;
-                    self.pending = Some(if self.state == State::Previewing {
-                        Pending::EndPreview
-                    } else {
-                        Pending::Stop
-                    });
+                    self.pending = Some(if self.state == State::Previewing { Pending::EndPreview } else { Pending::Stop });
                 }
             }
             let piece = self.piece_len(frames, timeline, preview);
-            let (plan, pos) = if self.state == State::Previewing {
-                (preview, self.preview_pos)
-            } else {
-                (timeline, self.position)
-            };
+            let (plan, pos) = if self.state == State::Previewing { (preview, self.preview_pos) } else { (timeline, self.position) };
             let slice = &mut out[cursor..cursor + piece * 2];
             mixer::render(plan, pos, slice, true);
             self.apply_gain(slice, piece);
@@ -323,18 +309,13 @@ impl Player {
             // A recording take runs until Stop, past the last clip.
             u64::MAX
         } else {
-            self.range_end
-                .map_or(timeline.length, |e| e.min(timeline.length))
+            self.range_end.map_or(timeline.length, |e| e.min(timeline.length))
         }
     }
 
     /// Position the active source renders from.
     fn render_pos(&self) -> u64 {
-        if self.state == State::Previewing {
-            self.preview_pos
-        } else {
-            self.position
-        }
+        if self.state == State::Previewing { self.preview_pos } else { self.position }
     }
 
     /// Current output gain (1.0 when no ramp is active).
@@ -378,11 +359,7 @@ impl Player {
                 self.start_ramp_up();
             }
             State::Playing | State::Previewing => {
-                self.ramp_to(Pending::StartPlay {
-                    from,
-                    range_end,
-                    open_ended,
-                });
+                self.ramp_to(Pending::StartPlay { from, range_end, open_ended });
             }
         }
     }
@@ -420,11 +397,7 @@ impl Player {
                 self.return_to = to;
                 self.start_ramp_up();
             }
-            Pending::StartPlay {
-                from,
-                range_end,
-                open_ended,
-            } => {
+            Pending::StartPlay { from, range_end, open_ended } => {
                 self.state = State::Playing;
                 self.position = from;
                 self.return_to = from;
@@ -467,9 +440,7 @@ impl Player {
             piece = piece.min(self.ramp_total - self.ramp_pos);
         }
         // The declick into the end must start exactly `ramp_len` frames early.
-        let remaining = self
-            .play_end(timeline, preview)
-            .saturating_sub(self.render_pos());
+        let remaining = self.play_end(timeline, preview).saturating_sub(self.render_pos());
         let bound = remaining.saturating_sub(self.ramp_len as u64);
         piece = piece.min(bound.min(u32::MAX as u64) as u32);
         piece as usize
@@ -518,34 +489,15 @@ mod tests {
                 audible: true,
                 gain_l: 1.0,
                 gain_r: 1.0,
-                clips: vec![ClipPlan {
-                    start: 0,
-                    len,
-                    src_in: 0,
-                    channels: 1,
-                    gain: 1.0,
-                    fade_in: 0,
-                    fade_out: 0,
-                    samples: Some(samples),
-                }],
+                clips: vec![ClipPlan { start: 0, len, src_in: 0, channels: 1, gain: 1.0, fade_in: 0, fade_out: 0, samples: Some(samples) }],
             }],
-            meters: Arc::new(MeterBank {
-                track_ids: Vec::new(),
-                tracks: Vec::new(),
-            }),
+            meters: Arc::new(MeterBank { track_ids: Vec::new(), tracks: Vec::new() }),
             master: Arc::new(StereoMeter::new()),
         }
     }
 
     /// Runs `blocks` blocks of `size` frames, appending all output to `sink`.
-    fn run(
-        player: &mut Player,
-        timeline: &MixPlan,
-        preview: &MixPlan,
-        blocks: usize,
-        size: usize,
-        sink: &mut Vec<f32>,
-    ) {
+    fn run(player: &mut Player, timeline: &MixPlan, preview: &MixPlan, blocks: usize, size: usize, sink: &mut Vec<f32>) {
         for _ in 0..blocks {
             let start = sink.len();
             sink.resize(start + size * 2, f32::NAN);
@@ -631,10 +583,7 @@ mod tests {
         assert_eq!(p.state(), State::Playing);
         assert_eq!(p.position(), 5_120);
         assert!(sink[500 * 2].abs() > 0.1, "the clip still plays");
-        assert!(
-            sink[2_000 * 2..].iter().all(|s| *s == 0.0),
-            "past the last clip the output is silence"
-        );
+        assert!(sink[2_000 * 2..].iter().all(|s| *s == 0.0), "past the last clip the output is silence");
 
         // Stop ends the take and returns the playhead to the record start.
         p.handle(Command::Stop);
@@ -702,10 +651,7 @@ mod tests {
         let timeline = const_plan(100_000, 0.5);
         let preview = MixPlan::empty(RATE);
         let mut p = Player::new(RATE);
-        p.handle(Command::PlayRange {
-            start: 1_000,
-            end: 5_000,
-        });
+        p.handle(Command::PlayRange { start: 1_000, end: 5_000 });
         let mut sink = Vec::new();
         run(&mut p, &timeline, &preview, 8, 512, &mut sink);
         assert_eq!(p.state(), State::Stopped);
@@ -729,10 +675,7 @@ mod tests {
         let before = sink[(RAMP as usize - 1) * 2];
         assert!(before < 0.5, "frame before ramp end not yet full: {before}");
         let full = sink[RAMP as usize * 2];
-        assert!(
-            (full - 0.5).abs() < 1e-6,
-            "frame {RAMP} should be full level: {full}"
-        );
+        assert!((full - 0.5).abs() < 1e-6, "frame {RAMP} should be full level: {full}");
         // Monotonic ramp.
         for i in 1..RAMP as usize {
             assert!(sink[i * 2] >= sink[(i - 1) * 2]);
@@ -752,10 +695,7 @@ mod tests {
         run(&mut p, &timeline, &preview, 3, 512, &mut sink);
         assert_eq!(p.state(), State::Playing);
         let pos = p.position();
-        assert!(
-            pos >= 10_000,
-            "position {pos} did not reach the seek target"
-        );
+        assert!(pos >= 10_000, "position {pos} did not reach the seek target");
         assert!(pos < 10_000 + 3 * 512 + RAMP as u64 + 1);
         assert!(sink[1_400 * 2].abs() > 0.1, "audio continues after seek");
     }
@@ -764,14 +704,7 @@ mod tests {
     fn preview_plays_preview_plan_and_stops() {
         let timeline = const_plan(100_000, 0.5);
         let preview_samples: Arc<[f32]> = Arc::from(vec![0.25f32; 2_000].into_boxed_slice());
-        let preview = MixPlan::preview(
-            1_000,
-            2,
-            preview_samples,
-            RATE,
-            0.0,
-            Arc::new(StereoMeter::new()),
-        );
+        let preview = MixPlan::preview(1_000, 2, preview_samples, RATE, 0.0, Arc::new(StereoMeter::new()));
         let mut p = Player::new(RATE);
         p.handle(Command::Seek(1_234));
         assert_eq!(p.position(), 1_234);
@@ -779,16 +712,9 @@ mod tests {
         let mut sink = Vec::new();
         run(&mut p, &timeline, &preview, 1, 512, &mut sink);
         assert_eq!(p.state(), State::Previewing);
-        assert_eq!(
-            p.position(),
-            1_234,
-            "timeline position untouched by preview"
-        );
+        assert_eq!(p.position(), 1_234, "timeline position untouched by preview");
         assert_eq!(p.preview_position(), 512);
-        assert!(
-            (sink[400 * 2] - 0.25).abs() < 1e-6,
-            "preview material rendered"
-        );
+        assert!((sink[400 * 2] - 0.25).abs() < 1e-6, "preview material rendered");
         run(&mut p, &timeline, &preview, 9, 512, &mut sink);
         assert_eq!(p.state(), State::Stopped);
         assert_eq!(p.preview_position(), 0);
@@ -799,14 +725,7 @@ mod tests {
     fn play_while_previewing_ends_the_preview_first() {
         let timeline = const_plan(100_000, 0.5);
         let preview_samples: Arc<[f32]> = Arc::from(vec![0.25f32; 2_000].into_boxed_slice());
-        let preview = MixPlan::preview(
-            1_000,
-            2,
-            preview_samples,
-            RATE,
-            0.0,
-            Arc::new(StereoMeter::new()),
-        );
+        let preview = MixPlan::preview(1_000, 2, preview_samples, RATE, 0.0, Arc::new(StereoMeter::new()));
         let mut p = Player::new(RATE);
         p.handle(Command::Preview);
         let mut sink = Vec::new();
@@ -815,10 +734,7 @@ mod tests {
         p.handle(Command::Play { from: 5_000 });
         run(&mut p, &timeline, &preview, 3, 512, &mut sink);
         assert_eq!(p.state(), State::Playing);
-        assert!(
-            p.position() >= 5_000,
-            "timeline playback started after preview"
-        );
+        assert!(p.position() >= 5_000, "timeline playback started after preview");
         // Early frames were still preview (0.25), later frames are timeline (0.5).
         assert!((sink[400 * 2] - 0.25).abs() < 1e-6);
         assert!((sink[1_400 * 2] - 0.5).abs() < 0.01);

@@ -44,9 +44,5 @@ fn window_icon() -> eframe::egui::IconData {
     let png = include_bytes!("../assets/icon/app.png");
     let img = image::load_from_memory(png).expect("embedded assets/icon/app.png decodes");
     let rgba = img.to_rgba8();
-    eframe::egui::IconData {
-        width: rgba.width(),
-        height: rgba.height(),
-        rgba: rgba.into_raw(),
-    }
+    eframe::egui::IconData { width: rgba.width(), height: rgba.height(), rgba: rgba.into_raw() }
 }

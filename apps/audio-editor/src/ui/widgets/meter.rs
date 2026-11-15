@@ -37,25 +37,11 @@ pub struct ChannelBallistics {
 impl ChannelBallistics {
     /// Fresh ballistics resting at the floor.
     pub fn new() -> ChannelBallistics {
-        ChannelBallistics {
-            rms: VecDeque::new(),
-            peak_db: FLOOR,
-            hold_db: FLOOR,
-            hold_age: 0.0,
-            clip: false,
-        }
+        ChannelBallistics { rms: VecDeque::new(), peak_db: FLOOR, hold_db: FLOOR, hold_age: 0.0, clip: false }
     }
 
     /// Feeds one batch of meter values and advances the ballistics by `dt`.
-    pub fn update(
-        &mut self,
-        now: f64,
-        dt: f32,
-        peak: f32,
-        sum_sq: f32,
-        frames: u32,
-        clipped: bool,
-    ) {
+    pub fn update(&mut self, now: f64, dt: f32, peak: f32, sum_sq: f32, frames: u32, clipped: bool) {
         // Peak: rises instantly, falls 20 dB/s, floored at -60.
         let inst_db = linear_to_db(peak);
         let fallen = self.peak_db - PEAK_FALL * dt;
@@ -153,20 +139,13 @@ impl MeterState {
 
     /// Feeds one frame of readings from `Editor::read_meters` into the
     /// ballistics, advancing them by `dt` seconds at egui time `now`.
-    pub fn update(
-        &mut self,
-        track_readings: &[(Uuid, [ChannelReading; 2])],
-        master: &[ChannelReading; 2],
-        now: f64,
-        dt: f32,
-    ) {
+    pub fn update(&mut self, track_readings: &[(Uuid, [ChannelReading; 2])], master: &[ChannelReading; 2], now: f64, dt: f32) {
         for (id, [l, r]) in track_readings {
             let entry = self.tracks.entry(*id).or_default();
             entry[0].update(now, dt, l.0, l.1, l.2, l.3);
             entry[1].update(now, dt, r.0, r.1, r.2, r.3);
         }
-        self.tracks
-            .retain(|id, _| track_readings.iter().any(|(tid, _)| tid == id));
+        self.tracks.retain(|id, _| track_readings.iter().any(|(tid, _)| tid == id));
         self.master[0].update(now, dt, master[0].0, master[0].1, master[0].2, master[0].3);
         self.master[1].update(now, dt, master[1].0, master[1].1, master[1].2, master[1].3);
         // Master peak readout: the highest finite peak since the last reset.
@@ -189,12 +168,7 @@ pub fn db_y(area: Rect, db: f32) -> f32 {
 /// above each, lit by dB zone (green below -18, yellow to -6, red above).
 ///
 /// Clicking the meter clears both clip lights. Returns true when clicked.
-pub fn header_meter(
-    ui: &mut egui::Ui,
-    id: egui::Id,
-    rect: Rect,
-    channels: &mut [ChannelBallistics; 2],
-) -> bool {
+pub fn header_meter(ui: &mut egui::Ui, id: egui::Id, rect: Rect, channels: &mut [ChannelBallistics; 2]) -> bool {
     let painter = ui.painter_at(rect);
     let resp = ui.interact(rect, id, egui::Sense::click());
     let clicked = resp.clicked();
@@ -206,10 +180,7 @@ pub fn header_meter(
     let bar_w = THEME.track_meter_bar_w;
     for (i, ch) in channels.iter().enumerate() {
         let left = rect.left() + i as f32 * (bar_w + THEME.track_meter_gap);
-        let bar = Rect::from_min_max(
-            Pos2::new(left, rect.top()),
-            Pos2::new(left + bar_w, rect.bottom()),
-        );
+        let bar = Rect::from_min_max(Pos2::new(left, rect.top()), Pos2::new(left + bar_w, rect.bottom()));
         painter.rect_filled(bar, 0.0, THEME.meter_bar_bg);
         // Lit portion, split by the dB zone boundaries.
         let lit = ch.rms_db().max(FLOOR);
@@ -217,22 +188,8 @@ pub fn header_meter(
         fill_zone(&painter, bar, -18.0, lit.min(-6.0), THEME.meter_yellow);
         fill_zone(&painter, bar, -6.0, lit, THEME.meter_red);
         // Clip light above the bar.
-        let light = Rect::from_min_size(
-            Pos2::new(
-                left,
-                rect.top() - THEME.track_clip_light - THEME.track_meter_gap,
-            ),
-            Vec2::new(bar_w, THEME.track_clip_light),
-        );
-        painter.rect_filled(
-            light,
-            0.0,
-            if ch.clip {
-                THEME.clip_light_on
-            } else {
-                THEME.clip_light_off
-            },
-        );
+        let light = Rect::from_min_size(Pos2::new(left, rect.top() - THEME.track_clip_light - THEME.track_meter_gap), Vec2::new(bar_w, THEME.track_clip_light));
+        painter.rect_filled(light, 0.0, if ch.clip { THEME.clip_light_on } else { THEME.clip_light_off });
     }
     clicked
 }
@@ -242,14 +199,7 @@ pub fn fill_zone(painter: &egui::Painter, bar: Rect, lo: f32, hi: f32, color: Co
     if hi <= lo {
         return;
     }
-    painter.rect_filled(
-        Rect::from_min_max(
-            Pos2::new(bar.left(), db_y(bar, hi)),
-            Pos2::new(bar.right(), db_y(bar, lo)),
-        ),
-        0.0,
-        color,
-    );
+    painter.rect_filled(Rect::from_min_max(Pos2::new(bar.left(), db_y(bar, hi)), Pos2::new(bar.right(), db_y(bar, lo))), 0.0, color);
 }
 
 #[cfg(test)]
@@ -257,14 +207,7 @@ mod tests {
     use super::*;
 
     /// Steps `ballistics` forward in 10 ms slices, advancing the clock.
-    fn step(
-        b: &mut ChannelBallistics,
-        now: &mut f64,
-        seconds: f32,
-        peak: f32,
-        sum_sq: f32,
-        frames: u32,
-    ) {
+    fn step(b: &mut ChannelBallistics, now: &mut f64, seconds: f32, peak: f32, sum_sq: f32, frames: u32) {
         for _ in 0..(seconds / 0.01) as usize {
             b.update(*now, 0.01, peak, sum_sq, frames, false);
             *now += 0.01;
@@ -278,11 +221,7 @@ mod tests {
         b.update(0.0, 0.01, 1.0, 0.0, 0, false);
         assert!((b.peak_db - 0.0).abs() < 1e-4);
         step(&mut b, &mut now, 1.0, 0.0, 0.0, 0);
-        assert!(
-            (b.peak_db - (-20.0)).abs() < 0.5,
-            "peak_db was {}",
-            b.peak_db
-        );
+        assert!((b.peak_db - (-20.0)).abs() < 0.5, "peak_db was {}", b.peak_db);
         step(&mut b, &mut now, 3.0, 0.0, 0.0, 0);
         assert!((b.peak_db - FLOOR).abs() < 1e-4, "must floor at -60");
     }
@@ -295,11 +234,7 @@ mod tests {
         step(&mut b, &mut now, 1.9, 0.0, 0.0, 0);
         assert!((b.hold_db - 0.0).abs() < 1e-3, "hold must stay at 0 dB");
         step(&mut b, &mut now, 0.5, 0.0, 0.0, 0);
-        assert!(
-            b.hold_db < -19.0,
-            "after 2 s the hold follows the falling peak: {}",
-            b.hold_db
-        );
+        assert!(b.hold_db < -19.0, "after 2 s the hold follows the falling peak: {}", b.hold_db);
     }
 
     #[test]
@@ -308,17 +243,9 @@ mod tests {
         let mut now = 0.0f64;
         // 480 frames of a constant 0.5 signal: sum_sq = 480 * 0.25 per batch.
         step(&mut b, &mut now, 1.0, 0.5, 480.0 * 0.25, 480);
-        assert!(
-            (b.rms_db() - (-6.0206)).abs() < 0.05,
-            "rms_db was {}",
-            b.rms_db()
-        );
+        assert!((b.rms_db() - (-6.0206)).abs() < 0.05, "rms_db was {}", b.rms_db());
         step(&mut b, &mut now, 0.4, 0.0, 0.0, 480);
-        assert!(
-            (b.rms_db() - FLOOR).abs() < 1e-4,
-            "rms_db was {}",
-            b.rms_db()
-        );
+        assert!((b.rms_db() - FLOOR).abs() < 1e-4, "rms_db was {}", b.rms_db());
     }
 
     #[test]

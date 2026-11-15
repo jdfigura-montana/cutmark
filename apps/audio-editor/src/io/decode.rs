@@ -64,38 +64,22 @@ pub fn decode_file(path: &Path, progress: &mut dyn FnMut(f32)) -> Result<Decoded
 }
 
 /// `decode_file` with the length cap as a parameter, so tests can use a small one.
-fn decode_with_cap(
-    path: &Path,
-    progress: &mut dyn FnMut(f32),
-    max_seconds: u64,
-) -> Result<Decoded, IoError> {
+fn decode_with_cap(path: &Path, progress: &mut dyn FnMut(f32), max_seconds: u64) -> Result<Decoded, IoError> {
     let file = File::open(path)?;
     // Only .wav and .mp3 are decoded; nothing else reaches the parsers.
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let expected = expected_container(ext).ok_or_else(|| {
-        IoError::UnsupportedAudio("Only .wav and .mp3 files are supported".to_string())
-    })?;
-    let mss = MediaSourceStream::new(
-        Box::new(file),
-        symphonia::core::io::MediaSourceStreamOptions::default(),
-    );
+    let expected = expected_container(ext).ok_or_else(|| IoError::UnsupportedAudio("Only .wav and .mp3 files are supported".to_string()))?;
+    let mss = MediaSourceStream::new(Box::new(file), symphonia::core::io::MediaSourceStreamOptions::default());
     let mut hint = Hint::new();
     hint.with_extension(ext);
     let mut format = symphonia::default::get_probe()
-        .probe(
-            &hint,
-            mss,
-            FormatOptions::default(),
-            MetadataOptions::default(),
-        )
+        .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
         .map_err(|e| IoError::UnsupportedAudio(format!("{e}")))?;
 
     // Probing goes by content, so a renamed file must not be accepted under
     // the wrong extension.
     if format.format_info().format != expected {
-        return Err(IoError::UnsupportedAudio(format!(
-            "File contents do not match its .{ext} extension"
-        )));
+        return Err(IoError::UnsupportedAudio(format!("File contents do not match its .{ext} extension")));
     }
 
     // Pick the first audio track and clone its parameters so the format can
@@ -114,16 +98,9 @@ fn decode_with_cap(
     if channels > 2 {
         return Err(IoError::Decode(TOO_MANY_CHANNELS.to_string()));
     }
-    let rate = params
-        .sample_rate
-        .filter(|_| channels != 0)
-        .ok_or_else(|| {
-            IoError::UnsupportedAudio("missing channel count or sample rate".to_string())
-        })?;
+    let rate = params.sample_rate.filter(|_| channels != 0).ok_or_else(|| IoError::UnsupportedAudio("missing channel count or sample rate".to_string()))?;
     if !(MIN_SOURCE_RATE..=MAX_SOURCE_RATE).contains(&rate) {
-        return Err(IoError::UnsupportedAudio(format!(
-            "Unsupported sample rate: {rate} Hz"
-        )));
+        return Err(IoError::UnsupportedAudio(format!("Unsupported sample rate: {rate} Hz")));
     }
 
     // Reject on the reported length before decoding a single packet.
@@ -135,9 +112,8 @@ fn decode_with_cap(
 
     // Gapless decoding is on by default in AudioDecoderOptions, which trims
     // MP3 encoder delay and padding frames.
-    let mut decoder = symphonia::default::get_codecs()
-        .make_audio_decoder(&params, &AudioDecoderOptions::default())
-        .map_err(|e| IoError::UnsupportedAudio(format!("{e}")))?;
+    let mut decoder =
+        symphonia::default::get_codecs().make_audio_decoder(&params, &AudioDecoderOptions::default()).map_err(|e| IoError::UnsupportedAudio(format!("{e}")))?;
 
     let mut samples: Vec<f32> = Vec::new();
     let mut scratch: Vec<f32> = Vec::new();
@@ -149,9 +125,7 @@ fn decode_with_cap(
             Ok(Some(packet)) => packet,
             Ok(None) => break,
             // Clean end of stream.
-            Err(symphonia::core::errors::Error::IoError(ref e))
-                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
+            Err(symphonia::core::errors::Error::IoError(ref e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                 break;
             }
             Err(e) => return Err(IoError::Decode(format!("{e}"))),
@@ -185,19 +159,12 @@ fn decode_with_cap(
         progress(1.0);
     }
 
-    Ok(Decoded {
-        samples,
-        channels: channels as u16,
-        rate,
-    })
+    Ok(Decoded { samples, channels: channels as u16, rate })
 }
 
 /// Returns true if the path has a .wav or .mp3 extension, case-insensitive.
 pub fn is_supported(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| matches!(e.to_ascii_lowercase().as_str(), "wav" | "mp3"))
-        .unwrap_or(false)
+    path.extension().and_then(|e| e.to_str()).map(|e| matches!(e.to_ascii_lowercase().as_str(), "wav" | "mp3")).unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -211,20 +178,9 @@ mod tests {
     use crate::io::export::{ExportFormat, ExportKind, open_sink};
 
     /// Writes a 16-bit int WAV with one sample per channel per frame.
-    fn write_i16_wav(
-        dir: &std::path::Path,
-        name: &str,
-        channels: u16,
-        rate: u32,
-        frames: &[Vec<i16>],
-    ) -> PathBuf {
+    fn write_i16_wav(dir: &std::path::Path, name: &str, channels: u16, rate: u32, frames: &[Vec<i16>]) -> PathBuf {
         let path = dir.join(name);
-        let spec = WavSpec {
-            channels,
-            sample_rate: rate,
-            bits_per_sample: 16,
-            sample_format: SampleFormat::Int,
-        };
+        let spec = WavSpec { channels, sample_rate: rate, bits_per_sample: 16, sample_format: SampleFormat::Int };
         let mut writer = WavWriter::create(&path, spec).unwrap();
         for frame in frames {
             for &s in frame {
@@ -253,15 +209,8 @@ mod tests {
         assert_eq!(decoded.rate, 48000);
         for (i, &s) in decoded.samples.iter().enumerate() {
             let half = (i / 2 % 251) as i16 - 125;
-            let expected = if i % 2 == 0 {
-                half * 100
-            } else {
-                -(half * 100)
-            };
-            assert!(
-                (s - f32::from(expected) / 32768.0).abs() < 1e-3,
-                "sample {i}: {s}"
-            );
+            let expected = if i % 2 == 0 { half * 100 } else { -(half * 100) };
+            assert!((s - f32::from(expected) / 32768.0).abs() < 1e-3, "sample {i}: {s}");
         }
         // Total frame count is known for WAV, so progress must fire.
         assert!(calls > 0);
@@ -271,12 +220,7 @@ mod tests {
     fn decodes_24bit_mono() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mono24.wav");
-        let spec = WavSpec {
-            channels: 1,
-            sample_rate: 44100,
-            bits_per_sample: 24,
-            sample_format: SampleFormat::Int,
-        };
+        let spec = WavSpec { channels: 1, sample_rate: 44100, bits_per_sample: 24, sample_format: SampleFormat::Int };
         let mut writer = WavWriter::create(&path, spec).unwrap();
         let values = [0i32, 1 << 22, -(1 << 22), (1 << 23) - 1, -(1 << 23)];
         for &v in &values {
@@ -289,10 +233,7 @@ mod tests {
         assert_eq!(decoded.rate, 44100);
         assert_eq!(decoded.samples.len(), values.len());
         for (&got, &want) in decoded.samples.iter().zip(values.iter()) {
-            assert!(
-                (got - want as f32 / 8388608.0).abs() < 1e-3,
-                "got {got}, want {want}"
-            );
+            assert!((got - want as f32 / 8388608.0).abs() < 1e-3, "got {got}, want {want}");
         }
     }
 
@@ -302,10 +243,7 @@ mod tests {
         let frames: Vec<Vec<i16>> = (0..10).map(|i| vec![i as i16; 4]).collect();
         let path = write_i16_wav(dir.path(), "quad.wav", 4, 48000, &frames);
         let err = decode_file(&path, &mut |_| {}).unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            format!("could not decode audio: {TOO_MANY_CHANNELS}")
-        );
+        assert_eq!(err.to_string(), format!("could not decode audio: {TOO_MANY_CHANNELS}"));
     }
 
     #[test]
@@ -328,10 +266,7 @@ mod tests {
         assert_eq!(decoded.channels, 2);
         let frames = decoded.samples.len() / 2;
         let seconds = frames as f64 / 44100.0;
-        assert!(
-            (3.0..=5.0).contains(&seconds),
-            "unexpected duration: {seconds} s ({frames} frames)"
-        );
+        assert!((3.0..=5.0).contains(&seconds), "unexpected duration: {seconds} s ({frames} frames)");
     }
 
     /// Writes a mono 16-bit silent WAV of `frames` frames whose header says `rate` Hz.
@@ -385,10 +320,7 @@ mod tests {
             bytes[24..28].copy_from_slice(&rate.to_le_bytes());
             let path = write_bytes(dir.path(), &format!("patched_{rate}.wav"), &bytes);
             let result = decode_file(&path, &mut |_| {});
-            assert!(
-                matches!(result, Err(IoError::UnsupportedAudio(_))),
-                "{rate}: {result:?}"
-            );
+            assert!(matches!(result, Err(IoError::UnsupportedAudio(_))), "{rate}: {result:?}");
         }
     }
 
@@ -419,11 +351,7 @@ mod tests {
     fn mp3_bytes(rate: u32, channels: u16, seconds: u32) -> Vec<u8> {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sine.mp3");
-        let format = ExportFormat {
-            kind: ExportKind::Mp3 { kbps: 192 },
-            channels,
-            in_rate: rate,
-        };
+        let format = ExportFormat { kind: ExportKind::Mp3 { kbps: 192 }, channels, in_rate: rate };
         let mut sink = open_sink(&path, &format).unwrap();
         let frames = (rate * seconds) as usize;
         let sine: Vec<f32> = (0..frames)
@@ -441,12 +369,7 @@ mod tests {
 
     /// Syncsafe 28-bit integer, as used in ID3v2 headers.
     fn syncsafe(n: usize) -> [u8; 4] {
-        [
-            ((n >> 21) & 0x7f) as u8,
-            ((n >> 14) & 0x7f) as u8,
-            ((n >> 7) & 0x7f) as u8,
-            (n & 0x7f) as u8,
-        ]
+        [((n >> 21) & 0x7f) as u8, ((n >> 14) & 0x7f) as u8, ((n >> 7) & 0x7f) as u8, (n & 0x7f) as u8]
     }
 
     /// An ID3v2.3 or v2.4 tag holding one TIT2 frame plus `padding` zero bytes.
@@ -485,8 +408,7 @@ mod tests {
     fn an_mp3_with_an_id3_tag_still_decodes() {
         let dir = tempfile::tempdir().unwrap();
         let plain = mp3_bytes(48_000, 2, 1);
-        let reference =
-            decode_file(&write_bytes(dir.path(), "plain.mp3", &plain), &mut |_| {}).unwrap();
+        let reference = decode_file(&write_bytes(dir.path(), "plain.mp3", &plain), &mut |_| {}).unwrap();
         assert_eq!(reference.rate, 48_000);
         assert_eq!(reference.channels, 2);
 
@@ -496,13 +418,7 @@ mod tests {
         let big = [id3v2_tag(3, "Cover", 200_000), plain.clone()].concat();
         let v1 = [plain.clone(), id3v1_tag()].concat();
         let both = [id3v2_tag(4, "Both", 64), plain.clone(), id3v1_tag()].concat();
-        for (name, bytes) in [
-            ("v23.mp3", v23),
-            ("v24.mp3", v24),
-            ("big.mp3", big),
-            ("v1.mp3", v1),
-            ("both.mp3", both),
-        ] {
+        for (name, bytes) in [("v23.mp3", v23), ("v24.mp3", v24), ("big.mp3", big), ("v1.mp3", v1), ("both.mp3", both)] {
             let path = write_bytes(dir.path(), name, &bytes);
             let decoded = decode_file(&path, &mut |_| {}).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert_eq!(decoded.rate, 48_000, "{name}");
@@ -515,9 +431,7 @@ mod tests {
     /// Splits an MP3 into its first MPEG-1 Layer III frame (LAME's Info tag
     /// frame, which carries the length) and the audio frames after it.
     fn split_info_frame(mp3: &[u8]) -> (&[u8], &[u8]) {
-        const KBPS: [u32; 16] = [
-            0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0,
-        ];
+        const KBPS: [u32; 16] = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0];
         const RATES: [u32; 4] = [44_100, 48_000, 32_000, 0];
         assert_eq!(mp3[0], 0xFF, "file must start at an MPEG frame");
         let bitrate = KBPS[usize::from(mp3[2] >> 4)] * 1000;
@@ -569,17 +483,11 @@ mod tests {
 
         let mp3_as_wav = write_bytes(dir.path(), "really_mp3.wav", &mp3);
         let err = decode_file(&mp3_as_wav, &mut |_| {}).unwrap_err();
-        assert_eq!(
-            message(err),
-            "File contents do not match its .wav extension"
-        );
+        assert_eq!(message(err), "File contents do not match its .wav extension");
 
         let wav_as_mp3 = write_bytes(dir.path(), "really_wav.mp3", &wav);
         let err = decode_file(&wav_as_mp3, &mut |_| {}).unwrap_err();
-        assert_eq!(
-            message(err),
-            "File contents do not match its .mp3 extension"
-        );
+        assert_eq!(message(err), "File contents do not match its .mp3 extension");
 
         // The check ignores case, and matching files pass.
         let upper = write_bytes(dir.path(), "LOUD.WAV", &wav);
@@ -638,18 +546,10 @@ mod tests {
     #[test]
     fn flac_and_ogg_renamed_to_wav_are_rejected() {
         let dir = tempfile::tempdir().unwrap();
-        for (name, bytes) in [
-            ("flac_as.wav", flac_header()),
-            ("ogg_as.wav", ogg_header()),
-            ("flac_as.mp3", flac_header()),
-            ("ogg_as.mp3", ogg_header()),
-        ] {
+        for (name, bytes) in [("flac_as.wav", flac_header()), ("ogg_as.wav", ogg_header()), ("flac_as.mp3", flac_header()), ("ogg_as.mp3", ogg_header())] {
             let path = write_bytes(dir.path(), name, &bytes);
             let result = decode_file(&path, &mut |_| {});
-            assert!(
-                matches!(result, Err(IoError::UnsupportedAudio(_))),
-                "{name}: {result:?}"
-            );
+            assert!(matches!(result, Err(IoError::UnsupportedAudio(_))), "{name}: {result:?}");
         }
     }
 }

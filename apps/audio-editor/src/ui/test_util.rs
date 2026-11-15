@@ -2,19 +2,13 @@
 //! send pointer clicks and read back what was painted.
 
 use eframe::egui::epaint::{CircleShape, RectShape};
-use eframe::egui::{
-    self, Color32, Event, FullOutput, Modifiers, PointerButton, Pos2, Rect, Shape, Vec2,
-    ViewportEvent, ViewportId,
-};
+use eframe::egui::{self, Color32, Event, FullOutput, Modifiers, PointerButton, Pos2, Rect, Shape, Vec2, ViewportEvent, ViewportId};
 
 /// Runs `work` on its own thread and returns its result, failing the test if
 /// it takes longer than `seconds`: an endless loop in UI code (a frozen app)
 /// then fails fast instead of hanging the whole test run. Build everything the
 /// work needs inside the closure, so nothing has to be `Send`.
-pub fn within_secs<T: Send + 'static>(
-    seconds: u64,
-    work: impl FnOnce() -> T + Send + 'static,
-) -> T {
+pub fn within_secs<T: Send + 'static>(seconds: u64, work: impl FnOnce() -> T + Send + 'static) -> T {
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = sender.send(work());
@@ -34,17 +28,11 @@ pub fn within_secs<T: Send + 'static>(
 /// `(start, len)` pairs), the first track armed on the test input double, so a
 /// take can be recorded without any audio device. The caller keeps the
 /// returned folder alive for as long as the editor is used.
-pub fn armed_editor(
-    tracks: &[&[(u64, u64)]],
-    name: &str,
-) -> (crate::editor::Editor, tempfile::TempDir) {
+pub fn armed_editor(tracks: &[&[(u64, u64)]], name: &str) -> (crate::editor::Editor, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let paths = crate::io::paths::create_layout(dir.path(), name).expect("layout");
-    let mut editor = crate::editor::Editor::with_project(
-        crate::model::fixtures::project_with_clips(tracks),
-        crate::model::project::ViewState::default(),
-        paths,
-    );
+    let mut editor =
+        crate::editor::Editor::with_project(crate::model::fixtures::project_with_clips(tracks), crate::model::project::ViewState::default(), paths);
     let first = editor.project.tracks[0].id;
     editor.toggle_arm(first);
     assert_eq!(editor.armed_track(), Some(first), "the test input armed");
@@ -52,21 +40,14 @@ pub fn armed_editor(
 }
 
 /// Polls the editor's jobs until `done` is true; fails after 10 s.
-pub fn wait_until(
-    editor: &mut crate::editor::Editor,
-    what: &str,
-    done: impl Fn(&crate::editor::Editor) -> bool,
-) {
+pub fn wait_until(editor: &mut crate::editor::Editor, what: &str, done: impl Fn(&crate::editor::Editor) -> bool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         editor.poll_jobs();
         if done(editor) {
             return;
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "timed out waiting for {what}"
-        );
+        assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
 }
@@ -75,9 +56,7 @@ pub fn wait_until(
 /// writer has written `total` frames in all.
 pub fn feed_take(editor: &mut crate::editor::Editor, frames: usize, value: f32, total: u64) {
     editor.push_input_frames(&vec![value; frames]);
-    wait_until(editor, "the writer to catch up", |e| {
-        e.recording_status().is_some_and(|s| s.frames == total)
-    });
+    wait_until(editor, "the writer to catch up", |e| e.recording_status().is_some_and(|s| s.frames == total));
 }
 
 /// A context with the app theme applied, driven one frame at a time.
@@ -100,13 +79,7 @@ impl Headless {
     pub fn new(width: f32, height: f32) -> Self {
         let ctx = egui::Context::default();
         crate::ui::theme::apply(&ctx);
-        let mut headless = Headless {
-            ctx,
-            size: egui::vec2(width, height),
-            time: 0.0,
-            modifiers: Modifiers::NONE,
-            reported: Modifiers::NONE,
-        };
+        let mut headless = Headless { ctx, size: egui::vec2(width, height), time: 0.0, modifiers: Modifiers::NONE, reported: Modifiers::NONE };
         headless.frame(Vec::new(), |_| {});
         headless
     }
@@ -129,31 +102,16 @@ impl Headless {
         self.frame_with(Vec::new(), true, add_contents)
     }
 
-    fn frame_with(
-        &mut self,
-        events: Vec<Event>,
-        close_requested: bool,
-        add_contents: impl FnMut(&mut egui::Ui),
-    ) -> Out {
+    fn frame_with(&mut self, events: Vec<Event>, close_requested: bool, add_contents: impl FnMut(&mut egui::Ui)) -> Out {
         self.time += 1.0 / 60.0;
         let mut events = events;
         if self.modifiers != self.reported {
             events.insert(0, Event::ModifiersChanged(self.modifiers));
             self.reported = self.modifiers;
         }
-        let mut input = egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)),
-            time: Some(self.time),
-            events,
-            ..Default::default()
-        };
+        let mut input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)), time: Some(self.time), events, ..Default::default() };
         if close_requested {
-            input
-                .viewports
-                .entry(ViewportId::ROOT)
-                .or_default()
-                .events
-                .push(ViewportEvent::Close);
+            input.viewports.entry(ViewportId::ROOT).or_default().events.push(ViewportEvent::Close);
         }
         let mut output = self.ctx.run_ui(input, add_contents);
         output.textures_delta.clear();
@@ -174,12 +132,7 @@ impl Headless {
     /// Moves the pointer to `pos`, presses and releases the primary button,
     /// one frame each. Returns the release frame.
     pub fn click(&mut self, pos: Pos2, mut add_contents: impl FnMut(&mut egui::Ui)) -> Out {
-        let button = |pressed| Event::PointerButton {
-            pos,
-            button: PointerButton::Primary,
-            pressed,
-            modifiers: Modifiers::NONE,
-        };
+        let button = |pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
         let _ = self.frame(vec![Event::PointerMoved(pos)], &mut add_contents);
         let _ = self.frame(vec![button(true)], &mut add_contents);
         self.frame(vec![button(false)], &mut add_contents)
@@ -225,12 +178,7 @@ impl Out {
                 Shape::Text(text) => Some(TextItem {
                     text: text.galley.text().to_string(),
                     rect: text.galley.rect.translate(text.pos.to_vec2()),
-                    color: text
-                        .galley
-                        .job
-                        .sections
-                        .first()
-                        .map_or(text.fallback_color, |section| section.format.color),
+                    color: text.galley.job.sections.first().map_or(text.fallback_color, |section| section.format.color),
                 }),
                 _ => None,
             })
@@ -239,10 +187,7 @@ impl Out {
 
     /// The rectangle of the first text run equal to `label`.
     pub fn text_rect(&self, label: &str) -> Option<Rect> {
-        self.texts()
-            .into_iter()
-            .find(|item| item.text == label)
-            .map(|item| item.rect)
+        self.texts().into_iter().find(|item| item.text == label).map(|item| item.rect)
     }
 
     /// Every painted filled circle.
@@ -270,36 +215,22 @@ impl Out {
     /// The smallest filled rectangle containing `point`: the button or field
     /// background under a text run's center.
     pub fn filled_rect_at(&self, point: Pos2) -> Option<Rect> {
-        self.rects()
-            .into_iter()
-            .filter(|r| r.fill.a() > 0 && r.rect.contains(point))
-            .map(|r| r.rect)
-            .min_by(|a, b| a.area().total_cmp(&b.area()))
+        self.rects().into_iter().filter(|r| r.fill.a() > 0 && r.rect.contains(point)).map(|r| r.rect).min_by(|a, b| a.area().total_cmp(&b.area()))
     }
 
     /// The dialog footer's 1 px divider, whose edges are the card's content
     /// edges: the widest filled rect that is one point tall.
     pub fn footer_line(&self) -> Option<Rect> {
-        self.rects()
-            .into_iter()
-            .filter(|r| r.fill.a() > 0 && r.rect.height() == 1.0)
-            .map(|r| r.rect)
-            .max_by(|a, b| a.width().total_cmp(&b.width()))
+        self.rects().into_iter().filter(|r| r.fill.a() > 0 && r.rect.height() == 1.0).map(|r| r.rect).max_by(|a, b| a.width().total_cmp(&b.width()))
     }
 
     /// True when the app asked the window to stay open this frame.
     pub fn cancelled_close(&self) -> bool {
-        self.0
-            .viewport_output
-            .get(&ViewportId::ROOT)
-            .is_some_and(|v| v.commands.contains(&egui::ViewportCommand::CancelClose))
+        self.0.viewport_output.get(&ViewportId::ROOT).is_some_and(|v| v.commands.contains(&egui::ViewportCommand::CancelClose))
     }
 
     /// True when the app asked the window to close this frame.
     pub fn sent_close(&self) -> bool {
-        self.0
-            .viewport_output
-            .get(&ViewportId::ROOT)
-            .is_some_and(|v| v.commands.contains(&egui::ViewportCommand::Close))
+        self.0.viewport_output.get(&ViewportId::ROOT).is_some_and(|v| v.commands.contains(&egui::ViewportCommand::Close))
     }
 }

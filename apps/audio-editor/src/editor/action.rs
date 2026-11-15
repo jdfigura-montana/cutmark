@@ -8,10 +8,7 @@ use crate::model::project::{BitDepth, Project};
 #[derive(Debug, Clone)]
 pub enum Action {
     /// Adds a track; `None` index appends, `None` name gives "Track N".
-    AddTrack {
-        index: Option<usize>,
-        name: Option<String>,
-    },
+    AddTrack { index: Option<usize>, name: Option<String> },
     /// Deletes the track with the given id.
     DeleteTrack { id: uuid::Uuid },
     /// Renames the track with the given id.
@@ -276,91 +273,29 @@ impl Action {
             Action::SoloExclusive { id } => track::solo_exclusive(project, *id),
             Action::SetMasterVolume { db } => track::set_master_volume(project, *db),
             Action::SplitAt { pos, track_ids } => clip::split_at(project, *pos, track_ids.clone()),
-            Action::PlaceClip {
-                track_id,
-                media_id,
-                start,
-                src_in,
-                src_out,
-                insert,
-            } => clip::place_clip(
-                project, *track_id, *media_id, *start, *src_in, *src_out, *insert,
-            )
-            .map(|_| ()),
-            Action::PlaceClipOnNewTrack { media_id, start } => {
-                clip::place_clip_on_new_track(project, *media_id, *start)
+            Action::PlaceClip { track_id, media_id, start, src_in, src_out, insert } => {
+                clip::place_clip(project, *track_id, *media_id, *start, *src_in, *src_out, *insert).map(|_| ())
             }
-            Action::MoveClips {
-                clip_ids,
-                delta_time,
-                delta_tracks,
-            } => clip::move_clips(project, clip_ids, *delta_time, *delta_tracks),
-            Action::TrimClip {
-                clip_id,
-                edge,
-                new_pos,
-            } => clip::trim_clip(project, *clip_id, *edge, *new_pos),
-            Action::DeleteClips { clip_ids, ripple } => {
-                clip::delete_clips(project, clip_ids, *ripple)
-            }
+            Action::PlaceClipOnNewTrack { media_id, start } => clip::place_clip_on_new_track(project, *media_id, *start),
+            Action::MoveClips { clip_ids, delta_time, delta_tracks } => clip::move_clips(project, clip_ids, *delta_time, *delta_tracks),
+            Action::TrimClip { clip_id, edge, new_pos } => clip::trim_clip(project, *clip_id, *edge, *new_pos),
+            Action::DeleteClips { clip_ids, ripple } => clip::delete_clips(project, clip_ids, *ripple),
             Action::SetClipGain { clip_id, db } => clip::set_clip_gain(project, *clip_id, *db),
-            Action::SetClipFades {
-                clip_id,
-                fade_in,
-                fade_out,
-            } => clip::set_clip_fades(project, *clip_id, *fade_in, *fade_out),
+            Action::SetClipFades { clip_id, fade_in, fade_out } => clip::set_clip_fades(project, *clip_id, *fade_in, *fade_out),
             Action::AddMarker { pos } => marker::add_marker(project, *pos),
             Action::MoveMarker { id, pos } => marker::move_marker(project, *id, *pos),
             Action::DeleteMarkers { ids } => marker::delete_markers(project, ids),
-            Action::DeleteRange {
-                s,
-                e,
-                track_ids,
-                ripple,
-            } => range::delete_range(project, *s, *e, track_ids, *ripple),
-            Action::TrimToSelection { s, e, track_ids } => {
-                range::trim_to_selection(project, *s, *e, track_ids)
+            Action::DeleteRange { s, e, track_ids, ripple } => range::delete_range(project, *s, *e, track_ids, *ripple),
+            Action::TrimToSelection { s, e, track_ids } => range::trim_to_selection(project, *s, *e, track_ids),
+            Action::SetProjectSettings { name, export_bit_depth } => crate::editor::ops::set_project_settings(project, name, *export_bit_depth),
+            Action::ImportMedia { item } => crate::editor::ops::media::import_media(project, item.clone()),
+            Action::RelinkMedia { id, file_name, original_rate, channels, length } => {
+                crate::editor::ops::media::relink_media(project, *id, file_name.clone(), *original_rate, *channels, *length)
             }
-            Action::SetProjectSettings {
-                name,
-                export_bit_depth,
-            } => crate::editor::ops::set_project_settings(project, name, *export_bit_depth),
-            Action::ImportMedia { item } => {
-                crate::editor::ops::media::import_media(project, item.clone())
-            }
-            Action::RelinkMedia {
-                id,
-                file_name,
-                original_rate,
-                channels,
-                length,
-            } => crate::editor::ops::media::relink_media(
-                project,
-                *id,
-                file_name.clone(),
-                *original_rate,
-                *channels,
-                *length,
-            ),
-            Action::RecordTake {
-                item,
-                track_id,
-                start,
-                src_in,
-            } => crate::editor::ops::media::record_take(
-                project,
-                item.clone(),
-                *track_id,
-                *start,
-                *src_in,
-            ),
+            Action::RecordTake { item, track_id, start, src_in } => crate::editor::ops::media::record_take(project, item.clone(), *track_id, *start, *src_in),
             Action::RemoveMedia { id } => crate::editor::ops::media::remove_media(project, *id),
-            Action::RenameMedia { id, name } => {
-                crate::editor::ops::media::rename_media(project, *id, name)
-            }
-            Action::ApplyGain { target, delta_db } => {
-                amplitude::apply_gain(project, target, *delta_db)
-            }
+            Action::RenameMedia { id, name } => crate::editor::ops::media::rename_media(project, *id, name),
+            Action::ApplyGain { target, delta_db } => amplitude::apply_gain(project, target, *delta_db),
             Action::Normalize { target, deltas } => amplitude::normalize(project, target, deltas),
             Action::FadeIn { target } => amplitude::fade_in(project, target),
             Action::FadeOut { target } => amplitude::fade_out(project, target),

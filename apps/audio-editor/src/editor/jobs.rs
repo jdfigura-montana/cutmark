@@ -174,14 +174,7 @@ pub struct ExportSettings {
 /// Spawns a worker thread that imports a source file into the project.
 ///
 /// Progress and the final result are sent over `sender`.
-pub fn spawn_import(
-    sender: Sender<JobMessage>,
-    job: u64,
-    src: PathBuf,
-    paths: ProjectPaths,
-    media_id: Uuid,
-    project_rate: u32,
-) {
+pub fn spawn_import(sender: Sender<JobMessage>, job: u64, src: PathBuf, paths: ProjectPaths, media_id: Uuid, project_rate: u32) {
     thread::spawn(move || {
         let result = import_file(&src, &paths, media_id, project_rate, &mut |frac| {
             let _ = sender.send(JobMessage::Progress { job, frac });
@@ -193,14 +186,7 @@ pub fn spawn_import(
 /// Spawns a worker thread that relinks an offline media item to `src`.
 ///
 /// Progress and the final result are sent over `sender`.
-pub fn spawn_relink(
-    sender: Sender<JobMessage>,
-    job: u64,
-    src: PathBuf,
-    paths: ProjectPaths,
-    item: MediaItem,
-    project_rate: u32,
-) {
+pub fn spawn_relink(sender: Sender<JobMessage>, job: u64, src: PathBuf, paths: ProjectPaths, item: MediaItem, project_rate: u32) {
     thread::spawn(move || {
         let result = relink_file(&src, &paths, &item, project_rate, &mut |frac| {
             let _ = sender.send(JobMessage::Progress { job, frac });
@@ -212,23 +198,13 @@ pub fn spawn_relink(
 /// Spawns a worker thread that loads (or rebuilds the cache for) one media item.
 ///
 /// Progress and the final result are sent over `sender`.
-pub fn spawn_load(
-    sender: Sender<JobMessage>,
-    job: u64,
-    item: MediaItem,
-    paths: ProjectPaths,
-    project_rate: u32,
-) {
+pub fn spawn_load(sender: Sender<JobMessage>, job: u64, item: MediaItem, paths: ProjectPaths, project_rate: u32) {
     let media_id = item.id;
     thread::spawn(move || {
         let result = load_or_rebuild(&paths, &item, project_rate, &mut |frac| {
             let _ = sender.send(JobMessage::Progress { job, frac });
         });
-        let _ = sender.send(JobMessage::LoadDone {
-            job,
-            media_id,
-            result,
-        });
+        let _ = sender.send(JobMessage::LoadDone { job, media_id, result });
     });
 }
 
@@ -282,19 +258,13 @@ fn run_export(
         for [l, r] in buf[..frames * 2].as_chunks::<2>().0 {
             peak = peak.max(l.abs()).max(r.abs());
         }
-        let _ = sender.send(JobMessage::ExportProgress {
-            job,
-            pass: 1,
-            frac: (pos - settings.start + frames as u64) as f32 / total as f32,
-        });
+        let _ = sender.send(JobMessage::ExportProgress { job, pass: 1, frac: (pos - settings.start + frames as u64) as f32 / total as f32 });
         pos += frames as u64;
     }
 
     // Above 0 dBFS: warn and wait for the Editor's decision.
     if peak > 1.0 {
-        let _ = sender.send(JobMessage::ExportPeak {
-            peak_db: linear_to_db(peak),
-        });
+        let _ = sender.send(JobMessage::ExportPeak { peak_db: linear_to_db(peak) });
         match decision_rx.recv() {
             Ok(ExportDecision::Continue) => {}
             _ => return Err(CANCELLED.to_string()),
@@ -324,16 +294,10 @@ fn run_export(
             sink.abort();
             return Err(error.to_string());
         }
-        let _ = sender.send(JobMessage::ExportProgress {
-            job,
-            pass: 2,
-            frac: (pos - settings.start + frames as u64) as f32 / total as f32,
-        });
+        let _ = sender.send(JobMessage::ExportProgress { job, pass: 2, frac: (pos - settings.start + frames as u64) as f32 / total as f32 });
         pos += frames as u64;
     }
-    sink.finish()
-        .map(|_| settings.path.clone())
-        .map_err(|e| e.to_string())
+    sink.finish().map(|_| settings.path.clone()).map_err(|e| e.to_string())
 }
 
 /// Spawns a worker thread that writes a take: it drains the ring about every
@@ -343,11 +307,7 @@ fn run_export(
 pub fn spawn_record(sender: Sender<JobMessage>, job: u64, take: TakeJob) {
     thread::spawn(move || {
         let (consumer, outcome) = run_take(take, &sender, job);
-        let _ = sender.send(JobMessage::RecordDone {
-            job,
-            consumer,
-            outcome,
-        });
+        let _ = sender.send(JobMessage::RecordDone { job, consumer, outcome });
     });
 }
 
@@ -355,17 +315,7 @@ pub fn spawn_record(sender: Sender<JobMessage>, job: u64, take: TakeJob) {
 /// and conform it in place. Cancel and a failed write delete the `.part`; an
 /// Editor that went away (the channel is closed) counts as a cancel.
 fn run_take(take: TakeJob, sender: &Sender<JobMessage>, job: u64) -> (Consumer<f32>, TakeOutcome) {
-    let TakeJob {
-        mut writer,
-        mut consumer,
-        paths,
-        file_name,
-        media_id,
-        project_rate,
-        latency,
-        finish,
-        cancel,
-    } = take;
+    let TakeJob { mut writer, mut consumer, paths, file_name, media_id, project_rate, latency, finish, cancel } = take;
     let mut peaks: Vec<[f32; 4]> = Vec::new();
     let mut reported = 0u64;
     loop {
@@ -390,11 +340,7 @@ fn run_take(take: TakeJob, sender: &Sender<JobMessage>, job: u64) -> (Consumer<f
             Ok(frames) => {
                 if frames != reported || !peaks.is_empty() {
                     reported = frames;
-                    let message = JobMessage::RecordProgress {
-                        job,
-                        frames,
-                        peaks: std::mem::take(&mut peaks),
-                    };
+                    let message = JobMessage::RecordProgress { job, frames, peaks: std::mem::take(&mut peaks) };
                     if sender.send(message).is_err() {
                         writer.abort();
                         return (consumer, TakeOutcome::Cancelled);
@@ -418,17 +364,8 @@ fn run_take(take: TakeJob, sender: &Sender<JobMessage>, job: u64) -> (Consumer<f
         let _ = std::fs::remove_file(&path);
         return (consumer, TakeOutcome::TooShort);
     }
-    let display_name = path
-        .file_stem()
-        .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
-    let outcome = match conform_existing(
-        &paths,
-        &file_name,
-        media_id,
-        display_name,
-        project_rate,
-        &mut |_| {},
-    ) {
+    let display_name = path.file_stem().map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
+    let outcome = match conform_existing(&paths, &file_name, media_id, display_name, project_rate, &mut |_| {}) {
         Ok((item, loaded)) => TakeOutcome::Finished { item, loaded },
         Err(error) => TakeOutcome::Failed(format!("could not load the take: {error}")),
     };
@@ -451,26 +388,12 @@ impl JobChannels {
     }
 
     /// Spawns an import job on its own thread.
-    pub fn spawn_import(
-        &self,
-        job: u64,
-        src: PathBuf,
-        paths: ProjectPaths,
-        media_id: Uuid,
-        project_rate: u32,
-    ) {
+    pub fn spawn_import(&self, job: u64, src: PathBuf, paths: ProjectPaths, media_id: Uuid, project_rate: u32) {
         spawn_import(self.tx.clone(), job, src, paths, media_id, project_rate);
     }
 
     /// Spawns a relink job on its own thread.
-    pub fn spawn_relink(
-        &self,
-        job: u64,
-        src: PathBuf,
-        paths: ProjectPaths,
-        item: MediaItem,
-        project_rate: u32,
-    ) {
+    pub fn spawn_relink(&self, job: u64, src: PathBuf, paths: ProjectPaths, item: MediaItem, project_rate: u32) {
         spawn_relink(self.tx.clone(), job, src, paths, item, project_rate);
     }
 
@@ -480,14 +403,7 @@ impl JobChannels {
     }
 
     /// Spawns an export job on its own thread.
-    pub fn spawn_export(
-        &self,
-        job: u64,
-        plan: Arc<MixPlan>,
-        settings: ExportSettings,
-        decision_rx: Receiver<ExportDecision>,
-        cancel: Arc<AtomicBool>,
-    ) {
+    pub fn spawn_export(&self, job: u64, plan: Arc<MixPlan>, settings: ExportSettings, decision_rx: Receiver<ExportDecision>, cancel: Arc<AtomicBool>) {
         spawn_export(self.tx.clone(), job, plan, settings, decision_rx, cancel);
     }
 
@@ -519,11 +435,7 @@ mod tests {
 
     /// An editor over `tracks` whose single stereo media item is filled by
     /// `fill(frame, channel)`; the media is loaded into the store.
-    fn test_editor(
-        tracks: &[&[(u64, u64)]],
-        media_frames: u64,
-        fill: impl Fn(u64, usize) -> f32,
-    ) -> (Editor, tempfile::TempDir) {
+    fn test_editor(tracks: &[&[(u64, u64)]], media_frames: u64, fill: impl Fn(u64, usize) -> f32) -> (Editor, tempfile::TempDir) {
         let project = project_with_clips(tracks);
         let media_id = project.media[0].id;
         let mut samples = Vec::with_capacity((media_frames * 2) as usize);
@@ -534,44 +446,16 @@ mod tests {
         }
         let media: Arc<[f32]> = samples.into();
         let dir = tempdir().unwrap();
-        let mut editor = Editor::with_project(
-            project,
-            ViewState::default(),
-            ProjectPaths {
-                root: dir.path().to_path_buf(),
-            },
-        );
-        editor.media_store.insert(
-            media_id,
-            Loaded {
-                samples: Arc::clone(&media),
-                peaks: Peaks {
-                    channels: 2,
-                    frames: 0,
-                    levels: Vec::new(),
-                }
-                .into(),
-            },
-        );
+        let mut editor = Editor::with_project(project, ViewState::default(), ProjectPaths { root: dir.path().to_path_buf() });
+        editor.media_store.insert(media_id, Loaded { samples: Arc::clone(&media), peaks: Peaks { channels: 2, frames: 0, levels: Vec::new() }.into() });
         (editor, dir)
     }
 
     /// Stereo float32 WAV export settings for `start..end`.
-    fn wav_settings(
-        editor: &Editor,
-        path: PathBuf,
-        channels: u16,
-        start: u64,
-        end: u64,
-        tracks: Option<Vec<Uuid>>,
-    ) -> ExportSettings {
+    fn wav_settings(editor: &Editor, path: PathBuf, channels: u16, start: u64, end: u64, tracks: Option<Vec<Uuid>>) -> ExportSettings {
         ExportSettings {
             path,
-            format: ExportFormat {
-                kind: ExportKind::Wav(BitDepth::Float32),
-                channels,
-                in_rate: editor.project.sample_rate,
-            },
+            format: ExportFormat { kind: ExportKind::Wav(BitDepth::Float32), channels, in_rate: editor.project.sample_rate },
             start,
             end,
             tracks,
@@ -619,19 +503,9 @@ mod tests {
             track.mute = true;
         }
         let ids: Vec<Uuid> = project.tracks.iter().map(|t| t.id).collect();
-        let meters = Arc::new(MeterBank {
-            track_ids: ids,
-            tracks: (0..project.tracks.len())
-                .map(|_| StereoMeter::new())
-                .collect(),
-        });
+        let meters = Arc::new(MeterBank { track_ids: ids, tracks: (0..project.tracks.len()).map(|_| StereoMeter::new()).collect() });
         let store = &editor.media_store;
-        let plan = MixPlan::build(
-            &project,
-            &|id| store.get(id).map(|l| Arc::clone(&l.samples)),
-            meters,
-            Arc::new(StereoMeter::new()),
-        );
+        let plan = MixPlan::build(&project, &|id| store.get(id).map(|l| Arc::clone(&l.samples)), meters, Arc::new(StereoMeter::new()));
         let mut out = vec![0.0f32; (frames * 2) as usize];
         mixer::render(&plan, start, &mut out, false);
         out
@@ -654,9 +528,7 @@ mod tests {
     fn float32_wav_export_matches_the_mixer_exactly() {
         let (mut editor, dir) = test_editor(&[&[(0, 10_000)]], 10_000, pattern);
         let path = dir.path().join("out.wav");
-        editor
-            .start_export(wav_settings(&editor, path.clone(), 2, 0, 10_000, None))
-            .unwrap();
+        editor.start_export(wav_settings(&editor, path.clone(), 2, 0, 10_000, None)).unwrap();
         let result = wait_done(&mut editor).unwrap();
         assert_eq!(result, path);
         assert!(!part_of(&path).exists());
@@ -667,17 +539,10 @@ mod tests {
     fn mono_export_sums_stereo_at_half_gain() {
         let (mut editor, dir) = test_editor(&[&[(0, 10_000)]], 10_000, pattern);
         let path = dir.path().join("mono.wav");
-        editor
-            .start_export(wav_settings(&editor, path.clone(), 1, 0, 10_000, None))
-            .unwrap();
+        editor.start_export(wav_settings(&editor, path.clone(), 1, 0, 10_000, None)).unwrap();
         wait_done(&mut editor).unwrap();
         let stereo = render_all(&editor, 0, 10_000, false);
-        let expected: Vec<f32> = stereo
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|[l, r]| (l + r) * 0.5)
-            .collect();
+        let expected: Vec<f32> = stereo.as_chunks::<2>().0.iter().map(|[l, r]| (l + r) * 0.5).collect();
         assert_eq!(read_wav(&path), expected);
     }
 
@@ -685,9 +550,7 @@ mod tests {
     fn selection_scope_exports_exactly_the_range() {
         let (mut editor, dir) = test_editor(&[&[(0, 10_000)]], 10_000, pattern);
         let path = dir.path().join("range.wav");
-        editor
-            .start_export(wav_settings(&editor, path.clone(), 2, 1_000, 5_000, None))
-            .unwrap();
+        editor.start_export(wav_settings(&editor, path.clone(), 2, 1_000, 5_000, None)).unwrap();
         wait_done(&mut editor).unwrap();
         let reader = hound::WavReader::open(&path).unwrap();
         assert_eq!(reader.duration(), 4_000, "exactly 4,000 frames");
@@ -701,39 +564,19 @@ mod tests {
         let (mut editor_b, dir_b) = test_editor(&[&[(0, 5_000)], &[(0, 5_000)]], 5_000, pattern);
         let track0 = editor_a.project.tracks[0].id;
         let track1 = editor_b.project.tracks[1].id;
-        editor_b
-            .apply(Action::SetTrackMute {
-                id: track1,
-                mute: true,
-            })
-            .unwrap();
+        editor_b.apply(Action::SetTrackMute { id: track1, mute: true }).unwrap();
 
         let path_a = dir_a.path().join("scoped.wav");
-        editor_a
-            .start_export(wav_settings(
-                &editor_a,
-                path_a.clone(),
-                2,
-                0,
-                5_000,
-                Some(vec![track0]),
-            ))
-            .unwrap();
+        editor_a.start_export(wav_settings(&editor_a, path_a.clone(), 2, 0, 5_000, Some(vec![track0]))).unwrap();
         let path_b = dir_b.path().join("muted.wav");
-        editor_b
-            .start_export(wav_settings(&editor_b, path_b.clone(), 2, 0, 5_000, None))
-            .unwrap();
+        editor_b.start_export(wav_settings(&editor_b, path_b.clone(), 2, 0, 5_000, None)).unwrap();
         wait_done(&mut editor_a).unwrap();
         wait_done(&mut editor_b).unwrap();
 
         let expected = render_all(&editor_a, 0, 5_000, true);
         assert_eq!(read_wav(&path_a), expected);
         assert_eq!(read_wav(&path_b), expected);
-        assert_ne!(
-            read_wav(&path_a),
-            render_all(&editor_a, 0, 5_000, false),
-            "the second track must have contributed something"
-        );
+        assert_ne!(read_wav(&path_a), render_all(&editor_a, 0, 5_000, false), "the second track must have contributed something");
     }
 
     #[test]
@@ -742,16 +585,9 @@ mod tests {
         // Center pan costs 3 dB per side; +3.01 dB track volume puts the mix
         // peak at exactly 2.0.
         let track0 = editor.project.tracks[0].id;
-        editor
-            .apply(Action::SetTrackVolume {
-                id: track0,
-                db: 3.0103,
-            })
-            .unwrap();
+        editor.apply(Action::SetTrackVolume { id: track0, db: 3.0103 }).unwrap();
         let path = dir.path().join("peak.wav");
-        editor
-            .start_export(wav_settings(&editor, path.clone(), 2, 0, 4_000, None))
-            .unwrap();
+        editor.start_export(wav_settings(&editor, path.clone(), 2, 0, 4_000, None)).unwrap();
         let db = wait_peak(&mut editor);
         assert!((db - 6.0206).abs() < 0.01, "peak 2.0 is about +6.0 dB");
         let status = editor.export_status().unwrap();
@@ -769,9 +605,7 @@ mod tests {
     fn peak_warning_cancel_leaves_no_file_and_no_part() {
         let (mut editor, dir) = test_editor(&[&[(0, 4_000)]], 4_000, |_, _| 2.0);
         let path = dir.path().join("peak_cancel.wav");
-        editor
-            .start_export(wav_settings(&editor, path.clone(), 2, 0, 4_000, None))
-            .unwrap();
+        editor.start_export(wav_settings(&editor, path.clone(), 2, 0, 4_000, None)).unwrap();
         wait_peak(&mut editor);
         editor.export_cancel();
         assert_eq!(wait_done(&mut editor).unwrap_err(), "Cancelled");
@@ -784,40 +618,22 @@ mod tests {
     fn exporting_locks_editing() {
         let (mut editor, dir) = test_editor(&[&[(0, 4_000)]], 4_000, |_, _| 2.0);
         let track0 = editor.project.tracks[0].id;
-        editor
-            .apply(Action::SetTrackVolume {
-                id: track0,
-                db: -3.0,
-            })
-            .unwrap();
+        editor.apply(Action::SetTrackVolume { id: track0, db: -3.0 }).unwrap();
         let path = dir.path().join("locked.wav");
-        editor
-            .start_export(wav_settings(&editor, path.clone(), 2, 0, 4_000, None))
-            .unwrap();
+        editor.start_export(wav_settings(&editor, path.clone(), 2, 0, 4_000, None)).unwrap();
         wait_peak(&mut editor);
 
         // The job sits waiting for a decision, so the lock is stable here.
         assert!(editor.is_locked());
         let before = editor.project.tracks.len();
-        assert!(matches!(
-            editor.apply(Action::AddTrack {
-                index: None,
-                name: None,
-            }),
-            Err(EditorError::Locked(_))
-        ));
+        assert!(matches!(editor.apply(Action::AddTrack { index: None, name: None }), Err(EditorError::Locked(_))));
         assert_eq!(editor.project.tracks.len(), before, "project unchanged");
         assert!(!editor.undo());
         assert!(!editor.redo());
         editor.begin_gesture();
         assert!(editor.gesture_base.is_none());
         assert!(editor.import_files(vec![PathBuf::from("x.wav")]).is_empty());
-        assert!(
-            editor
-                .pending_jobs()
-                .iter()
-                .all(|(label, _)| label == "Export")
-        );
+        assert!(editor.pending_jobs().iter().all(|(label, _)| label == "Export"));
 
         editor.export_continue();
         wait_done(&mut editor).unwrap();
@@ -827,26 +643,16 @@ mod tests {
     fn recording_is_refused_while_exporting() {
         let (mut editor, dir) = test_editor(&[&[(0, 4_000)]], 4_000, |_, _| 2.0);
         let track0 = editor.project.tracks[0].id;
-        editor
-            .apply(Action::SetTrackVolume {
-                id: track0,
-                db: -3.0,
-            })
-            .unwrap();
+        editor.apply(Action::SetTrackVolume { id: track0, db: -3.0 }).unwrap();
         editor.toggle_arm(track0);
         assert_eq!(editor.armed_track(), Some(track0));
         let path = dir.path().join("rec_locked.wav");
-        editor
-            .start_export(wav_settings(&editor, path.clone(), 2, 0, 4_000, None))
-            .unwrap();
+        editor.start_export(wav_settings(&editor, path.clone(), 2, 0, 4_000, None)).unwrap();
         wait_peak(&mut editor);
 
         // The job waits for a decision, so the lock is stable here.
         let result = editor.start_recording();
-        assert!(
-            matches!(&result, Err(EditorError::Locked(m)) if m == "Export in progress"),
-            "{result:?}"
-        );
+        assert!(matches!(&result, Err(EditorError::Locked(m)) if m == "Export in progress"), "{result:?}");
         assert!(!editor.is_recording());
 
         editor.export_continue();
@@ -860,9 +666,7 @@ mod tests {
         let tracks: Vec<&[(u64, u64)]> = vec![&[(0, 1_500_000)], &[(0, 1_500_000)]];
         let (mut editor, dir) = test_editor(&tracks, 1_500_000, pattern);
         let path = dir.path().join("mid.wav");
-        editor
-            .start_export(wav_settings(&editor, path.clone(), 2, 0, 1_500_000, None))
-            .unwrap();
+        editor.start_export(wav_settings(&editor, path.clone(), 2, 0, 1_500_000, None)).unwrap();
 
         let deadline = Instant::now() + TIMEOUT;
         let mut cancelled = false;
@@ -880,10 +684,7 @@ mod tests {
             }
             assert!(Instant::now() < deadline, "pass 2 never started in 10 s");
         }
-        assert!(
-            cancelled,
-            "the job finished before pass 2 could be cancelled"
-        );
+        assert!(cancelled, "the job finished before pass 2 could be cancelled");
         assert_eq!(wait_done(&mut editor).unwrap_err(), "Cancelled");
         assert!(!path.exists());
         assert!(!part_of(&path).exists());
@@ -892,12 +693,7 @@ mod tests {
     /// Writes a 16-bit int stereo WAV with `frames` sine frames at `rate`.
     fn write_wav(path: &Path, rate: u32, frames: usize) {
         use hound::{SampleFormat, WavSpec, WavWriter};
-        let spec = WavSpec {
-            channels: 2,
-            sample_rate: rate,
-            bits_per_sample: 16,
-            sample_format: SampleFormat::Int,
-        };
+        let spec = WavSpec { channels: 2, sample_rate: rate, bits_per_sample: 16, sample_format: SampleFormat::Int };
         let mut writer = WavWriter::create(path, spec).unwrap();
         for i in 0..frames {
             let s = (2.0 * std::f32::consts::PI * 440.0 * i as f32 / rate as f32).sin();
@@ -931,22 +727,13 @@ mod tests {
         write_wav(&src, 48_000, 8_000);
 
         editor.relink(id, src);
-        assert!(
-            editor
-                .pending_jobs()
-                .iter()
-                .any(|(label, _)| label == "Relink")
-        );
+        assert!(editor.pending_jobs().iter().any(|(label, _)| label == "Relink"));
 
         // Poll until the relink job finished.
         let deadline = Instant::now() + TIMEOUT;
         loop {
             editor.poll_jobs();
-            if !editor
-                .pending_jobs()
-                .iter()
-                .any(|(label, _)| label == "Relink")
-            {
+            if !editor.pending_jobs().iter().any(|(label, _)| label == "Relink") {
                 break;
             }
             assert!(Instant::now() < deadline, "relink did not finish in 10 s");
@@ -954,24 +741,12 @@ mod tests {
         }
 
         // The item is online, the store has samples and the file changed.
-        assert!(
-            editor.take_job_errors().is_empty(),
-            "relink reported errors"
-        );
-        assert!(
-            !editor.is_media_offline(id),
-            "item must be online after relink"
-        );
+        assert!(editor.take_job_errors().is_empty(), "relink reported errors");
+        assert!(!editor.is_media_offline(id), "item must be online after relink");
         assert_eq!(editor.offline_count(), 0);
         let loaded = editor.media(id).expect("store has samples after relink");
         assert_eq!(loaded.samples.len(), 8_000 * 2);
-        let item = editor
-            .project
-            .media
-            .iter()
-            .find(|m| m.id == id)
-            .unwrap()
-            .clone();
+        let item = editor.project.media.iter().find(|m| m.id == id).unwrap().clone();
         assert_ne!(item.file_name, old_item.file_name);
         assert_eq!(item.file_name, "replacement.wav");
         assert_eq!(item.length, 8_000);
@@ -986,13 +761,7 @@ mod tests {
     #[test]
     fn default_export_path_uses_exports_folder_and_extension() {
         let (editor, dir) = test_editor(&[&[(0, 10)]], 10, pattern);
-        assert_eq!(
-            editor.default_export_path(ExportKind::Wav(BitDepth::Float32)),
-            dir.path().join("exports").join("Test.wav")
-        );
-        assert_eq!(
-            editor.default_export_path(ExportKind::Mp3 { kbps: 192 }),
-            dir.path().join("exports").join("Test.mp3")
-        );
+        assert_eq!(editor.default_export_path(ExportKind::Wav(BitDepth::Float32)), dir.path().join("exports").join("Test.wav"));
+        assert_eq!(editor.default_export_path(ExportKind::Mp3 { kbps: 192 }), dir.path().join("exports").join("Test.mp3"));
     }
 }

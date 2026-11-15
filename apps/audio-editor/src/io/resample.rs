@@ -3,10 +3,7 @@
 #[cfg(test)]
 use rubato::Indexing;
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
-use rubato::{
-    Async, FixedAsync, Resampler, SincInterpolationParameters, SincInterpolationType,
-    WindowFunction,
-};
+use rubato::{Async, FixedAsync, Resampler, SincInterpolationParameters, SincInterpolationType, WindowFunction};
 
 use super::IoError;
 
@@ -29,13 +26,7 @@ const OVERSAMPLING_FACTOR: usize = 256;
 /// samples, zero-padding at the end if the resampler came up short.
 /// `progress` is called with a 0.0..1.0 fraction as chunks are processed.
 #[cfg(test)]
-pub(crate) fn resample(
-    samples: &[f32],
-    channels: u16,
-    from: u32,
-    to: u32,
-    progress: &mut dyn FnMut(f32),
-) -> Result<Vec<f32>, IoError> {
+pub(crate) fn resample(samples: &[f32], channels: u16, from: u32, to: u32, progress: &mut dyn FnMut(f32)) -> Result<Vec<f32>, IoError> {
     if from == to {
         progress(1.0);
         return Ok(samples.to_vec());
@@ -45,11 +36,7 @@ pub(crate) fn resample(
     }
     let ch = usize::from(channels);
     if !samples.len().is_multiple_of(ch) {
-        return Err(IoError::Decode(format!(
-            "sample count {} is not a multiple of {} channels",
-            samples.len(),
-            ch
-        )));
+        return Err(IoError::Decode(format!("sample count {} is not a multiple of {} channels", samples.len(), ch)));
     }
     let in_frames = samples.len() / ch;
     if in_frames == 0 {
@@ -57,43 +44,32 @@ pub(crate) fn resample(
         return Ok(Vec::new());
     }
     // Exact rounded target length, in integer math to avoid float error.
-    let target =
-        ((in_frames as u64 * u64::from(to) + u64::from(from) / 2) / u64::from(from)) as usize;
+    let target = ((in_frames as u64 * u64::from(to) + u64::from(from) / 2) / u64::from(from)) as usize;
 
     let params = SincInterpolationParameters::new(SINC_LEN, WindowFunction::BlackmanHarris2)
         .oversampling_factor(OVERSAMPLING_FACTOR)
         .interpolation(SincInterpolationType::Cubic);
-    let mut resampler = Async::<f32>::new_sinc(
-        f64::from(to) / f64::from(from),
-        1.1,
-        &params,
-        CHUNK_FRAMES,
-        ch,
-        FixedAsync::Input,
-    )
-    .map_err(|e| IoError::Decode(format!("resampler setup failed: {e}")))?;
+    let mut resampler = Async::<f32>::new_sinc(f64::from(to) / f64::from(from), 1.1, &params, CHUNK_FRAMES, ch, FixedAsync::Input)
+        .map_err(|e| IoError::Decode(format!("resampler setup failed: {e}")))?;
     let delay = resampler.output_delay();
 
     // Worst case produced output: the target length plus the resampler delay
     // plus the frames generated while flushing the final partial chunk.
-    let flush_frames =
-        (f64::from(CHUNK_FRAMES as u32) * f64::from(to) / f64::from(from)).ceil() as usize;
+    let flush_frames = (f64::from(CHUNK_FRAMES as u32) * f64::from(to) / f64::from(from)).ceil() as usize;
     let out_frames_cap = target + delay + flush_frames + CHUNK_FRAMES + 64;
     let mut out = vec![0.0_f32; out_frames_cap * ch];
 
-    let in_adapter = InterleavedSlice::new(samples, ch, in_frames)
-        .map_err(|e| IoError::Decode(format!("bad input buffer for resampler: {e}")))?;
-    let mut out_adapter = InterleavedSlice::new_mut(&mut out, ch, out_frames_cap)
-        .map_err(|e| IoError::Decode(format!("bad output buffer for resampler: {e}")))?;
+    let in_adapter = InterleavedSlice::new(samples, ch, in_frames).map_err(|e| IoError::Decode(format!("bad input buffer for resampler: {e}")))?;
+    let mut out_adapter =
+        InterleavedSlice::new_mut(&mut out, ch, out_frames_cap).map_err(|e| IoError::Decode(format!("bad output buffer for resampler: {e}")))?;
 
     let mut indexing = Indexing::new();
     let mut produced = 0usize;
     let mut frames_left = in_frames;
     let mut next_in = resampler.input_frames_next();
     while frames_left >= next_in {
-        let (in_used, out_written) = resampler
-            .process_into_buffer(&in_adapter, &mut out_adapter, Some(&indexing))
-            .map_err(|e| IoError::Decode(format!("resampling failed: {e}")))?;
+        let (in_used, out_written) =
+            resampler.process_into_buffer(&in_adapter, &mut out_adapter, Some(&indexing)).map_err(|e| IoError::Decode(format!("resampling failed: {e}")))?;
         indexing.input_offset += in_used;
         indexing.output_offset += out_written;
         produced += out_written;
@@ -103,9 +79,8 @@ pub(crate) fn resample(
     }
     // Flush the tail: partial_len treats the rest of the chunk as silence.
     indexing.partial_len = Some(frames_left);
-    let (_in_used, out_written) = resampler
-        .process_into_buffer(&in_adapter, &mut out_adapter, Some(&indexing))
-        .map_err(|e| IoError::Decode(format!("resampling failed: {e}")))?;
+    let (_in_used, out_written) =
+        resampler.process_into_buffer(&in_adapter, &mut out_adapter, Some(&indexing)).map_err(|e| IoError::Decode(format!("resampling failed: {e}")))?;
     produced += out_written;
     progress(1.0);
 
@@ -153,23 +128,14 @@ impl StreamResampler {
     /// Creates a resampler for `channels` interleaved channels, `from` Hz to `to` Hz.
     pub fn new(channels: u16, from: u32, to: u32) -> Result<Self, IoError> {
         if channels == 0 || from == 0 || to == 0 {
-            return Err(IoError::Decode(
-                "cannot resample zero channels or a zero sample rate".to_string(),
-            ));
+            return Err(IoError::Decode("cannot resample zero channels or a zero sample rate".to_string()));
         }
         let ch = usize::from(channels);
         let params = SincInterpolationParameters::new(SINC_LEN, WindowFunction::BlackmanHarris2)
             .oversampling_factor(OVERSAMPLING_FACTOR)
             .interpolation(SincInterpolationType::Cubic);
-        let resampler = Async::<f32>::new_sinc(
-            f64::from(to) / f64::from(from),
-            1.1,
-            &params,
-            CHUNK_FRAMES,
-            ch,
-            FixedAsync::Input,
-        )
-        .map_err(|e| IoError::Decode(format!("resampler setup failed: {e}")))?;
+        let resampler = Async::<f32>::new_sinc(f64::from(to) / f64::from(from), 1.1, &params, CHUNK_FRAMES, ch, FixedAsync::Input)
+            .map_err(|e| IoError::Decode(format!("resampler setup failed: {e}")))?;
         let out_cap_frames = resampler.output_frames_max();
         Ok(Self {
             delay_left: resampler.output_delay(),
@@ -191,11 +157,7 @@ impl StreamResampler {
     pub fn push(&mut self, input: &[f32], out: &mut Vec<f32>) -> Result<(), IoError> {
         let ch = self.channels;
         if !input.len().is_multiple_of(ch) {
-            return Err(IoError::Decode(format!(
-                "sample count {} is not a multiple of {} channels",
-                input.len(),
-                ch
-            )));
+            return Err(IoError::Decode(format!("sample count {} is not a multiple of {} channels", input.len(), ch)));
         }
         let mut rest = input;
         while !rest.is_empty() {
@@ -217,8 +179,7 @@ impl StreamResampler {
     /// stream at exactly `round(total_in_frames * to / from)` frames in total.
     pub fn finish(&mut self, out: &mut Vec<f32>) -> Result<(), IoError> {
         let ch = self.channels;
-        let target =
-            (self.in_frames * u64::from(self.to) + u64::from(self.from) / 2) / u64::from(self.from);
+        let target = (self.in_frames * u64::from(self.to) + u64::from(self.from) / 2) / u64::from(self.from);
         let start_len = out.len();
         let emitted_before = self.out_frames;
 
@@ -245,14 +206,11 @@ impl StreamResampler {
     /// Resamples the staging chunk and appends its output, minus any startup delay.
     fn run_chunk(&mut self, out: &mut Vec<f32>) -> Result<(), IoError> {
         let ch = self.channels;
-        let in_adapter = InterleavedSlice::new(&self.in_buf, ch, CHUNK_FRAMES)
-            .map_err(|e| IoError::Decode(format!("bad input buffer for resampler: {e}")))?;
+        let in_adapter = InterleavedSlice::new(&self.in_buf, ch, CHUNK_FRAMES).map_err(|e| IoError::Decode(format!("bad input buffer for resampler: {e}")))?;
         let mut out_adapter = InterleavedSlice::new_mut(&mut self.out_buf, ch, self.out_cap_frames)
             .map_err(|e| IoError::Decode(format!("bad output buffer for resampler: {e}")))?;
-        let (_in_used, written) = self
-            .resampler
-            .process_into_buffer(&in_adapter, &mut out_adapter, None)
-            .map_err(|e| IoError::Decode(format!("resampling failed: {e}")))?;
+        let (_in_used, written) =
+            self.resampler.process_into_buffer(&in_adapter, &mut out_adapter, None).map_err(|e| IoError::Decode(format!("resampling failed: {e}")))?;
 
         let skip = self.delay_left.min(written);
         self.delay_left -= skip;
@@ -284,22 +242,13 @@ mod tests {
 
     #[test]
     fn stream_output_length_is_exact_for_any_piece_size() {
-        for (from, to) in [
-            (96_000, 48_000),
-            (88_200, 44_100),
-            (44_100, 48_000),
-            (48_000, 44_100),
-        ] {
+        for (from, to) in [(96_000, 48_000), (88_200, 44_100), (44_100, 48_000), (48_000, 44_100)] {
             for frames in [0usize, 1, 100, 1023, 1024, 1025, 5000, 20_000] {
                 let input = vec![0.25_f32; frames * 2];
                 let want = (frames as u64 * u64::from(to) + u64::from(from) / 2) / u64::from(from);
                 for piece in [1usize, 333, 1024, 4096, 50_000] {
                     let out = stream(&input, 2, from, to, piece);
-                    assert_eq!(
-                        out.len() as u64,
-                        want * 2,
-                        "{from}->{to}, {frames} frames, pieces of {piece}"
-                    );
+                    assert_eq!(out.len() as u64, want * 2, "{from}->{to}, {frames} frames, pieces of {piece}");
                 }
             }
         }
@@ -307,9 +256,7 @@ mod tests {
 
     #[test]
     fn stream_matches_batch_resample() {
-        let input: Vec<f32> = (0..44_100)
-            .map(|i| 0.5 * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / 44_100.0).sin())
-            .collect();
+        let input: Vec<f32> = (0..44_100).map(|i| 0.5 * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / 44_100.0).sin()).collect();
         let batch = resample(&input, 1, 44_100, 48_000, &mut quiet).unwrap();
         let streamed = stream(&input, 1, 44_100, 48_000, 700);
         assert_eq!(streamed.len(), batch.len());
@@ -317,12 +264,7 @@ mod tests {
         // where the batch version pads zeros instead of flushing the filter.
         let compare = batch.len() - 400;
         for i in 0..compare {
-            assert!(
-                (streamed[i] - batch[i]).abs() < 1e-5,
-                "frame {i}: stream {} vs batch {}",
-                streamed[i],
-                batch[i]
-            );
+            assert!((streamed[i] - batch[i]).abs() < 1e-5, "frame {i}: stream {} vs batch {}", streamed[i], batch[i]);
         }
     }
 
@@ -332,15 +274,8 @@ mod tests {
         input[48_000] = 1.0; // 0.5 s at 96 kHz
         let out = stream(&input, 1, 96_000, 48_000, 1000);
         assert_eq!(out.len(), 48_000);
-        let (peak_index, _) = out
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
-            .unwrap();
-        assert!(
-            (peak_index as i64 - 24_000).abs() <= 2,
-            "impulse landed at {peak_index}, expected within 2 frames of 24000"
-        );
+        let (peak_index, _) = out.iter().enumerate().max_by(|a, b| a.1.abs().total_cmp(&b.1.abs())).unwrap();
+        assert!((peak_index as i64 - 24_000).abs() <= 2, "impulse landed at {peak_index}, expected within 2 frames of 24000");
     }
 
     #[test]
@@ -353,9 +288,7 @@ mod tests {
         }
         let out = stream(&input, 1, 48_000, 44_100, 3000);
         assert_eq!(out.len(), 2756);
-        let tail_peak = out[out.len() - 40..]
-            .iter()
-            .fold(0.0_f32, |m, s| m.max(s.abs()));
+        let tail_peak = out[out.len() - 40..].iter().fold(0.0_f32, |m, s| m.max(s.abs()));
         assert!(tail_peak > 0.4, "tail peak was {tail_peak}");
     }
 
@@ -378,21 +311,15 @@ mod tests {
     #[test]
     fn forty_four_one_to_forty_eight_gives_exact_frames() {
         // 1 second of stereo pseudo-noise.
-        let input: Vec<f32> = (0..44_100 * 2)
-            .map(|i| (i as f32 * 12.9898).sin() * 0.5)
-            .collect();
+        let input: Vec<f32> = (0..44_100 * 2).map(|i| (i as f32 * 12.9898).sin() * 0.5).collect();
         let out = resample(&input, 2, 44_100, 48_000, &mut quiet).unwrap();
         assert_eq!(out.len(), 48_000 * 2, "output must be exactly 48000 frames");
         // Stereo stays stereo: both channels carry signal.
-        let [ch0_max, ch1_max] = out
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .fold([0.0_f32; 2], |mut m, p| {
-                m[0] = m[0].max(p[0].abs());
-                m[1] = m[1].max(p[1].abs());
-                m
-            });
+        let [ch0_max, ch1_max] = out.as_chunks::<2>().0.iter().fold([0.0_f32; 2], |mut m, p| {
+            m[0] = m[0].max(p[0].abs());
+            m[1] = m[1].max(p[1].abs());
+            m
+        });
         assert!(ch0_max > 0.1 && ch1_max > 0.1);
     }
 
@@ -409,31 +336,19 @@ mod tests {
         input[22_050] = 1.0; // 0.5 s at 44.1 kHz
         let out = resample(&input, 1, 44_100, 48_000, &mut quiet).unwrap();
         assert_eq!(out.len(), 48_000);
-        let (peak_index, _) = out
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
-            .unwrap();
-        assert!(
-            (peak_index as i64 - 24_000).abs() <= 2,
-            "impulse landed at {peak_index}, expected within 2 frames of 24000"
-        );
+        let (peak_index, _) = out.iter().enumerate().max_by(|a, b| a.1.abs().total_cmp(&b.1.abs())).unwrap();
+        assert!((peak_index as i64 - 24_000).abs() <= 2, "impulse landed at {peak_index}, expected within 2 frames of 24000");
     }
 
     #[test]
     fn sine_amplitude_is_preserved() {
         // 1 kHz sine at 0.5 amplitude, one second at 44.1 kHz.
-        let input: Vec<f32> = (0..44_100)
-            .map(|i| 0.5 * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / 44_100.0).sin())
-            .collect();
+        let input: Vec<f32> = (0..44_100).map(|i| 0.5 * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / 44_100.0).sin()).collect();
         let out = resample(&input, 1, 44_100, 48_000, &mut quiet).unwrap();
         assert_eq!(out.len(), 48_000);
         // Look well away from the filter edges.
         let middle = &out[24_000..43_000];
         let peak = middle.iter().fold(0.0_f32, |m, s| m.max(s.abs()));
-        assert!(
-            (0.45..=0.55).contains(&peak),
-            "middle peak was {peak}, expected 0.45..0.55"
-        );
+        assert!((0.45..=0.55).contains(&peak), "middle peak was {peak}, expected 0.45..0.55");
     }
 }

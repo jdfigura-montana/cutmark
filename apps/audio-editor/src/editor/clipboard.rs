@@ -24,21 +24,10 @@ pub fn copy_range(project: &Project, s: u64, e: u64, track_ids: &[Uuid]) -> Clip
         if !track_ids.contains(&track.id) {
             continue;
         }
-        let clips = if s >= e {
-            Vec::new()
-        } else {
-            track
-                .clips
-                .iter()
-                .filter_map(|clip| copy_piece(clip, s, e))
-                .collect()
-        };
+        let clips = if s >= e { Vec::new() } else { track.clips.iter().filter_map(|clip| copy_piece(clip, s, e)).collect() };
         tracks.push(clips);
     }
-    Clipboard {
-        length: e.saturating_sub(s),
-        tracks,
-    }
+    Clipboard { length: e.saturating_sub(s), tracks }
 }
 
 /// Copies whole selected clips into a clipboard, keeping their track offsets.
@@ -49,37 +38,13 @@ pub fn copy_range(project: &Project, s: u64, e: u64, track_ids: &[Uuid]) -> Clip
 /// end minus that start.
 pub fn copy_clips(project: &Project, clip_ids: &[Uuid]) -> Clipboard {
     let is_selected = |clip: &Clip| clip_ids.contains(&clip.id);
-    let first = project
-        .tracks
-        .iter()
-        .position(|t| t.clips.iter().any(&is_selected));
+    let first = project.tracks.iter().position(|t| t.clips.iter().any(&is_selected));
     let Some(first) = first else {
-        return Clipboard {
-            length: 0,
-            tracks: Vec::new(),
-        };
+        return Clipboard { length: 0, tracks: Vec::new() };
     };
-    let last = project
-        .tracks
-        .iter()
-        .rposition(|t| t.clips.iter().any(&is_selected))
-        .unwrap_or(first);
-    let earliest = project
-        .tracks
-        .iter()
-        .flat_map(|t| t.clips.iter())
-        .filter(|c| is_selected(c))
-        .map(|c| c.start)
-        .min()
-        .unwrap_or(0);
-    let latest = project
-        .tracks
-        .iter()
-        .flat_map(|t| t.clips.iter())
-        .filter(|c| is_selected(c))
-        .map(|c| c.end())
-        .max()
-        .unwrap_or(earliest);
+    let last = project.tracks.iter().rposition(|t| t.clips.iter().any(&is_selected)).unwrap_or(first);
+    let earliest = project.tracks.iter().flat_map(|t| t.clips.iter()).filter(|c| is_selected(c)).map(|c| c.start).min().unwrap_or(0);
+    let latest = project.tracks.iter().flat_map(|t| t.clips.iter()).filter(|c| is_selected(c)).map(|c| c.end()).max().unwrap_or(earliest);
     let tracks = project.tracks[first..=last]
         .iter()
         .map(|track| {
@@ -96,10 +61,7 @@ pub fn copy_clips(project: &Project, clip_ids: &[Uuid]) -> Clipboard {
                 .collect()
         })
         .collect();
-    Clipboard {
-        length: latest.saturating_sub(earliest),
-        tracks,
-    }
+    Clipboard { length: latest.saturating_sub(earliest), tracks }
 }
 
 /// Returns the part of `clip` inside `s..e`, or `None` when it does not overlap.
@@ -117,11 +79,7 @@ fn copy_piece(clip: &Clip, s: u64, e: u64) -> Option<Clip> {
         src_in: clip.src_in + (overlap_start - clip.start),
         src_out: clip.src_in + (overlap_end - clip.start),
         gain_db: clip.gain_db,
-        fade_in: if overlap_start == clip.start {
-            clip.fade_in
-        } else {
-            0
-        },
+        fade_in: if overlap_start == clip.start { clip.fade_in } else { 0 },
         fade_out: if overlap_end == end { clip.fade_out } else { 0 },
     };
     piece.clamp_fades();
@@ -135,18 +93,12 @@ mod tests {
 
     /// Returns the `(start, end)` of each clip on clipboard track `index`.
     fn spans(c: &Clipboard, index: usize) -> Vec<(u64, u64)> {
-        c.tracks[index]
-            .iter()
-            .map(|clip| (clip.start, clip.start + clip.len()))
-            .collect()
+        c.tracks[index].iter().map(|clip| (clip.start, clip.start + clip.len())).collect()
     }
 
     /// Returns the `(src_in, src_out)` of each clip on clipboard track `index`.
     fn srcs(c: &Clipboard, index: usize) -> Vec<(u64, u64)> {
-        c.tracks[index]
-            .iter()
-            .map(|clip| (clip.src_in, clip.src_out))
-            .collect()
+        c.tracks[index].iter().map(|clip| (clip.src_in, clip.src_out)).collect()
     }
 
     #[test]
@@ -184,16 +136,10 @@ mod tests {
         let track_id = project.tracks[0].id;
 
         let whole = copy_range(&project, 0, 100, &[track_id]);
-        assert_eq!(
-            (whole.tracks[0][0].fade_in, whole.tracks[0][0].fade_out),
-            (20, 20)
-        );
+        assert_eq!((whole.tracks[0][0].fade_in, whole.tracks[0][0].fade_out), (20, 20));
 
         let middle = copy_range(&project, 30, 70, &[track_id]);
-        assert_eq!(
-            (middle.tracks[0][0].fade_in, middle.tracks[0][0].fade_out),
-            (0, 0)
-        );
+        assert_eq!((middle.tracks[0][0].fade_in, middle.tracks[0][0].fade_out), (0, 0));
     }
 
     #[test]
@@ -205,11 +151,7 @@ mod tests {
         assert!(clip.tracks[1].is_empty(), "the middle track stays empty");
         assert_eq!(clip.length, 150, "latest end 250 minus earliest start 100");
         assert_eq!(spans(&clip, 0), [(0, 50)]);
-        assert_eq!(
-            spans(&clip, 2),
-            [(100, 150)],
-            "relative to the earliest start"
-        );
+        assert_eq!(spans(&clip, 2), [(100, 150)], "relative to the earliest start");
     }
 
     #[test]

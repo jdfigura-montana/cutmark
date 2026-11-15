@@ -57,10 +57,7 @@ pub fn mp3_rate(project_rate: u32) -> u32 {
 /// Opens a sink that writes `format` audio to `path` via `<path>.part`.
 pub fn open_sink(path: &Path, format: &ExportFormat) -> Result<Box<dyn AudioSink>, IoError> {
     if !(1..=2).contains(&format.channels) {
-        return Err(IoError::Export(format!(
-            "unsupported channel count: {}",
-            format.channels
-        )));
+        return Err(IoError::Export(format!("unsupported channel count: {}", format.channels)));
     }
     if format.in_rate == 0 {
         return Err(IoError::Export("sample rate must be above 0".to_string()));
@@ -76,9 +73,7 @@ pub(super) fn check_whole_frames(samples: usize, channels: usize) -> Result<(), 
     if samples.is_multiple_of(channels) {
         Ok(())
     } else {
-        Err(IoError::Export(format!(
-            "{samples} samples is not a whole number of {channels}-channel frames"
-        )))
+        Err(IoError::Export(format!("{samples} samples is not a whole number of {channels}-channel frames")))
     }
 }
 
@@ -97,11 +92,7 @@ impl PartGuard {
     pub(super) fn new(target: &Path) -> Self {
         let mut part: OsString = target.as_os_str().to_owned();
         part.push(".part");
-        Self {
-            part: PathBuf::from(part),
-            target: target.to_path_buf(),
-            armed: true,
-        }
+        Self { part: PathBuf::from(part), target: target.to_path_buf(), armed: true }
     }
 
     /// Path of the temp file to create and write.
@@ -131,19 +122,11 @@ mod tests {
     use super::*;
 
     fn wav_format(depth: BitDepth, channels: u16) -> ExportFormat {
-        ExportFormat {
-            kind: ExportKind::Wav(depth),
-            channels,
-            in_rate: 48_000,
-        }
+        ExportFormat { kind: ExportKind::Wav(depth), channels, in_rate: 48_000 }
     }
 
     fn mp3_format(channels: u16) -> ExportFormat {
-        ExportFormat {
-            kind: ExportKind::Mp3 { kbps: 192 },
-            channels,
-            in_rate: 48_000,
-        }
+        ExportFormat { kind: ExportKind::Mp3 { kbps: 192 }, channels, in_rate: 48_000 }
     }
 
     fn part_of(path: &Path) -> PathBuf {
@@ -239,22 +222,10 @@ mod tests {
             let result = open_sink(&path, &wav_format(BitDepth::Int16, channels));
             assert!(matches!(result, Err(IoError::Export(_))));
         }
-        let zero_rate = ExportFormat {
-            in_rate: 0,
-            ..wav_format(BitDepth::Int16, 2)
-        };
-        assert!(matches!(
-            open_sink(&path, &zero_rate),
-            Err(IoError::Export(_))
-        ));
-        let bad_kbps = ExportFormat {
-            kind: ExportKind::Mp3 { kbps: 100 },
-            ..mp3_format(2)
-        };
-        assert!(matches!(
-            open_sink(&path, &bad_kbps),
-            Err(IoError::Export(_))
-        ));
+        let zero_rate = ExportFormat { in_rate: 0, ..wav_format(BitDepth::Int16, 2) };
+        assert!(matches!(open_sink(&path, &zero_rate), Err(IoError::Export(_))));
+        let bad_kbps = ExportFormat { kind: ExportKind::Mp3 { kbps: 100 }, ..mp3_format(2) };
+        assert!(matches!(open_sink(&path, &bad_kbps), Err(IoError::Export(_))));
         // Nothing was created by the failed opens.
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
     }
@@ -265,10 +236,7 @@ mod tests {
         for format in [wav_format(BitDepth::Int16, 2), mp3_format(2)] {
             let path = dir.path().join("out.bin");
             let mut sink = open_sink(&path, &format).unwrap();
-            assert!(matches!(
-                sink.write(&[0.0, 0.0, 0.0]),
-                Err(IoError::Export(_))
-            ));
+            assert!(matches!(sink.write(&[0.0, 0.0, 0.0]), Err(IoError::Export(_))));
             sink.abort();
         }
     }

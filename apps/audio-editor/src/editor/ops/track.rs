@@ -22,19 +22,11 @@ fn clamp(value: f32, lo: f32, hi: f32) -> f32 {
 
 /// Returns a mutable reference to the track with the given id, or NotFound.
 fn track_mut(project: &mut Project, id: Uuid) -> Result<&mut Track, OpError> {
-    project
-        .tracks
-        .iter_mut()
-        .find(|t| t.id == id)
-        .ok_or(OpError::NotFound(id))
+    project.tracks.iter_mut().find(|t| t.id == id).ok_or(OpError::NotFound(id))
 }
 
 /// Adds a track; `None` index appends, `None` name gives "Track N" (N = count + 1).
-pub fn add_track(
-    project: &mut Project,
-    index: Option<usize>,
-    name: Option<String>,
-) -> Result<(), OpError> {
+pub fn add_track(project: &mut Project, index: Option<usize>, name: Option<String>) -> Result<(), OpError> {
     let count = project.tracks.len();
     if let Some(i) = index
         && i > count
@@ -56,11 +48,7 @@ pub fn add_track(
 
 /// Deletes the track with the given id.
 pub fn delete_track(project: &mut Project, id: Uuid) -> Result<(), OpError> {
-    let index = project
-        .tracks
-        .iter()
-        .position(|t| t.id == id)
-        .ok_or(OpError::NotFound(id))?;
+    let index = project.tracks.iter().position(|t| t.id == id).ok_or(OpError::NotFound(id))?;
     project.tracks.remove(index);
     Ok(())
 }
@@ -76,11 +64,7 @@ pub fn rename_track(project: &mut Project, id: Uuid, name: String) -> Result<(),
 
 /// Moves the track with the given id to a new zero-based index.
 pub fn move_track(project: &mut Project, id: Uuid, new_index: usize) -> Result<(), OpError> {
-    let old_index = project
-        .tracks
-        .iter()
-        .position(|t| t.id == id)
-        .ok_or(OpError::NotFound(id))?;
+    let old_index = project.tracks.iter().position(|t| t.id == id).ok_or(OpError::NotFound(id))?;
     if new_index >= project.tracks.len() {
         return Err(OpError::Overflow);
     }
@@ -147,10 +131,7 @@ mod tests {
     fn index_out_of_range_is_overflow() {
         let mut project = project_with_clips(&[&[]]);
         let id = project.tracks[0].id;
-        assert_eq!(
-            add_track(&mut project, Some(2), None),
-            Err(OpError::Overflow)
-        );
+        assert_eq!(add_track(&mut project, Some(2), None), Err(OpError::Overflow));
         assert_eq!(move_track(&mut project, id, 5), Err(OpError::Overflow));
     }
 
@@ -166,9 +147,6 @@ mod tests {
         assert!(!project.tracks[0].solo && !project.tracks[1].solo);
         assert!(project.tracks[2].solo);
         let missing = Uuid::new_v4();
-        assert_eq!(
-            solo_exclusive(&mut project, missing),
-            Err(OpError::NotFound(missing))
-        );
+        assert_eq!(solo_exclusive(&mut project, missing), Err(OpError::NotFound(missing)));
     }
 }

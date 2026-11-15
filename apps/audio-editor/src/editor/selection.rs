@@ -30,31 +30,12 @@ impl Selection {
         match self {
             Selection::None => Selection::None,
             Selection::Range { start, end, tracks } => {
-                let tracks: Vec<Uuid> = tracks
-                    .into_iter()
-                    .filter(|id| project.tracks.iter().any(|t| t.id == *id))
-                    .collect();
-                if tracks.is_empty() {
-                    Selection::None
-                } else {
-                    Selection::Range { start, end, tracks }
-                }
+                let tracks: Vec<Uuid> = tracks.into_iter().filter(|id| project.tracks.iter().any(|t| t.id == *id)).collect();
+                if tracks.is_empty() { Selection::None } else { Selection::Range { start, end, tracks } }
             }
             Selection::Clips(ids) => {
-                let ids: Vec<Uuid> = ids
-                    .into_iter()
-                    .filter(|id| {
-                        project
-                            .tracks
-                            .iter()
-                            .any(|t| t.clips.iter().any(|c| c.id == *id))
-                    })
-                    .collect();
-                if ids.is_empty() {
-                    Selection::None
-                } else {
-                    Selection::Clips(ids)
-                }
+                let ids: Vec<Uuid> = ids.into_iter().filter(|id| project.tracks.iter().any(|t| t.clips.iter().any(|c| c.id == *id))).collect();
+                if ids.is_empty() { Selection::None } else { Selection::Clips(ids) }
             }
         }
     }
@@ -72,36 +53,12 @@ mod tests {
         let track1 = project.tracks[1].id;
         let clip = project.tracks[0].clips[0].id;
 
-        let range = Selection::Range {
-            start: 0,
-            end: 100,
-            tracks: vec![track0, track1],
-        }
-        .tidy(&project);
-        assert_eq!(
-            range,
-            Selection::Range {
-                start: 0,
-                end: 100,
-                tracks: vec![track0, track1]
-            }
-        );
+        let range = Selection::Range { start: 0, end: 100, tracks: vec![track0, track1] }.tidy(&project);
+        assert_eq!(range, Selection::Range { start: 0, end: 100, tracks: vec![track0, track1] });
 
         let gone = Uuid::new_v4();
-        let kept = Selection::Range {
-            start: 0,
-            end: 100,
-            tracks: vec![track0, gone],
-        }
-        .tidy(&project);
-        assert_eq!(
-            kept,
-            Selection::Range {
-                start: 0,
-                end: 100,
-                tracks: vec![track0]
-            }
-        );
+        let kept = Selection::Range { start: 0, end: 100, tracks: vec![track0, gone] }.tidy(&project);
+        assert_eq!(kept, Selection::Range { start: 0, end: 100, tracks: vec![track0] });
 
         let clips = Selection::Clips(vec![clip, gone]).tidy(&project);
         assert_eq!(clips, Selection::Clips(vec![clip]));
@@ -112,15 +69,7 @@ mod tests {
         let project = project_with_clips(&[&[(0, 100)]]);
         let gone = Uuid::new_v4();
         assert_eq!(Selection::None.tidy(&project), Selection::None);
-        assert_eq!(
-            Selection::Range {
-                start: 0,
-                end: 10,
-                tracks: vec![gone]
-            }
-            .tidy(&project),
-            Selection::None
-        );
+        assert_eq!(Selection::Range { start: 0, end: 10, tracks: vec![gone] }.tidy(&project), Selection::None);
         assert_eq!(Selection::Clips(vec![gone]).tidy(&project), Selection::None);
     }
 }

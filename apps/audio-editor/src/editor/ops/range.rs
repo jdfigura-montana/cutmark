@@ -9,24 +9,14 @@ use crate::model::track::Track;
 
 /// Returns the mutable track with the given id, or NotFound.
 fn track_mut(project: &mut Project, id: Uuid) -> Result<&mut Track, OpError> {
-    project
-        .tracks
-        .iter_mut()
-        .find(|track| track.id == id)
-        .ok_or(OpError::NotFound(id))
+    project.tracks.iter_mut().find(|track| track.id == id).ok_or(OpError::NotFound(id))
 }
 
 /// Removes content from `s..e` on the listed tracks.
 ///
 /// Ripple on: later clips on those tracks shift left by `e - s`. Ripple off:
 /// leaves a gap. Returns [`OpError::NotFound`] for an unknown track id.
-pub fn delete_range(
-    project: &mut Project,
-    s: u64,
-    e: u64,
-    track_ids: &[Uuid],
-    ripple: bool,
-) -> Result<(), OpError> {
+pub fn delete_range(project: &mut Project, s: u64, e: u64, track_ids: &[Uuid], ripple: bool) -> Result<(), OpError> {
     for &id in track_ids {
         let track = track_mut(project, id)?;
         clear_range(track, s, e);
@@ -40,12 +30,7 @@ pub fn delete_range(
 /// Removes everything outside `s..e` on the listed tracks. Nothing moves.
 ///
 /// Returns [`OpError::NotFound`] for an unknown track id.
-pub fn trim_to_selection(
-    project: &mut Project,
-    s: u64,
-    e: u64,
-    track_ids: &[Uuid],
-) -> Result<(), OpError> {
+pub fn trim_to_selection(project: &mut Project, s: u64, e: u64, track_ids: &[Uuid]) -> Result<(), OpError> {
     for &id in track_ids {
         let track = track_mut(project, id)?;
         clear_range(track, 0, s);

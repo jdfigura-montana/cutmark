@@ -4,10 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{
-    Device, ErrorKind, InputCallbackInfo, SampleFormat, SizedSample, Stream, StreamConfig,
-    SupportedStreamConfig, SupportedStreamConfigRange,
-};
+use cpal::{Device, ErrorKind, InputCallbackInfo, SampleFormat, SizedSample, Stream, StreamConfig, SupportedStreamConfig, SupportedStreamConfigRange};
 use rtrb::Producer;
 
 use crate::audio::engine::{AudioError, latency_ns};
@@ -107,12 +104,7 @@ fn feed(meter: &ChannelMeter, block: Block) {
 /// feeds the same totals to both meter channels. A pick the device cannot
 /// serve (channel out of range, `channels` 0) feeds nothing. No allocation, no
 /// locks, no panics: safe for the input callback.
-pub fn meter_block<S: InputSample>(
-    samples: &[S],
-    channels: u16,
-    pick: InputPick,
-    meter: &StereoMeter,
-) {
+pub fn meter_block<S: InputSample>(samples: &[S], channels: u16, pick: InputPick, meter: &StereoMeter) {
     let channels = usize::from(channels);
     match pick {
         InputPick::Mono(index) => {
@@ -139,12 +131,7 @@ pub fn meter_block<S: InputSample>(
 /// were dropped; when not, pushes nothing and returns 0. Never pushes a
 /// partial frame. No allocation, no locks, no panics: safe for the input
 /// callback.
-fn record_block<S: InputSample>(
-    samples: &[S],
-    channels: usize,
-    recording: bool,
-    producer: &mut Producer<f32>,
-) -> u64 {
+fn record_block<S: InputSample>(samples: &[S], channels: usize, recording: bool, producer: &mut Producer<f32>) -> u64 {
     if !recording || channels == 0 {
         return 0;
     }
@@ -176,21 +163,14 @@ fn record_block<S: InputSample>(
 /// panics: safe for the input callback.
 fn input_latency_ns(info: &InputCallbackInfo, frames: usize, rate: u32) -> u64 {
     let stamp = info.timestamp();
-    latency_ns(
-        stamp.callback.saturating_duration_since(stamp.capture),
-        frames,
-        rate,
-    )
+    latency_ns(stamp.callback.saturating_duration_since(stamp.capture), frames, rate)
 }
 
 /// True for stream errors that mean the capture has stopped. A reroute to a
 /// new default device, a buffer glitch and a refused real-time priority all
 /// leave the stream running, so they must not read as a lost device.
 fn is_fatal(kind: ErrorKind) -> bool {
-    !matches!(
-        kind,
-        ErrorKind::DeviceChanged | ErrorKind::Xrun | ErrorKind::RealtimeDenied
-    )
+    !matches!(kind, ErrorKind::DeviceChanged | ErrorKind::Xrun | ErrorKind::RealtimeDenied)
 }
 
 /// Preference among the sample formats the callback can read: f32, then i16, then u16.
@@ -206,10 +186,7 @@ fn format_rank(format: SampleFormat) -> Option<u8> {
 /// The device's default config, or, when the device lists the same channel
 /// count and rate in a format that ranks higher (f32 over i16 over u16), that
 /// one. None when no readable format exists at all.
-fn best_config(
-    default: SupportedStreamConfig,
-    others: impl IntoIterator<Item = SupportedStreamConfigRange>,
-) -> Option<SupportedStreamConfig> {
+fn best_config(default: SupportedStreamConfig, others: impl IntoIterator<Item = SupportedStreamConfigRange>) -> Option<SupportedStreamConfig> {
     let mut best = format_rank(default.sample_format()).map(|rank| (rank, default));
     for range in others {
         if range.channels() != default.channels() {
@@ -232,10 +209,7 @@ fn best_config(
 /// because it was just unplugged). `Device`'s own `Display` returns an error
 /// in that case, which makes `to_string()` panic, so it is not used here.
 pub(crate) fn device_name(device: &Device) -> Option<String> {
-    device
-        .description()
-        .ok()
-        .map(|description| description.name().to_string())
+    device.description().ok().map(|description| description.name().to_string())
 }
 
 /// Display names of the input devices Windows lists, without duplicates, in
@@ -254,9 +228,7 @@ pub fn input_device_names() -> Vec<String> {
 
 /// Display name of the Windows default input device, if there is one.
 pub fn default_input_name() -> Option<String> {
-    cpal::default_host()
-        .default_input_device()
-        .and_then(|device| device_name(&device))
+    cpal::default_host().default_input_device().and_then(|device| device_name(&device))
 }
 
 /// Input channel count of the device `InputStream::open(name, ..)` would use
@@ -264,10 +236,7 @@ pub fn default_input_name() -> Option<String> {
 /// device or it cannot report a config. Opens nothing.
 pub fn device_channels(name: Option<&str>) -> Option<u16> {
     let (device, _) = choose_device(&cpal::default_host(), name).ok()?;
-    device
-        .default_input_config()
-        .ok()
-        .map(|config| config.channels())
+    device.default_input_config().ok().map(|config| config.channels())
 }
 
 /// Name, sample rate and channel count of the device [`InputStream::open`]
@@ -278,15 +247,9 @@ pub fn probe_input(device: Option<&str>) -> Result<(String, u32, u16), AudioErro
     let host = cpal::default_host();
     let (device, _) = choose_device(&host, device)?;
     let name = device_name(&device).unwrap_or_else(|| UNKNOWN_DEVICE.to_string());
-    let default = device
-        .default_input_config()
-        .map_err(AudioError::InputStream)?;
-    let others = device
-        .supported_input_configs()
-        .map(|ranges| ranges.collect::<Vec<_>>())
-        .unwrap_or_default();
-    let supported =
-        best_config(default, others).ok_or_else(|| AudioError::NoInputFormat(name.clone()))?;
+    let default = device.default_input_config().map_err(AudioError::InputStream)?;
+    let others = device.supported_input_configs().map(|ranges| ranges.collect::<Vec<_>>()).unwrap_or_default();
+    let supported = best_config(default, others).ok_or_else(|| AudioError::NoInputFormat(name.clone()))?;
     Ok((name, supported.sample_rate(), supported.channels()))
 }
 
@@ -302,9 +265,7 @@ fn choose_device(host: &cpal::Host, wanted: Option<&str>) -> Result<(Device, boo
             }
         }
     }
-    let default = host
-        .default_input_device()
-        .ok_or(AudioError::NoInputDevice)?;
+    let default = host.default_input_device().ok_or(AudioError::NoInputDevice)?;
     Ok((default, wanted.is_some()))
 }
 
@@ -338,12 +299,7 @@ where
                 let frames = data.len().checked_div(usize::from(channels)).unwrap_or(0);
                 latency.store(input_latency_ns(info, frames, rate), Ordering::Relaxed);
                 meter_block(data, channels, pick, &meter);
-                let dropped_frames = record_block(
-                    data,
-                    usize::from(channels),
-                    recording.load(Ordering::Relaxed),
-                    &mut producer,
-                );
+                let dropped_frames = record_block(data, usize::from(channels), recording.load(Ordering::Relaxed), &mut producer);
                 if dropped_frames > 0 {
                     dropped.fetch_add(dropped_frames, Ordering::Relaxed);
                 }
@@ -394,34 +350,19 @@ impl InputStream {
     /// channel count and rate, otherwise i16 or u16 converted sample by sample
     /// in the callback. Fails with a clear error, without opening anything,
     /// when `pick` needs a channel the device does not have.
-    pub fn open(
-        device: Option<&str>,
-        pick: InputPick,
-        meter: Arc<StereoMeter>,
-        producer: Producer<f32>,
-    ) -> Result<InputStream, AudioError> {
+    pub fn open(device: Option<&str>, pick: InputPick, meter: Arc<StereoMeter>, producer: Producer<f32>) -> Result<InputStream, AudioError> {
         let host = cpal::default_host();
         let (device, fell_back) = choose_device(&host, device)?;
         let name = device_name(&device).unwrap_or_else(|| UNKNOWN_DEVICE.to_string());
 
-        let default = device
-            .default_input_config()
-            .map_err(AudioError::InputStream)?;
-        let others = device
-            .supported_input_configs()
-            .map(|ranges| ranges.collect::<Vec<_>>())
-            .unwrap_or_default();
-        let supported =
-            best_config(default, others).ok_or_else(|| AudioError::NoInputFormat(name.clone()))?;
+        let default = device.default_input_config().map_err(AudioError::InputStream)?;
+        let others = device.supported_input_configs().map(|ranges| ranges.collect::<Vec<_>>()).unwrap_or_default();
+        let supported = best_config(default, others).ok_or_else(|| AudioError::NoInputFormat(name.clone()))?;
 
         let have = supported.channels();
         let need = pick.channels_needed();
         if have < need {
-            return Err(AudioError::InputChannels {
-                device: name,
-                have,
-                need,
-            });
+            return Err(AudioError::InputChannels { device: name, have, need });
         }
 
         let errored = Arc::new(AtomicBool::new(false));
@@ -617,11 +558,7 @@ mod tests {
     /// What one channel meter holds: (peak, mean square, frames, clipped).
     fn read(meter: &ChannelMeter) -> (f32, f32, u32, bool) {
         let (peak, sum_sq, frames, clipped) = meter.take();
-        let mean_sq = if frames == 0 {
-            0.0
-        } else {
-            sum_sq / frames as f32
-        };
+        let mean_sq = if frames == 0 { 0.0 } else { sum_sq / frames as f32 };
         (peak, mean_sq, frames, clipped)
     }
 
@@ -788,43 +725,22 @@ mod tests {
 
     #[test]
     fn only_a_stopped_stream_is_a_fatal_error() {
-        for fatal in [
-            ErrorKind::DeviceNotAvailable,
-            ErrorKind::StreamInvalidated,
-            ErrorKind::BackendError,
-            ErrorKind::DeviceBusy,
-            ErrorKind::Other,
-        ] {
+        for fatal in [ErrorKind::DeviceNotAvailable, ErrorKind::StreamInvalidated, ErrorKind::BackendError, ErrorKind::DeviceBusy, ErrorKind::Other] {
             assert!(is_fatal(fatal), "{fatal:?}");
         }
-        for harmless in [
-            ErrorKind::DeviceChanged,
-            ErrorKind::Xrun,
-            ErrorKind::RealtimeDenied,
-        ] {
+        for harmless in [ErrorKind::DeviceChanged, ErrorKind::Xrun, ErrorKind::RealtimeDenied] {
             assert!(!is_fatal(harmless), "{harmless:?}");
         }
     }
 
     /// A supported config with a fixed buffer range.
     fn config(channels: u16, rate: u32, format: SampleFormat) -> SupportedStreamConfig {
-        SupportedStreamConfig::new(
-            channels,
-            rate,
-            SupportedBufferSize::Range { min: 64, max: 4096 },
-            format,
-        )
+        SupportedStreamConfig::new(channels, rate, SupportedBufferSize::Range { min: 64, max: 4096 }, format)
     }
 
     /// A single-rate supported range.
     fn range(channels: u16, rate: u32, format: SampleFormat) -> SupportedStreamConfigRange {
-        SupportedStreamConfigRange::new(
-            channels,
-            rate,
-            rate,
-            SupportedBufferSize::Range { min: 64, max: 4096 },
-            format,
-        )
+        SupportedStreamConfigRange::new(channels, rate, rate, SupportedBufferSize::Range { min: 64, max: 4096 }, format)
     }
 
     #[test]
@@ -846,10 +762,7 @@ mod tests {
         assert_eq!(best.sample_format(), SampleFormat::I16);
         assert_eq!((best.channels(), best.sample_rate()), (2, 48_000));
 
-        let others = [
-            range(2, 48_000, SampleFormat::I16),
-            range(2, 48_000, SampleFormat::F32),
-        ];
+        let others = [range(2, 48_000, SampleFormat::I16), range(2, 48_000, SampleFormat::F32)];
         let best = best_config(default, others).unwrap();
         assert_eq!(best.sample_format(), SampleFormat::F32);
     }
@@ -864,10 +777,7 @@ mod tests {
     #[test]
     fn best_config_is_none_without_a_readable_format() {
         let default = config(2, 48_000, SampleFormat::I24);
-        let others = [
-            range(2, 48_000, SampleFormat::I32),
-            range(2, 48_000, SampleFormat::F64),
-        ];
+        let others = [range(2, 48_000, SampleFormat::I32), range(2, 48_000, SampleFormat::F64)];
         assert_eq!(best_config(default, others), None);
     }
 
@@ -882,25 +792,16 @@ mod tests {
 
     #[test]
     fn the_input_latency_is_callback_minus_capture() {
-        assert_eq!(
-            input_latency_ns(&info_with_capture(12), 480, 48_000),
-            12_000_000
-        );
+        assert_eq!(input_latency_ns(&info_with_capture(12), 480, 48_000), 12_000_000);
     }
 
     #[test]
     fn an_unusable_input_timestamp_falls_back_to_the_buffer_size() {
         // Capture at the callback instant: no usable difference, so one buffer.
-        assert_eq!(
-            input_latency_ns(&info_with_capture(0), 480, 48_000),
-            10_000_000
-        );
+        assert_eq!(input_latency_ns(&info_with_capture(0), 480, 48_000), 10_000_000);
         // Capture after the callback saturates to zero, with the same fallback.
         use cpal::{InputStreamTimestamp, StreamInstant};
-        let backwards = InputCallbackInfo::new(InputStreamTimestamp {
-            callback: StreamInstant::new(3, 0),
-            capture: StreamInstant::new(4, 0),
-        });
+        let backwards = InputCallbackInfo::new(InputStreamTimestamp { callback: StreamInstant::new(3, 0), capture: StreamInstant::new(4, 0) });
         assert_eq!(input_latency_ns(&backwards, 441, 44_100), 10_000_000);
         // No buffer size known either: zero.
         assert_eq!(input_latency_ns(&backwards, 0, 44_100), 0);

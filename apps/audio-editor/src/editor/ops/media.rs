@@ -41,20 +41,12 @@ pub fn next_take_name(project: &Project) -> String {
 /// the overwrite rules of [`place_clip`].
 ///
 /// The take must be longer than `src_in`. On an error the project is unchanged.
-pub fn record_take(
-    project: &mut Project,
-    mut item: MediaItem,
-    track_id: Uuid,
-    start: u64,
-    src_in: u64,
-) -> Result<(), OpError> {
+pub fn record_take(project: &mut Project, mut item: MediaItem, track_id: Uuid, start: u64, src_in: u64) -> Result<(), OpError> {
     if !project.tracks.iter().any(|track| track.id == track_id) {
         return Err(OpError::NotFound(track_id));
     }
     if src_in >= item.length {
-        return Err(OpError::Invalid(
-            "the take is not longer than its latency".to_string(),
-        ));
+        return Err(OpError::Invalid("the take is not longer than its latency".to_string()));
     }
     item.display_name = next_take_name(project);
     let (media_id, src_out) = (item.id, item.length);
@@ -80,36 +72,17 @@ pub fn remove_media(project: &mut Project, id: Uuid) -> Result<(), OpError> {
 /// The audio was already re-imported by `io::import::relink_file`; this only
 /// records the new file name and stats. Every clip using the item must still
 /// fit inside the replacement's length.
-pub fn relink_media(
-    project: &mut Project,
-    id: Uuid,
-    file_name: String,
-    original_rate: u32,
-    channels: u16,
-    length: u64,
-) -> Result<(), OpError> {
+pub fn relink_media(project: &mut Project, id: Uuid, file_name: String, original_rate: u32, channels: u16, length: u64) -> Result<(), OpError> {
     if !project.media.iter().any(|m| m.id == id) {
         return Err(OpError::NotFound(id));
     }
-    if let Some(highest) = project
-        .tracks
-        .iter()
-        .flat_map(|t| t.clips.iter())
-        .filter(|c| c.media_id == id)
-        .map(|c| c.src_out)
-        .max()
-        .filter(|src_out| *src_out > length)
+    if let Some(highest) =
+        project.tracks.iter().flat_map(|t| t.clips.iter()).filter(|c| c.media_id == id).map(|c| c.src_out).max().filter(|src_out| *src_out > length)
     {
         let need = crate::util::time::samples_to_timecode(highest, project.sample_rate);
-        return Err(OpError::Invalid(format!(
-            "The replacement is too short. The clips using this item need at least {need}."
-        )));
+        return Err(OpError::Invalid(format!("The replacement is too short. The clips using this item need at least {need}.")));
     }
-    let item = project
-        .media
-        .iter_mut()
-        .find(|m| m.id == id)
-        .ok_or(OpError::NotFound(id))?;
+    let item = project.media.iter_mut().find(|m| m.id == id).ok_or(OpError::NotFound(id))?;
     item.file_name = file_name;
     item.original_rate = original_rate;
     item.channels = channels;
@@ -125,11 +98,7 @@ pub fn rename_media(project: &mut Project, id: Uuid, name: &str) -> Result<(), O
     if trimmed.is_empty() {
         return Err(OpError::Invalid("media name is empty".to_string()));
     }
-    let item = project
-        .media
-        .iter_mut()
-        .find(|m| m.id == id)
-        .ok_or(OpError::NotFound(id))?;
+    let item = project.media.iter_mut().find(|m| m.id == id).ok_or(OpError::NotFound(id))?;
     item.display_name = trimmed.to_string();
     Ok(())
 }
@@ -141,14 +110,7 @@ mod tests {
 
     /// A small bin entry with a unique id.
     fn item(name: &str) -> MediaItem {
-        MediaItem {
-            id: Uuid::new_v4(),
-            display_name: name.to_string(),
-            file_name: format!("{name}.wav"),
-            original_rate: 48_000,
-            channels: 2,
-            length: 100,
-        }
+        MediaItem { id: Uuid::new_v4(), display_name: name.to_string(), file_name: format!("{name}.wav"), original_rate: 48_000, channels: 2, length: 100 }
     }
 
     #[test]
@@ -157,18 +119,12 @@ mod tests {
         let first = item("a");
         import_media(&mut project, first.clone()).unwrap();
         assert_eq!(project.media.len(), 1);
-        assert!(matches!(
-            import_media(&mut project, first),
-            Err(OpError::Invalid(_))
-        ));
+        assert!(matches!(import_media(&mut project, first), Err(OpError::Invalid(_))));
     }
 
     /// A recorded take of `length` frames (the display name is replaced by the op).
     fn take_item(length: u64) -> MediaItem {
-        MediaItem {
-            length,
-            ..item("rec-20261114-101500")
-        }
+        MediaItem { length, ..item("rec-20261114-101500") }
     }
 
     /// A project whose bin holds items with these display names.
@@ -182,31 +138,13 @@ mod tests {
     fn next_take_name_counts_up_from_the_highest_take() {
         assert_eq!(next_take_name(&project_with_names(&[])), "Take 1");
         assert_eq!(next_take_name(&project_with_names(&["Take 1"])), "Take 2");
-        assert_eq!(
-            next_take_name(&project_with_names(&["Take 1", "Take 3", "Take 2"])),
-            "Take 4",
-            "the highest wins, not the count"
-        );
-        assert_eq!(
-            next_take_name(&project_with_names(&["Take 9", "Take 10"])),
-            "Take 11",
-            "numeric, not alphabetic"
-        );
+        assert_eq!(next_take_name(&project_with_names(&["Take 1", "Take 3", "Take 2"])), "Take 4", "the highest wins, not the count");
+        assert_eq!(next_take_name(&project_with_names(&["Take 9", "Take 10"])), "Take 11", "numeric, not alphabetic");
     }
 
     #[test]
     fn next_take_name_ignores_names_that_only_look_like_takes() {
-        let names = [
-            "Take 2 copy",
-            "Takes 9",
-            "take 8",
-            "Take +9",
-            "Take -4",
-            "Take ",
-            "Take",
-            "My Take 7",
-            "Take 1.5",
-        ];
+        let names = ["Take 2 copy", "Takes 9", "take 8", "Take +9", "Take -4", "Take ", "Take", "My Take 7", "Take 1.5"];
         assert_eq!(next_take_name(&project_with_names(&names)), "Take 1");
         let mut with_one = names.to_vec();
         with_one.push("Take 1");
@@ -230,10 +168,7 @@ mod tests {
         let clips = &project.tracks[1].clips;
         assert_eq!(clips.len(), 1);
         let clip = &clips[0];
-        assert_eq!(
-            (clip.media_id, clip.start, clip.src_in, clip.src_out),
-            (id, 1_000, 480, 5_000)
-        );
+        assert_eq!((clip.media_id, clip.start, clip.src_in, clip.src_out), (id, 1_000, 480, 5_000));
         assert_eq!((clip.gain_db, clip.fade_in, clip.fade_out), (0.0, 0, 0));
         assert!(crate::model::invariants::check(&project).is_ok());
     }
@@ -246,15 +181,7 @@ mod tests {
         let second = take_item(2_000);
         let second_id = second.id;
         record_take(&mut project, second, track, 5_000, 0).unwrap();
-        let name = |id| {
-            project
-                .media
-                .iter()
-                .find(|m| m.id == id)
-                .unwrap()
-                .display_name
-                .clone()
-        };
+        let name = |id| project.media.iter().find(|m| m.id == id).unwrap().display_name.clone();
         assert_eq!(name(second_id), "Take 2");
     }
 
@@ -269,10 +196,7 @@ mod tests {
             [(0, 400), (400, 700), (700, 1_000)],
             "the old clip is split around the take, like any overwrite"
         );
-        assert_eq!(
-            crate::model::fixtures::srcs(&project, 0),
-            [(0, 400), (100, 400), (700, 1_000)]
-        );
+        assert_eq!(crate::model::fixtures::srcs(&project, 0), [(0, 400), (100, 400), (700, 1_000)]);
         assert!(crate::model::invariants::check(&project).is_ok());
     }
 
@@ -283,24 +207,15 @@ mod tests {
         let before = project.clone();
 
         // Unknown track.
-        assert!(matches!(
-            record_take(&mut project, take_item(1_000), Uuid::new_v4(), 0, 0),
-            Err(OpError::NotFound(_))
-        ));
+        assert!(matches!(record_take(&mut project, take_item(1_000), Uuid::new_v4(), 0, 0), Err(OpError::NotFound(_))));
         // No audible frames after the latency: equal and longer latency.
         for src_in in [1_000, 1_001] {
-            assert!(matches!(
-                record_take(&mut project, take_item(1_000), track, 0, src_in),
-                Err(OpError::Invalid(_))
-            ));
+            assert!(matches!(record_take(&mut project, take_item(1_000), track, 0, src_in), Err(OpError::Invalid(_))));
         }
         // A media id that is already in the bin.
         let mut duplicate = take_item(1_000);
         duplicate.id = project.media[0].id;
-        assert!(matches!(
-            record_take(&mut project, duplicate, track, 0, 0),
-            Err(OpError::Invalid(_))
-        ));
+        assert!(matches!(record_take(&mut project, duplicate, track, 0, 0), Err(OpError::Invalid(_))));
         assert_eq!(project, before);
     }
 
@@ -325,10 +240,7 @@ mod tests {
         assert_eq!(item.channels, 1);
         assert_eq!(item.length, 500_000);
         assert_eq!(item.display_name, "Test Media");
-        assert!(matches!(
-            relink_media(&mut project, Uuid::new_v4(), "x".to_string(), 48_000, 1, 1),
-            Err(OpError::NotFound(_))
-        ));
+        assert!(matches!(relink_media(&mut project, Uuid::new_v4(), "x".to_string(), 48_000, 1, 1), Err(OpError::NotFound(_))));
     }
 
     #[test]
@@ -357,14 +269,8 @@ mod tests {
         rename_media(&mut project, id, "  Song  ").unwrap();
         assert_eq!(project.media[0].display_name, "Song");
         for bad in ["", "   "] {
-            assert!(matches!(
-                rename_media(&mut project, id, bad),
-                Err(OpError::Invalid(_))
-            ));
+            assert!(matches!(rename_media(&mut project, id, bad), Err(OpError::Invalid(_))));
         }
-        assert!(matches!(
-            rename_media(&mut project, Uuid::new_v4(), "x"),
-            Err(OpError::NotFound(_))
-        ));
+        assert!(matches!(rename_media(&mut project, Uuid::new_v4(), "x"), Err(OpError::NotFound(_))));
     }
 }

@@ -27,11 +27,7 @@ pub fn autosave_path(paths: &ProjectPaths) -> PathBuf {
 /// project.json.
 pub fn write(paths: &ProjectPaths, project: &Project, view: &ViewState) -> Result<(), IoError> {
     fs::create_dir_all(paths.autosave())?;
-    let file = ProjectFile {
-        format_version: FORMAT_VERSION,
-        project: project.clone(),
-        view: view.clone(),
-    };
+    let file = ProjectFile { format_version: FORMAT_VERSION, project: project.clone(), view: view.clone() };
     let json = serde_json::to_string_pretty(&file)?;
     let tmp = paths.autosave().join(TMP_NAME);
     let target = autosave_path(paths);
@@ -65,10 +61,7 @@ pub fn load(paths: &ProjectPaths) -> Result<(Project, ViewState), IoError> {
     let text = fs::read_to_string(autosave_path(paths))?;
     let file: ProjectFile = serde_json::from_str(&text)?;
     if file.format_version > FORMAT_VERSION {
-        return Err(IoError::UnsupportedVersion {
-            found: file.format_version,
-            max: FORMAT_VERSION,
-        });
+        return Err(IoError::UnsupportedVersion { found: file.format_version, max: FORMAT_VERSION });
     }
     Ok((finish_load(file.project)?, file.view))
 }
@@ -105,10 +98,7 @@ mod tests {
 
     /// A tiny project and view for round-trip tests.
     fn sample() -> (Project, ViewState) {
-        (
-            Project::new("Proj".to_string(), 48_000, BitDepth::Int16),
-            ViewState::default(),
-        )
+        (Project::new("Proj".to_string(), 48_000, BitDepth::Int16), ViewState::default())
     }
 
     /// Creates a project layout and a saved project.json inside a tempdir.

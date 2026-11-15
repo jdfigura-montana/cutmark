@@ -32,11 +32,7 @@ pub enum OpError {
 ///
 /// The name is validated with [`paths::validate_project_name`]; the project
 /// folder on disk is never renamed.
-pub fn set_project_settings(
-    project: &mut Project,
-    name: &str,
-    export_bit_depth: BitDepth,
-) -> Result<(), OpError> {
+pub fn set_project_settings(project: &mut Project, name: &str, export_bit_depth: BitDepth) -> Result<(), OpError> {
     if let Err(error) = paths::validate_project_name(name) {
         return Err(OpError::Invalid(error.to_string()));
     }
@@ -62,10 +58,7 @@ mod tests {
         let mut project = crate::model::fixtures::project_with_clips(&[&[]]);
         let before = project.clone();
         for bad in ["", "   ", "a/b", "a:b"] {
-            assert!(matches!(
-                set_project_settings(&mut project, bad, BitDepth::Int16),
-                Err(OpError::Invalid(_))
-            ));
+            assert!(matches!(set_project_settings(&mut project, bad, BitDepth::Int16), Err(OpError::Invalid(_))));
             assert_eq!(project, before);
         }
     }

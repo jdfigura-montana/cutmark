@@ -42,9 +42,7 @@ pub struct AppConfig {
 impl AppConfig {
     /// This config with `latency_offset_ms` forced into -100..=100.
     pub fn clamped(mut self) -> AppConfig {
-        self.latency_offset_ms = self
-            .latency_offset_ms
-            .clamp(MIN_LATENCY_OFFSET_MS, MAX_LATENCY_OFFSET_MS);
+        self.latency_offset_ms = self.latency_offset_ms.clamp(MIN_LATENCY_OFFSET_MS, MAX_LATENCY_OFFSET_MS);
         self
     }
 }
@@ -74,9 +72,7 @@ pub fn load_from(path: &Path) -> AppConfig {
     let Ok(text) = fs::read_to_string(path) else {
         return AppConfig::default();
     };
-    serde_json::from_str::<AppConfig>(&text)
-        .unwrap_or_default()
-        .clamped()
+    serde_json::from_str::<AppConfig>(&text).unwrap_or_default().clamped()
 }
 
 /// The error for "there is nowhere to save the config": the Editor reports it
@@ -124,11 +120,8 @@ mod tests {
     fn save_then_load_round_trips() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("sub").join("config.json");
-        let config = AppConfig {
-            input_device: Some("Microphone (USB Audio) \u{e9}".to_string()),
-            record_channels: RecordChannels::Stereo,
-            latency_offset_ms: -42,
-        };
+        let config =
+            AppConfig { input_device: Some("Microphone (USB Audio) \u{e9}".to_string()), record_channels: RecordChannels::Stereo, latency_offset_ms: -42 };
         save_to(&config, &path).unwrap();
         assert_eq!(load_from(&path), config);
         assert!(!path.with_extension("json.tmp").exists());
@@ -138,10 +131,7 @@ mod tests {
     fn save_replaces_an_existing_file() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("config.json");
-        let first = AppConfig {
-            record_channels: RecordChannels::Mono2,
-            ..AppConfig::default()
-        };
+        let first = AppConfig { record_channels: RecordChannels::Mono2, ..AppConfig::default() };
         save_to(&first, &path).unwrap();
         save_to(&AppConfig::default(), &path).unwrap();
         assert_eq!(load_from(&path), AppConfig::default());
@@ -162,13 +152,7 @@ mod tests {
     fn wrong_typed_or_unknown_values_give_defaults_without_a_rewrite() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("config.json");
-        for text in [
-            r#"{"record_channels":"Quad"}"#,
-            r#"{"latency_offset_ms":"loud"}"#,
-            r#"{"latency_offset_ms":99999999999}"#,
-            "[]",
-            "",
-        ] {
+        for text in [r#"{"record_channels":"Quad"}"#, r#"{"latency_offset_ms":"loud"}"#, r#"{"latency_offset_ms":99999999999}"#, "[]", ""] {
             fs::write(&path, text).unwrap();
             assert_eq!(load_from(&path), AppConfig::default(), "{text:?}");
             assert_eq!(fs::read_to_string(&path).unwrap(), text);
@@ -219,21 +203,14 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("config.json");
         for (offset, want) in [(1_000, 100), (i32::MIN, -100), (i32::MAX, 100), (25, 25)] {
-            let config = AppConfig {
-                latency_offset_ms: offset,
-                ..AppConfig::default()
-            };
+            let config = AppConfig { latency_offset_ms: offset, ..AppConfig::default() };
             save_to(&config, &path).unwrap();
             // The clamped value is what is on disk, not just what load returns.
-            let on_disk: serde_json::Value =
-                serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+            let on_disk: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
             assert_eq!(on_disk["latency_offset_ms"], want, "offset {offset}");
         }
         // The caller's value is not changed by saving it.
-        let config = AppConfig {
-            latency_offset_ms: 1_000,
-            ..AppConfig::default()
-        };
+        let config = AppConfig { latency_offset_ms: 1_000, ..AppConfig::default() };
         save_to(&config, &path).unwrap();
         assert_eq!(config.latency_offset_ms, 1_000);
     }
@@ -241,10 +218,7 @@ mod tests {
     #[test]
     fn default_path_is_config_json_next_to_the_config_folder() {
         let path = default_path().expect("a config folder");
-        assert!(
-            path.ends_with(Path::new("CutMark").join("config.json")),
-            "{path:?}"
-        );
+        assert!(path.ends_with(Path::new("CutMark").join("config.json")), "{path:?}");
         // recent.json lives in the `config` folder beside it.
         let recent = crate::io::recent::default_path().expect("a config folder");
         assert_eq!(recent.parent().unwrap().parent(), path.parent());

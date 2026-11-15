@@ -9,41 +9,20 @@ use crate::editor::editor::Editor;
 pub fn snap(pos: u64, candidates: &[u64], spp: f64, threshold_px: f32) -> Option<u64> {
     let threshold = threshold_px as f64 * spp;
     let idx = candidates.partition_point(|&c| c <= pos);
-    let before = if idx > 0 {
-        Some(candidates[idx - 1])
-    } else {
-        None
-    };
-    let best = before
-        .into_iter()
-        .chain(candidates.get(idx).copied())
-        .min_by_key(|&c| (c as i128 - pos as i128).abs())?;
-    if (best as i128 - pos as i128).abs() as f64 <= threshold {
-        Some(best)
-    } else {
-        None
-    }
+    let before = if idx > 0 { Some(candidates[idx - 1]) } else { None };
+    let best = before.into_iter().chain(candidates.get(idx).copied()).min_by_key(|&c| (c as i128 - pos as i128).abs())?;
+    if (best as i128 - pos as i128).abs() as f64 <= threshold { Some(best) } else { None }
 }
 
 impl Editor {
     /// Sorted, duplicate-free snap positions: 0, the playhead, every marker
     /// except `exclude_marker`, and the start and end of every clip not in
     /// `exclude_clips`.
-    pub fn snap_candidates(
-        &self,
-        exclude_clips: &[Uuid],
-        exclude_marker: Option<Uuid>,
-    ) -> Vec<u64> {
+    pub fn snap_candidates(&self, exclude_clips: &[Uuid], exclude_marker: Option<Uuid>) -> Vec<u64> {
         let mut out: Vec<u64> = Vec::new();
         out.push(0);
         out.push(self.view.playhead);
-        out.extend(
-            self.project
-                .markers
-                .iter()
-                .filter(|m| Some(m.id) != exclude_marker)
-                .map(|m| m.position),
-        );
+        out.extend(self.project.markers.iter().filter(|m| Some(m.id) != exclude_marker).map(|m| m.position));
         for track in &self.project.tracks {
             for clip in &track.clips {
                 if !exclude_clips.contains(&clip.id) {
@@ -61,14 +40,7 @@ impl Editor {
     /// when it snapped. No snapping when the view's snap toggle is off or
     /// `bypass` is true (Alt during a drag). The threshold in points comes from
     /// the caller (the UI passes its theme snap distance).
-    pub fn snap_pos(
-        &self,
-        pos: u64,
-        exclude_clips: &[Uuid],
-        exclude_marker: Option<Uuid>,
-        bypass: bool,
-        threshold_px: f32,
-    ) -> (u64, Option<u64>) {
+    pub fn snap_pos(&self, pos: u64, exclude_clips: &[Uuid], exclude_marker: Option<Uuid>, bypass: bool, threshold_px: f32) -> (u64, Option<u64>) {
         if !self.view.snap || bypass {
             return (pos, None);
         }
@@ -92,13 +64,7 @@ mod tests {
 
     /// An in-memory editor: two tracks, clips (0..100) and (200..400) on track 1.
     fn editor() -> Editor {
-        Editor::with_project(
-            project_with_clips(&[&[(0, 100), (200, 200)], &[]]),
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        )
+        Editor::with_project(project_with_clips(&[&[(0, 100), (200, 200)], &[]]), ViewState::default(), ProjectPaths { root: PathBuf::from("unused") })
     }
 
     #[test]
@@ -121,10 +87,7 @@ mod tests {
         let clip = editor.project.tracks[0].clips[0].id;
         let candidates = editor.snap_candidates(&[], None);
         assert_eq!(candidates, vec![0, 100, 200, 400, 500]);
-        assert_eq!(
-            editor.snap_candidates(&[clip], None),
-            vec![0, 200, 400, 500]
-        );
+        assert_eq!(editor.snap_candidates(&[clip], None), vec![0, 200, 400, 500]);
     }
 
     #[test]
@@ -149,9 +112,6 @@ mod tests {
         assert_eq!(editor.snap_pos(1000, &[], None, false, 8.0), (1000, None));
         editor.view.snap = true;
         assert_eq!(editor.snap_pos(1000, &[], None, true, 8.0), (1000, None));
-        assert_eq!(
-            editor.snap_pos(1000, &[], None, false, 8.0),
-            (1004, Some(1004))
-        );
+        assert_eq!(editor.snap_pos(1000, &[], None, false, 8.0), (1004, Some(1004)));
     }
 }

@@ -26,10 +26,7 @@ pub struct History {
 impl History {
     /// Creates empty undo and redo stacks.
     pub fn new() -> History {
-        History {
-            undo: Vec::new(),
-            redo: Vec::new(),
-        }
+        History { undo: Vec::new(), redo: Vec::new() }
     }
 
     /// Pushes one entry, clears redo and drops the oldest past the cap.
@@ -44,20 +41,14 @@ impl History {
     /// Pops the top undo entry, pushing the current project onto redo.
     pub fn undo_step(&mut self, current: Arc<Project>) -> Option<HistoryEntry> {
         let entry = self.undo.pop()?;
-        self.redo.push(HistoryEntry {
-            label: entry.label,
-            before: current,
-        });
+        self.redo.push(HistoryEntry { label: entry.label, before: current });
         Some(entry)
     }
 
     /// Pops the top redo entry, pushing the current project onto undo.
     pub fn redo_step(&mut self, current: Arc<Project>) -> Option<HistoryEntry> {
         let entry = self.redo.pop()?;
-        self.undo.push(HistoryEntry {
-            label: entry.label,
-            before: current,
-        });
+        self.undo.push(HistoryEntry { label: entry.label, before: current });
         Some(entry)
     }
 
@@ -85,22 +76,13 @@ mod tests {
     fn push_undo_clears_redo_and_caps_at_max() {
         let mut history = History::new();
         for _ in 0..(MAX_HISTORY + 1) {
-            history.push_undo(HistoryEntry {
-                label: "L",
-                before: Arc::new(plain()),
-            });
+            history.push_undo(HistoryEntry { label: "L", before: Arc::new(plain()) });
         }
         assert_eq!(history.undo.len(), MAX_HISTORY);
-        history.push_undo(HistoryEntry {
-            label: "L",
-            before: Arc::new(plain()),
-        });
+        history.push_undo(HistoryEntry { label: "L", before: Arc::new(plain()) });
         history.undo_step(Arc::new(plain()));
         assert_eq!(history.redo.len(), 1);
-        history.push_undo(HistoryEntry {
-            label: "L",
-            before: Arc::new(plain()),
-        });
+        history.push_undo(HistoryEntry { label: "L", before: Arc::new(plain()) });
         assert!(history.redo.is_empty());
     }
 }

@@ -198,9 +198,7 @@ impl Editor {
         // While scrubbing the mouse drives the playhead; the audio position
         // must not overwrite it.
         if state != TransportState::Scrubbing
-            && (state == TransportState::Playing
-                || (self.transport_prev == Some(TransportState::Playing)
-                    && state == TransportState::Stopped))
+            && (state == TransportState::Playing || (self.transport_prev == Some(TransportState::Playing) && state == TransportState::Stopped))
         {
             self.view.playhead = shared.playhead.load(Ordering::Relaxed);
         }
@@ -219,13 +217,7 @@ mod tests {
 
     /// An in-memory editor with no audio engine.
     fn editor() -> Editor {
-        Editor::with_project(
-            fixtures::project_with_clips(&[&[(0, 100)]]),
-            ViewState::default(),
-            ProjectPaths {
-                root: PathBuf::from("unused"),
-            },
-        )
+        Editor::with_project(fixtures::project_with_clips(&[&[(0, 100)]]), ViewState::default(), ProjectPaths { root: PathBuf::from("unused") })
     }
 
     #[test]

@@ -32,10 +32,7 @@ impl RecentEntry {
 
 /// The current time as a Unix timestamp in seconds.
 fn now_unix() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
 /// The recent-projects list, newest first.
@@ -50,19 +47,14 @@ const OLD_APP_DIR: &str = "AudioEditor";
 
 /// Default location of recent.json in %APPDATA%, if the config dir can be found.
 pub fn default_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "CutMark")
-        .map(|dirs| dirs.config_dir().join("recent.json"))
+    directories::ProjectDirs::from("", "", "CutMark").map(|dirs| dirs.config_dir().join("recent.json"))
 }
 
 /// One-time migration: if the current recent.json does not exist but the one
 /// from the old AudioEditor config folder does, copy it over (the old file is
 /// kept). Any failure is silent and non-fatal.
 pub fn migrate_old_config() {
-    if let (Some(new), Some(old)) = (
-        default_path(),
-        directories::ProjectDirs::from("", "", OLD_APP_DIR)
-            .map(|dirs| dirs.config_dir().join("recent.json")),
-    ) {
+    if let (Some(new), Some(old)) = (default_path(), directories::ProjectDirs::from("", "", OLD_APP_DIR).map(|dirs| dirs.config_dir().join("recent.json"))) {
         migrate(&old, &new);
     }
 }
@@ -108,14 +100,7 @@ impl RecentList {
     /// stamping it with the current time, keeping at most MAX_ENTRIES entries.
     pub fn touch(&mut self, name: String, root: PathBuf) {
         self.entries.retain(|e| e.root != root);
-        self.entries.insert(
-            0,
-            RecentEntry {
-                name,
-                root,
-                last_opened: Some(now_unix()),
-            },
-        );
+        self.entries.insert(0, RecentEntry { name, root, last_opened: Some(now_unix()) });
         self.entries.truncate(MAX_ENTRIES);
     }
 
@@ -225,11 +210,7 @@ mod tests {
     fn exists_false_for_deleted_folder() {
         let dir = tempdir().unwrap();
         let root = make_project(dir.path(), "gone");
-        let entry = RecentEntry {
-            name: "gone".into(),
-            root: root.clone(),
-            last_opened: None,
-        };
+        let entry = RecentEntry { name: "gone".into(), root: root.clone(), last_opened: None };
         assert!(entry.exists());
         fs::remove_dir_all(&root).unwrap();
         assert!(!entry.exists());
@@ -253,16 +234,8 @@ mod tests {
         fs::remove_dir_all(&gone).unwrap();
         let mut list = RecentList {
             entries: vec![
-                RecentEntry {
-                    name: "gone".into(),
-                    root: gone,
-                    last_opened: Some(0),
-                },
-                RecentEntry {
-                    name: "kept".into(),
-                    root: kept,
-                    last_opened: None,
-                },
+                RecentEntry { name: "gone".into(), root: gone, last_opened: Some(0) },
+                RecentEntry { name: "kept".into(), root: kept, last_opened: None },
             ],
         };
         list.remove_missing();

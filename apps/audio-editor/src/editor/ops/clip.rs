@@ -11,10 +11,7 @@ use crate::model::track::Track;
 ///
 /// Returns `(left id, right id)` or `None` if no clip covers `pos` strictly inside.
 pub fn split_clip_at(track: &mut Track, pos: u64) -> Option<(Uuid, Uuid)> {
-    let index = track
-        .clips
-        .iter()
-        .position(|clip| clip.start < pos && pos < clip.end())?;
+    let index = track.clips.iter().position(|clip| clip.start < pos && pos < clip.end())?;
     let left_id = track.clips[index].id;
 
     let mut left = track.clips[index].clone();
@@ -122,19 +119,11 @@ pub fn shift_from(track: &mut Track, pos: u64, delta: i64) -> Result<(), OpError
 /// Splits clips at `pos` on the given tracks, or on all tracks when `None`.
 ///
 /// Returns [`OpError::NotFound`] if a listed track id does not exist.
-pub fn split_at(
-    project: &mut Project,
-    pos: u64,
-    track_ids: Option<Vec<Uuid>>,
-) -> Result<(), OpError> {
+pub fn split_at(project: &mut Project, pos: u64, track_ids: Option<Vec<Uuid>>) -> Result<(), OpError> {
     match track_ids {
         Some(ids) => {
             for id in ids {
-                let track = project
-                    .tracks
-                    .iter_mut()
-                    .find(|track| track.id == id)
-                    .ok_or(OpError::NotFound(id))?;
+                let track = project.tracks.iter_mut().find(|track| track.id == id).ok_or(OpError::NotFound(id))?;
                 split_clip_at(track, pos);
             }
             Ok(())
@@ -153,37 +142,15 @@ pub fn split_at(
 /// Start trims move `start` and `src_in` together; end trims move `src_out`.
 /// Clamped so `src_in >= 0`, `src_out <= media length`, `len >= 1`, and the clip
 /// never crosses a neighbor on the same track.
-pub fn trim_clip(
-    project: &mut Project,
-    clip_id: Uuid,
-    edge: Edge,
-    new_pos: u64,
-) -> Result<(), OpError> {
+pub fn trim_clip(project: &mut Project, clip_id: Uuid, edge: Edge, new_pos: u64) -> Result<(), OpError> {
     // Locate the clip, its neighbors and its media length before mutating.
-    let (track_index, clip_index) =
-        locate_clip(project, clip_id).ok_or(OpError::NotFound(clip_id))?;
+    let (track_index, clip_index) = locate_clip(project, clip_id).ok_or(OpError::NotFound(clip_id))?;
     let track = &project.tracks[track_index];
     let old = track.clips[clip_index].clone();
     let media_id = old.media_id;
-    let media_len = project
-        .media
-        .iter()
-        .find(|media| media.id == media_id)
-        .ok_or(OpError::NotFound(media_id))?
-        .length;
-    let left_bound = track
-        .clips
-        .iter()
-        .filter(|clip| clip.id != clip_id && clip.end() <= old.start)
-        .map(|clip| clip.end())
-        .max()
-        .unwrap_or(0);
-    let right_bound = track
-        .clips
-        .iter()
-        .filter(|clip| clip.id != clip_id && clip.start >= old.end())
-        .map(|clip| clip.start)
-        .min();
+    let media_len = project.media.iter().find(|media| media.id == media_id).ok_or(OpError::NotFound(media_id))?.length;
+    let left_bound = track.clips.iter().filter(|clip| clip.id != clip_id && clip.end() <= old.start).map(|clip| clip.end()).max().unwrap_or(0);
+    let right_bound = track.clips.iter().filter(|clip| clip.id != clip_id && clip.start >= old.end()).map(|clip| clip.start).min();
 
     let clip = &mut project.tracks[track_index].clips[clip_index];
     match edge {
@@ -231,12 +198,7 @@ pub fn delete_clips(project: &mut Project, clip_ids: &[Uuid], ripple: bool) -> R
 
     // Ripple: per track, take deleted clips right to left and close each gap.
     for track_index in 0..project.tracks.len() {
-        let mut deleted: Vec<Clip> = project.tracks[track_index]
-            .clips
-            .iter()
-            .filter(|clip| clip_ids.contains(&clip.id))
-            .cloned()
-            .collect();
+        let mut deleted: Vec<Clip> = project.tracks[track_index].clips.iter().filter(|clip| clip_ids.contains(&clip.id)).cloned().collect();
         deleted.sort_by_key(|clip| std::cmp::Reverse(clip.start));
         for clip in deleted {
             let end = clip.end();
@@ -257,12 +219,7 @@ pub fn set_clip_gain(project: &mut Project, clip_id: Uuid, db: f32) -> Result<()
 }
 
 /// Sets both fade lengths, then clamps them to the clip length.
-pub fn set_clip_fades(
-    project: &mut Project,
-    clip_id: Uuid,
-    fade_in: u64,
-    fade_out: u64,
-) -> Result<(), OpError> {
+pub fn set_clip_fades(project: &mut Project, clip_id: Uuid, fade_in: u64, fade_out: u64) -> Result<(), OpError> {
     let clip = find_clip_mut(project, clip_id).ok_or(OpError::NotFound(clip_id))?;
     clip.fade_in = fade_in;
     clip.fade_out = fade_out;
@@ -272,22 +229,14 @@ pub fn set_clip_fades(
 
 /// Finds a clip by id anywhere in the project.
 fn find_clip_mut(project: &mut Project, clip_id: Uuid) -> Option<&mut Clip> {
-    project
-        .tracks
-        .iter_mut()
-        .find_map(|track| track.clips.iter_mut().find(|clip| clip.id == clip_id))
+    project.tracks.iter_mut().find_map(|track| track.clips.iter_mut().find(|clip| clip.id == clip_id))
 }
 /// Moves the listed clips by `delta_time` samples and `delta_tracks` tracks.
 ///
 /// Validates every new start and track index first; on any violation returns
 /// [`OpError::Invalid`] and changes nothing. Clip ids stay the same; the moved
 /// range overwrites whatever it lands on. Unknown ids return [`OpError::NotFound`].
-pub fn move_clips(
-    project: &mut Project,
-    clip_ids: &[Uuid],
-    delta_time: i64,
-    delta_tracks: i32,
-) -> Result<(), OpError> {
+pub fn move_clips(project: &mut Project, clip_ids: &[Uuid], delta_time: i64, delta_tracks: i32) -> Result<(), OpError> {
     // Locate every clip and validate the destinations before mutating anything.
     let mut located: Vec<(Clip, usize)> = Vec::with_capacity(clip_ids.len());
     for id in clip_ids {
@@ -295,15 +244,11 @@ pub fn move_clips(
         let clip = project.tracks[track_index].clips[clip_index].clone();
         let new_start = clip.start as i128 + delta_time as i128;
         if new_start < 0 || new_start > u64::MAX as i128 {
-            return Err(OpError::Invalid(
-                "moved clip start out of range".to_string(),
-            ));
+            return Err(OpError::Invalid("moved clip start out of range".to_string()));
         }
         let new_track = track_index as i64 + delta_tracks as i64;
         if new_track < 0 || new_track >= project.tracks.len() as i64 {
-            return Err(OpError::Invalid(
-                "moved clip track out of range".to_string(),
-            ));
+            return Err(OpError::Invalid("moved clip track out of range".to_string()));
         }
         located.push((clip, new_track as usize));
     }
@@ -332,33 +277,12 @@ pub enum Edge {
 /// Returns the new clip id. `insert` splits at `start`, shifts later clips right
 /// by the clip length, then inserts; otherwise the covered range is overwritten.
 /// Returns [`OpError::NotFound`] for an unknown track or media id.
-pub fn place_clip(
-    project: &mut Project,
-    track_id: Uuid,
-    media_id: Uuid,
-    start: u64,
-    src_in: u64,
-    src_out: u64,
-    insert: bool,
-) -> Result<Uuid, OpError> {
-    let track = project
-        .tracks
-        .iter_mut()
-        .find(|track| track.id == track_id)
-        .ok_or(OpError::NotFound(track_id))?;
+pub fn place_clip(project: &mut Project, track_id: Uuid, media_id: Uuid, start: u64, src_in: u64, src_out: u64, insert: bool) -> Result<Uuid, OpError> {
+    let track = project.tracks.iter_mut().find(|track| track.id == track_id).ok_or(OpError::NotFound(track_id))?;
     if !project.media.iter().any(|media| media.id == media_id) {
         return Err(OpError::NotFound(media_id));
     }
-    let clip = Clip {
-        id: Uuid::new_v4(),
-        media_id,
-        start,
-        src_in,
-        src_out,
-        gain_db: 0.0,
-        fade_in: 0,
-        fade_out: 0,
-    };
+    let clip = Clip { id: Uuid::new_v4(), media_id, start, src_in, src_out, gain_db: 0.0, fade_in: 0, fade_out: 0 };
     let id = clip.id;
     if insert {
         split_clip_at(track, start);
@@ -386,28 +310,10 @@ fn locate_clip(project: &Project, clip_id: Uuid) -> Option<(usize, usize)> {
 /// The clip spans the full source media (`src_in` 0, `src_out` = media length),
 /// gain 0 and no fades. One undo step covers both the track and the clip.
 /// Returns [`OpError::NotFound`] for an unknown media id.
-pub fn place_clip_on_new_track(
-    project: &mut Project,
-    media_id: Uuid,
-    start: u64,
-) -> Result<(), OpError> {
-    let media_len = project
-        .media
-        .iter()
-        .find(|media| media.id == media_id)
-        .ok_or(OpError::NotFound(media_id))?
-        .length;
+pub fn place_clip_on_new_track(project: &mut Project, media_id: Uuid, start: u64) -> Result<(), OpError> {
+    let media_len = project.media.iter().find(|media| media.id == media_id).ok_or(OpError::NotFound(media_id))?.length;
     let mut track = Track::new(format!("Track {}", project.tracks.len() + 1));
-    track.clips.push(Clip {
-        id: Uuid::new_v4(),
-        media_id,
-        start,
-        src_in: 0,
-        src_out: media_len,
-        gain_db: 0.0,
-        fade_in: 0,
-        fade_out: 0,
-    });
+    track.clips.push(Clip { id: Uuid::new_v4(), media_id, start, src_in: 0, src_out: media_len, gain_db: 0.0, fade_in: 0, fade_out: 0 });
     project.tracks.push(track);
     Ok(())
 }
@@ -525,16 +431,7 @@ mod tests {
         // The re-take case: a new clip lands where an older one starts.
         let mut project = project_with_clips(&[&[(0, 100)]]);
         let media_id = project.tracks[0].clips[0].media_id;
-        let clip = Clip {
-            id: Uuid::new_v4(),
-            media_id,
-            start: 0,
-            src_in: 0,
-            src_out: 40,
-            gain_db: 0.0,
-            fade_in: 0,
-            fade_out: 0,
-        };
+        let clip = Clip { id: Uuid::new_v4(), media_id, start: 0, src_in: 0, src_out: 40, gain_db: 0.0, fade_in: 0, fade_out: 0 };
         place_overwrite(&mut project.tracks[0], clip);
         assert_eq!(spans(&project, 0), [(0, 40), (40, 100)]);
         assert_eq!(srcs(&project, 0), [(0, 40), (40, 100)]);
@@ -545,16 +442,7 @@ mod tests {
     fn place_overwrite_replaces_the_covered_range() {
         let mut project = project_with_clips(&[&[(100, 100)]]);
         let media_id = project.tracks[0].clips[0].media_id;
-        let clip = Clip {
-            id: Uuid::new_v4(),
-            media_id,
-            start: 130,
-            src_in: 0,
-            src_out: 40,
-            gain_db: 0.0,
-            fade_in: 0,
-            fade_out: 0,
-        };
+        let clip = Clip { id: Uuid::new_v4(), media_id, start: 130, src_in: 0, src_out: 40, gain_db: 0.0, fade_in: 0, fade_out: 0 };
         place_overwrite(&mut project.tracks[0], clip);
         assert_eq!(spans(&project, 0), [(100, 130), (130, 170), (170, 200)]);
     }

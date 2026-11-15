@@ -25,13 +25,7 @@ pub struct Scrub {
 impl Scrub {
     /// Allocates the scratch window and starts stopped at sample 0.
     pub fn new(_rate: u32) -> Scrub {
-        Scrub {
-            pos: 0.0,
-            target: 0.0,
-            speed: 0.0,
-            gain: 0.0,
-            window: vec![0.0; WIN_FRAMES * 2].into_boxed_slice(),
-        }
+        Scrub { pos: 0.0, target: 0.0, speed: 0.0, gain: 0.0, window: vec![0.0; WIN_FRAMES * 2].into_boxed_slice() }
     }
 
     /// Jumps the read head to `pos` and stops moving (silent until a target arrives).
@@ -142,10 +136,7 @@ mod tests {
                     samples: Some(Arc::from(samples.into_boxed_slice())),
                 }],
             }],
-            meters: Arc::new(MeterBank {
-                track_ids: Vec::new(),
-                tracks: Vec::new(),
-            }),
+            meters: Arc::new(MeterBank { track_ids: Vec::new(), tracks: Vec::new() }),
             master: Arc::new(StereoMeter::new()),
         }
     }
@@ -162,18 +153,10 @@ mod tests {
             s.process(&plan, &mut out);
             let now = s.position();
             assert!(now > prev, "pos should move forward: {prev} -> {now}");
-            assert!(
-                now - prev <= 4.0 * 512.0 + 1e-6,
-                "speed exceeded 4x: {}",
-                now - prev
-            );
+            assert!(now - prev <= 4.0 * 512.0 + 1e-6, "speed exceeded 4x: {}", now - prev);
             prev = now;
         }
-        assert!(
-            s.position() > 11_000.0,
-            "pos {} should have moved well forward in 0.5 s",
-            s.position()
-        );
+        assert!(s.position() > 11_000.0, "pos {} should have moved well forward in 0.5 s", s.position());
     }
 
     #[test]
@@ -218,19 +201,12 @@ mod tests {
         }
         let expected = 0.5 * std::f32::consts::FRAC_1_SQRT_2;
         for w in all.chunks(2).skip(3_072) {
-            assert!(
-                (w[0] - expected).abs() < 0.01,
-                "value {} should be near {expected}",
-                w[0]
-            );
+            assert!((w[0] - expected).abs() < 0.01, "value {} should be near {expected}", w[0]);
         }
         for i in 3_072..all.len() / 2 - 1 {
             let a = all[i * 2];
             let b = all[(i + 1) * 2];
-            assert!(
-                (a - b).abs() < 0.01,
-                "jump {a} -> {b} at frame {i} exceeds 0.01"
-            );
+            assert!((a - b).abs() < 0.01, "jump {a} -> {b} at frame {i} exceeds 0.01");
         }
     }
 

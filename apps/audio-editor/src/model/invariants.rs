@@ -65,12 +65,7 @@ pub fn check(project: &Project) -> Result<(), InvariantError> {
         .iter()
         .map(|m| m.id)
         .chain(project.tracks.iter().map(|t| t.id))
-        .chain(
-            project
-                .tracks
-                .iter()
-                .flat_map(|t| t.clips.iter().map(|c| c.id)),
-        )
+        .chain(project.tracks.iter().flat_map(|t| t.clips.iter().map(|c| c.id)))
         .chain(project.markers.iter().map(|m| m.id));
     for id in ids {
         if !seen.insert(id) {
@@ -78,16 +73,13 @@ pub fn check(project: &Project) -> Result<(), InvariantError> {
         }
     }
     // Duplicate media ids are rejected above, so each id maps to one length.
-    let media_lengths: HashMap<Uuid, u64> =
-        project.media.iter().map(|m| (m.id, m.length)).collect();
+    let media_lengths: HashMap<Uuid, u64> = project.media.iter().map(|m| (m.id, m.length)).collect();
 
     for track in &project.tracks {
         // Rule a: clips sorted by start and never overlapping.
         for pair in track.clips.windows(2) {
             if pair[1].start < pair[0].end() {
-                return Err(InvariantError::UnsortedOrOverlapping {
-                    clip_id: pair[1].id,
-                });
+                return Err(InvariantError::UnsortedOrOverlapping { clip_id: pair[1].id });
             }
         }
 
@@ -121,9 +113,7 @@ pub fn check(project: &Project) -> Result<(), InvariantError> {
     // Rule f: markers sorted by position.
     for pair in project.markers.windows(2) {
         if pair[1].position < pair[0].position {
-            return Err(InvariantError::MarkersUnsorted {
-                marker_id: pair[1].id,
-            });
+            return Err(InvariantError::MarkersUnsorted { marker_id: pair[1].id });
         }
     }
 
@@ -146,36 +136,21 @@ mod tests {
     fn overlapping_clips_fail_rule_a() {
         let mut project = project_with_clips(&[&[(0, 2000), (1000, 1000)]]);
         project.tracks[0].sort_clips();
-        assert_eq!(
-            check(&project),
-            Err(InvariantError::UnsortedOrOverlapping {
-                clip_id: project.tracks[0].clips[1].id
-            })
-        );
+        assert_eq!(check(&project), Err(InvariantError::UnsortedOrOverlapping { clip_id: project.tracks[0].clips[1].id }));
     }
 
     #[test]
     fn missing_media_fails_rule_b() {
         let mut project = project_with_clips(&[&[(0, 1000)]]);
         project.media.clear();
-        assert_eq!(
-            check(&project),
-            Err(InvariantError::MissingMedia {
-                clip_id: project.tracks[0].clips[0].id
-            })
-        );
+        assert_eq!(check(&project), Err(InvariantError::MissingMedia { clip_id: project.tracks[0].clips[0].id }));
     }
 
     #[test]
     fn src_out_beyond_media_length_fails_rule_c() {
         let mut project = project_with_clips(&[&[(0, 1_000_000)]]);
         project.tracks[0].clips[0].src_out += 1;
-        assert_eq!(
-            check(&project),
-            Err(InvariantError::SrcRange {
-                clip_id: project.tracks[0].clips[0].id
-            })
-        );
+        assert_eq!(check(&project), Err(InvariantError::SrcRange { clip_id: project.tracks[0].clips[0].id }));
     }
 
     #[test]
@@ -183,12 +158,7 @@ mod tests {
         let mut project = project_with_clips(&[&[(0, 1000)]]);
         project.tracks[0].clips[0].src_in = 500;
         project.tracks[0].clips[0].src_out = 500;
-        assert_eq!(
-            check(&project),
-            Err(InvariantError::SrcRange {
-                clip_id: project.tracks[0].clips[0].id
-            })
-        );
+        assert_eq!(check(&project), Err(InvariantError::SrcRange { clip_id: project.tracks[0].clips[0].id }));
     }
 
     #[test]
@@ -196,46 +166,28 @@ mod tests {
         let mut project = project_with_clips(&[&[(0, 1000)]]);
         project.tracks[0].clips[0].fade_in = 600;
         project.tracks[0].clips[0].fade_out = 600;
-        assert_eq!(
-            check(&project),
-            Err(InvariantError::FadeSum {
-                clip_id: project.tracks[0].clips[0].id
-            })
-        );
+        assert_eq!(check(&project), Err(InvariantError::FadeSum { clip_id: project.tracks[0].clips[0].id }));
     }
 
     #[test]
     fn out_of_range_track_volume_fails_rule_e() {
         let mut project = project_with_clips(&[&[]]);
         project.tracks[0].volume_db = 13.0;
-        assert_eq!(
-            check(&project),
-            Err(InvariantError::LevelRange {
-                id: project.tracks[0].id
-            })
-        );
+        assert_eq!(check(&project), Err(InvariantError::LevelRange { id: project.tracks[0].id }));
     }
 
     #[test]
     fn out_of_range_clip_gain_fails_rule_e() {
         let mut project = project_with_clips(&[&[(0, 1000)]]);
         project.tracks[0].clips[0].gain_db = 25.0;
-        assert_eq!(
-            check(&project),
-            Err(InvariantError::LevelRange {
-                id: project.tracks[0].clips[0].id
-            })
-        );
+        assert_eq!(check(&project), Err(InvariantError::LevelRange { id: project.tracks[0].clips[0].id }));
     }
 
     #[test]
     fn out_of_range_master_volume_fails_rule_e() {
         let mut project = project_with_clips(&[&[]]);
         project.master_volume_db = -61.0;
-        assert_eq!(
-            check(&project),
-            Err(InvariantError::LevelRange { id: Uuid::nil() })
-        );
+        assert_eq!(check(&project), Err(InvariantError::LevelRange { id: Uuid::nil() }));
     }
 
     #[test]
@@ -243,20 +195,8 @@ mod tests {
         let mut project = project_with_clips(&[&[]]);
         let late = Uuid::new_v4();
         let early = Uuid::new_v4();
-        project.markers = vec![
-            Marker {
-                id: late,
-                position: 500,
-            },
-            Marker {
-                id: early,
-                position: 100,
-            },
-        ];
-        assert_eq!(
-            check(&project),
-            Err(InvariantError::MarkersUnsorted { marker_id: early })
-        );
+        project.markers = vec![Marker { id: late, position: 500 }, Marker { id: early, position: 100 }];
+        assert_eq!(check(&project), Err(InvariantError::MarkersUnsorted { marker_id: early }));
     }
 
     #[test]
@@ -264,10 +204,7 @@ mod tests {
         let mut project = project_with_clips(&[&[], &[]]);
         let duplicate = project.tracks[0].id;
         project.tracks[1].id = duplicate;
-        assert_eq!(
-            check(&project),
-            Err(InvariantError::DuplicateId { id: duplicate })
-        );
+        assert_eq!(check(&project), Err(InvariantError::DuplicateId { id: duplicate }));
     }
 
     #[test]
@@ -275,10 +212,7 @@ mod tests {
         let mut project = project_with_clips(&[&[(0, 1000)], &[(0, 1000)]]);
         let duplicate = project.tracks[0].clips[0].id;
         project.tracks[1].clips[0].id = duplicate;
-        assert_eq!(
-            check(&project),
-            Err(InvariantError::DuplicateId { id: duplicate })
-        );
+        assert_eq!(check(&project), Err(InvariantError::DuplicateId { id: duplicate }));
     }
 
     #[test]

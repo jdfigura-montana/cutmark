@@ -106,16 +106,10 @@ pub fn is_reserved_device_name(name: &str) -> bool {
     // the first dot, without trailing spaces.
     let stem = name.split('.').next().unwrap_or("").trim_end_matches(' ');
     let upper = stem.to_ascii_uppercase();
-    if matches!(
-        upper.as_str(),
-        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
-    ) {
+    if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") {
         return true;
     }
-    let Some(digit) = upper
-        .strip_prefix("COM")
-        .or_else(|| upper.strip_prefix("LPT"))
-    else {
+    let Some(digit) = upper.strip_prefix("COM").or_else(|| upper.strip_prefix("LPT")) else {
         return false;
     };
     let mut chars = digit.chars();
@@ -132,10 +126,7 @@ pub fn is_reserved_device_name(name: &str) -> bool {
 /// other characters Windows forbids in file names (`<>|?*`), and reserved
 /// device names. Joining an accepted name onto `media/` cannot leave it.
 pub fn check_media_file_name(name: &str) -> Result<(), LoadError> {
-    let reject = |reason: &'static str| LoadError::FileName {
-        name: shorten(name),
-        reason,
-    };
+    let reject = |reason: &'static str| LoadError::FileName { name: shorten(name), reason };
     if name.is_empty() {
         return Err(reject("it is empty"));
     }
@@ -149,9 +140,7 @@ pub fn check_media_file_name(name: &str) -> Result<(), LoadError> {
         return Err(reject("it contains a colon (drive or stream marker)"));
     }
     if name.contains(['"', '<', '>', '|', '?', '*']) {
-        return Err(reject(
-            "it contains a quote or another character Windows forbids",
-        ));
+        return Err(reject("it contains a quote or another character Windows forbids"));
     }
     if is_reserved_device_name(name) {
         return Err(reject("it is a reserved Windows device name"));
@@ -171,12 +160,7 @@ fn level_ok(value: f32, min: f32, max: f32) -> bool {
 
 /// Builds the error for a level that is not finite or out of range.
 fn out_of_range(what: String, value: f32, min: f32, max: f32) -> LoadError {
-    LoadError::OutOfRange {
-        what,
-        value,
-        min,
-        max,
-    }
+    LoadError::OutOfRange { what, value, min, max }
 }
 
 /// Clamps every track height to the lane limits (a non-number becomes the
@@ -184,11 +168,7 @@ fn out_of_range(what: String, value: f32, min: f32, max: f32) -> LoadError {
 /// than rejected.
 pub fn clamp_track_heights(project: &mut Project) {
     for track in &mut project.tracks {
-        track.height = if track.height.is_nan() {
-            DEFAULT_HEIGHT
-        } else {
-            track.height.clamp(MIN_HEIGHT, MAX_HEIGHT)
-        };
+        track.height = if track.height.is_nan() { DEFAULT_HEIGHT } else { track.height.clamp(MIN_HEIGHT, MAX_HEIGHT) };
     }
 }
 
@@ -205,8 +185,7 @@ pub fn validate_loaded(project: &Project) -> Result<(), LoadError> {
     if !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&rate) {
         return Err(LoadError::SampleRate(rate));
     }
-    let too_many =
-        |what: &'static str, count: usize, limit: usize| LoadError::TooMany { what, count, limit };
+    let too_many = |what: &'static str, count: usize, limit: usize| LoadError::TooMany { what, count, limit };
     if project.media.len() > MAX_MEDIA {
         return Err(too_many("media items", project.media.len(), MAX_MEDIA));
     }
@@ -220,21 +199,13 @@ pub fn validate_loaded(project: &Project) -> Result<(), LoadError> {
 
     for (index, item) in project.media.iter().enumerate() {
         if !(1..=2).contains(&item.channels) {
-            return Err(LoadError::Channels {
-                index: index + 1,
-                channels: item.channels,
-            });
+            return Err(LoadError::Channels { index: index + 1, channels: item.channels });
         }
         check_media_file_name(&item.file_name)?;
     }
 
     if !level_ok(project.master_volume_db, -60.0, 12.0) {
-        return Err(out_of_range(
-            "the master volume".to_string(),
-            project.master_volume_db,
-            -60.0,
-            12.0,
-        ));
+        return Err(out_of_range("the master volume".to_string(), project.master_volume_db, -60.0, 12.0));
     }
 
     // At most 192,000 * 86,400, far below u64::MAX.
@@ -242,20 +213,10 @@ pub fn validate_loaded(project: &Project) -> Result<(), LoadError> {
     for (index, track) in project.tracks.iter().enumerate() {
         let number = index + 1;
         if !level_ok(track.volume_db, -60.0, 12.0) {
-            return Err(out_of_range(
-                format!("track {number} volume"),
-                track.volume_db,
-                -60.0,
-                12.0,
-            ));
+            return Err(out_of_range(format!("track {number} volume"), track.volume_db, -60.0, 12.0));
         }
         if !level_ok(track.pan, -1.0, 1.0) {
-            return Err(out_of_range(
-                format!("track {number} pan"),
-                track.pan,
-                -1.0,
-                1.0,
-            ));
+            return Err(out_of_range(format!("track {number} pan"), track.pan, -1.0, 1.0));
         }
         for clip in &track.clips {
             if clip.src_out < clip.src_in {
@@ -265,12 +226,7 @@ pub fn validate_loaded(project: &Project) -> Result<(), LoadError> {
                 return Err(LoadError::ClipTooLong(clip.id));
             }
             if !level_ok(clip.gain_db, -60.0, 24.0) {
-                return Err(out_of_range(
-                    format!("the gain of a clip on track {number}"),
-                    clip.gain_db,
-                    -60.0,
-                    24.0,
-                ));
+                return Err(out_of_range(format!("the gain of a clip on track {number}"), clip.gain_db, -60.0, 24.0));
             }
         }
     }
@@ -301,19 +257,13 @@ mod tests {
     #[test]
     fn a_valid_project_passes() {
         assert_eq!(validate_loaded(&valid()), Ok(()));
-        let empty = Project::new(
-            "Empty".to_string(),
-            48_000,
-            crate::model::project::BitDepth::Int24,
-        );
+        let empty = Project::new("Empty".to_string(), 48_000, crate::model::project::BitDepth::Int24);
         assert_eq!(validate_loaded(&empty), Ok(()));
     }
 
     /// The text of the rejection, panicking when the project is accepted.
     fn reason(project: &Project) -> String {
-        validate_loaded(project)
-            .expect_err("the project should be rejected")
-            .to_string()
+        validate_loaded(project).expect_err("the project should be rejected").to_string()
     }
 
     #[test]
@@ -340,10 +290,7 @@ mod tests {
         for bad in [0, 3, 8, u16::MAX] {
             let mut p = valid();
             p.media[0].channels = bad;
-            assert!(matches!(
-                validate_loaded(&p),
-                Err(LoadError::Channels { index: 1, .. })
-            ));
+            assert!(matches!(validate_loaded(&p), Err(LoadError::Channels { index: 1, .. })));
         }
     }
 
@@ -381,31 +328,16 @@ mod tests {
         for (what, name) in bad {
             let mut p = valid();
             p.media[0].file_name = name.to_string();
-            assert!(
-                matches!(validate_loaded(&p), Err(LoadError::FileName { .. })),
-                "{what} ({name:?}) must be rejected"
-            );
-            assert!(
-                check_media_file_name(name).is_err(),
-                "{what} ({name:?}) must be rejected by the helper"
-            );
+            assert!(matches!(validate_loaded(&p), Err(LoadError::FileName { .. })), "{what} ({name:?}) must be rejected");
+            assert!(check_media_file_name(name).is_err(), "{what} ({name:?}) must be rejected by the helper");
         }
     }
 
     #[test]
     fn ordinary_file_names_are_accepted() {
-        for name in [
-            "boom.wav",
-            "boom (2).wav",
-            "My Song.mp3",
-            "consul.wav",
-            "COM10.wav",
-            "COM.wav",
-            "comet.mp3",
-            "a.b.c.wav",
-            "r\u{e9}sum\u{e9}.wav",
-            "lpt.wav",
-        ] {
+        for name in
+            ["boom.wav", "boom (2).wav", "My Song.mp3", "consul.wav", "COM10.wav", "COM.wav", "comet.mp3", "a.b.c.wav", "r\u{e9}sum\u{e9}.wav", "lpt.wav"]
+        {
             assert_eq!(check_media_file_name(name), Ok(()), "{name:?}");
         }
     }
@@ -438,35 +370,20 @@ mod tests {
         p.tracks[0].clips[0].start = day - 1_000;
         assert_eq!(validate_loaded(&p), Ok(()), "ends exactly at 24 h");
         p.tracks[0].clips[0].start = day - 999;
-        assert!(matches!(
-            validate_loaded(&p),
-            Err(LoadError::ClipTooLong(_))
-        ));
+        assert!(matches!(validate_loaded(&p), Err(LoadError::ClipTooLong(_))));
         // A start that would overflow u64 when the length is added.
         p.tracks[0].clips[0].start = u64::MAX - 10;
-        assert!(matches!(
-            validate_loaded(&p),
-            Err(LoadError::ClipTooLong(_))
-        ));
+        assert!(matches!(validate_loaded(&p), Err(LoadError::ClipTooLong(_))));
     }
 
     #[test]
     fn a_marker_past_24_hours_is_rejected() {
         let limit = MAX_SECONDS * 48_000;
         let mut p = valid();
-        p.markers.push(Marker {
-            id: Uuid::new_v4(),
-            position: limit,
-        });
+        p.markers.push(Marker { id: Uuid::new_v4(), position: limit });
         assert_eq!(validate_loaded(&p), Ok(()));
-        p.markers.push(Marker {
-            id: Uuid::new_v4(),
-            position: limit + 1,
-        });
-        assert!(matches!(
-            validate_loaded(&p),
-            Err(LoadError::MarkerTooLate(_))
-        ));
+        p.markers.push(Marker { id: Uuid::new_v4(), position: limit + 1 });
+        assert!(matches!(validate_loaded(&p), Err(LoadError::MarkerTooLate(_))));
     }
 
     #[test]
@@ -483,10 +400,7 @@ mod tests {
             for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 1.0e9, -1.0e9] {
                 let mut p = valid();
                 set(&mut p, bad);
-                assert!(
-                    matches!(validate_loaded(&p), Err(LoadError::OutOfRange { .. })),
-                    "{what} = {bad} must be rejected"
-                );
+                assert!(matches!(validate_loaded(&p), Err(LoadError::OutOfRange { .. })), "{what} = {bad} must be rejected");
             }
         }
         // Just outside each range.
@@ -499,21 +413,12 @@ mod tests {
         ] {
             let mut p = valid();
             set(&mut p, bad);
-            assert!(
-                matches!(validate_loaded(&p), Err(LoadError::OutOfRange { .. })),
-                "{what} = {bad}"
-            );
+            assert!(matches!(validate_loaded(&p), Err(LoadError::OutOfRange { .. })), "{what} = {bad}");
         }
         // The range ends are fine.
-        for (set, edge) in [
-            (cases[0].1, 12.0),
-            (cases[0].1, -60.0),
-            (cases[1].1, 1.0),
-            (cases[1].1, -1.0),
-            (cases[2].1, 24.0),
-            (cases[2].1, -60.0),
-            (cases[3].1, 12.0),
-        ] {
+        for (set, edge) in
+            [(cases[0].1, 12.0), (cases[0].1, -60.0), (cases[1].1, 1.0), (cases[1].1, -1.0), (cases[2].1, 24.0), (cases[2].1, -60.0), (cases[3].1, 12.0)]
+        {
             let mut p = valid();
             set(&mut p, edge);
             assert_eq!(validate_loaded(&p), Ok(()), "edge {edge}");
@@ -523,50 +428,18 @@ mod tests {
     #[test]
     fn too_many_tracks_media_or_clips_are_rejected() {
         let mut p = valid();
-        p.tracks = (0..=MAX_TRACKS)
-            .map(|i| Track::new(format!("T{i}")))
-            .collect();
-        assert!(matches!(
-            validate_loaded(&p),
-            Err(LoadError::TooMany {
-                what: "tracks",
-                count: 1_001,
-                ..
-            })
-        ));
+        p.tracks = (0..=MAX_TRACKS).map(|i| Track::new(format!("T{i}"))).collect();
+        assert!(matches!(validate_loaded(&p), Err(LoadError::TooMany { what: "tracks", count: 1_001, .. })));
 
         let mut p = valid();
         let template = p.media[0].clone();
-        p.media = (0..=MAX_MEDIA)
-            .map(|_| MediaItem {
-                id: Uuid::new_v4(),
-                ..template.clone()
-            })
-            .collect();
-        assert!(matches!(
-            validate_loaded(&p),
-            Err(LoadError::TooMany {
-                what: "media items",
-                ..
-            })
-        ));
+        p.media = (0..=MAX_MEDIA).map(|_| MediaItem { id: Uuid::new_v4(), ..template.clone() }).collect();
+        assert!(matches!(validate_loaded(&p), Err(LoadError::TooMany { what: "media items", .. })));
 
         let mut p = valid();
         let template = p.tracks[0].clips[0].clone();
-        p.tracks[0].clips = (0..=MAX_CLIPS)
-            .map(|_| Clip {
-                id: Uuid::new_v4(),
-                ..template.clone()
-            })
-            .collect();
-        assert!(matches!(
-            validate_loaded(&p),
-            Err(LoadError::TooMany {
-                what: "clips",
-                count: 100_001,
-                ..
-            })
-        ));
+        p.tracks[0].clips = (0..=MAX_CLIPS).map(|_| Clip { id: Uuid::new_v4(), ..template.clone() }).collect();
+        assert!(matches!(validate_loaded(&p), Err(LoadError::TooMany { what: "clips", count: 100_001, .. })));
     }
 
     #[test]
@@ -574,26 +447,15 @@ mod tests {
         // Overlapping clips.
         let mut p = valid();
         p.tracks[0].clips[1].start = 500;
-        assert!(matches!(
-            validate_loaded(&p),
-            Err(LoadError::Inconsistent(
-                InvariantError::UnsortedOrOverlapping { .. }
-            ))
-        ));
+        assert!(matches!(validate_loaded(&p), Err(LoadError::Inconsistent(InvariantError::UnsortedOrOverlapping { .. }))));
         // Clip pointing at media that is not in the bin.
         let mut p = valid();
         p.tracks[0].clips[0].media_id = Uuid::new_v4();
-        assert!(matches!(
-            validate_loaded(&p),
-            Err(LoadError::Inconsistent(InvariantError::MissingMedia { .. }))
-        ));
+        assert!(matches!(validate_loaded(&p), Err(LoadError::Inconsistent(InvariantError::MissingMedia { .. }))));
         // Duplicate track id.
         let mut p = project_with_clips(&[&[], &[]]);
         p.tracks[1].id = p.tracks[0].id;
-        assert!(matches!(
-            validate_loaded(&p),
-            Err(LoadError::Inconsistent(InvariantError::DuplicateId { .. }))
-        ));
+        assert!(matches!(validate_loaded(&p), Err(LoadError::Inconsistent(InvariantError::DuplicateId { .. }))));
     }
 
     #[test]
@@ -601,10 +463,7 @@ mod tests {
         let mut p = valid();
         p.tracks[0].clips[0].fade_in = u64::MAX;
         p.tracks[0].clips[0].fade_out = 1;
-        assert!(matches!(
-            validate_loaded(&p),
-            Err(LoadError::Inconsistent(InvariantError::FadeSum { .. }))
-        ));
+        assert!(matches!(validate_loaded(&p), Err(LoadError::Inconsistent(InvariantError::FadeSum { .. }))));
     }
 
     #[test]
@@ -615,21 +474,13 @@ mod tests {
         let p = project_with_clips(&rows);
         let started = std::time::Instant::now();
         assert_eq!(validate_loaded(&p), Ok(()));
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(5),
-            "validation took {:?}",
-            started.elapsed()
-        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "validation took {:?}", started.elapsed());
     }
 
     #[test]
     fn track_heights_are_clamped_not_rejected() {
         let mut p = project_with_clips(&[&[], &[], &[], &[], &[]]);
-        for (track, height) in p
-            .tracks
-            .iter_mut()
-            .zip([5.0, 1.0e9, f32::INFINITY, f32::NAN, 120.0])
-        {
+        for (track, height) in p.tracks.iter_mut().zip([5.0, 1.0e9, f32::INFINITY, f32::NAN, 120.0]) {
             track.height = height;
         }
         clamp_track_heights(&mut p);
@@ -640,9 +491,7 @@ mod tests {
 
     #[test]
     fn reserved_device_names_are_detected() {
-        for name in [
-            "con", "PRN", "Aux.txt", "nul", "COM1", "lpt9.wav", "CON .", "COM0", "LPT0",
-        ] {
+        for name in ["con", "PRN", "Aux.txt", "nul", "COM1", "lpt9.wav", "CON .", "COM0", "LPT0"] {
             assert!(is_reserved_device_name(name), "{name}");
         }
         for name in ["", "CONSOLE", "COM10", "LPT", "My Project", "xcon"] {

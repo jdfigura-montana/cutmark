@@ -24,13 +24,7 @@ impl DeviceResampler {
         let ratio = project_rate as f64 / device_rate.max(1) as f64;
         let buf = vec![0.0f32; CAP_FRAMES * 2];
         // Three leading zero frames so the first stencil never indexes before the buffer.
-        DeviceResampler {
-            ratio,
-            pos: 0.0,
-            base: -3,
-            len: 3,
-            buf,
-        }
+        DeviceResampler { ratio, pos: 0.0, base: -3, len: 3, buf }
     }
 
     /// Renders `out.len() / 2` device-rate stereo frames, pulling project-rate
@@ -109,12 +103,7 @@ mod tests {
     const DEVICE_RATE: f64 = 48_000.0;
 
     /// Runs `calls` fills of `size` frames; returns (all output, total frames pulled).
-    fn run(
-        res: &mut DeviceResampler,
-        calls: usize,
-        size: usize,
-        source: &mut dyn FnMut(&mut [f32]),
-    ) -> (Vec<f32>, usize) {
+    fn run(res: &mut DeviceResampler, calls: usize, size: usize, source: &mut dyn FnMut(&mut [f32])) -> (Vec<f32>, usize) {
         let mut out_all = Vec::new();
         let mut pulled = 0usize;
         for _ in 0..calls {
@@ -151,10 +140,7 @@ mod tests {
         let out_frames = out.len() as f64 / 2.0;
         let expected = out_frames * (PROJECT_RATE / DEVICE_RATE);
         let diff = pulled as f64 - expected;
-        assert!(
-            diff.abs() <= 2.0,
-            "pulled {pulled} vs expected {expected} (diff {diff})"
-        );
+        assert!(diff.abs() <= 2.0, "pulled {pulled} vs expected {expected} (diff {diff})");
     }
 
     #[test]
