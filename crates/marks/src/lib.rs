@@ -4,11 +4,13 @@
 //! Marks Sidecar phases 1 to 3 (see docs/suite).
 
 pub mod model;
+pub mod read;
 
 pub use model::{
     AUTO_DATA_MAX_BYTES, AutoInfo, ClockInfo, ClockSource, Context, LABEL_MAX, MARKS_MAX, Mark, MarkType, MediaEntry, NOTES_MAX, SCHEMA_VERSION,
     SCRIPT_LINE_MAX, ScriptRef, Session, Sidecar, Source, WriterInfo,
 };
+pub use read::{LoadError, Warning, discover, load};
 
 #[cfg(test)]
 mod tests {
