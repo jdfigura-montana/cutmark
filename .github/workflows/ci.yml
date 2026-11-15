@@ -1,0 +1,27 @@
+name: CI
+# Manual trigger only. One run per milestone. Linux only, because marks is the only crate CI builds.
+on: workflow_dispatch
+concurrency:
+  group: ci
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  neutral:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+    steps:
+      - uses: actions/checkout@v4
+      # jdfigura-montana/filmcraft is private. FILMCRAFT_TOKEN is a fine-grained, read-only token for that repo only.
+      - name: Read access to filmcraft
+        run: git config --global url."https://x-access-token:${{ secrets.FILMCRAFT_TOKEN }}@github.com/jdfigura-montana/filmcraft".insteadOf "https://github.com/jdfigura-montana/filmcraft"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy -p marks --all-targets -- -D warnings
+      - run: cargo test -p marks
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny check --hide-inclusion-graph
