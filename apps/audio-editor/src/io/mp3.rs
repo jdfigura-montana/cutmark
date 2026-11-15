@@ -20,11 +20,7 @@ const MP3_MUXER: &str = "mp3";
 
 /// Clamps a sample to +/-1.0 and maps non-finite values to silence.
 fn clean(sample: f32) -> f32 {
-    if sample.is_finite() {
-        sample.clamp(-1.0, 1.0)
-    } else {
-        0.0
-    }
+    if sample.is_finite() { sample.clamp(-1.0, 1.0) } else { 0.0 }
 }
 
 /// The mp3 muxer output plus the libmp3lame encoder and its reusable buffers.
@@ -62,13 +58,11 @@ impl Mp3 {
             .ok_or_else(|| IoError::Export("libmp3lame is missing from the FFmpeg build".to_string()))?
             .audio()
             .map_err(setup)?;
-        let layout =
-            if channels == 1 { channel_layout::ChannelLayout::MONO } else { channel_layout::ChannelLayout::STEREO };
+        let layout = if channels == 1 { channel_layout::ChannelLayout::MONO } else { channel_layout::ChannelLayout::STEREO };
 
         // `.part` is not a known extension, so the mp3 muxer is forced. This
         // creates the file; the sink's guard deletes it when the sink goes away.
-        let mut octx = ffmpeg_next::format::output_as(part, MP3_MUXER)
-            .map_err(|e| IoError::Export(format!("could not create the MP3 output: {e}")))?;
+        let mut octx = ffmpeg_next::format::output_as(part, MP3_MUXER).map_err(|e| IoError::Export(format!("could not create the MP3 output: {e}")))?;
         let global_header = octx.format().flags().contains(FormatFlags::GLOBAL_HEADER);
         let mut stream = octx.add_stream(mp3_codec).map_err(setup)?;
         stream.set_time_base((1, rate as i32));
@@ -88,45 +82,28 @@ impl Mp3 {
         // so libmp3lame encodes CBR at the requested bit rate.
         let mut options = ffmpeg_next::Dictionary::new();
         options.set("compression_level", "0");
-        let encoder = encoder
-            .open_as_with(mp3_codec, options)
-            .map_err(|e| IoError::Export(format!("could not open the MP3 encoder: {e}")))?;
+        let encoder = encoder.open_as_with(mp3_codec, options).map_err(|e| IoError::Export(format!("could not open the MP3 encoder: {e}")))?;
         stream.set_parameters(&encoder);
         // The muxer would otherwise prepend an ID3v2 tag; the export is an MP3
         // that starts at its first frame, like the old LAME output was.
         let mut muxer_options = ffmpeg_next::Dictionary::new();
         muxer_options.set("id3v2_version", "0");
-        octx.write_header_with(muxer_options)
-            .map_err(|e| IoError::Export(format!("could not write the MP3 header: {e}")))?;
+        octx.write_header_with(muxer_options).map_err(|e| IoError::Export(format!("could not write the MP3 header: {e}")))?;
         // The muxer may pick its own time base in write_header; packets must be
         // rescaled to whatever the stream ended up with.
         let stream_tb = octx.stream(0).map_or((1, rate as i32).into(), |s| s.time_base());
-        let frame_size = usize::try_from(encoder.frame_size())
-            .ok()
-            .filter(|n| *n > 0)
-            .ok_or_else(|| IoError::Export("MP3 encoder reported no frame size".to_string()))?;
+        let frame_size =
+            usize::try_from(encoder.frame_size()).ok().filter(|n| *n > 0).ok_or_else(|| IoError::Export("MP3 encoder reported no frame size".to_string()))?;
         let mut frame = frame::Audio::new(Sample::F32(Type::Planar), frame_size, layout);
         frame.set_rate(rate);
-        Ok(Self {
-            channels: usize::from(channels),
-            frame_size,
-            pts: 0,
-            stream_tb,
-            frame,
-            pkt: packet::Packet::empty(),
-            pending: Vec::new(),
-            encoder,
-            octx,
-        })
+        Ok(Self { channels: usize::from(channels), frame_size, pts: 0, stream_tb, frame, pkt: packet::Packet::empty(), pending: Vec::new(), encoder, octx })
     }
 
     /// Writes one drained packet into the muxer on stream 0.
     fn write_packet(&mut self) -> Result<(), IoError> {
         self.pkt.set_stream(0);
         self.pkt.rescale_ts((1, self.encoder.rate() as i32), self.stream_tb);
-        self.pkt
-            .write_interleaved(&mut self.octx)
-            .map_err(|e| IoError::Export(format!("MP3 write failed: {e}")))
+        self.pkt.write_interleaved(&mut self.octx).map_err(|e| IoError::Export(format!("MP3 write failed: {e}")))
     }
 
     /// Drains every packet the encoder currently has into the muxer.
@@ -162,9 +139,7 @@ impl Mp3 {
                 *dst = clean(src);
             }
         }
-        self.encoder
-            .send_frame(&self.frame)
-            .map_err(|e| IoError::Export(format!("MP3 encode failed: {e}")))?;
+        self.encoder.send_frame(&self.frame).map_err(|e| IoError::Export(format!("MP3 encode failed: {e}")))?;
         self.drain_packets()
     }
 
@@ -199,13 +174,9 @@ impl Mp3 {
     /// (which finalizes the Xing/Info tag) and closes the output file.
     fn finish(mut self) -> Result<(), IoError> {
         self.flush_tail()?;
-        self.encoder
-            .send_eof()
-            .map_err(|e| IoError::Export(format!("MP3 flush failed: {e}")))?;
+        self.encoder.send_eof().map_err(|e| IoError::Export(format!("MP3 flush failed: {e}")))?;
         self.drain_packets()?;
-        self.octx
-            .write_trailer()
-            .map_err(|e| IoError::Export(format!("could not write the MP3 trailer: {e}")))
+        self.octx.write_trailer().map_err(|e| IoError::Export(format!("could not write the MP3 trailer: {e}")))
     }
 }
 
@@ -227,8 +198,7 @@ pub(super) fn open_sink(path: &Path, kbps: u32, format: &ExportFormat) -> Result
     let out_rate = mp3_rate(format.in_rate);
     // Created before the muxer opens the `.part` file, so a failure here leaves
     // nothing on disk.
-    let resampler =
-        if out_rate == format.in_rate { None } else { Some(StreamResampler::new(format.channels, format.in_rate, out_rate)?) };
+    let resampler = if out_rate == format.in_rate { None } else { Some(StreamResampler::new(format.channels, format.in_rate, out_rate)?) };
     let guard = PartGuard::new(path);
     let mp3 = Mp3::new(guard.part_path(), format.channels, out_rate, kbps)?;
     let channels = usize::from(format.channels);

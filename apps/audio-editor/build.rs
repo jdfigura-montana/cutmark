@@ -58,9 +58,9 @@ fn copy_ffmpeg_dlls() {
         }
         let Some(name) = path.file_name() else { continue };
         let fresh = match std::fs::metadata(&path) {
-            Ok(src) => [profile_dir.join(name), deps_dir.join(name)].into_iter().all(|dst| {
-                std::fs::metadata(&dst).is_ok_and(|m| m.len() == src.len() && m.modified().is_ok_and(|t| t >= src.modified().unwrap_or(t)))
-            }),
+            Ok(src) => [profile_dir.join(name), deps_dir.join(name)]
+                .into_iter()
+                .all(|dst| std::fs::metadata(&dst).is_ok_and(|m| m.len() == src.len() && m.modified().is_ok_and(|t| t >= src.modified().unwrap_or(t)))),
             Err(e) => {
                 println!("cargo:warning=FFmpeg DLL copy skipped for {}: {e}", name.to_string_lossy());
                 continue;
