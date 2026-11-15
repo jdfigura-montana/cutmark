@@ -3,9 +3,9 @@ param([switch]$Full)
 # Packages excluded from clippy and test. Starts empty. Add a package only with a comment saying why and when it comes off.
 $Exclude = @()
 
-# Tests that time out under full parallel load. They run alone, one thread, after the package's other tests.
+# Tests that time out under full parallel load: both wait on background workers with a fixed timeout and pass when run alone. They run alone, one thread, after the package's other tests.
 # The video track fixes the tests; then remove the entry.
-$Isolated = @{ "cutmark-video-ui" = "perf_ui::" }
+$Isolated = @{ "cutmark-video-ui" = @("perf_ui::", "media_ui::offline_badges_proxy_toggle_and_dialogs") }
 
 $ErrorActionPreference = "Continue"
 Set-Location (Split-Path $PSScriptRoot -Parent)
@@ -37,8 +37,12 @@ foreach ($p in $packages) {
 }
 foreach ($p in $packages) {
     if ($Isolated.ContainsKey($p)) {
-        Invoke-Step "test $p" @("test", "-p", $p, "--", "--skip", $Isolated[$p])
-        Invoke-Step "test $p (isolated $($Isolated[$p]))" @("test", "-p", $p, "--test", "it", $Isolated[$p], "--", "--test-threads=1")
+        $skipArgs = @()
+        foreach ($f in $Isolated[$p]) { $skipArgs += @("--skip", $f) }
+        Invoke-Step "test $p" (@("test", "-p", $p, "--") + $skipArgs)
+        foreach ($f in $Isolated[$p]) {
+            Invoke-Step "test $p (isolated $f)" @("test", "-p", $p, "--test", "it", $f, "--", "--test-threads=1")
+        }
     } else {
         Invoke-Step "test $p" @("test", "-p", $p)
     }
