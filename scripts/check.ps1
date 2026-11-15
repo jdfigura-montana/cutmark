@@ -3,6 +3,10 @@ param([switch]$Full)
 # Packages excluded from clippy and test. Starts empty. Add a package only with a comment saying why and when it comes off.
 $Exclude = @()
 
+# Tests that time out under full parallel load. They run alone, one thread, after the package's other tests.
+# The video track fixes the tests; then remove the entry.
+$Isolated = @{ "cutmark-video-ui" = "perf_ui::" }
+
 $ErrorActionPreference = "Continue"
 Set-Location (Split-Path $PSScriptRoot -Parent)
 
@@ -32,7 +36,12 @@ foreach ($p in $packages) {
     Invoke-Step "clippy $p" @("clippy", "-p", $p, "--all-targets", "--", "-D", "warnings")
 }
 foreach ($p in $packages) {
-    Invoke-Step "test $p" @("test", "-p", $p)
+    if ($Isolated.ContainsKey($p)) {
+        Invoke-Step "test $p" @("test", "-p", $p, "--", "--skip", $Isolated[$p])
+        Invoke-Step "test $p (isolated $($Isolated[$p]))" @("test", "-p", $p, "--test", "it", $Isolated[$p], "--", "--test-threads=1")
+    } else {
+        Invoke-Step "test $p" @("test", "-p", $p)
+    }
 }
 Invoke-Step "deny" @("deny", "check", "--hide-inclusion-graph")
 Write-Host "ALL CHECKS PASSED"
