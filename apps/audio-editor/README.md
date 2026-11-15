@@ -17,21 +17,22 @@ each take lands in the bin and on the armed track as one undo step.
 ## Build
 
 ```
-cargo build --release
+cargo build --release -p cutmark-audio
 ```
 
-The executable ends up at `target\release\cutmark.exe`. Release builds are windowed — no
+The executable ends up at `target\release\cutmark-audio.exe` in the workspace root (two folders
+above this one). Release builds are windowed — no
 console window opens, and the C runtime is linked statically (no VC++ redistributable needed).
 
 ## Build the installer
 
 ```
-powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1
+powershell -ExecutionPolicy Bypass -File apps\audio-editor\scripts\build-installer.ps1
 ```
 
 Requires [Inno Setup 6](https://jrsoftware.org/isinfo.php) (ISCC.exe) to be installed. The script
 refuses to run while CutMark is open, builds the release exe, runs Inno Setup with the version from
-`Cargo.toml` and writes `dist\CutMark-Setup-<version>.exe`. The installer bundles the exe plus a
+`apps\audio-editor\Cargo.toml` and writes `dist\CutMark-Setup-<version>.exe`. The installer bundles the exe plus a
 `licenses\` folder (third-party licences for the IBM Plex and JetBrains Mono fonts and LAME). The
 icons can be regenerated with `python scripts\make_icon.py`.
 

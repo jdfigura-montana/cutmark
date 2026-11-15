@@ -1,16 +1,17 @@
-"""Generate THIRD-PARTY-NOTICES.txt in the repo root.
+"""Generate THIRD-PARTY-NOTICES.txt in apps/audio-editor.
 
 Lists IBM Plex Sans + JetBrains Mono (OFL), LAME via mp3lame-encoder
-(LGPL-3.0) and the license of every crate in Cargo.lock, read from the
-extracted crate sources in the local cargo registry (no network). Run from
-the repo root: python scripts/gen_notices.py
+(LGPL-3.0) and the license of every crate in the cutmark-audio dependency
+tree for Windows (via cargo tree), read from the extracted crate sources
+in the local cargo registry (no network). Run from the repo root:
+python apps\audio-editor\scripts\gen_notices.py
 """
 import json
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-LOCK = ROOT / "Cargo.lock"
 OUT = ROOT / "THIRD-PARTY-NOTICES.txt"
 
 # Local sparse-registry cache written by cargo; no network needed.
@@ -37,19 +38,22 @@ Fonts (bundled under assets/fonts, licenses in the same folder):
   License: LGPL-3.0 (https://www.gnu.org/licenses/lgpl-3.0.html)
   LAME is linked as a compiled C library (mp3lame-sys) and is not modified.
 
-Rust crates (from Cargo.lock; license as declared on crates.io):
+Rust crates (from the cutmark-audio dependency tree; license as declared on crates.io):
 """
 
 
-def lock_packages() -> list[tuple[str, str]]:
-    """Unique (name, version) pairs from Cargo.lock, sorted by name."""
-    text = LOCK.read_text(encoding="utf-8")
+def tree_packages() -> list[tuple[str, str]]:
+    """Unique (name, version) pairs in the cutmark-audio dependency tree on Windows, sorted by name."""
+    out = subprocess.run(
+        ["cargo", "tree", "-p", "cutmark-audio", "-e", "normal", "--target", "x86_64-pc-windows-msvc",
+         "--prefix", "none", "--format", "{p}", "--offline"],
+        cwd=ROOT, capture_output=True, text=True, check=True,
+    ).stdout
     pkgs: dict[str, str] = {}
-    for block in re.split(r"\[\[package\]\]", text)[1:]:
-        name = re.search(r'^name = "(.+)"', block, re.M)
-        version = re.search(r'^version = "(.+)"', block, re.M)
-        if name and version:
-            pkgs.setdefault(name.group(1), version.group(1))
+    for line in out.splitlines():
+        m = re.match(r"^(\S+) v(\S+)", line)
+        if m:
+            pkgs.setdefault(m.group(1), m.group(2))
     return sorted(pkgs.items())
 
 
@@ -79,11 +83,11 @@ def license_from_source(name: str, version: str) -> str | None:
 
 
 def main() -> None:
-    pkgs = lock_packages()
+    pkgs = tree_packages()
     lines = [PREAMBLE]
     missing = 0
     for name, version in pkgs:
-        if name == "cutmark":  # the root crate itself, not a dependency
+        if name == "cutmark-audio":  # the crate itself, not a dependency
             continue
         lic = license_from_source(name, version)
         if lic is None:
