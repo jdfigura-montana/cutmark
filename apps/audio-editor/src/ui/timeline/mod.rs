@@ -1,0 +1,841 @@
+//! ui::timeline: the central timeline view (ruler, lanes, playhead, zoom, scroll).
+
+use eframe::egui;
+use uuid::Uuid;
+
+use crate::editor::Editor;
+use crate::editor::transport::TransportState;
+use crate::ui::theme::THEME;
+use crate::ui::widgets::meter;
+use crate::util::time::seconds_to_samples;
+
+pub mod clip_view;
+pub mod interaction;
+pub mod lane;
+pub mod ruler;
+pub mod track_header;
+pub mod waveform;
+
+/// Smallest zoom: one thirty-second of a sample per pixel.
+pub const MIN_SPP: f64 = 1.0 / 32.0;
+/// Largest zoom: 4 194 304 samples per pixel.
+pub const MAX_SPP: f64 = 4_194_304.0;
+
+/// Zoom command from the View menu, applied by `timeline::show`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewMenuAction {
+    /// Nothing chosen.
+    #[default]
+    None,
+    /// Zoom in, anchored at the lane center.
+    ZoomIn,
+    /// Zoom out, anchored at the lane center.
+    ZoomOut,
+    /// Zoom so the whole project fits.
+    ZoomToFit,
+    /// Zoom so the range selection fills the lane area.
+    ZoomToSelection,
+}
+
+/// Ruler tick step, in seconds, from the coarsest-fitting list.
+const TICK_STEPS: [f64; 21] = [
+    0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0,
+    120.0, 300.0, 600.0, 1800.0, 3600.0,
+];
+
+/// Geometry of the timeline lane area for one frame.
+pub struct Geom {
+    /// Left edge of the lane area in window points.
+    pub lane_left: f32,
+    /// Width of the lane area in points.
+    pub lane_width: f32,
+    /// Horizontal zoom in samples per pixel.
+    pub spp: f64,
+    /// First visible sample.
+    pub scroll_x: u64,
+}
+
+impl Geom {
+    /// Window x position of a timeline sample.
+    pub fn sample_to_x(&self, sample: u64) -> f32 {
+        self.lane_left + ((sample as f64 - self.scroll_x as f64) / self.spp) as f32
+    }
+
+    /// Timeline sample at a window x position, clamped at 0.
+    pub fn x_to_sample(&self, x: f32) -> u64 {
+        let dx = (x - self.lane_left) as f64;
+        ((dx * self.spp + self.scroll_x as f64).max(0.0)) as u64
+    }
+
+    /// First and one-past-last visible sample.
+    pub fn visible_range(&self) -> (u64, u64) {
+        (
+            self.scroll_x,
+            self.scroll_x + (self.lane_width as f64 * self.spp).ceil() as u64,
+        )
+    }
+}
+
+/// Zooms horizontally by `factor`, keeping the sample under the anchor pixel fixed.
+///
+/// `anchor_offset_px` is measured from the left edge of the lane area. The new
+/// samples-per-pixel is clamped to MIN_SPP..=MAX_SPP and the new scroll
+/// position never goes below zero.
+pub fn zoom_at(spp: f64, scroll_x: u64, factor: f64, anchor_offset_px: f32) -> (f64, u64) {
+    let new_spp = (spp * factor).clamp(MIN_SPP, MAX_SPP);
+    let anchor = scroll_x as f64 + f64::from(anchor_offset_px) * spp;
+    let new_scroll = anchor - f64::from(anchor_offset_px) * new_spp;
+    (new_spp, new_scroll.round().max(0.0) as u64)
+}
+
+/// Samples per pixel and scroll that fit the whole project with a small margin.
+///
+/// The span is the larger of the project length and 10 seconds of samples,
+/// times 1.05, spread over `lane_width`. Clamped to MIN_SPP..=MAX_SPP; the
+/// scroll starts at 0.
+pub fn zoom_to_fit(project_length: u64, sample_rate: u32, lane_width: f32) -> (f64, u64) {
+    if lane_width <= 0.0 {
+        return (MAX_SPP, 0);
+    }
+    let span = project_length.max(seconds_to_samples(10.0, sample_rate)) as f64;
+    let spp = (span / f64::from(lane_width) * 1.05).clamp(MIN_SPP, MAX_SPP);
+    (spp, 0)
+}
+
+/// Zoom and scroll that show the range selection: samples-per-pixel is the
+/// range length over the lane width times 1.1, and the scroll puts the range
+/// start 5 percent of the visible width in from the left edge, not below 0.
+/// Both are clamped to the usual zoom limits.
+pub fn zoom_to_selection(start: u64, end: u64, lane_width: f32) -> (f64, u64) {
+    if lane_width <= 0.0 {
+        return (MAX_SPP, 0);
+    }
+    let len = (end.saturating_sub(start)) as f64;
+    let spp = (len / f64::from(lane_width) * 1.1).clamp(MIN_SPP, MAX_SPP);
+    let visible = f64::from(lane_width) * spp;
+    let scroll = (start as f64 - 0.05 * visible).round().max(0.0) as u64;
+    (spp, scroll)
+}
+
+/// Smallest ruler tick step (in samples) that is at least `min_px` wide at
+/// the given zoom and sample rate. Uses the largest step when none fit.
+pub fn tick_step(spp: f64, rate: u32, min_px: f32) -> u64 {
+    let min_px = f64::from(min_px);
+    for step in TICK_STEPS {
+        let samples = seconds_to_samples(step, rate);
+        if samples as f64 / spp >= min_px {
+            return samples;
+        }
+    }
+    seconds_to_samples(TICK_STEPS[TICK_STEPS.len() - 1], rate)
+}
+
+/// Total scrollable span in samples: the larger of project length and visible
+/// width, plus 10 percent extra.
+fn scroll_extent(project_length: u64, visible: u64) -> u64 {
+    (project_length.max(visible) as f64 * 1.1).ceil() as u64
+}
+
+/// How far the view must be able to scroll and fit: the project length, or the
+/// end of the take being recorded when that runs past the last clip.
+fn content_length(editor: &Editor) -> u64 {
+    let length = editor.project_length();
+    editor.recording_status().map_or(length, |take| {
+        length.max(take.start.saturating_add(take.frames))
+    })
+}
+
+/// Draws the whole timeline into the remaining center space and handles its
+/// input (zoom, scroll, playhead clicks). Not a ScrollArea: everything is
+/// painted by hand over one allocated rect.
+pub fn show(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    view_menu: ViewMenuAction,
+    meters: &mut meter::MeterState,
+) -> Vec<String> {
+    // The timeline owns horizontal zoom; egui's own keyboard and Ctrl+wheel
+    // UI zoom must not fire here.
+    ui.ctx().options_mut(|o| o.zoom_with_keyboard = false);
+
+    let avail = ui.available_rect_before_wrap();
+    let resp = ui.allocate_rect(avail, egui::Sense::click());
+
+    let lane_left = avail.left() + THEME.header_col_w;
+    let lane_right = avail.right();
+    let lane_width = lane_right - lane_left;
+    let ruler_rect = egui::Rect::from_min_max(
+        egui::pos2(lane_left, avail.top()),
+        egui::pos2(lane_right, avail.top() + THEME.ruler_h),
+    );
+    let header_rect = egui::Rect::from_min_max(
+        egui::pos2(avail.left(), ruler_rect.bottom()),
+        egui::pos2(lane_left, avail.bottom()),
+    );
+    let lane_rect = egui::Rect::from_min_max(
+        egui::pos2(lane_left, ruler_rect.bottom()),
+        egui::pos2(lane_right, avail.bottom() - THEME.scrollbar_h),
+    );
+    let scroll_rect = egui::Rect::from_min_max(
+        egui::pos2(lane_left, lane_rect.bottom()),
+        egui::pos2(lane_right, avail.bottom()),
+    );
+
+    let content_h: f32 = editor.project.tracks.iter().map(|t| t.height).sum();
+    let max_scroll_y = (content_h - lane_rect.height()).max(0.0);
+
+    // Old project files may carry an out-of-range zoom (or 0); fit instead.
+    if !(MIN_SPP..=MAX_SPP).contains(&editor.view.samples_per_pixel) {
+        apply_fit(editor, lane_width);
+    }
+    // \ zooms to fit, Ctrl+\ zooms to the selection, wherever the pointer is.
+    if !ui.ctx().egui_wants_keyboard_input() && ui.input(|i| i.key_pressed(egui::Key::Backslash)) {
+        if ui.input(|i| i.modifiers.ctrl) {
+            apply_view_menu(editor, ViewMenuAction::ZoomToSelection, lane_width);
+        } else {
+            apply_fit(editor, lane_width);
+        }
+    }
+    apply_view_menu(editor, view_menu, lane_width);
+
+    // Input first: it may change spp, scroll_x, scroll_y and the playhead.
+    // Marker interaction on the ruler comes first and wins over the plain
+    // ruler click (playhead), so the flag suppresses that click this frame.
+    // While a take is recorded the mouse only zooms and scrolls: the ruler,
+    // the lanes, the clips and the bin drag ignore it (no seek, no scrub, no
+    // selection, no edits).
+    let recording = editor.is_recording();
+    let marker_g = Geom {
+        lane_left,
+        lane_width,
+        spp: editor.view.samples_per_pixel,
+        scroll_x: editor.view.scroll_x,
+    };
+    let ruler_taken = !recording && ruler::handle_markers(ui, editor, &marker_g, ruler_rect);
+    handle_input(ui, editor, lane_left, lane_width, max_scroll_y, &resp);
+    // Audible scrubbing on the ruler (and the playhead handle): press starts,
+    // drag scrubs, release ends. Marker interaction wins.
+    if !recording {
+        ruler::handle_scrub(ui, editor, ruler_rect, ruler_taken);
+    }
+
+    // Follow the playhead while playing or recording: when it leaves the
+    // visible lanes on either side, page so it sits 5 percent in from the left
+    // edge. Never follows while stopped. While a take is recorded the playhead
+    // is the end of what was recorded so far.
+    if editor.transport_state() == TransportState::Playing || editor.take_is_live() {
+        let spp = editor.view.samples_per_pixel;
+        let playhead = editor.view.playhead;
+        let visible_end = editor.view.scroll_x + (lane_width as f64 * spp) as u64;
+        if playhead < editor.view.scroll_x || playhead > visible_end {
+            let left_margin = (0.05 * lane_width as f64 * spp) as u64;
+            let new_scroll = playhead.saturating_sub(left_margin);
+            editor.set_view_x(spp, clamp_scroll_x(editor, spp, lane_width, new_scroll));
+        }
+    }
+
+    let view = editor.view.clone();
+    let g = Geom {
+        lane_left,
+        lane_width,
+        spp: view.samples_per_pixel,
+        scroll_x: view.scroll_x,
+    };
+    // A bin item dragged over the lanes: Esc cancels, release over a lane drops.
+    let mut messages = Vec::new();
+    if !recording {
+        messages = interaction::handle_bin_drag(ui, editor, &g, lane_rect, view.scroll_y);
+        // Clip mouse interaction: header moves, edge trims, clip menu, cursors.
+        // When it takes the press, the lane interaction must not see it.
+        let clip_handled = interaction::handle_clip_input(ui, editor, &g, lane_rect, view.scroll_y);
+        // Lane mouse interaction: range selection, boundary drags, playhead
+        // clicks.
+        if !clip_handled {
+            interaction::handle_lane_input(ui, editor, &g, lane_rect, view.scroll_y);
+        }
+    }
+    let visible = g.visible_range().1 - g.visible_range().0;
+    let length = content_length(editor);
+    let max_scroll_x = scroll_extent(length, visible).saturating_sub(visible);
+
+    draw(
+        ui,
+        editor,
+        &g,
+        ruler_rect,
+        header_rect,
+        lane_rect,
+        scroll_rect,
+        visible,
+        max_scroll_x,
+        meters,
+    );
+    // Clip drag snap line (over the clips) and the open clip context menu.
+    interaction::draw_clip_snap_line(ui, &g, lane_rect);
+    messages.extend(interaction::draw_clip_menu(ui, editor));
+    ruler::draw_marker_menu(ui, editor);
+    messages.extend(interaction::draw_gain_edit(ui, editor));
+    messages.extend(crate::ui::dialogs::gain::show(ui.ctx(), editor));
+    messages.extend(crate::ui::dialogs::normalize::show(ui.ctx(), editor));
+    messages
+}
+
+/// Zooms so the whole project fits, scroll at the start.
+fn apply_fit(editor: &mut Editor, lane_width: f32) {
+    let (spp, scroll_x) = zoom_to_fit(
+        content_length(editor),
+        editor.project.sample_rate,
+        lane_width,
+    );
+    editor.set_view_x(spp, scroll_x);
+}
+
+/// Applies a View menu zoom command, anchored at the lane center.
+fn apply_view_menu(editor: &mut Editor, action: ViewMenuAction, lane_width: f32) {
+    match action {
+        ViewMenuAction::None => {}
+        ViewMenuAction::ZoomToFit => apply_fit(editor, lane_width),
+        ViewMenuAction::ZoomToSelection => {
+            if let crate::editor::selection::Selection::Range { start, end, .. } =
+                editor.selection()
+            {
+                let (spp, scroll_x) = zoom_to_selection(*start, *end, lane_width);
+                editor.set_view_x(spp, clamp_scroll_x(editor, spp, lane_width, scroll_x));
+            }
+        }
+        ViewMenuAction::ZoomIn | ViewMenuAction::ZoomOut => {
+            let factor = if action == ViewMenuAction::ZoomIn {
+                1.5
+            } else {
+                1.0 / 1.5
+            };
+            let (spp, scroll_x) = zoom_at(
+                editor.view.samples_per_pixel,
+                editor.view.scroll_x,
+                factor,
+                lane_width / 2.0,
+            );
+            editor.set_view_x(spp, clamp_scroll_x(editor, spp, lane_width, scroll_x));
+        }
+    }
+}
+
+/// Wheel, keyboard and click input over the timeline.
+#[allow(clippy::too_many_arguments)]
+fn handle_input(
+    ui: &egui::Ui,
+    editor: &mut Editor,
+    lane_left: f32,
+    lane_width: f32,
+    max_scroll_y: f32,
+    resp: &egui::Response,
+) {
+    if !resp.hovered() {
+        return;
+    }
+
+    // Ruler clicks are handled by ruler::handle_scrub (audible scrubbing);
+    // lane clicks keep their seek-while-playing behavior in
+    // interaction::handle_lane_input.
+    if ui.ctx().egui_wants_keyboard_input() {
+        return;
+    }
+
+    ui.input(|i| {
+        let zoom = i.zoom_delta();
+        if zoom != 1.0 {
+            // Ctrl + wheel: zoom anchored at the mouse, 1.25 per notch.
+            // egui keeps the delta out of smooth_scroll_delta when the zoom
+            // modifier is down, so this does exactly one thing.
+            if let Some(p) = i.pointer.latest_pos() {
+                let offset = (p.x - lane_left).clamp(0.0, lane_width);
+                let factor = if zoom > 1.0 { 1.25 } else { 1.0 / 1.25 };
+                let (spp, scroll_x) = zoom_at(
+                    editor.view.samples_per_pixel,
+                    editor.view.scroll_x,
+                    factor,
+                    offset,
+                );
+                editor.set_view_x(spp, clamp_scroll_x(editor, spp, lane_width, scroll_x));
+            }
+        } else if i.modifiers.alt {
+            // Alt + wheel: vertical waveform scale, 1.25 per notch. This
+            // branch replaces the scroll branches, so Alt + wheel never
+            // scrolls.
+            let d = i.smooth_scroll_delta().y;
+            if d != 0.0 {
+                let factor = if d > 0.0 { 1.25_f32 } else { 1.0_f32 / 1.25 };
+                editor.set_wave_scale(editor.wave_scale * factor);
+            }
+        } else if i.modifiers.shift {
+            // Shift + wheel: egui already folds the wheel delta into the
+            // horizontal component; scroll left/right by ~100 px per notch.
+            let d = i.smooth_scroll_delta().x;
+            if d != 0.0 {
+                let spp = editor.view.samples_per_pixel;
+                let new_x = (editor.view.scroll_x as f64 - d as f64)
+                    .round()
+                    .clamp(0.0, f64::from(u32::MAX)) as u64;
+                editor.set_view_x(spp, clamp_scroll_x(editor, spp, lane_width, new_x));
+            }
+        } else {
+            // Plain wheel: scroll tracks vertically.
+            let d = i.smooth_scroll_delta().y;
+            if d != 0.0 {
+                let y = (editor.view.scroll_y - d).clamp(0.0, max_scroll_y);
+                editor.set_scroll_y(y);
+            }
+        }
+
+        // + / - (and = and the numpad keys) zoom by 1.5, anchored on the
+        // playhead if visible, else the view center.
+        let factor = if i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals) {
+            Some(1.5)
+        } else if i.key_pressed(egui::Key::Minus) {
+            Some(1.0 / 1.5)
+        } else {
+            None
+        };
+        if let Some(factor) = factor {
+            let g = Geom {
+                lane_left,
+                lane_width,
+                spp: editor.view.samples_per_pixel,
+                scroll_x: editor.view.scroll_x,
+            };
+            let playhead_x = g.sample_to_x(editor.view.playhead);
+            let offset = if playhead_x >= lane_left && playhead_x <= lane_left + lane_width {
+                playhead_x - lane_left
+            } else {
+                lane_width / 2.0
+            };
+            let (spp, scroll_x) = zoom_at(
+                editor.view.samples_per_pixel,
+                editor.view.scroll_x,
+                factor,
+                offset,
+            );
+            editor.set_view_x(spp, clamp_scroll_x(editor, spp, lane_width, scroll_x));
+        }
+    });
+}
+
+/// Largest legal scroll_x for the given zoom, so the view cannot scroll past
+/// the (10 percent padded) end of the project.
+pub(crate) fn clamp_scroll_x(editor: &Editor, spp: f64, lane_width: f32, scroll_x: u64) -> u64 {
+    let visible = (lane_width as f64 * spp).ceil() as u64;
+    let length = content_length(editor);
+    scroll_x.min(scroll_extent(length, visible).saturating_sub(visible))
+}
+
+/// Draws the header column, lanes, ruler, markers, playhead and scrollbar.
+#[allow(clippy::too_many_arguments)]
+fn draw(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    g: &Geom,
+    ruler_rect: egui::Rect,
+    header_rect: egui::Rect,
+    lane_rect: egui::Rect,
+    scroll_rect: egui::Rect,
+    visible: u64,
+    max_scroll_x: u64,
+    meters: &mut meter::MeterState,
+) {
+    let all = ruler_rect
+        .union(header_rect)
+        .union(lane_rect)
+        .union(scroll_rect);
+    let painter = ui.painter_at(all);
+    let visuals = ui.visuals().clone();
+    let view = editor.view.clone();
+
+    // The timeline background behind ruler, headers, lanes and scrollbar.
+    painter.rect_filled(all, 0.0, THEME.app_bg);
+
+    // Track lanes: alternating shades and separators (ui::timeline::lane),
+    // with the clips of each track drawn over its lane.
+    let lane_painter = ui.painter_at(lane_rect);
+    let mut y = lane_rect.top() - view.scroll_y;
+    for (i, track) in editor.project.tracks.iter().enumerate() {
+        let bottom = y + track.height;
+        if bottom >= lane_rect.top() && y <= lane_rect.bottom() {
+            let track_rect = egui::Rect::from_min_max(
+                egui::pos2(g.lane_left, y),
+                egui::pos2(lane_rect.right(), bottom),
+            );
+            lane::draw(
+                &lane_painter,
+                track_rect,
+                i % 2 == 0,
+                THEME.lane_a,
+                THEME.lane_b,
+                egui::Stroke::new(THEME.hairline, THEME.border),
+            );
+            // Clips (no waveforms yet, ui::timeline::clip_view).
+            let gain_active = interaction::gain_line_active(ui.ctx());
+            for clip in &track.clips {
+                let (name, offline) = media_info(editor, clip.media_id);
+                let loaded = if offline {
+                    None
+                } else {
+                    editor.media(clip.media_id)
+                };
+                let wave_scale = editor.wave_scale();
+                let selected = matches!(
+                    editor.selection(),
+                    crate::editor::selection::Selection::Clips(ids) if ids.contains(&clip.id)
+                );
+                let hover = ui.input(|i| i.pointer.latest_pos()).and_then(|p| {
+                    clip_view::hit_test(clip, clip_view::clip_rect(clip, g, track_rect), g.spp, p)
+                });
+                clip_view::draw(
+                    &lane_painter,
+                    clip,
+                    name,
+                    offline,
+                    loaded,
+                    g,
+                    track_rect,
+                    i,
+                    wave_scale,
+                    selected,
+                    hover,
+                    track.mute,
+                    gain_active,
+                );
+            }
+            // The take being recorded grows over this track's clips.
+            if let Some(take) = editor.recording_status()
+                && take.track_id == track.id
+            {
+                clip_view::draw_live(
+                    &lane_painter,
+                    &take,
+                    editor.project.sample_rate,
+                    g,
+                    track_rect,
+                    editor.wave_scale(),
+                );
+            }
+        }
+        y = bottom;
+    }
+
+    // Ghost clip while a bin item is dragged over the lanes.
+    interaction::draw_drop_ghost(ui, editor, g, lane_rect, view.scroll_y);
+
+    // Range selection: tint on selected tracks, boundary lines, snap line.
+    interaction::draw_range(ui, editor, g, lane_rect, view.scroll_y);
+
+    // Ruler: ticks, labels, markers and their faint lines.
+    painter.rect_filled(ruler_rect, 0.0, THEME.ruler_bg);
+    ruler::draw(
+        &painter,
+        ruler_rect,
+        lane_rect,
+        g,
+        editor.project.sample_rate,
+        editor.project_length(),
+        &editor.project.markers,
+        editor.selected_marker(),
+    );
+
+    // Range selection: a 3 px accent bar along the ruler bottom across the
+    // range (the tint and boundary lines are drawn by ui::timeline::interaction).
+    if let crate::editor::selection::Selection::Range { start, end, .. } = editor.selection() {
+        let x0 = g.sample_to_x(*start).max(g.lane_left);
+        let x1 = g.sample_to_x(*end).min(lane_rect.right());
+        if x1 > x0 {
+            painter.rect_filled(
+                egui::Rect::from_min_max(
+                    egui::pos2(x0, ruler_rect.bottom() - 3.0),
+                    egui::pos2(x1, ruler_rect.bottom()),
+                ),
+                0.0,
+                THEME.accent,
+            );
+        }
+    }
+
+    // Playhead: a line through ruler and lanes with a handle in the ruler.
+    let playhead_color = THEME.playhead_color;
+    let ph_x = g.sample_to_x(view.playhead);
+    if ph_x >= g.lane_left - 1.0 && ph_x <= lane_rect.right() + 1.0 {
+        painter.line_segment(
+            [
+                egui::pos2(ph_x, ruler_rect.top()),
+                egui::pos2(ph_x, lane_rect.bottom()),
+            ],
+            egui::Stroke::new(THEME.playhead_width, playhead_color),
+        );
+        let tri = vec![
+            egui::pos2(
+                ph_x - THEME.playhead_tri_w,
+                ruler_rect.top() + THEME.hairline,
+            ),
+            egui::pos2(
+                ph_x + THEME.playhead_tri_w,
+                ruler_rect.top() + THEME.hairline,
+            ),
+            egui::pos2(ph_x, ruler_rect.top() + THEME.playhead_tri_h),
+        ];
+        painter.add(egui::Shape::convex_polygon(
+            tri,
+            playhead_color,
+            egui::Stroke::NONE,
+        ));
+    }
+
+    // Horizontal scrollbar: trough plus draggable thumb.
+    painter.rect_filled(scroll_rect, THEME.corner_r, visuals.faint_bg_color);
+    let frac = (visible as f32 / scroll_extent(content_length(editor), visible) as f32).min(1.0);
+    let thumb_w = (scroll_rect.width() * frac).max(THEME.scrollbar_thumb_min);
+    let scroll_max = max_scroll_x as f32;
+    let thumb_x = g.lane_left
+        + if scroll_max > 0.0 {
+            (view.scroll_x as f32 / scroll_max) * (scroll_rect.width() - thumb_w)
+        } else {
+            0.0
+        };
+    let thumb_rect = egui::Rect::from_min_max(
+        egui::pos2(thumb_x, scroll_rect.top() + THEME.hairline),
+        egui::pos2(thumb_x + thumb_w, scroll_rect.bottom() - THEME.hairline),
+    );
+    let thumb_color = if thumb_held(ui, thumb_rect) {
+        visuals.widgets.active.bg_fill
+    } else if thumb_hover(ui, thumb_rect) {
+        visuals.widgets.hovered.bg_fill
+    } else {
+        visuals.widgets.inactive.bg_fill
+    };
+    painter.rect_filled(thumb_rect, THEME.corner_round, thumb_color);
+    let thumb = ui.interact(
+        thumb_rect,
+        egui::Id::new("timeline_hscroll_thumb"),
+        egui::Sense::click_and_drag(),
+    );
+    if thumb.dragged() {
+        let d = thumb.drag_delta().x;
+        if d != 0.0 {
+            let new_x = (view.scroll_x as f64 - d as f64 * g.spp)
+                .round()
+                .clamp(0.0, max_scroll_x as f64) as u64;
+            editor.set_view_x(view.samples_per_pixel, new_x);
+        }
+    }
+
+    // Track headers: grip, rename, menu, resize, controls, meter, reorder.
+    track_header::show(
+        ui,
+        editor,
+        header_rect,
+        lane_rect,
+        view.scroll_y,
+        &mut meters.tracks,
+    );
+}
+
+/// Display name and offline flag of a media item, for clip drawing.
+fn media_info(editor: &Editor, media_id: Uuid) -> (&str, bool) {
+    let name = editor
+        .project
+        .media
+        .iter()
+        .find(|media| media.id == media_id)
+        .map(|media| media.display_name.as_str())
+        .unwrap_or("");
+    (name, editor.is_media_offline(media_id))
+}
+
+/// True while the pointer hovers the scrollbar thumb.
+fn thumb_hover(ui: &egui::Ui, thumb_rect: egui::Rect) -> bool {
+    ui.input(|i| {
+        i.pointer
+            .latest_pos()
+            .is_some_and(|p| thumb_rect.contains(p))
+    })
+}
+
+/// True while the primary button is down over the scrollbar thumb.
+fn thumb_held(ui: &egui::Ui, thumb_rect: egui::Rect) -> bool {
+    ui.input(|i| {
+        i.pointer.primary_down()
+            && i.pointer
+                .latest_pos()
+                .is_some_and(|p| thumb_rect.contains(p))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn geom(spp: f64, scroll_x: u64) -> Geom {
+        Geom {
+            lane_left: 10.0,
+            lane_width: 1000.0,
+            spp,
+            scroll_x,
+        }
+    }
+
+    #[test]
+    fn sample_to_x_and_x_to_sample_round_trip_at_spp_1() {
+        let g = geom(1.0, 0);
+        assert_eq!(g.sample_to_x(500), 510.0);
+        assert_eq!(g.x_to_sample(510.0), 500);
+        assert_eq!(g.x_to_sample(g.sample_to_x(1_000)), 1_000);
+    }
+
+    #[test]
+    fn sample_to_x_and_x_to_sample_round_trip_at_spp_100() {
+        let g = geom(100.0, 2_000);
+        assert_eq!(g.sample_to_x(5_000), 40.0);
+        assert_eq!(g.x_to_sample(40.0), 5_000);
+    }
+
+    #[test]
+    fn sample_to_x_and_x_to_sample_round_trip_at_spp_quarter() {
+        let g = geom(0.25, 0);
+        assert_eq!(g.sample_to_x(7), 38.0);
+        assert_eq!(g.x_to_sample(38.0), 7);
+    }
+
+    #[test]
+    fn x_to_sample_clamps_at_zero() {
+        let g = geom(1.0, 0);
+        assert_eq!(g.x_to_sample(0.0), 0);
+        assert_eq!(g.x_to_sample(-50.0), 0);
+    }
+
+    #[test]
+    fn x_left_of_the_view_maps_inside_the_timeline() {
+        // Only x below lane_left - scroll_x/spp clamps; otherwise it is a
+        // legitimate sample before the view start.
+        let g = geom(1.0, 1_000);
+        assert_eq!(g.x_to_sample(0.0), 990);
+    }
+
+    #[test]
+    fn visible_range_follows_scroll_and_zoom() {
+        assert_eq!(geom(1.0, 0).visible_range(), (0, 1000));
+        assert_eq!(geom(10.0, 2_500).visible_range(), (2_500, 12_500));
+    }
+
+    #[test]
+    fn zoom_at_keeps_the_anchor_sample_at_factors_half_and_two() {
+        let spp = 100.0;
+        let scroll_x = 100_000;
+        let offset = 50.0;
+        let anchor = scroll_x as f64 + offset as f64 * spp;
+
+        let (spp_in, scroll_in) = zoom_at(spp, scroll_x, 2.0, offset);
+        let kept = scroll_in as f64 + offset as f64 * spp_in;
+        assert!((kept - anchor).abs() <= 1.0);
+
+        let (spp_out, scroll_out) = zoom_at(spp, scroll_x, 0.5, offset);
+        let kept = scroll_out as f64 + offset as f64 * spp_out;
+        assert!((kept - anchor).abs() <= 1.0);
+    }
+
+    #[test]
+    fn zoom_at_clamps_at_min_and_max_spp() {
+        let (spp, _) = zoom_at(MAX_SPP, 1_000, 2.0, 100.0);
+        assert_eq!(spp, MAX_SPP);
+        let (spp, _) = zoom_at(MIN_SPP, 1_000, 0.5, 100.0);
+        assert_eq!(spp, MIN_SPP);
+    }
+
+    #[test]
+    fn zoom_at_never_makes_scroll_x_negative() {
+        let (_, scroll_x) = zoom_at(1_000_000.0, 1_000, 2.0, 10.0);
+        assert_eq!(scroll_x, 0);
+        let (_, scroll_x) = zoom_at(1_000_000.0, 0, 2.0, 0.0);
+        assert_eq!(scroll_x, 0);
+    }
+
+    #[test]
+    fn tick_step_48k_spp_10_min_90_px() {
+        assert_eq!(tick_step(10.0, 48_000, 90.0), 960);
+    }
+
+    #[test]
+    fn tick_step_48k_spp_48000_min_90_px() {
+        assert_eq!(tick_step(48_000.0, 48_000, 90.0), 5_760_000);
+    }
+
+    #[test]
+    fn tick_step_falls_back_to_largest() {
+        // Extremely zoomed in: even 1 ms is far more than 90 px.
+        assert_eq!(tick_step(0.1, 48_000, 90.0), 48);
+        // Extremely zoomed out: 3600 s is the last step.
+        assert_eq!(tick_step(4_194_304.0, 48_000, 90.0), 172_800_000);
+    }
+
+    #[test]
+    fn zoom_to_fit_fits_the_project_with_a_margin() {
+        // 1 000 000 samples over 1 000 px: 1000 spp * 1.05, scroll at 0.
+        let (spp, scroll_x) = zoom_to_fit(1_000_000, 48_000, 1_000.0);
+        assert!((spp - 1_050.0).abs() < 1e-9);
+        assert_eq!(scroll_x, 0);
+    }
+
+    #[test]
+    fn zoom_to_fit_uses_ten_seconds_for_short_projects() {
+        // Empty project: 10 s at 48 kHz over 1 000 px * 1.05.
+        let (spp, _) = zoom_to_fit(0, 48_000, 1_000.0);
+        let expected = 480_000.0 / 1_000.0 * 1.05;
+        assert!((spp - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn zoom_to_selection_fits_the_range_with_a_margin() {
+        // 100 000 samples over 1 000 px: spp = 100 * 1.1; start 0 stays 0.
+        let (spp, scroll_x) = zoom_to_selection(0, 100_000, 1_000.0);
+        assert!((spp - 110.0).abs() < 1e-9);
+        assert_eq!(scroll_x, 0);
+    }
+
+    #[test]
+    fn zoom_to_selection_scrolls_so_the_start_is_five_percent_in() {
+        // spp 1.1 -> visible 1 100; scroll = 200 - 55 = 145.
+        let (spp, scroll_x) = zoom_to_selection(200, 1_200, 1_000.0);
+        assert!((spp - 1.1).abs() < 1e-9);
+        assert_eq!(scroll_x, 145);
+    }
+
+    #[test]
+    fn zoom_to_selection_never_scrolls_below_zero() {
+        // The start is before the 5 percent margin would be.
+        let (_, scroll_x) = zoom_to_selection(40, 1_040, 1_000.0);
+        assert_eq!(scroll_x, 0);
+    }
+
+    #[test]
+    fn zoom_to_selection_clamps_spp() {
+        // A one-sample range at a huge lane width clamps at MIN_SPP.
+        let (spp, _) = zoom_to_selection(0, 1, 1_000_000_000.0);
+        assert_eq!(spp, MIN_SPP);
+    }
+
+    #[test]
+    fn zoom_to_selection_handles_empty_and_zero_width() {
+        assert_eq!(zoom_to_selection(500, 500, 1_000.0).0, MIN_SPP);
+        assert_eq!(zoom_to_selection(0, 100, 0.0), (MAX_SPP, 0));
+    }
+
+    #[test]
+    fn zoom_to_fit_clamps_to_min_and_max_spp() {
+        // Far too small a span for the width: clamps at MIN_SPP.
+        let (spp, _) = zoom_to_fit(1, 48_000, 100_000_000.0);
+        assert_eq!(spp, MIN_SPP);
+        // Far too large: clamps at MAX_SPP.
+        let (spp, _) = zoom_to_fit(u64::MAX, 48_000, 1.0);
+        assert_eq!(spp, MAX_SPP);
+        // Zero-width lane area: the largest zoom.
+        let (spp, scroll_x) = zoom_to_fit(1_000, 48_000, 0.0);
+        assert_eq!(spp, MAX_SPP);
+        assert_eq!(scroll_x, 0);
+    }
+}

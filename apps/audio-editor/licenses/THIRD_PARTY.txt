@@ -1,0 +1,18 @@
+Bundled third-party components in CutMark Audio Editor
+=======================================================
+
+LAME (MP3 encoder, linked via mp3lame-encoder / mp3lame-sys)
+  Licence: GNU Lesser General Public License, version 3 (LGPL-3.0)
+  Full text: LGPL-3.0.txt (this folder)
+
+IBM Plex Sans (fonts: IBMPlexSans-Regular.ttf, IBMPlexSans-Medium.ttf,
+  IBMPlexSans-SemiBold.ttf)
+  Licence: SIL Open Font License 1.1
+  Full text: LICENSE-IBMPlex.txt (this folder)
+
+JetBrains Mono (fonts: JetBrainsMono-Regular.ttf, JetBrainsMono-Medium.ttf)
+  Licence: SIL Open Font License 1.1
+  Full text: OFL-JetBrainsMono.txt (this folder)
+
+The Rust application code itself is separate from these components; this
+file covers only third-party material bundled in the installer.

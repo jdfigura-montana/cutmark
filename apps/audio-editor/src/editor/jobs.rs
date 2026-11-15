@@ -1,0 +1,998 @@
+//! editor::jobs: runs import and export on worker threads, reporting progress back.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::Duration;
+
+use crossbeam_channel::{Receiver, Sender};
+use rtrb::Consumer;
+use uuid::Uuid;
+
+use crate::audio::mix_plan::MixPlan;
+use crate::audio::mixer;
+use crate::io::IoError;
+use crate::io::export::{ExportFormat, open_sink};
+use crate::io::import::{Loaded, conform_existing, import_file, load_or_rebuild, relink_file};
+use crate::io::paths::ProjectPaths;
+use crate::io::record_writer::RecordWriter;
+use crate::model::media::MediaItem;
+use crate::util::db::linear_to_db;
+
+/// Result message when an export is cancelled.
+const CANCELLED: &str = "Cancelled";
+
+/// Timeline frames rendered per mixer call and progress step during export.
+const EXPORT_BLOCK_FRAMES: u64 = 8192;
+
+/// How often a take job drains its ring buffer.
+const TAKE_DRAIN_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Message a worker thread sends back to the Editor over the job channel.
+#[derive(Debug)]
+pub enum JobMessage {
+    /// Progress of a running job, 0.0 to 1.0.
+    Progress {
+        /// Job id the progress belongs to.
+        job: u64,
+        /// Fraction done, 0.0..=1.0.
+        frac: f32,
+    },
+    /// An import job finished.
+    ImportDone {
+        /// Job id.
+        job: u64,
+        /// The bin entry plus loaded audio, or the failure.
+        result: Result<(MediaItem, Loaded), IoError>,
+    },
+    /// A media load (open / cache rebuild) job finished.
+    LoadDone {
+        /// Job id.
+        job: u64,
+        /// Media id the job was loading.
+        media_id: Uuid,
+        /// The loaded audio, or the failure.
+        result: Result<Loaded, IoError>,
+    },
+    /// A relink job finished.
+    RelinkDone {
+        /// Job id.
+        job: u64,
+        /// The updated bin entry plus loaded audio, or the failure.
+        result: Result<(MediaItem, Loaded), IoError>,
+    },
+    /// Export progress of one render pass.
+    ExportProgress {
+        /// Job id.
+        job: u64,
+        /// Render pass, 1 (peak scan) or 2 (write).
+        pass: u8,
+        /// Fraction of the pass done, 0.0..=1.0.
+        frac: f32,
+    },
+    /// Pass 1 found a peak above 0 dBFS; the Editor must send an ExportDecision.
+    ExportPeak {
+        /// Peak level in dBFS (above 0 when this fires).
+        peak_db: f32,
+    },
+    /// The export job finished.
+    ExportDone {
+        /// Job id.
+        job: u64,
+        /// The written file, or the error message ("Cancelled" on cancel).
+        result: Result<PathBuf, String>,
+    },
+    /// A running take wrote more audio.
+    RecordProgress {
+        /// Job id.
+        job: u64,
+        /// Frames written to the take file so far, at the project rate.
+        frames: u64,
+        /// New `[minL, maxL, minR, maxR]` entries, one per 1,024 frames.
+        peaks: Vec<[f32; 4]>,
+    },
+    /// A take job ended. The ring consumer comes back for the next take.
+    RecordDone {
+        /// Job id.
+        job: u64,
+        /// The ring's reading end, returned by the job.
+        consumer: Consumer<f32>,
+        /// How the take ended.
+        outcome: TakeOutcome,
+    },
+}
+
+/// How a take job ended.
+#[derive(Debug)]
+pub enum TakeOutcome {
+    /// The take is a WAV in media/ with its cache built: the bin entry data
+    /// plus the loaded audio.
+    Finished {
+        /// The bin entry for the take (the Editor names it "Take <n>").
+        item: MediaItem,
+        /// The conformed audio and its peaks.
+        loaded: Loaded,
+    },
+    /// The take was no longer than its latency, so nothing was audible after
+    /// compensation: the file was deleted.
+    TooShort,
+    /// The take was discarded: the `.part` file was deleted.
+    Cancelled,
+    /// Writing or loading the take failed; the message says why. A failed
+    /// write leaves no file behind.
+    Failed(String),
+}
+
+/// Everything a take job owns: the open writer, the ring's reading end and
+/// where the take ends up.
+pub struct TakeJob {
+    /// The open take file.
+    pub writer: RecordWriter,
+    /// The ring's reading end; handed back in `RecordDone`.
+    pub consumer: Consumer<f32>,
+    /// The project folder the take lives in.
+    pub paths: ProjectPaths,
+    /// Final file name in media/ (the writer renames its `.part` to it).
+    pub file_name: String,
+    /// Id of the bin entry the take becomes.
+    pub media_id: Uuid,
+    /// Project sample rate in Hz.
+    pub project_rate: u32,
+    /// Take latency in samples: a take of this many frames or fewer is too short.
+    pub latency: u64,
+    /// Set by the Editor to end the take and keep it.
+    pub finish: Arc<AtomicBool>,
+    /// Set by the Editor to end the take and delete it.
+    pub cancel: Arc<AtomicBool>,
+}
+
+/// What the Editor decided when a mix peaked above 0 dBFS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportDecision {
+    /// Keep exporting; the user accepted the clipping.
+    Continue,
+    /// Abort the export.
+    Cancel,
+}
+
+/// Settings for one export job, captured when the export starts.
+#[derive(Debug, Clone)]
+pub struct ExportSettings {
+    /// Target file path; written via `<path>.part` and renamed on finish.
+    pub path: PathBuf,
+    /// File kind, channel count and input sample rate.
+    pub format: ExportFormat,
+    /// First timeline frame to render, in samples.
+    pub start: u64,
+    /// One-past-the-last timeline frame to render, in samples.
+    pub end: u64,
+    /// When given, only these track ids stay audible (mute and solo still apply).
+    pub tracks: Option<Vec<Uuid>>,
+}
+
+/// Spawns a worker thread that imports a source file into the project.
+///
+/// Progress and the final result are sent over `sender`.
+pub fn spawn_import(
+    sender: Sender<JobMessage>,
+    job: u64,
+    src: PathBuf,
+    paths: ProjectPaths,
+    media_id: Uuid,
+    project_rate: u32,
+) {
+    thread::spawn(move || {
+        let result = import_file(&src, &paths, media_id, project_rate, &mut |frac| {
+            let _ = sender.send(JobMessage::Progress { job, frac });
+        });
+        let _ = sender.send(JobMessage::ImportDone { job, result });
+    });
+}
+
+/// Spawns a worker thread that relinks an offline media item to `src`.
+///
+/// Progress and the final result are sent over `sender`.
+pub fn spawn_relink(
+    sender: Sender<JobMessage>,
+    job: u64,
+    src: PathBuf,
+    paths: ProjectPaths,
+    item: MediaItem,
+    project_rate: u32,
+) {
+    thread::spawn(move || {
+        let result = relink_file(&src, &paths, &item, project_rate, &mut |frac| {
+            let _ = sender.send(JobMessage::Progress { job, frac });
+        });
+        let _ = sender.send(JobMessage::RelinkDone { job, result });
+    });
+}
+
+/// Spawns a worker thread that loads (or rebuilds the cache for) one media item.
+///
+/// Progress and the final result are sent over `sender`.
+pub fn spawn_load(
+    sender: Sender<JobMessage>,
+    job: u64,
+    item: MediaItem,
+    paths: ProjectPaths,
+    project_rate: u32,
+) {
+    let media_id = item.id;
+    thread::spawn(move || {
+        let result = load_or_rebuild(&paths, &item, project_rate, &mut |frac| {
+            let _ = sender.send(JobMessage::Progress { job, frac });
+        });
+        let _ = sender.send(JobMessage::LoadDone {
+            job,
+            media_id,
+            result,
+        });
+    });
+}
+
+/// Spawns a worker thread that renders `plan` to `settings.path` in two passes.
+///
+/// Pass 1 renders in blocks and tracks the peak; when it is above 0 dBFS the
+/// job asks the Editor over `decision_rx`. Pass 2 renders again and writes
+/// through an io::export sink. `cancel` aborts the job within one block.
+/// Progress and the final result go over `sender`.
+pub fn spawn_export(
+    sender: Sender<JobMessage>,
+    job: u64,
+    plan: Arc<MixPlan>,
+    settings: ExportSettings,
+    decision_rx: Receiver<ExportDecision>,
+    cancel: Arc<AtomicBool>,
+) {
+    thread::spawn(move || {
+        let result = run_export(&plan, &settings, &decision_rx, &cancel, &sender, job);
+        let _ = sender.send(JobMessage::ExportDone { job, result });
+    });
+}
+
+/// Runs the export: pass 1 peak scan, optional clip warning, pass 2 write.
+///
+/// Buffers are allocated once up front; the loop itself does not allocate.
+fn run_export(
+    plan: &MixPlan,
+    settings: &ExportSettings,
+    decision_rx: &Receiver<ExportDecision>,
+    cancel: &AtomicBool,
+    sender: &Sender<JobMessage>,
+    job: u64,
+) -> Result<PathBuf, String> {
+    let total = settings.end.saturating_sub(settings.start);
+    if total == 0 {
+        return Err("empty export range".to_string());
+    }
+    let mut buf = vec![0.0f32; (EXPORT_BLOCK_FRAMES * 2) as usize];
+    let mut mono = vec![0.0f32; EXPORT_BLOCK_FRAMES as usize];
+
+    // Pass 1: render and track the highest absolute sample.
+    let mut peak = 0.0f32;
+    let mut pos = settings.start;
+    while pos < settings.end {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(CANCELLED.to_string());
+        }
+        let frames = (settings.end - pos).min(EXPORT_BLOCK_FRAMES) as usize;
+        mixer::render(plan, pos, &mut buf[..frames * 2], false);
+        for [l, r] in buf[..frames * 2].as_chunks::<2>().0 {
+            peak = peak.max(l.abs()).max(r.abs());
+        }
+        let _ = sender.send(JobMessage::ExportProgress {
+            job,
+            pass: 1,
+            frac: (pos - settings.start + frames as u64) as f32 / total as f32,
+        });
+        pos += frames as u64;
+    }
+
+    // Above 0 dBFS: warn and wait for the Editor's decision.
+    if peak > 1.0 {
+        let _ = sender.send(JobMessage::ExportPeak {
+            peak_db: linear_to_db(peak),
+        });
+        match decision_rx.recv() {
+            Ok(ExportDecision::Continue) => {}
+            _ => return Err(CANCELLED.to_string()),
+        }
+    }
+
+    // Pass 2: render the same blocks again and write them.
+    let mut sink = open_sink(&settings.path, &settings.format).map_err(|e| e.to_string())?;
+    let mono_out = settings.format.channels == 1;
+    let mut pos = settings.start;
+    while pos < settings.end {
+        if cancel.load(Ordering::Relaxed) {
+            sink.abort();
+            return Err(CANCELLED.to_string());
+        }
+        let frames = (settings.end - pos).min(EXPORT_BLOCK_FRAMES) as usize;
+        mixer::render(plan, pos, &mut buf[..frames * 2], false);
+        let block: &[f32] = if mono_out {
+            for (i, [l, r]) in buf[..frames * 2].as_chunks::<2>().0.iter().enumerate() {
+                mono[i] = (l + r) * 0.5;
+            }
+            &mono[..frames]
+        } else {
+            &buf[..frames * 2]
+        };
+        if let Err(error) = sink.write(block) {
+            sink.abort();
+            return Err(error.to_string());
+        }
+        let _ = sender.send(JobMessage::ExportProgress {
+            job,
+            pass: 2,
+            frac: (pos - settings.start + frames as u64) as f32 / total as f32,
+        });
+        pos += frames as u64;
+    }
+    sink.finish()
+        .map(|_| settings.path.clone())
+        .map_err(|e| e.to_string())
+}
+
+/// Spawns a worker thread that writes a take: it drains the ring about every
+/// 10 ms, reports frames and new peak entries over `sender`, and ends when the
+/// finish or cancel flag is set. The consumer and the outcome come back in
+/// `RecordDone`.
+pub fn spawn_record(sender: Sender<JobMessage>, job: u64, take: TakeJob) {
+    thread::spawn(move || {
+        let (consumer, outcome) = run_take(take, &sender, job);
+        let _ = sender.send(JobMessage::RecordDone {
+            job,
+            consumer,
+            outcome,
+        });
+    });
+}
+
+/// Runs one take: drain loop, then (on finish) close the WAV, check the length
+/// and conform it in place. Cancel and a failed write delete the `.part`; an
+/// Editor that went away (the channel is closed) counts as a cancel.
+fn run_take(take: TakeJob, sender: &Sender<JobMessage>, job: u64) -> (Consumer<f32>, TakeOutcome) {
+    let TakeJob {
+        mut writer,
+        mut consumer,
+        paths,
+        file_name,
+        media_id,
+        project_rate,
+        latency,
+        finish,
+        cancel,
+    } = take;
+    let mut peaks: Vec<[f32; 4]> = Vec::new();
+    let mut reported = 0u64;
+    loop {
+        // Read this before the flags: the Editor sets a flag and only then
+        // closes the input, so an abandoned ring seen first means a flag that
+        // is already visible below.
+        let abandoned = consumer.is_abandoned();
+        if cancel.load(Ordering::Acquire) {
+            writer.abort();
+            return (consumer, TakeOutcome::Cancelled);
+        }
+        if finish.load(Ordering::Acquire) {
+            break;
+        }
+        if abandoned {
+            // The input is gone and nobody asked for the take (the Editor was
+            // dropped mid-take): do not leave a thread and a file behind.
+            writer.abort();
+            return (consumer, TakeOutcome::Cancelled);
+        }
+        match writer.drain(&mut consumer, &mut peaks) {
+            Ok(frames) => {
+                if frames != reported || !peaks.is_empty() {
+                    reported = frames;
+                    let message = JobMessage::RecordProgress {
+                        job,
+                        frames,
+                        peaks: std::mem::take(&mut peaks),
+                    };
+                    if sender.send(message).is_err() {
+                        writer.abort();
+                        return (consumer, TakeOutcome::Cancelled);
+                    }
+                }
+            }
+            Err(error) => {
+                writer.abort();
+                return (consumer, TakeOutcome::Failed(error.to_string()));
+            }
+        }
+        thread::sleep(TAKE_DRAIN_INTERVAL);
+    }
+
+    // Finish: drain what is left, close the file, rename it into place.
+    let (path, frames) = match writer.finish(&mut consumer) {
+        Ok(done) => done,
+        Err(error) => return (consumer, TakeOutcome::Failed(error.to_string())),
+    };
+    if frames <= latency {
+        let _ = std::fs::remove_file(&path);
+        return (consumer, TakeOutcome::TooShort);
+    }
+    let display_name = path
+        .file_stem()
+        .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
+    let outcome = match conform_existing(
+        &paths,
+        &file_name,
+        media_id,
+        display_name,
+        project_rate,
+        &mut |_| {},
+    ) {
+        Ok((item, loaded)) => TakeOutcome::Finished { item, loaded },
+        Err(error) => TakeOutcome::Failed(format!("could not load the take: {error}")),
+    };
+    (consumer, outcome)
+}
+
+/// The Editor-owned job channel pair plus helpers for spawning job threads.
+pub struct JobChannels {
+    /// Sends job messages to the Editor.
+    pub tx: Sender<JobMessage>,
+    /// Receives job messages; drained by `Editor::poll_jobs`.
+    pub rx: Receiver<JobMessage>,
+}
+
+impl JobChannels {
+    /// Creates an unbounded channel pair.
+    pub fn new() -> JobChannels {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        JobChannels { tx, rx }
+    }
+
+    /// Spawns an import job on its own thread.
+    pub fn spawn_import(
+        &self,
+        job: u64,
+        src: PathBuf,
+        paths: ProjectPaths,
+        media_id: Uuid,
+        project_rate: u32,
+    ) {
+        spawn_import(self.tx.clone(), job, src, paths, media_id, project_rate);
+    }
+
+    /// Spawns a relink job on its own thread.
+    pub fn spawn_relink(
+        &self,
+        job: u64,
+        src: PathBuf,
+        paths: ProjectPaths,
+        item: MediaItem,
+        project_rate: u32,
+    ) {
+        spawn_relink(self.tx.clone(), job, src, paths, item, project_rate);
+    }
+
+    /// Spawns a load job on its own thread.
+    pub fn spawn_load(&self, job: u64, item: MediaItem, paths: ProjectPaths, project_rate: u32) {
+        spawn_load(self.tx.clone(), job, item, paths, project_rate);
+    }
+
+    /// Spawns an export job on its own thread.
+    pub fn spawn_export(
+        &self,
+        job: u64,
+        plan: Arc<MixPlan>,
+        settings: ExportSettings,
+        decision_rx: Receiver<ExportDecision>,
+        cancel: Arc<AtomicBool>,
+    ) {
+        spawn_export(self.tx.clone(), job, plan, settings, decision_rx, cancel);
+    }
+
+    /// Spawns a take (recording writer) job on its own thread.
+    pub fn spawn_record(&self, job: u64, take: TakeJob) {
+        spawn_record(self.tx.clone(), job, take);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::audio::meters::{MeterBank, StereoMeter};
+    use crate::editor::action::Action;
+    use crate::editor::editor::{Editor, EditorError};
+    use crate::io::export::{ExportFormat, ExportKind};
+    use crate::io::import::Loaded;
+    use crate::model::fixtures::project_with_clips;
+    use crate::model::media::Peaks;
+    use crate::model::project::{BitDepth, ViewState};
+
+    /// A 10 s poll deadline for waiting on background jobs.
+    const TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// An editor over `tracks` whose single stereo media item is filled by
+    /// `fill(frame, channel)`; the media is loaded into the store.
+    fn test_editor(
+        tracks: &[&[(u64, u64)]],
+        media_frames: u64,
+        fill: impl Fn(u64, usize) -> f32,
+    ) -> (Editor, tempfile::TempDir) {
+        let project = project_with_clips(tracks);
+        let media_id = project.media[0].id;
+        let mut samples = Vec::with_capacity((media_frames * 2) as usize);
+        for frame in 0..media_frames {
+            for channel in 0..2 {
+                samples.push(fill(frame, channel));
+            }
+        }
+        let media: Arc<[f32]> = samples.into();
+        let dir = tempdir().unwrap();
+        let mut editor = Editor::with_project(
+            project,
+            ViewState::default(),
+            ProjectPaths {
+                root: dir.path().to_path_buf(),
+            },
+        );
+        editor.media_store.insert(
+            media_id,
+            Loaded {
+                samples: Arc::clone(&media),
+                peaks: Peaks {
+                    channels: 2,
+                    frames: 0,
+                    levels: Vec::new(),
+                }
+                .into(),
+            },
+        );
+        (editor, dir)
+    }
+
+    /// Stereo float32 WAV export settings for `start..end`.
+    fn wav_settings(
+        editor: &Editor,
+        path: PathBuf,
+        channels: u16,
+        start: u64,
+        end: u64,
+        tracks: Option<Vec<Uuid>>,
+    ) -> ExportSettings {
+        ExportSettings {
+            path,
+            format: ExportFormat {
+                kind: ExportKind::Wav(BitDepth::Float32),
+                channels,
+                in_rate: editor.project.sample_rate,
+            },
+            start,
+            end,
+            tracks,
+        }
+    }
+
+    /// The `.part` sibling of an export target.
+    fn part_of(path: &Path) -> PathBuf {
+        PathBuf::from(format!("{}.part", path.display()))
+    }
+
+    /// Polls until the export finished; panics after 10 s.
+    fn wait_done(editor: &mut Editor) -> Result<PathBuf, String> {
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            editor.poll_jobs();
+            if let Some(result) = editor.take_export_result() {
+                return result;
+            }
+            assert!(Instant::now() < deadline, "export did not finish in 10 s");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// Polls until the clip warning appears; panics after 10 s.
+    fn wait_peak(editor: &mut Editor) -> f32 {
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            editor.poll_jobs();
+            if let Some(status) = editor.export_status()
+                && let Some(db) = status.peak_warning
+            {
+                return db;
+            }
+            assert!(Instant::now() < deadline, "no peak warning in 10 s");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// Renders `frames` of the editor's mix from `start` with track 1 muted
+    /// when `mute_track1`, exactly as the export job would.
+    fn render_all(editor: &Editor, start: u64, frames: u64, mute_track1: bool) -> Vec<f32> {
+        let mut project = (*editor.project).clone();
+        if mute_track1 && let Some(track) = project.tracks.get_mut(1) {
+            track.mute = true;
+        }
+        let ids: Vec<Uuid> = project.tracks.iter().map(|t| t.id).collect();
+        let meters = Arc::new(MeterBank {
+            track_ids: ids,
+            tracks: (0..project.tracks.len())
+                .map(|_| StereoMeter::new())
+                .collect(),
+        });
+        let store = &editor.media_store;
+        let plan = MixPlan::build(
+            &project,
+            &|id| store.get(id).map(|l| Arc::clone(&l.samples)),
+            meters,
+            Arc::new(StereoMeter::new()),
+        );
+        let mut out = vec![0.0f32; (frames * 2) as usize];
+        mixer::render(&plan, start, &mut out, false);
+        out
+    }
+
+    /// Reads a float32 WAV file back as interleaved samples.
+    fn read_wav(path: &Path) -> Vec<f32> {
+        let mut reader = hound::WavReader::open(path).unwrap();
+        assert_eq!(reader.spec().sample_format, hound::SampleFormat::Float);
+        reader.samples::<f32>().map(|s| s.unwrap()).collect()
+    }
+
+    /// A deterministic stereo pattern whose peak is below 1.0.
+    fn pattern(frame: u64, channel: usize) -> f32 {
+        let value = (frame % 97) as f32 / 97.0 - 0.5;
+        if channel == 0 { value } else { -value * 0.5 }
+    }
+
+    #[test]
+    fn float32_wav_export_matches_the_mixer_exactly() {
+        let (mut editor, dir) = test_editor(&[&[(0, 10_000)]], 10_000, pattern);
+        let path = dir.path().join("out.wav");
+        editor
+            .start_export(wav_settings(&editor, path.clone(), 2, 0, 10_000, None))
+            .unwrap();
+        let result = wait_done(&mut editor).unwrap();
+        assert_eq!(result, path);
+        assert!(!part_of(&path).exists());
+        assert_eq!(read_wav(&path), render_all(&editor, 0, 10_000, false));
+    }
+
+    #[test]
+    fn mono_export_sums_stereo_at_half_gain() {
+        let (mut editor, dir) = test_editor(&[&[(0, 10_000)]], 10_000, pattern);
+        let path = dir.path().join("mono.wav");
+        editor
+            .start_export(wav_settings(&editor, path.clone(), 1, 0, 10_000, None))
+            .unwrap();
+        wait_done(&mut editor).unwrap();
+        let stereo = render_all(&editor, 0, 10_000, false);
+        let expected: Vec<f32> = stereo
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|[l, r]| (l + r) * 0.5)
+            .collect();
+        assert_eq!(read_wav(&path), expected);
+    }
+
+    #[test]
+    fn selection_scope_exports_exactly_the_range() {
+        let (mut editor, dir) = test_editor(&[&[(0, 10_000)]], 10_000, pattern);
+        let path = dir.path().join("range.wav");
+        editor
+            .start_export(wav_settings(&editor, path.clone(), 2, 1_000, 5_000, None))
+            .unwrap();
+        wait_done(&mut editor).unwrap();
+        let reader = hound::WavReader::open(&path).unwrap();
+        assert_eq!(reader.duration(), 4_000, "exactly 4,000 frames");
+        drop(reader);
+        assert_eq!(read_wav(&path), render_all(&editor, 1_000, 4_000, false));
+    }
+
+    #[test]
+    fn selected_tracks_only_matches_muting_the_others() {
+        let (mut editor_a, dir_a) = test_editor(&[&[(0, 5_000)], &[(0, 5_000)]], 5_000, pattern);
+        let (mut editor_b, dir_b) = test_editor(&[&[(0, 5_000)], &[(0, 5_000)]], 5_000, pattern);
+        let track0 = editor_a.project.tracks[0].id;
+        let track1 = editor_b.project.tracks[1].id;
+        editor_b
+            .apply(Action::SetTrackMute {
+                id: track1,
+                mute: true,
+            })
+            .unwrap();
+
+        let path_a = dir_a.path().join("scoped.wav");
+        editor_a
+            .start_export(wav_settings(
+                &editor_a,
+                path_a.clone(),
+                2,
+                0,
+                5_000,
+                Some(vec![track0]),
+            ))
+            .unwrap();
+        let path_b = dir_b.path().join("muted.wav");
+        editor_b
+            .start_export(wav_settings(&editor_b, path_b.clone(), 2, 0, 5_000, None))
+            .unwrap();
+        wait_done(&mut editor_a).unwrap();
+        wait_done(&mut editor_b).unwrap();
+
+        let expected = render_all(&editor_a, 0, 5_000, true);
+        assert_eq!(read_wav(&path_a), expected);
+        assert_eq!(read_wav(&path_b), expected);
+        assert_ne!(
+            read_wav(&path_a),
+            render_all(&editor_a, 0, 5_000, false),
+            "the second track must have contributed something"
+        );
+    }
+
+    #[test]
+    fn peak_warning_continue_writes_the_file() {
+        let (mut editor, dir) = test_editor(&[&[(0, 4_000)]], 4_000, |_, _| 2.0);
+        // Center pan costs 3 dB per side; +3.01 dB track volume puts the mix
+        // peak at exactly 2.0.
+        let track0 = editor.project.tracks[0].id;
+        editor
+            .apply(Action::SetTrackVolume {
+                id: track0,
+                db: 3.0103,
+            })
+            .unwrap();
+        let path = dir.path().join("peak.wav");
+        editor
+            .start_export(wav_settings(&editor, path.clone(), 2, 0, 4_000, None))
+            .unwrap();
+        let db = wait_peak(&mut editor);
+        assert!((db - 6.0206).abs() < 0.01, "peak 2.0 is about +6.0 dB");
+        let status = editor.export_status().unwrap();
+        assert_eq!(status.pass, 1);
+        assert_eq!(status.peak_warning, Some(db));
+        editor.export_continue();
+        let result = wait_done(&mut editor).unwrap();
+        assert_eq!(result, path);
+        assert!(editor.export_status().is_none());
+        assert!(!part_of(&path).exists());
+        assert_eq!(read_wav(&path), render_all(&editor, 0, 4_000, false));
+    }
+
+    #[test]
+    fn peak_warning_cancel_leaves_no_file_and_no_part() {
+        let (mut editor, dir) = test_editor(&[&[(0, 4_000)]], 4_000, |_, _| 2.0);
+        let path = dir.path().join("peak_cancel.wav");
+        editor
+            .start_export(wav_settings(&editor, path.clone(), 2, 0, 4_000, None))
+            .unwrap();
+        wait_peak(&mut editor);
+        editor.export_cancel();
+        assert_eq!(wait_done(&mut editor).unwrap_err(), "Cancelled");
+        assert!(editor.export_status().is_none());
+        assert!(!path.exists());
+        assert!(!part_of(&path).exists());
+    }
+
+    #[test]
+    fn exporting_locks_editing() {
+        let (mut editor, dir) = test_editor(&[&[(0, 4_000)]], 4_000, |_, _| 2.0);
+        let track0 = editor.project.tracks[0].id;
+        editor
+            .apply(Action::SetTrackVolume {
+                id: track0,
+                db: -3.0,
+            })
+            .unwrap();
+        let path = dir.path().join("locked.wav");
+        editor
+            .start_export(wav_settings(&editor, path.clone(), 2, 0, 4_000, None))
+            .unwrap();
+        wait_peak(&mut editor);
+
+        // The job sits waiting for a decision, so the lock is stable here.
+        assert!(editor.is_locked());
+        let before = editor.project.tracks.len();
+        assert!(matches!(
+            editor.apply(Action::AddTrack {
+                index: None,
+                name: None,
+            }),
+            Err(EditorError::Locked(_))
+        ));
+        assert_eq!(editor.project.tracks.len(), before, "project unchanged");
+        assert!(!editor.undo());
+        assert!(!editor.redo());
+        editor.begin_gesture();
+        assert!(editor.gesture_base.is_none());
+        assert!(editor.import_files(vec![PathBuf::from("x.wav")]).is_empty());
+        assert!(
+            editor
+                .pending_jobs()
+                .iter()
+                .all(|(label, _)| label == "Export")
+        );
+
+        editor.export_continue();
+        wait_done(&mut editor).unwrap();
+    }
+
+    #[test]
+    fn recording_is_refused_while_exporting() {
+        let (mut editor, dir) = test_editor(&[&[(0, 4_000)]], 4_000, |_, _| 2.0);
+        let track0 = editor.project.tracks[0].id;
+        editor
+            .apply(Action::SetTrackVolume {
+                id: track0,
+                db: -3.0,
+            })
+            .unwrap();
+        editor.toggle_arm(track0);
+        assert_eq!(editor.armed_track(), Some(track0));
+        let path = dir.path().join("rec_locked.wav");
+        editor
+            .start_export(wav_settings(&editor, path.clone(), 2, 0, 4_000, None))
+            .unwrap();
+        wait_peak(&mut editor);
+
+        // The job waits for a decision, so the lock is stable here.
+        let result = editor.start_recording();
+        assert!(
+            matches!(&result, Err(EditorError::Locked(m)) if m == "Export in progress"),
+            "{result:?}"
+        );
+        assert!(!editor.is_recording());
+
+        editor.export_continue();
+        wait_done(&mut editor).unwrap();
+    }
+
+    #[test]
+    fn cancel_mid_pass_two_leaves_no_file() {
+        // A long enough mix that pass 2 lasts seconds in debug builds, but
+        // pass 1 still finishes well inside the timeout.
+        let tracks: Vec<&[(u64, u64)]> = vec![&[(0, 1_500_000)], &[(0, 1_500_000)]];
+        let (mut editor, dir) = test_editor(&tracks, 1_500_000, pattern);
+        let path = dir.path().join("mid.wav");
+        editor
+            .start_export(wav_settings(&editor, path.clone(), 2, 0, 1_500_000, None))
+            .unwrap();
+
+        let deadline = Instant::now() + TIMEOUT;
+        let mut cancelled = false;
+        loop {
+            editor.poll_jobs();
+            if let Some(status) = editor.export_status()
+                && status.pass == 2
+            {
+                editor.export_cancel();
+                cancelled = true;
+                break;
+            }
+            if editor.take_export_result().is_some() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "pass 2 never started in 10 s");
+        }
+        assert!(
+            cancelled,
+            "the job finished before pass 2 could be cancelled"
+        );
+        assert_eq!(wait_done(&mut editor).unwrap_err(), "Cancelled");
+        assert!(!path.exists());
+        assert!(!part_of(&path).exists());
+    }
+
+    /// Writes a 16-bit int stereo WAV with `frames` sine frames at `rate`.
+    fn write_wav(path: &Path, rate: u32, frames: usize) {
+        use hound::{SampleFormat, WavSpec, WavWriter};
+        let spec = WavSpec {
+            channels: 2,
+            sample_rate: rate,
+            bits_per_sample: 16,
+            sample_format: SampleFormat::Int,
+        };
+        let mut writer = WavWriter::create(path, spec).unwrap();
+        for i in 0..frames {
+            let s = (2.0 * std::f32::consts::PI * 440.0 * i as f32 / rate as f32).sin();
+            let v = (s * 16_000.0) as i16;
+            writer.write_sample(v).unwrap();
+            writer.write_sample(-v).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    #[test]
+    fn relink_job_swaps_offline_media_and_one_undo_restores() {
+        let (mut editor, dir) = test_editor(&[&[(0, 4_000)]], 4_000, pattern);
+        let id = editor.project.media[0].id;
+        let old_item = editor.project.media[0].clone();
+
+        // Make the item offline: its media file is gone (the test editor's
+        // paths have no real file) and the store marks it offline.
+        let _ = std::fs::remove_file(dir.path().join("media").join(&old_item.file_name));
+        editor.media_store.set_offline(id);
+        assert_eq!(editor.offline_count(), 1);
+        assert!(editor.is_media_offline(id));
+
+        // The relink needs the project's media/ and cache/ folders.
+        std::fs::create_dir_all(dir.path().join("media")).unwrap();
+        std::fs::create_dir_all(dir.path().join("cache")).unwrap();
+
+        // A longer replacement WAV in a scratch folder.
+        let src_dir = tempdir().unwrap();
+        let src = src_dir.path().join("replacement.wav");
+        write_wav(&src, 48_000, 8_000);
+
+        editor.relink(id, src);
+        assert!(
+            editor
+                .pending_jobs()
+                .iter()
+                .any(|(label, _)| label == "Relink")
+        );
+
+        // Poll until the relink job finished.
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            editor.poll_jobs();
+            if !editor
+                .pending_jobs()
+                .iter()
+                .any(|(label, _)| label == "Relink")
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "relink did not finish in 10 s");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        // The item is online, the store has samples and the file changed.
+        assert!(
+            editor.take_job_errors().is_empty(),
+            "relink reported errors"
+        );
+        assert!(
+            !editor.is_media_offline(id),
+            "item must be online after relink"
+        );
+        assert_eq!(editor.offline_count(), 0);
+        let loaded = editor.media(id).expect("store has samples after relink");
+        assert_eq!(loaded.samples.len(), 8_000 * 2);
+        let item = editor
+            .project
+            .media
+            .iter()
+            .find(|m| m.id == id)
+            .unwrap()
+            .clone();
+        assert_ne!(item.file_name, old_item.file_name);
+        assert_eq!(item.file_name, "replacement.wav");
+        assert_eq!(item.length, 8_000);
+        assert!(dir.path().join("media").join("replacement.wav").is_file());
+
+        // One undo restores the old MediaItem.
+        assert!(editor.undo(), "relink is one undo step");
+        let restored = editor.project.media.iter().find(|m| m.id == id).unwrap();
+        assert_eq!(*restored, old_item);
+    }
+
+    #[test]
+    fn default_export_path_uses_exports_folder_and_extension() {
+        let (editor, dir) = test_editor(&[&[(0, 10)]], 10, pattern);
+        assert_eq!(
+            editor.default_export_path(ExportKind::Wav(BitDepth::Float32)),
+            dir.path().join("exports").join("Test.wav")
+        );
+        assert_eq!(
+            editor.default_export_path(ExportKind::Mp3 { kbps: 192 }),
+            dir.path().join("exports").join("Test.mp3")
+        );
+    }
+}
