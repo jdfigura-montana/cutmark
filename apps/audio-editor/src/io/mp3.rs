@@ -1,174 +1,271 @@
-//! io::mp3: streaming MP3 export sink via mp3lame-encoder, CBR only.
+//! io::mp3: streaming MP3 export sink through FFmpeg's libmp3lame encoder, CBR only.
 //!
 //! Audio arrives at the project rate. 88.2 and 96 kHz are resampled to 44.1 and
-//! 48 kHz on the fly (rubato), so nothing is buffered beyond one chunk. When the
-//! stream ends, the LAME/Info tag frame is written over the placeholder frame at
-//! the start of the file so decoders can trim the encoder delay and padding.
+//! 48 kHz on the fly (rubato), so nothing is buffered beyond one chunk. FFmpeg
+//! (LGPL DLLs) receives PCM at the final rate, and its mp3 muxer overwrites the
+//! first frame with the Xing/Info tag so decoders can trim delay and padding.
 
-use std::fs::File;
-use std::io::{BufWriter, Seek, SeekFrom, Write};
-use std::num::NonZeroU32;
 use std::path::Path;
 
-use mp3lame_encoder::{Bitrate, Builder, Encoder, FlushGap, InterleavedPcm, Mode, MonoPcm, Quality, VbrMode, max_required_buffer_size};
+use ffmpeg_next::format::flag::Flags as FormatFlags;
+use ffmpeg_next::format::{Sample, sample::Type};
+use ffmpeg_next::{Rational, channel_layout, codec, frame, log, packet};
 
 use super::IoError;
 use super::export::{AudioSink, ExportFormat, PartGuard, check_whole_frames, mp3_rate};
 use super::resample::StreamResampler;
 
-/// Frames handed to LAME per call, which bounds the output buffer size.
-const ENCODE_FRAMES: usize = 8192;
-/// Write buffer for the .part file.
-const FILE_BUFFER: usize = 64 * 1024;
+/// The muxer format forced for `.part` files, which have no known extension.
+const MP3_MUXER: &str = "mp3";
 
-/// A LAME encoder plus the reusable buffers it needs.
-struct Lame {
-    encoder: Encoder,
-    channels: usize,
-    /// Clamped copy of the current block (LAME wants +/-1.0 full scale).
-    scratch: Vec<f32>,
-    /// Encoded bytes for the current block.
-    out: Vec<u8>,
+/// Clamps a sample to +/-1.0 and maps non-finite values to silence.
+fn clean(sample: f32) -> f32 {
+    if sample.is_finite() {
+        sample.clamp(-1.0, 1.0)
+    } else {
+        0.0
+    }
 }
 
-impl Lame {
-    /// CBR encoder at `rate` Hz (input and output rate are the same), best quality.
-    fn new(channels: u16, rate: u32, kbps: u32) -> Result<Self, IoError> {
-        let bitrate = match kbps {
-            128 => Bitrate::Kbps128,
-            192 => Bitrate::Kbps192,
-            256 => Bitrate::Kbps256,
-            320 => Bitrate::Kbps320,
-            other => {
-                return Err(IoError::Export(format!("unsupported MP3 bitrate: {other} kbps")));
+/// The mp3 muxer output plus the libmp3lame encoder and its reusable buffers.
+struct Mp3 {
+    channels: usize,
+    /// Samples per encoder frame (1152 per channel for libmp3lame).
+    frame_size: usize,
+    /// pts of the next input frame, in samples at the output rate.
+    pts: i64,
+    /// Stream time base after `write_header` (the muxer may change it).
+    stream_tb: Rational,
+    /// Reused encoder input frame (fltp, `frame_size` samples).
+    frame: frame::Audio,
+    /// Reused output packet.
+    pkt: packet::Packet,
+    /// Interleaved samples carried over between writes, always shorter than one
+    /// encoder frame after `encode` returns.
+    pending: Vec<f32>,
+    encoder: codec::encoder::Audio,
+    // Declared last so the muxer (and its file handle) closes after the encoder.
+    octx: ffmpeg_next::format::context::Output,
+}
+
+impl Mp3 {
+    /// CBR libmp3lame encoder for `part` at `rate` Hz (input and output rate are
+    /// the same), best quality, mono or joint stereo.
+    fn new(part: &Path, channels: u16, rate: u32, kbps: u32) -> Result<Self, IoError> {
+        if !matches!(kbps, 128 | 192 | 256 | 320) {
+            return Err(IoError::Export(format!("unsupported MP3 bitrate: {kbps} kbps")));
+        }
+        ffmpeg_next::init().map_err(|e| IoError::Export(format!("MP3 encoder setup failed: {e}")))?;
+        log::set_level(log::Level::Error);
+        let setup = |e| IoError::Export(format!("MP3 encoder setup failed: {e}"));
+        let mp3_codec = codec::encoder::find_by_name("libmp3lame")
+            .ok_or_else(|| IoError::Export("libmp3lame is missing from the FFmpeg build".to_string()))?
+            .audio()
+            .map_err(setup)?;
+        let layout =
+            if channels == 1 { channel_layout::ChannelLayout::MONO } else { channel_layout::ChannelLayout::STEREO };
+
+        // `.part` is not a known extension, so the mp3 muxer is forced. This
+        // creates the file; the sink's guard deletes it when the sink goes away.
+        let mut octx = ffmpeg_next::format::output_as(part, MP3_MUXER)
+            .map_err(|e| IoError::Export(format!("could not create the MP3 output: {e}")))?;
+        let global_header = octx.format().flags().contains(FormatFlags::GLOBAL_HEADER);
+        let mut stream = octx.add_stream(mp3_codec).map_err(setup)?;
+        stream.set_time_base((1, rate as i32));
+
+        let ctx = codec::context::Context::from_parameters(stream.parameters()).map_err(setup)?;
+        let mut encoder = ctx.encoder().audio().map_err(setup)?;
+        if global_header {
+            encoder.set_flags(codec::flag::Flags::GLOBAL_HEADER);
+        }
+        encoder.set_rate(rate as i32);
+        encoder.set_channel_layout(layout);
+        encoder.set_format(Sample::F32(Type::Planar));
+        encoder.set_bit_rate(kbps as usize * 1000);
+        encoder.set_time_base((1, rate as i32));
+
+        // LAME quality "best" is compression level 0. No VBR options are set,
+        // so libmp3lame encodes CBR at the requested bit rate.
+        let mut options = ffmpeg_next::Dictionary::new();
+        options.set("compression_level", "0");
+        let encoder = encoder
+            .open_as_with(mp3_codec, options)
+            .map_err(|e| IoError::Export(format!("could not open the MP3 encoder: {e}")))?;
+        stream.set_parameters(&encoder);
+        // The muxer would otherwise prepend an ID3v2 tag; the export is an MP3
+        // that starts at its first frame, like the old LAME output was.
+        let mut muxer_options = ffmpeg_next::Dictionary::new();
+        muxer_options.set("id3v2_version", "0");
+        octx.write_header_with(muxer_options)
+            .map_err(|e| IoError::Export(format!("could not write the MP3 header: {e}")))?;
+        // The muxer may pick its own time base in write_header; packets must be
+        // rescaled to whatever the stream ended up with.
+        let stream_tb = octx.stream(0).map_or((1, rate as i32).into(), |s| s.time_base());
+        let frame_size = usize::try_from(encoder.frame_size())
+            .ok()
+            .filter(|n| *n > 0)
+            .ok_or_else(|| IoError::Export("MP3 encoder reported no frame size".to_string()))?;
+        let mut frame = frame::Audio::new(Sample::F32(Type::Planar), frame_size, layout);
+        frame.set_rate(rate);
+        Ok(Self {
+            channels: usize::from(channels),
+            frame_size,
+            pts: 0,
+            stream_tb,
+            frame,
+            pkt: packet::Packet::empty(),
+            pending: Vec::new(),
+            encoder,
+            octx,
+        })
+    }
+
+    /// Writes one drained packet into the muxer on stream 0.
+    fn write_packet(&mut self) -> Result<(), IoError> {
+        self.pkt.set_stream(0);
+        self.pkt.rescale_ts((1, self.encoder.rate() as i32), self.stream_tb);
+        self.pkt
+            .write_interleaved(&mut self.octx)
+            .map_err(|e| IoError::Export(format!("MP3 write failed: {e}")))
+    }
+
+    /// Drains every packet the encoder currently has into the muxer.
+    fn drain_packets(&mut self) -> Result<(), IoError> {
+        while self.encoder.receive_packet(&mut self.pkt).is_ok() {
+            self.write_packet()?;
+        }
+        Ok(())
+    }
+
+    /// Fills the frame planes from an interleaved chunk, encodes it and drains
+    /// the muxer. `block` holds whole frames.
+    fn send_frame_chunk(&mut self, block: &[f32]) -> Result<(), IoError> {
+        let ch = self.channels;
+        let frames = block.len() / ch;
+        self.frame.set_samples(frames);
+        self.frame.set_pts(Some(self.pts));
+        self.pts += frames as i64;
+        if ch == 1 {
+            let plane = self.frame.plane_mut::<f32>(0);
+            for (dst, &src) in plane.iter_mut().zip(block) {
+                *dst = clean(src);
             }
-        };
-        let mode = if channels == 1 { Mode::Mono } else { Mode::JointStereo };
-        let build = |e| IoError::Export(format!("MP3 encoder setup failed: {e}"));
-        let encoder = Builder::new()
-            .ok_or_else(|| IoError::Export("could not create the MP3 encoder".to_string()))?
-            .with_num_channels(channels as u8)
-            .map_err(build)?
-            .with_sample_rate(rate)
-            .map_err(build)?
-            .with_output_sample_rate(NonZeroU32::new(rate))
-            .map_err(build)?
-            .with_mode(mode)
-            .map_err(build)?
-            .with_vbr_mode(VbrMode::Off)
-            .map_err(build)?
-            .with_brate(bitrate)
-            .map_err(build)?
-            .with_quality(Quality::Best)
-            .map_err(build)?
-            .with_to_write_vbr_tag(true)
-            .map_err(build)?
-            .build()
-            .map_err(build)?;
-        let ch = usize::from(channels);
-        Ok(Self { encoder, channels: ch, scratch: Vec::with_capacity(ENCODE_FRAMES * ch), out: Vec::with_capacity(max_required_buffer_size(ENCODE_FRAMES)) })
-    }
-
-    /// Encodes whole interleaved frames and writes the output to `file`.
-    fn encode(&mut self, samples: &[f32], file: &mut impl Write) -> Result<(), IoError> {
-        for block in samples.chunks(ENCODE_FRAMES * self.channels) {
-            // Overs would only distort inside the encoder; NaN must never reach it.
-            self.scratch.clear();
-            self.scratch.extend(block.iter().map(|&s| if s.is_finite() { s.clamp(-1.0, 1.0) } else { 0.0 }));
-            self.out.clear();
-            self.out.reserve(max_required_buffer_size(block.len() / self.channels));
-            let result = if self.channels == 1 {
-                self.encoder.encode_to_vec(MonoPcm(self.scratch.as_slice()), &mut self.out)
-            } else {
-                self.encoder.encode_to_vec(InterleavedPcm(self.scratch.as_slice()), &mut self.out)
-            };
-            result.map_err(|e| IoError::Export(format!("MP3 encode failed: {e}")))?;
-            file.write_all(&self.out)?;
+        } else {
+            {
+                let left = self.frame.plane_mut::<f32>(0);
+                for (dst, &src) in left.iter_mut().zip(block.iter().step_by(2)) {
+                    *dst = clean(src);
+                }
+            }
+            let right = self.frame.plane_mut::<f32>(1);
+            for (dst, &src) in right.iter_mut().zip(block.iter().skip(1).step_by(2)) {
+                *dst = clean(src);
+            }
         }
-        Ok(())
+        self.encoder
+            .send_frame(&self.frame)
+            .map_err(|e| IoError::Export(format!("MP3 encode failed: {e}")))?;
+        self.drain_packets()
     }
 
-    /// Flushes the encoder's internal buffers (and pads the last frame) to `file`.
-    fn flush(&mut self, file: &mut impl Write) -> Result<(), IoError> {
-        self.out.clear();
-        self.out.reserve(max_required_buffer_size(0));
-        self.encoder.flush_to_vec::<FlushGap>(&mut self.out).map_err(|e| IoError::Export(format!("MP3 flush failed: {e}")))?;
-        file.write_all(&self.out)?;
-        Ok(())
-    }
-
-    /// Overwrites the placeholder first frame with the final LAME/Info tag.
+    /// Encodes whole interleaved frames into the muxer.
     ///
-    /// Call after `flush`. Does nothing when LAME wrote no tag.
-    fn write_tag(&self, file: &mut File) -> Result<(), IoError> {
-        if self.encoder.lame_tag_size() == 0 {
-            return Ok(());
+    /// The encoder takes full `frame_size` frames plus exactly one short frame
+    /// at the end of the stream, so a remainder that is not a whole encoder
+    /// frame is carried over to the next call instead of being sent early.
+    fn encode(&mut self, samples: &[f32]) -> Result<(), IoError> {
+        let want = self.frame_size * self.channels;
+        let mut chunk = std::mem::take(&mut self.pending);
+        chunk.extend_from_slice(samples);
+        while chunk.len() >= want {
+            self.send_frame_chunk(&chunk[..want])?;
+            chunk.drain(..want);
         }
-        let mut tag = Vec::with_capacity(self.encoder.lame_tag_size());
-        if self.encoder.lame_tag_encode_to_vec(&mut tag).is_none() {
-            return Ok(());
-        }
-        // The placeholder follows any ID3v2 tag (there is none unless one is set).
-        file.seek(SeekFrom::Start(self.encoder.id3v2_tag_size() as u64))?;
-        file.write_all(&tag)?;
+        self.pending = chunk;
         Ok(())
+    }
+
+    /// Sends the carried-over remainder, which is shorter than one encoder
+    /// frame. Must only run once, right before the end of stream.
+    fn flush_tail(&mut self) -> Result<(), IoError> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        let tail = std::mem::take(&mut self.pending);
+        self.send_frame_chunk(&tail)
+    }
+
+    /// Flushes the encoder (padding the last short frame), writes the trailer
+    /// (which finalizes the Xing/Info tag) and closes the output file.
+    fn finish(mut self) -> Result<(), IoError> {
+        self.flush_tail()?;
+        self.encoder
+            .send_eof()
+            .map_err(|e| IoError::Export(format!("MP3 flush failed: {e}")))?;
+        self.drain_packets()?;
+        self.octx
+            .write_trailer()
+            .map_err(|e| IoError::Export(format!("could not write the MP3 trailer: {e}")))
     }
 }
 
 /// Streaming MP3 export sink.
 struct Mp3Sink {
-    lame: Lame,
+    mp3: Mp3,
     channels: usize,
     /// Present when the project rate is not an MP3 rate.
     resampler: Option<StreamResampler>,
     /// Resampler output for the current `write`, reused between calls.
     resampled: Vec<f32>,
-    // Declared before `guard` so the file is closed before the guard deletes it.
-    file: BufWriter<File>,
+    // Declared before `guard` so the muxer's file handle is closed (fields drop
+    // in order) before the guard deletes the `.part` file.
     guard: PartGuard,
 }
 
 /// Opens an MP3 sink writing `<path>.part`; used by `export::open_sink`.
 pub(super) fn open_sink(path: &Path, kbps: u32, format: &ExportFormat) -> Result<Box<dyn AudioSink>, IoError> {
     let out_rate = mp3_rate(format.in_rate);
-    let lame = Lame::new(format.channels, out_rate, kbps)?;
-    let resampler = if out_rate == format.in_rate { None } else { Some(StreamResampler::new(format.channels, format.in_rate, out_rate)?) };
+    // Created before the muxer opens the `.part` file, so a failure here leaves
+    // nothing on disk.
+    let resampler =
+        if out_rate == format.in_rate { None } else { Some(StreamResampler::new(format.channels, format.in_rate, out_rate)?) };
     let guard = PartGuard::new(path);
-    let file = BufWriter::with_capacity(FILE_BUFFER, File::create(guard.part_path())?);
+    let mp3 = Mp3::new(guard.part_path(), format.channels, out_rate, kbps)?;
     let channels = usize::from(format.channels);
-    Ok(Box::new(Mp3Sink { lame, channels, resampler, resampled: Vec::with_capacity(ENCODE_FRAMES * channels), file, guard }))
+    Ok(Box::new(Mp3Sink { mp3, channels, resampler, resampled: Vec::new(), guard }))
 }
 
 impl AudioSink for Mp3Sink {
     fn write(&mut self, interleaved: &[f32]) -> Result<(), IoError> {
         check_whole_frames(interleaved.len(), self.channels)?;
         match self.resampler.as_mut() {
-            None => self.lame.encode(interleaved, &mut self.file),
+            None => self.mp3.encode(interleaved),
             Some(resampler) => {
                 self.resampled.clear();
                 resampler.push(interleaved, &mut self.resampled)?;
-                self.lame.encode(&self.resampled, &mut self.file)
+                self.mp3.encode(&self.resampled)
             }
         }
     }
 
     fn finish(self: Box<Self>) -> Result<(), IoError> {
-        let Mp3Sink { mut lame, mut resampler, mut resampled, mut file, guard, .. } = *self;
+        let Mp3Sink { mut mp3, mut resampler, mut resampled, guard, .. } = *self;
         if let Some(resampler) = resampler.as_mut() {
             resampled.clear();
             resampler.finish(&mut resampled)?;
-            lame.encode(&resampled, &mut file)?;
+            mp3.encode(&resampled)?;
         }
-        lame.flush(&mut file)?;
-        let mut file = file.into_inner().map_err(|e| e.into_error())?;
-        lame.write_tag(&mut file)?;
-        file.flush()?;
-        drop(file);
+        // `finish` drops the muxer, which closes the `.part` file, so the
+        // rename below works on Windows.
+        mp3.finish()?;
+        drop(resampler);
+        drop(resampled);
         guard.commit()
     }
 
     fn abort(self: Box<Self>) {
-        // Dropping closes the file, then the guard deletes it.
+        // Dropping closes the FFmpeg output first, then the guard deletes the
+        // `.part` file.
         drop(self);
     }
 }
@@ -235,13 +332,24 @@ mod tests {
     fn file_starts_with_a_lame_info_tag() {
         let (_dir, path) = export_sine(48_000, 2, 192, 1);
         let bytes = std::fs::read(&path).unwrap();
-        // MPEG sync at the very start, then the CBR "Info" tag and LAME version.
-        assert_eq!(bytes[0], 0xFF);
-        assert_eq!(bytes[1] & 0xE0, 0xE0);
-        let head = &bytes[..200];
-        let info = head.windows(4).position(|w| w == b"Info").unwrap();
-        assert_eq!(info, 36, "Info tag sits right after the stereo side info");
-        assert!(head.windows(4).any(|w| w == b"LAME"));
+        // FFmpeg's muxer can write an ID3v2 tag first; skip it to the first
+        // frame. (None is written today, but stay robust either way.)
+        let start = if bytes.starts_with(b"ID3") {
+            let size = ((usize::from(bytes[6]) & 0x7F) << 21)
+                | ((usize::from(bytes[7]) & 0x7F) << 14)
+                | ((usize::from(bytes[8]) & 0x7F) << 7)
+                | (usize::from(bytes[9]) & 0x7F);
+            10 + size
+        } else {
+            0
+        };
+        // MPEG sync at the first frame, then the CBR Xing/Info tag. FFmpeg
+        // stamps its own encoder string there, not LAME's.
+        assert_eq!(bytes[start], 0xFF);
+        assert_eq!(bytes[start + 1] & 0xE0, 0xE0);
+        let head = &bytes[start..start + 200];
+        let tag = head.windows(4).position(|w| w == b"Info" || w == b"Xing").unwrap();
+        assert_eq!(tag, 36, "Xing/Info tag sits right after the stereo side info");
     }
 
     #[test]
