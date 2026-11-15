@@ -1,13 +1,16 @@
 ; Inno Setup script for CutMark Audio Editor.
 ; Build with scripts/build-installer.ps1, which passes the version:
-;   ISCC installer\cutmark.iss /DAppVersion=1.1.0
+;   ISCC installer\cutmark.iss /DAppVersion=1.1.0 "/DBinDir=<workspace>\target\release\"
 
 #define AppName "CutMark Audio Editor"
-#define AppExe "cutmark.exe"
+#define AppExe "cutmark-audio.exe"
 ; Root is passed by scripts/build-installer.ps1 as /DRoot=<repo>\; the
 ; fallback ("..\") works when ISCC is run from the repo root.
 #ifndef Root
 #define Root "..\"
+#endif
+#ifndef BinDir
+#define BinDir "..\..\..\target\release\"
 #endif
 
 [Setup]
@@ -35,7 +38,7 @@ SolidCompression=yes
 WizardStyle=modern
 
 [Files]
-Source: "{#Root}target\release\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BinDir}{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Root}licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs
 Source: "{#Root}assets\fonts\LICENSE-IBMPlex.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 Source: "{#Root}assets\fonts\OFL-JetBrainsMono.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion

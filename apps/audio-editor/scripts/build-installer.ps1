@@ -2,18 +2,19 @@
 # Usage: powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+$ws = Split-Path -Parent (Split-Path -Parent $root)
 Set-Location $root
 
 # 1. Refuse to build while the app is running (its exe cannot be replaced).
-$exe = Join-Path $root 'target\release\cutmark.exe'
-if (Get-Process -Name 'cutmark' -ErrorAction SilentlyContinue) {
-    throw "cutmark.exe is running. Close CutMark Audio Editor and try again."
+$exe = Join-Path $ws 'target\release\cutmark-audio.exe'
+if (Get-Process -Name 'cutmark-audio' -ErrorAction SilentlyContinue) {
+    throw "cutmark-audio.exe is running. Close CutMark Audio Editor and try again."
 }
 
 # 2. Release build.
 $env:Path = "$env:USERPROFILE\.cargo\bin;" + $env:Path
-cargo build --release
-if ($LASTEXITCODE -ne 0) { throw "cargo build --release failed" }
+cargo build --release -p cutmark-audio
+if ($LASTEXITCODE -ne 0) { throw "cargo build --release -p cutmark-audio failed" }
 
 # 3. Version from Cargo.toml.
 $cargo = Get-Content (Join-Path $root 'Cargo.toml') -Raw
@@ -35,7 +36,7 @@ if (-not $iscc) {
 }
 
 # 5. Compile the installer.
-& $iscc (Join-Path $root 'installer\cutmark.iss') "/DAppVersion=$version" "/DRoot=$root\"
+& $iscc (Join-Path $root 'installer\cutmark.iss') "/DAppVersion=$version" "/DRoot=$root\" "/DBinDir=$ws\target\release\"
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
 
 # 6. Report the result.
