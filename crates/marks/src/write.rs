@@ -6,7 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Duration, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
@@ -130,6 +130,23 @@ struct MarkLine<'a> {
     mark: &'a Mark,
 }
 
+/// The first journal line as read back during recovery.
+#[derive(Deserialize)]
+struct JournalHeaderIn {
+    journal: u32,
+    session: Session,
+    media: Vec<MediaEntry>,
+}
+
+/// A later journal line as read back during recovery: it holds a media entry, a mark, or neither.
+#[derive(Deserialize)]
+struct JournalLineIn {
+    #[serde(default)]
+    media: Option<MediaEntry>,
+    #[serde(default)]
+    mark: Option<Mark>,
+}
+
 /// Records one recording session: marks go to a journal as they are made, and `finish` writes the sidecar.
 pub struct SessionWriter {
     dir: PathBuf,
@@ -236,29 +253,41 @@ impl SessionWriter {
         if durations_ms.len() != self.media.len() {
             return Err(WriteError::DurationsMismatch { expected: self.media.len(), got: durations_ms.len() });
         }
-        let Self { dir, base_name, journal_path, journal, mut session, mut media, mut marks, clock, .. } = self;
+        let Self { dir, base_name, journal_path, journal, mut session, mut media, marks, clock, .. } = self;
         drop(journal);
 
         for (entry, duration) in media.iter_mut().zip(durations_ms) {
             entry.duration_ms = *duration;
         }
         session.ended_at = Some(clock.now());
-        clamp_marks(&mut marks, &media);
-        marks.sort_by(|a, b| session_time(&media, a).cmp(&session_time(&media, b)).then_with(|| a.id.cmp(&b.id)));
+        publish_sidecar(&dir, &base_name, &journal_path, session, media, marks)
+    }
 
-        let sidecar = Sidecar { schema_version: SCHEMA_VERSION, session, media, context: None, marks };
-        let mut text = serde_json::to_string_pretty(&sidecar)?;
-        text.push('\n');
-
-        let final_path = dir.join(format!("{base_name}.marks.json"));
-        let tmp_path = dir.join(format!("{base_name}.marks.json.tmp"));
-        let placed = write_and_validate(&tmp_path, text.as_bytes()).and_then(|()| fs::rename(&tmp_path, &final_path).map_err(WriteError::from));
-        if let Err(error) = placed {
-            let _ = fs::remove_file(&tmp_path);
-            return Err(error);
+    /// Rebuilds a sidecar from a journal a crashed session left behind; returns its path, or `None` if there is no journal.
+    ///
+    /// A journal next to a finished sidecar (a crash after the rename) is just deleted and the sidecar is left alone.
+    /// Otherwise every complete journal line is applied and any line that does not parse is skipped. The result is marked
+    /// `recovered` with no `ended_at`, and each media duration is the latest mark time on it, since the real length is unknown.
+    /// On any failure the journal stays in place.
+    pub fn recover(dir: &Path, base_name: &str) -> Result<Option<PathBuf>, WriteError> {
+        let journal_path = dir.join(format!("{base_name}.marks.journal"));
+        let sidecar_path = dir.join(format!("{base_name}.marks.json"));
+        if !journal_path.exists() {
+            return Ok(None);
         }
-        fs::remove_file(&journal_path)?;
-        Ok(final_path)
+        if sidecar_path.exists() {
+            fs::remove_file(&journal_path)?;
+            return Ok(Some(sidecar_path));
+        }
+
+        let bytes = fs::read(&journal_path)?;
+        let (mut session, mut media, marks) = replay_journal(&bytes)?;
+        session.recovered = true;
+        session.ended_at = None;
+        for (position, entry) in media.iter_mut().enumerate() {
+            entry.duration_ms = marks.iter().filter(|mark| mark.media == position).map(|mark| mark.t_ms.max(mark.end_ms.unwrap_or(0))).max().unwrap_or(0);
+        }
+        publish_sidecar(dir, base_name, &journal_path, session, media, marks).map(Some)
     }
 
     /// Returns true if the last hotkey mark had this type and was made less than the repeat window ago.
@@ -271,6 +300,73 @@ impl SessionWriter {
             _ => false,
         }
     }
+}
+
+/// Returns the base names of the `*.marks.journal` files directly in `dir`, sorted.
+pub fn find_journals(dir: &Path) -> io::Result<Vec<String>> {
+    let mut names = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name();
+        if let Some(base) = file_name.to_str().and_then(|name| name.strip_suffix(".marks.journal")).filter(|base| !base.is_empty()) {
+            names.push(base.to_string());
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+/// Reads a journal: the header line gives the session and first media, then each media and mark line is applied in order.
+///
+/// Works on bytes because a crash can cut the last line inside a multi-byte character.
+fn replay_journal(bytes: &[u8]) -> Result<(Session, Vec<MediaEntry>, Vec<Mark>), WriteError> {
+    let mut lines = bytes.split(|byte| *byte == b'\n');
+    let header = lines
+        .next()
+        .and_then(|line| serde_json::from_slice::<JournalHeaderIn>(line).ok())
+        .filter(|header| header.journal == JOURNAL_VERSION)
+        .ok_or_else(|| WriteError::Invalid("The marks journal has no readable first line.".to_string()))?;
+
+    let mut media = header.media;
+    let mut marks = Vec::new();
+    for line in lines {
+        let Ok(parsed) = serde_json::from_slice::<JournalLineIn>(line) else { continue };
+        media.extend(parsed.media);
+        marks.extend(parsed.mark);
+    }
+    Ok((header.session, media, marks))
+}
+
+/// Clamps and sorts the marks, then writes `{base}.marks.json` atomically (temp file, sync, check, rename) and deletes the journal.
+///
+/// On failure the journal is kept and the temp file is removed.
+fn publish_sidecar(
+    dir: &Path,
+    base_name: &str,
+    journal_path: &Path,
+    session: Session,
+    media: Vec<MediaEntry>,
+    mut marks: Vec<Mark>,
+) -> Result<PathBuf, WriteError> {
+    clamp_marks(&mut marks, &media);
+    marks.sort_by(|a, b| session_time(&media, a).cmp(&session_time(&media, b)).then_with(|| a.id.cmp(&b.id)));
+
+    let sidecar = Sidecar { schema_version: SCHEMA_VERSION, session, media, context: None, marks };
+    let mut text = serde_json::to_string_pretty(&sidecar)?;
+    text.push('\n');
+
+    let final_path = dir.join(format!("{base_name}.marks.json"));
+    let tmp_path = dir.join(format!("{base_name}.marks.json.tmp"));
+    let placed = write_and_validate(&tmp_path, text.as_bytes()).and_then(|()| fs::rename(&tmp_path, &final_path).map_err(WriteError::from));
+    if let Err(error) = placed {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(error);
+    }
+    fs::remove_file(journal_path)?;
+    Ok(final_path)
 }
 
 /// Appends one compact JSON line to the journal, then flushes and syncs it to disk.

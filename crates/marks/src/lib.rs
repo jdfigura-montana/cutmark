@@ -16,7 +16,7 @@ pub use model::{
 };
 pub use read::{LoadError, Warning, discover, load};
 pub use time::{format_tc, parse_tc, session_ms, snap_to_frame};
-pub use write::{Clock, NewMark, SessionWriter, SystemClock, WriteError};
+pub use write::{Clock, NewMark, SessionWriter, SystemClock, WriteError, find_journals};
 
 #[cfg(test)]
 mod tests {
