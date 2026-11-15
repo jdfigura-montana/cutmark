@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["apps/*", "crates/*"]
-exclude = ["filmcraft"]
+exclude = ["filmcraft", "patches/alsa-sys"]
 
 [workspace.package]
 version = "0.1.0"
@@ -50,6 +50,10 @@ thiserror = "2.0.21"
 [workspace.lints.clippy]
 dbg_macro = "warn"
 todo = "warn"
+
+# cpal 0.16 (video editor) and cpal 0.18 (audio editor) pull different alsa-sys versions that both link the native alsa library, and Cargo resolves for every platform. The suite is Windows only, so alsa is never built. Remove this patch and the patches folder when apps/video-editor moves to cpal 0.18.
+[patch.crates-io]
+alsa-sys = { path = "patches/alsa-sys" }
 
 # Line tables keep file and line in panics and backtraces at a fraction of full debug info's size;
 # dependencies need none.
