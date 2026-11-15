@@ -315,4 +315,10 @@ mod tests {
         assert!(path.is_file());
         assert!(!dir.path().join("out.mp3.part").exists());
     }
+
+    #[test]
+    fn ffmpeg_loads_and_has_libmp3lame() {
+        ffmpeg_next::init().expect("ffmpeg init");
+        assert!(ffmpeg_next::encoder::find_by_name("libmp3lame").is_some(), "libmp3lame encoder missing from FFmpeg build");
+    }
 }
