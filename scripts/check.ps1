@@ -7,6 +7,9 @@ $Exclude = @()
 # The video track fixes the tests; then remove the entry.
 $Isolated = @{ "cutmark-video-ui" = @("perf_ui::", "media_ui::offline_badges_proxy_toggle_and_dialogs") }
 
+# The video UI tests share render workers. With every core running a test, some miss their frame deadline. 4 threads passes reliably at the same speed.
+$TestThreads = @{ "cutmark-video-ui" = 4 }
+
 $ErrorActionPreference = "Continue"
 Set-Location (Split-Path $PSScriptRoot -Parent)
 
@@ -36,15 +39,21 @@ foreach ($p in $packages) {
     Invoke-Step "clippy $p" @("clippy", "-p", $p, "--all-targets", "--", "-D", "warnings")
 }
 foreach ($p in $packages) {
+    $threadArgs = @()
+    if ($TestThreads.ContainsKey($p)) { $threadArgs = @("--test-threads=$($TestThreads[$p])") }
     if ($Isolated.ContainsKey($p)) {
         $skipArgs = @()
         foreach ($f in $Isolated[$p]) { $skipArgs += @("--skip", $f) }
-        Invoke-Step "test $p" (@("test", "-p", $p, "--") + $skipArgs)
+        Invoke-Step "test $p" (@("test", "-p", $p, "--") + $skipArgs + $threadArgs)
         foreach ($f in $Isolated[$p]) {
             Invoke-Step "test $p (isolated $f)" @("test", "-p", $p, "--test", "it", $f, "--", "--test-threads=1")
         }
     } else {
-        Invoke-Step "test $p" @("test", "-p", $p)
+        if ($threadArgs.Count -gt 0) {
+            Invoke-Step "test $p" (@("test", "-p", $p, "--") + $threadArgs)
+        } else {
+            Invoke-Step "test $p" @("test", "-p", $p)
+        }
     }
 }
 Invoke-Step "deny" @("deny", "check", "--hide-inclusion-graph")
