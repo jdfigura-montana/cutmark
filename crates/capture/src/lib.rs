@@ -6,12 +6,16 @@
 //! rules, Clock and frame rate.
 
 #[cfg(windows)]
+mod convert;
+#[cfg(windows)]
 mod gpu;
 #[cfg(windows)]
 mod monitor;
 #[cfg(windows)]
 mod wgc;
 
+#[cfg(windows)]
+pub use convert::Nv12Converter;
 #[cfg(windows)]
 pub use gpu::{AdapterInfo, Gpu, list_adapters};
 #[cfg(windows)]
@@ -38,6 +42,18 @@ pub enum CaptureError {
     /// An expected result was missing, for example no primary monitor.
     #[error("{0}")]
     Missing(&'static str),
+    /// The input texture does not match the size the converter was created for.
+    #[error("input size {actual_w}x{actual_h} does not match the converter input size {expected_w}x{expected_h}; recreate the Nv12Converter")]
+    InputSizeChanged {
+        /// Input width the converter was created for.
+        expected_w: u32,
+        /// Input height the converter was created for.
+        expected_h: u32,
+        /// Width of the texture that arrived.
+        actual_w: u32,
+        /// Height of the texture that arrived.
+        actual_h: u32,
+    },
 }
 
 /// Placeholder error so the crate still compiles on non-Windows targets.
