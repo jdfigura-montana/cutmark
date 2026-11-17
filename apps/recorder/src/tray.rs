@@ -1,11 +1,10 @@
 //! The tray icon: a grey or red dot with a menu to show the window, start or stop and quit.
 
-use std::sync::mpsc::{self, Receiver};
-
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 use crate::engine::bus::{BusSender, Command};
+use crate::platform;
 
 /// Width and height of the tray icon in pixels.
 const ICON_SIZE: u32 = 32;
@@ -18,26 +17,17 @@ const TOOLTIP_IDLE: &str = "Cutmark Recorder";
 /// Tooltip text while recording.
 const TOOLTIP_RECORDING: &str = "Cutmark Recorder - recording";
 
-/// A request from the tray menu that is about the window, not about recording.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppEvent {
-    /// Bring the main window back and focus it.
-    ShowWindow,
-    /// Close the app.
-    Quit,
-}
-
-/// The tray icon and the queue of app events its menu produces.
+/// The tray icon: it handles its own menu clicks for the window and sends recording commands to the bus.
 pub struct Tray {
     icon: TrayIcon,
     idle_icon: Icon,
     recording_icon: Icon,
-    events: Receiver<AppEvent>,
 }
 
 impl Tray {
-    /// Builds the tray icon and menu. Call it on the main thread. Start and stop goes to the bus.
-    pub fn new(ctx: &egui::Context, bus: BusSender) -> Result<Self, String> {
+    /// Builds the tray icon and menu. Call it on the main thread. Show and Quit run here directly, so they
+    /// work while the window is hidden; start or stop goes to the bus.
+    pub fn new(ctx: &egui::Context, hwnd: Option<isize>, bus: BusSender) -> Result<Self, String> {
         let idle_icon = circle_icon(IDLE_RGB)?;
         let recording_icon = circle_icon(RECORDING_RGB)?;
 
@@ -47,23 +37,26 @@ impl Tray {
         let menu = Menu::new();
         menu.append_items(&[&show, &start_stop, &quit]).map_err(|err| format!("could not build the tray menu: {err}"))?;
 
-        let (events_tx, events) = mpsc::channel();
         let (show_id, start_stop_id, quit_id) = (show.id().clone(), start_stop.id().clone(), quit.id().clone());
         let ctx = ctx.clone();
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
-            let sent = if event.id == show_id {
-                events_tx.send(AppEvent::ShowWindow).is_ok()
+            if event.id == show_id {
+                if let Some(hwnd) = hwnd {
+                    platform::show_and_focus(hwnd);
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ctx.request_repaint();
             } else if event.id == start_stop_id {
-                bus.send(Command::StartStop).is_ok()
+                if bus.send(Command::StartStop).is_err() {
+                    log::warn!("a tray menu click was dropped because the app is gone");
+                }
             } else if event.id == quit_id {
-                events_tx.send(AppEvent::Quit).is_ok()
-            } else {
-                return;
-            };
-            if !sent {
-                log::warn!("a tray menu click was dropped because the app is gone");
+                if let Some(hwnd) = hwnd {
+                    platform::show_and_focus(hwnd);
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                ctx.request_repaint();
             }
-            ctx.request_repaint();
         }));
 
         let icon = TrayIconBuilder::new()
@@ -72,12 +65,7 @@ impl Tray {
             .with_tooltip(TOOLTIP_IDLE)
             .build()
             .map_err(|err| format!("could not create the tray icon: {err}"))?;
-        Ok(Self { icon, idle_icon, recording_icon, events })
-    }
-
-    /// Takes every queued tray event, oldest first, without waiting.
-    pub fn drain_events(&self) -> Vec<AppEvent> {
-        self.events.try_iter().collect()
+        Ok(Self { icon, idle_icon, recording_icon })
     }
 
     /// Swaps the icon colour and tooltip to match the recording state.

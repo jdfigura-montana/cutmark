@@ -6,7 +6,7 @@ use crate::config::{self, Settings};
 use crate::engine::bus::{Bus, Command};
 use crate::hotkeys::Hotkeys;
 use crate::platform;
-use crate::tray::{AppEvent, Tray};
+use crate::tray::Tray;
 
 /// How many recent commands the window keeps.
 const RECENT_LIMIT: usize = 20;
@@ -43,7 +43,14 @@ impl RecorderApp {
         });
         let bus = Bus::default();
         let hotkeys = Hotkeys::start(&cc.egui_ctx, bus.sender());
-        let tray = match Tray::new(&cc.egui_ctx, bus.sender()) {
+        let hwnd = match platform::raw_hwnd(cc) {
+            Ok(hwnd) => Some(hwnd),
+            Err(err) => {
+                log::warn!("could not get the window handle, tray Show and Quit will only send commands: {err}");
+                None
+            }
+        };
+        let tray = match Tray::new(&cc.egui_ctx, hwnd, bus.sender()) {
             Ok(tray) => Some(tray),
             Err(err) => {
                 log::warn!("running without a tray icon: {err}");
@@ -66,26 +73,6 @@ impl RecorderApp {
             }
             self.recent.push_back(command);
         }
-    }
-
-    /// Acts on the tray menu's Show window and Quit clicks.
-    fn handle_app_events(&self, ctx: &egui::Context) {
-        let Some(tray) = &self.tray else {
-            return;
-        };
-        for event in tray.drain_events() {
-            match event {
-                AppEvent::ShowWindow => Self::show_window(ctx),
-                AppEvent::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-            }
-        }
-    }
-
-    /// Brings the window back from the tray or the taskbar and focuses it.
-    fn show_window(ctx: &egui::Context) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
     }
 
     /// While recording, hides the window to the tray the moment it is minimized.
@@ -137,7 +124,6 @@ impl eframe::App for RecorderApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_commands();
-        self.handle_app_events(&ctx);
         self.hide_to_tray_when_minimized(&ctx);
 
         egui::CentralPanel::default().show(ui, |ui| {
