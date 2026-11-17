@@ -15,10 +15,16 @@ mod amf;
 pub mod encode;
 
 #[cfg(windows)]
+pub mod mux;
+
+#[cfg(windows)]
 pub use amf::AmfEncoder;
 
 #[cfg(windows)]
 pub use encode::{Codec, EncodedPacket, Encoder, EncoderConfig, Preset, RateControl};
+
+#[cfg(windows)]
+pub use mux::{Container, Muxer};
 
 #[cfg(windows)]
 pub use hw::{D3d11Device, D3d11FramePool, HwFrame, MediaError};
