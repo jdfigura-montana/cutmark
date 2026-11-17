@@ -45,6 +45,8 @@ log = "0.4"
 # All date/time conversion goes through chrono (no hand-rolled calendar code beyond the 400-year range extension; AGENTS.md).
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 rayon = "1"
+# Audio resampling, shared by the audio editor and the recorder.
+rubato = "5.0.1"
 uuid = { version = "1.29.0", features = ["v4", "v7", "serde"] }
 thiserror = "2.0.21"
 # Shared FFmpeg wrapper. Each crate picks the features it needs; the base entry

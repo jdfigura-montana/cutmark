@@ -25,7 +25,7 @@ hound = "3.5.1"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 rfd = { workspace = true }
 rtrb = "0.4.1"
-rubato = "5.0.1"
+rubato = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 symphonia = { version = "0.6.1", default-features = false, features = ["wav", "mp3", "pcm", "id3v2"] }

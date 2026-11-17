@@ -35,6 +35,7 @@ global-hotkey = "0.10.0"
 log.workspace = true
 media-io = { version = "0.1.0", path = "../../crates/media-io" }
 raw-window-handle = "0.6"
+rubato = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
