@@ -10,7 +10,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::thread::{self, JoinHandle};
 
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
-use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_EVENT, WAIT_FAILED};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, RPC_E_CHANGED_MODE, WAIT_EVENT, WAIT_FAILED};
 use windows::Win32::Media::Audio::{
     AUDCLNT_SHAREMODE_SHARED, DEVICE_STATE_ACTIVE, EDataFlow, ERole, IAudioCaptureClient, IAudioClient, IMMDevice, IMMDeviceCollection, IMMDeviceEnumerator,
     MMDeviceEnumerator, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
@@ -19,7 +19,7 @@ use windows::Win32::System::Com::{CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInst
 use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
 use windows::Win32::System::Variant::VT_LPWSTR;
 use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
-use windows::core::{GUID, HSTRING};
+use windows::core::{GUID, HRESULT, HSTRING};
 
 use crate::{CaptureError, with_context};
 
@@ -215,6 +215,7 @@ impl Drop for AudioCapture {
 
 /// Lists active render and capture endpoints, default output and input first in their groups.
 pub fn list_audio_devices() -> Result<Vec<AudioDevice>, CaptureError> {
+    let _com = ComGuard::new()?;
     let mut devices = endpoints(DeviceKind::Output)?;
     devices.extend(endpoints(DeviceKind::Input)?);
     Ok(devices)
@@ -222,6 +223,7 @@ pub fn list_audio_devices() -> Result<Vec<AudioDevice>, CaptureError> {
 
 /// Finds a device by endpoint ID, or else by exact friendly name.
 pub fn find_device(id: &str, name_fallback: &str) -> Option<AudioDevice> {
+    let _com = ComGuard::new().ok()?;
     let devices = list_audio_devices().ok()?;
     devices.iter().find(|d| d.id == id).or_else(|| devices.iter().find(|d| d.name == name_fallback)).cloned()
 }
@@ -354,6 +356,43 @@ fn init_com() -> bool {
 fn uninit_com() {
     // SAFETY: balances a successful CoInitializeEx on this thread.
     unsafe { CoUninitialize() };
+}
+
+/// Calls CoInitializeEx for the multithreaded apartment.
+#[allow(unsafe_code)]
+fn co_initialize_mta() -> HRESULT {
+    // SAFETY: CoInitializeEx only sets this thread's COM apartment mode.
+    unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
+}
+
+/// Holds COM initialization for the calling thread and releases it on drop.
+struct ComGuard {
+    /// True when this call initialized COM and must balance it on drop.
+    owns_com: bool,
+}
+
+impl ComGuard {
+    /// Initializes COM for this thread, tolerating a thread already in another apartment.
+    fn new() -> Result<Self, CaptureError> {
+        let hr = co_initialize_mta();
+        if hr.is_ok() {
+            // S_OK and S_FALSE both make COM ours to uninitialize.
+            return Ok(Self { owns_com: true });
+        }
+        if hr == RPC_E_CHANGED_MODE {
+            // The thread already runs COM in another mode, for example the STA UI thread.
+            return Ok(Self { owns_com: false });
+        }
+        Err(CaptureError::Windows { context: "failed to initialize COM for audio device access", source: hr.into() })
+    }
+}
+
+impl Drop for ComGuard {
+    fn drop(&mut self) {
+        if self.owns_com {
+            uninit_com();
+        }
+    }
 }
 
 /// Opens and starts the WASAPI session for one device.
