@@ -4,6 +4,14 @@ targets = ["x86_64-pc-windows-msvc"]
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+  # chrono is flagged unmaintained (informational, not a vulnerability; no fixed version exists).
+  # The pinned FilmCraft engine depends on it and we never edit that code, and the audio editor,
+  # marks and recorder use it too. Review when FilmCraft moves off chrono, or when our own crates
+  # move to jiff or time (tracked in the S0 spec's deferred list).
+  { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; required by the pinned FilmCraft engine" },
+]
+
 # Any ignore needs a comment with the advisory id and the reason.
 
 [licenses]
