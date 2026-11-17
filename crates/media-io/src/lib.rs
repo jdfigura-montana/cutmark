@@ -2,14 +2,18 @@
 //!
 //! Recorder phase 2: hands the suite's shared D3D11 device to FFmpeg and
 //! manages a pool of D3D11 frames that NV12 textures are copied into with no
-//! CPU round trip. A later phase feeds those hardware frames straight to an
-//! FFmpeg encoder. See the recorder spec: Screen capture, and Encode.
+//! CPU round trip. Phase 3 adds the software audio encoders and the mux
+//! thread. See the recorder spec: Screen capture, Encode, and Audio capture
+//! and tracks.
 
 #[cfg(windows)]
 mod hw;
 
 #[cfg(windows)]
 mod amf;
+
+#[cfg(windows)]
+pub mod audio;
 
 #[cfg(windows)]
 pub mod encode;
@@ -21,10 +25,13 @@ pub mod mux;
 pub use amf::AmfEncoder;
 
 #[cfg(windows)]
+pub use audio::{AudioCodec, AudioEncoder};
+
+#[cfg(windows)]
 pub use encode::{Codec, EncodedPacket, Encoder, EncoderConfig, Preset, RateControl};
 
 #[cfg(windows)]
-pub use mux::{Container, Muxer};
+pub use mux::{Container, MuxSummary, MuxThread, Muxer};
 
 #[cfg(windows)]
 pub use hw::{D3d11Device, D3d11FramePool, HwFrame, MediaError};
