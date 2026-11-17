@@ -156,6 +156,10 @@ fn create_device(adapter_index: usize) -> Result<(ID3D11Device, ID3D11DeviceCont
 fn enable_multithread(device: &ID3D11Device) -> Result<(), CaptureError> {
     let multithread: ID3D11Multithread = with_context("failed to query ID3D11Multithread", device.cast())?;
     // SAFETY: device is a live COM object.
-    let enabled = unsafe { multithread.SetMultithreadProtected(true) };
-    if enabled.as_bool() { Ok(()) } else { Err(CaptureError::Missing("SetMultithreadProtected returned false")) }
+    // SetMultithreadProtected returns the previous protection state, not a success
+    // flag, so a false return is normal on a new device.
+    let _previous = unsafe { multithread.SetMultithreadProtected(true) };
+    // SAFETY: device is a live COM object.
+    let enabled = unsafe { multithread.GetMultithreadProtected() };
+    if enabled.as_bool() { Ok(()) } else { Err(CaptureError::Missing("GetMultithreadProtected returned false")) }
 }
