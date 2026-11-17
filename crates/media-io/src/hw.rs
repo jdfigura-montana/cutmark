@@ -132,11 +132,22 @@ pub enum MediaError {
     /// FFmpeg initialisation failed.
     #[error("FFmpeg init failed: {0}")]
     Init(#[from] ffmpeg_next::Error),
+    /// The named encoder was not found in this FFmpeg build.
+    #[error("encoder {0} was not found")]
+    EncoderMissing(String),
+    /// The encoder does not expose a private option we need.
+    #[error("encoder {encoder} has no option {option}")]
+    OptionMissing {
+        /// The encoder name.
+        encoder: String,
+        /// The missing option name.
+        option: String,
+    },
 }
 
 /// Turns a negative AVERROR code into a MediaError with its av_strerror text.
 #[allow(unsafe_code)]
-fn ff_error(code: i32) -> MediaError {
+pub(crate) fn ff_error(code: i32) -> MediaError {
     let mut buf = [0u8; 256];
     // SAFETY: av_strerror writes at most buf.len() bytes and NUL terminates.
     unsafe {
@@ -192,15 +203,17 @@ fn alloc_device(device: &ID3D11Device) -> Result<D3d11Device, MediaError> {
     Ok(D3d11Device { device_ref })
 }
 
-/// Allocates and initialises the NV12 D3D11 frame pool, trying the standard
-/// pool layouts in turn and keeping the error of the last attempt.
+/// Allocates and initialises the NV12 D3D11 frame pool, trying the pool layouts
+/// in turn and keeping the error of the last attempt. The per-frame layout is
+/// tried first: some drivers reject NV12 texture arrays, and FFmpeg prints an
+/// error for every rejected attempt, so the array modes go last.
 #[allow(unsafe_code)]
 fn alloc_frames(device: &D3d11Device, width: u32, height: u32, initial_pool_size: u32) -> Result<D3d11FramePool, MediaError> {
     let render_target = D3D11_BIND_RENDER_TARGET.0;
     let attempts: [(PoolMode, c_int, i32); 3] = [
+        (PoolMode::PerFrameRenderTarget, 0, render_target),
         (PoolMode::ArrayRenderTarget, initial_pool_size as c_int, render_target),
         (PoolMode::ArrayDefault, initial_pool_size as c_int, 0),
-        (PoolMode::PerFrameRenderTarget, 0, render_target),
     ];
     let mut last_err = None;
     for (mode, pool_size, bind_flags) in attempts {

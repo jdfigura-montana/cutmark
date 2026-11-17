@@ -9,6 +9,18 @@
 mod hw;
 
 #[cfg(windows)]
+mod amf;
+
+#[cfg(windows)]
+pub mod encode;
+
+#[cfg(windows)]
+pub use amf::AmfEncoder;
+
+#[cfg(windows)]
+pub use encode::{Codec, EncodedPacket, Encoder, EncoderConfig, Preset, RateControl};
+
+#[cfg(windows)]
 pub use hw::{D3d11Device, D3d11FramePool, HwFrame, MediaError};
 
 /// Initialises FFmpeg and sets its log level to Error.
