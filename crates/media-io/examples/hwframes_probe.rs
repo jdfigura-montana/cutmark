@@ -9,6 +9,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gpu = Gpu::create(Some(0))?;
     let hw_device = D3d11Device::from_device(gpu.device())?;
     let pool = D3d11FramePool::new(&hw_device, 1920, 1080, 8)?;
+    println!("pool mode: {:?}", pool.mode());
 
     let monitor = list_monitors()?.into_iter().find(|m| m.primary).ok_or("no primary monitor")?;
     let capture = MonitorCapture::start(&gpu, &monitor, false)?;

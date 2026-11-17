@@ -6,7 +6,7 @@
 use std::ffi::{c_int, c_void};
 
 use ffmpeg_next::ffi;
-use windows::Win32::Graphics::Direct3D11::{D3D11_TEXTURE2D_DESC, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D};
+use windows::Win32::Graphics::Direct3D11::{D3D11_BIND_RENDER_TARGET, D3D11_TEXTURE2D_DESC, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D};
 use windows::core::Interface;
 
 /// The AVHWDeviceContext wrapping our shared D3D11 device.
@@ -31,15 +31,32 @@ impl Drop for D3d11Device {
     }
 }
 
+/// Which pool layout the D3D11 frame pool ended up using.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoolMode {
+    /// One array texture of initial_pool_size slices bound as render target.
+    ArrayRenderTarget,
+    /// One array texture of initial_pool_size slices with default bindings.
+    ArrayDefault,
+    /// One standalone NV12 texture per frame, bound as render target.
+    PerFrameRenderTarget,
+}
+
 /// The NV12 D3D11 frame pool on the wrapped device.
 pub struct D3d11FramePool {
     frames_ref: *mut ffi::AVBufferRef,
+    mode: PoolMode,
 }
 
 impl D3d11FramePool {
     /// Creates an NV12 pool of the given size with the given initial frame count.
     pub fn new(device: &D3d11Device, width: u32, height: u32, initial_pool_size: u32) -> Result<Self, MediaError> {
         alloc_frames(device, width, height, initial_pool_size)
+    }
+
+    /// Which pool layout this pool uses.
+    pub fn mode(&self) -> PoolMode {
+        self.mode
     }
 
     /// The raw frames context reference, for handing to the encoder in P2d.
@@ -175,9 +192,35 @@ fn alloc_device(device: &ID3D11Device) -> Result<D3d11Device, MediaError> {
     Ok(D3d11Device { device_ref })
 }
 
-/// Allocates and initialises the NV12 D3D11 frame pool.
+/// Allocates and initialises the NV12 D3D11 frame pool, trying the standard
+/// pool layouts in turn and keeping the error of the last attempt.
 #[allow(unsafe_code)]
 fn alloc_frames(device: &D3d11Device, width: u32, height: u32, initial_pool_size: u32) -> Result<D3d11FramePool, MediaError> {
+    let render_target = D3D11_BIND_RENDER_TARGET.0;
+    let attempts: [(PoolMode, c_int, i32); 3] = [
+        (PoolMode::ArrayRenderTarget, initial_pool_size as c_int, render_target),
+        (PoolMode::ArrayDefault, initial_pool_size as c_int, 0),
+        (PoolMode::PerFrameRenderTarget, 0, render_target),
+    ];
+    let mut last_err = None;
+    for (mode, pool_size, bind_flags) in attempts {
+        match init_frames(device, width, height, pool_size, bind_flags) {
+            Ok(frames_ref) => {
+                log::info!("D3D11 frame pool ready: {mode:?}, {}x{}, pool size {pool_size}", width, height);
+                return Ok(D3d11FramePool { frames_ref, mode });
+            }
+            Err(err) => last_err = Some(err),
+        }
+    }
+    match last_err {
+        Some(err) => Err(err),
+        None => Err(MediaError::Null("av_hwframe_ctx_init")),
+    }
+}
+
+/// Builds one frames context candidate and initialises it.
+#[allow(unsafe_code)]
+fn init_frames(device: &D3d11Device, width: u32, height: u32, initial_pool_size: c_int, bind_flags: i32) -> Result<*mut ffi::AVBufferRef, MediaError> {
     // SAFETY: the device reference is live; av_hwframe_ctx_alloc returns an
     // owned reference or null.
     let mut frames_ref = unsafe { ffi::av_hwframe_ctx_alloc(device.device_ref) };
@@ -185,21 +228,47 @@ fn alloc_frames(device: &D3d11Device, width: u32, height: u32, initial_pool_size
         return Err(MediaError::Null("av_hwframe_ctx_alloc"));
     }
     // SAFETY: the reference is live; its data is an AVHWFramesContext whose
-    // fields must be set by the caller before init.
+    // fields must be set by the caller before init, and whose hwctx is an
+    // AVD3D11VAFramesContext that takes the D3D11 bind flags.
     let code = unsafe {
         let frames_ctx = (*frames_ref).data.cast::<ffi::AVHWFramesContext>();
         (*frames_ctx).format = ffi::AVPixelFormat::AV_PIX_FMT_D3D11;
         (*frames_ctx).sw_format = ffi::AVPixelFormat::AV_PIX_FMT_NV12;
         (*frames_ctx).width = width as c_int;
         (*frames_ctx).height = height as c_int;
-        (*frames_ctx).initial_pool_size = initial_pool_size as c_int;
+        (*frames_ctx).initial_pool_size = initial_pool_size;
+        // Check what the backend will read and repair any drifted field; the
+        // width and height must be the non-zero values passed in.
+        if (*frames_ctx).format != ffi::AVPixelFormat::AV_PIX_FMT_D3D11 {
+            (*frames_ctx).format = ffi::AVPixelFormat::AV_PIX_FMT_D3D11;
+        }
+        if (*frames_ctx).sw_format != ffi::AVPixelFormat::AV_PIX_FMT_NV12 {
+            (*frames_ctx).sw_format = ffi::AVPixelFormat::AV_PIX_FMT_NV12;
+        }
+        if (*frames_ctx).width <= 0 {
+            (*frames_ctx).width = width as c_int;
+        }
+        if (*frames_ctx).height <= 0 {
+            (*frames_ctx).height = height as c_int;
+        }
+        log::debug!(
+            "D3D11 frames ctx before init: format {:?}, sw_format {:?}, {}x{}, pool {}",
+            (*frames_ctx).format,
+            (*frames_ctx).sw_format,
+            (*frames_ctx).width,
+            (*frames_ctx).height,
+            (*frames_ctx).initial_pool_size
+        );
+        let d3d11_frames = (*frames_ctx).hwctx.cast::<ffi::AVD3D11VAFramesContext>();
+        (*d3d11_frames).BindFlags = bind_flags as u32;
+        (*d3d11_frames).MiscFlags = 0;
         ffi::av_hwframe_ctx_init(frames_ref)
     };
     if code < 0 {
         unref_buffer(&mut frames_ref);
         return Err(ff_error(code));
     }
-    Ok(D3d11FramePool { frames_ref })
+    Ok(frames_ref)
 }
 
 /// Allocates one AVFrame and takes one frame out of the pool.
@@ -238,10 +307,10 @@ fn copy_into(frame: &HwFrame, context: &ID3D11DeviceContext, nv12: &ID3D11Textur
     let texture = unsafe { ID3D11Texture2D::from_raw_borrowed(&raw) }.ok_or(MediaError::Null("AVFrame data[0]"))?;
     let index = frame_index(frame);
     // SAFETY: both textures are live on the shared device and match the pool
-    // size; an NV12 texture has two subresources per array slice, so the
-    // destination subresource is the slice index times two.
+    // size; an NV12 array slice is one subresource, and FFmpeg's own d3d11va
+    // transfer code copies with the plain array index.
     unsafe {
-        context.CopySubresourceRegion(texture, index * 2, 0, 0, 0, nv12, 0, None);
+        context.CopySubresourceRegion(texture, index, 0, 0, 0, nv12, 0, None);
     }
     Ok(())
 }
