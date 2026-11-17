@@ -22,6 +22,7 @@ pub struct TakePaths {
 /// take folders already under `root` for that date, plus 1. The video file is `{same name}.mkv` inside
 /// it. The full naming template arrives in phase 4.
 pub fn next_take(root: &Path, now: DateTime<Local>) -> Result<TakePaths, io::Error> {
+    fs::create_dir_all(root).map_err(|source| io::Error::new(source.kind(), format!("{}: {source}", root.display())))?;
     let date = format!("{:04}-{:02}-{:02}", now.year(), now.month(), now.day());
     let time = format!("{:02}-{:02}-{:02}", now.hour(), now.minute(), now.second());
     let count = count_take_folders(root, &date)?;
@@ -35,9 +36,11 @@ pub fn next_take(root: &Path, now: DateTime<Local>) -> Result<TakePaths, io::Err
 /// Counts the take folders under `root` that belong to `date`.
 fn count_take_folders(root: &Path, date: &str) -> Result<u32, io::Error> {
     let mut count = 0u32;
-    for entry in fs::read_dir(root)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() && is_take_folder(&entry.file_name().to_string_lossy(), date) {
+    for entry in fs::read_dir(root).map_err(|source| io::Error::new(source.kind(), format!("{}: {source}", root.display())))? {
+        let entry = entry.map_err(|source| io::Error::new(source.kind(), format!("{}: {source}", root.display())))?;
+        let entry_path = entry.path();
+        let is_dir = entry.file_type().map_err(|source| io::Error::new(source.kind(), format!("{}: {source}", entry_path.display())))?.is_dir();
+        if is_dir && is_take_folder(&entry.file_name().to_string_lossy(), date) {
             count += 1;
         }
     }
@@ -102,6 +105,19 @@ mod tests {
         let second = next_take(&root, now)?;
         assert_eq!(second.base_name, "2026-11-17_14-30-05_take02");
         assert!(second.folder.is_dir());
+        fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_missing_root_is_created_and_the_first_take_is_take01() -> Result<(), Box<dyn Error>> {
+        let root = fresh_dir("missing-root")?;
+        fs::remove_dir_all(&root)?;
+        let now = at(2026, 11, 17, 14, 30, 5)?;
+        let take = next_take(&root, now)?;
+        assert!(root.is_dir());
+        assert_eq!(take.base_name, "2026-11-17_14-30-05_take01");
+        assert!(take.folder.is_dir());
         fs::remove_dir_all(&root)?;
         Ok(())
     }
