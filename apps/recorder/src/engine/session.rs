@@ -58,6 +58,8 @@ pub struct Stats {
     pub(super) duplicated: AtomicU64,
     /// Frames that never reached the encoder.
     pub(super) dropped: AtomicU64,
+    /// Frames the capture received, whether the pacer used them or not.
+    pub(super) frames_received: AtomicU64,
     /// Encoded bytes handed to the muxer.
     pub(super) bytes_written: AtomicU64,
     /// The QPC value at recording time 0.
@@ -74,6 +76,7 @@ impl Stats {
             frames: AtomicU64::new(0),
             duplicated: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
+            frames_received: AtomicU64::new(0),
             bytes_written: AtomicU64::new(0),
             started_qpc: AtomicU64::new(0),
             paused: AtomicBool::new(false),
@@ -87,6 +90,7 @@ impl Stats {
             frames: self.frames.load(Ordering::Relaxed),
             duplicated: self.duplicated.load(Ordering::Relaxed),
             dropped: self.dropped.load(Ordering::Relaxed),
+            frames_received: self.frames_received.load(Ordering::Relaxed),
             bytes_written: self.bytes_written.load(Ordering::Relaxed),
             started_qpc: self.started_qpc.load(Ordering::Relaxed),
             paused: self.paused.load(Ordering::Relaxed),
@@ -110,6 +114,8 @@ pub struct StatsSnapshot {
     pub duplicated: u64,
     /// Frames that never reached the encoder.
     pub dropped: u64,
+    /// Frames the capture received, whether the pacer used them or not.
+    pub frames_received: u64,
     /// Encoded bytes handed to the muxer.
     pub bytes_written: u64,
     /// The QPC value at recording time 0.

@@ -103,13 +103,13 @@ fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, tx: &Sender<Thr
                 Ok(()) => {
                     consecutive_failures = 0;
                     pacer.record(n, frame.seq, true);
-                    store_pacer_counters(stats, &pacer);
+                    store_pacer_counters(stats, &pacer, pipeline.capture.frames_received());
                 }
                 Err(err) => {
                     consecutive_failures += 1;
                     stats.set_last_error(err.to_string());
                     pacer.record(n, frame.seq, false);
-                    store_pacer_counters(stats, &pacer);
+                    store_pacer_counters(stats, &pacer, pipeline.capture.frames_received());
                     if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
                         frame_error = Some(err);
                         break 'record;
@@ -179,11 +179,12 @@ fn build_summary(file: &Path, pacer: &Pacer, stats: &Stats, fps: u32) -> Result<
     Ok(Summary { file: file.to_path_buf(), frames, duplicated: pacer.duplicated(), dropped: pacer.dropped(), bytes_written, duration_ms, average_mbps })
 }
 
-/// Copies the pacer's counters into the stats the UI thread reads.
-fn store_pacer_counters(stats: &Stats, pacer: &Pacer) {
+/// Copies the pacer's counters and the capture's received count into the stats the UI thread reads.
+fn store_pacer_counters(stats: &Stats, pacer: &Pacer, received: u64) {
     stats.frames.store(pacer.frames(), Ordering::Relaxed);
     stats.duplicated.store(pacer.duplicated(), Ordering::Relaxed);
     stats.dropped.store(pacer.dropped(), Ordering::Relaxed);
+    stats.frames_received.store(received, Ordering::Relaxed);
 }
 
 /// Waits up to two seconds for the first captured frame.

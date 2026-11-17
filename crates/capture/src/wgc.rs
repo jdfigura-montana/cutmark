@@ -7,6 +7,7 @@ use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession};
 use windows::Graphics::DirectX::{Direct3D11::IDirect3DDevice, DirectXPixelFormat};
 use windows::Graphics::SizeInt32;
+use windows::Win32::Graphics::Direct3D10::ID3D10Multithread;
 use windows::Win32::Graphics::Direct3D11::{D3D11_TEXTURE2D_DESC, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D};
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Graphics::Gdi::HMONITOR;
@@ -64,6 +65,16 @@ impl MonitorCapture {
     pub fn start(gpu: &Gpu, monitor: &crate::MonitorInfo, cursor: bool) -> Result<Self, CaptureError> {
         let device = gpu.device().clone();
         let context = gpu.context().clone();
+        // The FrameArrived callback copies frames on this device from a WGC
+        // thread while the recording thread drives the same immediate context.
+        // Without the runtime's multithread protection those concurrent calls
+        // can wedge the capture after the first frame.
+        let multithread: ID3D10Multithread = with_context("failed to query ID3D10Multithread from the shared device", device.cast())?;
+        // SAFETY: multithread is a live interface on a live device; the call
+        // only flips the context protection flag.
+        #[allow(unsafe_code)]
+        let protected = unsafe { multithread.SetMultithreadProtected(true) };
+        with_context("failed to enable the D3D11 multithread protection", if protected.as_bool() { Ok(()) } else { Err(windows::core::Error::empty()) })?;
         let winrt_device = wrap_device(&device)?;
         let item = item_for_monitor(monitor.handle)?;
         let size = SizeInt32 { Width: monitor.width, Height: monitor.height };

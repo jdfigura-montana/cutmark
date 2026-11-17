@@ -34,8 +34,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..seconds {
         std::thread::sleep(Duration::from_secs(1));
         let stats = session.stats();
-        println!("frames {} duplicated {} dropped {} {:.1} MB", stats.frames, stats.duplicated, stats.dropped, stats.bytes_written as f64 / 1_000_000.0);
+        println!(
+            "frames {} duplicated {} dropped {} received {} {:.1} MB",
+            stats.frames,
+            stats.duplicated,
+            stats.dropped,
+            stats.frames_received,
+            stats.bytes_written as f64 / 1_000_000.0
+        );
     }
+    let final_stats = session.stats();
+    println!("received {} frames from the capture", final_stats.frames_received);
     let summary = session.stop()?;
     println!(
         "file {} frames {} (expected {} = seconds x 60) duplicated {} dropped {} bytes {} duration {} ms average {:.2} Mbps",
