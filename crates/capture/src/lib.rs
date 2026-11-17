@@ -6,6 +6,8 @@
 //! rules, Clock and frame rate.
 
 #[cfg(windows)]
+mod audio;
+#[cfg(windows)]
 mod convert;
 #[cfg(windows)]
 mod gpu;
@@ -14,6 +16,8 @@ mod monitor;
 #[cfg(windows)]
 mod wgc;
 
+#[cfg(windows)]
+pub use audio::{AudioCapture, AudioDevice, AudioPacket, DeviceKind, find_device, list_audio_devices};
 #[cfg(windows)]
 pub use convert::Nv12Converter;
 #[cfg(windows)]
@@ -84,6 +88,23 @@ pub fn qpc_now() -> i64 {
 #[cfg(windows)]
 pub fn qpc_frequency() -> i64 {
     qpc_ticks_per_second().unwrap_or(0)
+}
+
+/// Converts a QPC counter value into 100 nanosecond units on the same clock.
+#[cfg(windows)]
+pub fn qpc_to_100ns(qpc: i64) -> i64 {
+    let freq = qpc_frequency();
+    if freq <= 0 {
+        return 0;
+    }
+    // Split so the multiply cannot overflow i64 even after days of uptime.
+    (qpc / freq) * 10_000_000 + ((qpc % freq) * 10_000_000) / freq
+}
+
+/// The QPC counter value at this instant, in 100 nanosecond units.
+#[cfg(windows)]
+pub fn qpc_now_100ns() -> i64 {
+    qpc_to_100ns(qpc_now())
 }
 
 /// Reads the QPC counter.
