@@ -7,6 +7,7 @@ mod config;
 mod engine;
 mod hotkeys;
 mod platform;
+mod takes;
 mod tray;
 
 fn main() -> anyhow::Result<()> {

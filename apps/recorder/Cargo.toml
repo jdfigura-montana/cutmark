@@ -25,7 +25,7 @@ panic = "deny"
 [dependencies]
 anyhow = "1.0.104"
 capture = { version = "0.1.0", path = "../../crates/capture" }
-chrono.workspace = true
+chrono = { workspace = true, features = ["clock"] }
 cutmark-hotkeys = { version = "0.1.0", path = "../../crates/cutmark-hotkeys" }
 directories = "6.0.0"
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }
