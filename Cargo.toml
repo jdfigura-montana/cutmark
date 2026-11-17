@@ -47,6 +47,9 @@ chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 rayon = "1"
 uuid = { version = "1.29.0", features = ["v4", "v7", "serde"] }
 thiserror = "2.0.21"
+# Shared FFmpeg wrapper. Each crate picks the features it needs; the base entry
+# enables none so consumers cannot drift apart on the version.
+ffmpeg-next = { version = "9", default-features = false }
 
 [workspace.lints.clippy]
 dbg_macro = "warn"
