@@ -1,22 +1,26 @@
-//! The video thread: capture, NV12 conversion, AMF encode and MKV mux on one
-//! thread, paced at the exact profile frame rate from the QPC clock.
+//! The video thread: capture, NV12 conversion and AMF encode on one thread,
+//! paced at the exact profile frame rate from the shared start QPC, with its
+//! packets queued into the session's mux thread.
 
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
 use capture::{Gpu, LatestFrame, MonitorCapture, Nv12Converter, list_monitors, qpc_frequency, qpc_now};
-use media_io::mux::Container;
-use media_io::{AmfEncoder, D3d11Device, D3d11FramePool, EncodedPacket, Encoder, HwFrame, MediaError, Muxer};
+use media_io::mux::{MuxSender, SendParameters};
+use media_io::{AmfEncoder, D3d11Device, D3d11FramePool, EncodedPacket, Encoder, HwFrame, MediaError};
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 
 use super::pacer::Pacer;
-use super::session::{EngineError, SessionConfig, Stats, Summary, ThreadMessage, encoder_config};
+use super::session::{EngineError, SessionConfig, StartCommand, Stats, Summary, ThreadMessage, VideoSetup, encoder_config};
 
 /// Frames may fail in a row this many times before the session stops itself.
 const MAX_CONSECUTIVE_FAILURES: u32 = 30;
+
+/// The muxer stream index of the video stream, which the session adds first.
+const VIDEO_STREAM: usize = 0;
 
 /// Everything the per-frame path needs, set up once at session start.
 struct Pipeline {
@@ -26,18 +30,32 @@ struct Pipeline {
     nv12: ID3D11Texture2D,
     pool: D3d11FramePool,
     encoder: AmfEncoder,
-    muxer: Muxer,
-    stream: usize,
 }
 
-/// Entry point of the video thread: records until told to stop, then reports.
-pub(super) fn run(cfg: SessionConfig, stats: Arc<Stats>, stop: Arc<AtomicBool>, tx: Sender<ThreadMessage>) {
-    let outcome = record(&cfg, &stats, &stop, &tx);
+/// Entry point of the video thread: sets up, waits for the start command,
+/// records until told to stop, then reports.
+pub(super) fn run(cfg: SessionConfig, stats: Arc<Stats>, stop: Arc<AtomicBool>, tx: Sender<ThreadMessage>, start_rx: Receiver<StartCommand>) {
+    let outcome = match setup(&cfg) {
+        Err(err) => {
+            let _ = tx.send(ThreadMessage::Setup(Err(err)));
+            return;
+        }
+        Ok((pipeline, facts)) => {
+            if tx.send(ThreadMessage::Setup(Ok(facts))).is_err() {
+                return;
+            }
+            match start_rx.recv() {
+                Ok(command) => record(&cfg, &stats, &stop, pipeline, command),
+                Err(_) => Err(EngineError::Failed("the session stopped before recording started".into())),
+            }
+        }
+    };
     let _ = tx.send(ThreadMessage::Finished(outcome));
 }
 
-/// Sets everything up, reports startup, then runs the paced recording loop.
-fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, tx: &Sender<ThreadMessage>) -> Result<Summary, EngineError> {
+/// Sets the capture, the converter, the frame pool and the encoder up, and
+/// reports the encoder facts the session needs for the mux stream.
+fn setup(cfg: &SessionConfig) -> Result<(Pipeline, VideoSetup), EngineError> {
     let profile = &cfg.profile;
     let gpu = Gpu::create(Some(cfg.adapter))?;
     let hw_device = D3d11Device::from_device(gpu.device())?;
@@ -48,16 +66,18 @@ fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, tx: &Sender<Thr
     let nv12 = converter.create_output()?;
     let pool = D3d11FramePool::new(&hw_device, profile.width, profile.height, 8)?;
     let encoder = AmfEncoder::open(&encoder_config(profile), &pool)?;
-    let mut muxer = Muxer::create(&cfg.output_file, Container::Mkv)?;
-    let stream = muxer.add_video(encoder.parameters(), encoder.time_base(), (profile.fps as i32, 1))?;
-    muxer.start()?;
-    let mut pipeline = Pipeline { capture, gpu, converter, nv12, pool, encoder, muxer, stream };
+    let facts = VideoSetup { params: SendParameters(encoder.parameters()), time_base: encoder.time_base() };
+    let pipeline = Pipeline { capture, gpu, converter, nv12, pool, encoder };
+    Ok((pipeline, facts))
+}
 
-    tx.send(ThreadMessage::Started).map_err(|_| EngineError::Failed("the session was dropped before recording started".into()))?;
-
+/// Runs the paced recording loop from the shared start QPC, then drains the
+/// encoder into the mux queue.
+fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, mut pipeline: Pipeline, command: StartCommand) -> Result<Summary, EngineError> {
+    let profile = &cfg.profile;
     let qpc_freq = qpc_frequency();
-    let start_qpc = qpc_now();
-    stats.started_qpc.store(start_qpc as u64, Ordering::Relaxed);
+    let start_qpc = command.start_qpc;
+    let mux = command.mux;
     let mut pacer = Pacer::new(qpc_freq, profile.fps, 1, start_qpc);
     // Mirrors of the pacer's shifted start and next frame index, used to sleep
     // up to the next tick without ever sleeping past it.
@@ -99,7 +119,7 @@ fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, tx: &Sender<Thr
                 continue;
             };
             let pts = pacer.pts_for(n);
-            match encode_one_frame(&mut pipeline, stats, &frame, pts) {
+            match encode_one_frame(&mut pipeline, &mux, stats, &frame, pts) {
                 Ok(()) => {
                     consecutive_failures = 0;
                     pacer.record(n, frame.seq, true);
@@ -120,63 +140,69 @@ fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, tx: &Sender<Thr
     }
 
     pipeline.capture.stop();
-    let Pipeline { encoder, muxer, stream, .. } = pipeline;
+    let Pipeline { encoder, .. } = pipeline;
     match frame_error {
-        // Still finish the file so the take stays playable up to the last frame.
+        // Still drain the encoder so the take stays playable to the last frame.
         Some(err) => {
-            let _ = finish_file(encoder, muxer, stream, stats);
+            let _ = finish_file(encoder, &mux, stats);
             Err(err)
         }
-        None => finish_file(encoder, muxer, stream, stats).and_then(|()| build_summary(&cfg.output_file, &pacer, stats, profile.fps)),
+        None => finish_file(encoder, &mux, stats).and_then(|()| build_summary(&cfg.output_file, &pacer, profile.fps)),
     }
 }
 
-/// Converts, encodes and muxes one due frame.
-fn encode_one_frame(pipeline: &mut Pipeline, stats: &Stats, frame: &LatestFrame, pts: i64) -> Result<(), EngineError> {
+/// Converts, encodes and queues one due frame.
+fn encode_one_frame(pipeline: &mut Pipeline, mux: &MuxSender, stats: &Stats, frame: &LatestFrame, pts: i64) -> Result<(), EngineError> {
     pipeline.converter.convert(&frame.texture, &pipeline.nv12)?;
     let mut hw = HwFrame::from_pool(&pipeline.pool)?;
     hw.copy_from(pipeline.gpu.context(), &pipeline.nv12)?;
     hw.set_pts(pts);
     pipeline.encoder.send(hw)?;
     let mut mux_err: Option<MediaError> = None;
-    let Pipeline { encoder, muxer, stream, .. } = &mut *pipeline;
-    encoder.receive(&mut |packet| write_packet(&packet, muxer, *stream, stats, &mut mux_err))?;
+    pipeline.encoder.receive(&mut |packet| write_packet(packet, mux, stats, &mut mux_err))?;
     if let Some(err) = mux_err {
         return Err(err.into());
     }
     Ok(())
 }
 
-/// Writes one packet into the muxer and adds its bytes to the stats.
-fn write_packet(packet: &EncodedPacket, muxer: &mut Muxer, stream: usize, stats: &Stats, mux_err: &mut Option<MediaError>) {
+/// Queues one packet into the mux thread and adds its bytes to the stats.
+fn write_packet(packet: EncodedPacket, mux: &MuxSender, stats: &Stats, mux_err: &mut Option<MediaError>) {
     stats.bytes_written.fetch_add(packet.size() as u64, Ordering::Relaxed);
     if mux_err.is_some() {
         return;
     }
-    if let Err(err) = muxer.write(stream, packet) {
+    if let Err(err) = mux.send(VIDEO_STREAM, packet) {
         *mux_err = Some(err);
     }
 }
 
-/// Drains the encoder into the muxer and writes the MKV trailer.
-fn finish_file(mut encoder: AmfEncoder, mut muxer: Muxer, stream: usize, stats: &Stats) -> Result<(), EngineError> {
+/// Drains the encoder into the mux queue; the mux thread writes the trailer
+/// when the session finishes it.
+fn finish_file(mut encoder: AmfEncoder, mux: &MuxSender, stats: &Stats) -> Result<(), EngineError> {
     let mut mux_err: Option<MediaError> = None;
-    encoder.finish(&mut |packet| write_packet(&packet, &mut muxer, stream, stats, &mut mux_err))?;
+    encoder.finish(&mut |packet| write_packet(packet, mux, stats, &mut mux_err))?;
     if let Some(err) = mux_err {
         return Err(err.into());
     }
-    muxer.finish()?;
     Ok(())
 }
 
-/// Builds the end-of-recording summary from the pacer and the stats.
-fn build_summary(file: &Path, pacer: &Pacer, stats: &Stats, fps: u32) -> Result<Summary, EngineError> {
+/// Builds the end-of-recording summary from the pacer; stop() fills in the
+/// muxed bytes and the per-stream packet counts.
+fn build_summary(file: &Path, pacer: &Pacer, fps: u32) -> Result<Summary, EngineError> {
     let frames = pacer.frames();
     let duration_ms = if fps == 0 { 0 } else { frames * 1000 / u64::from(fps) };
-    let bytes_written = stats.bytes_written.load(Ordering::Relaxed);
-    let seconds = duration_ms as f64 / 1000.0;
-    let average_mbps = if seconds > 0.0 { bytes_written as f64 * 8.0 / seconds / 1_000_000.0 } else { 0.0 };
-    Ok(Summary { file: file.to_path_buf(), frames, duplicated: pacer.duplicated(), dropped: pacer.dropped(), bytes_written, duration_ms, average_mbps })
+    Ok(Summary {
+        file: file.to_path_buf(),
+        frames,
+        duplicated: pacer.duplicated(),
+        dropped: pacer.dropped(),
+        bytes_written: 0,
+        packets: Vec::new(),
+        duration_ms,
+        average_mbps: 0.0,
+    })
 }
 
 /// Copies the pacer's counters and the capture's received count into the stats the UI thread reads.

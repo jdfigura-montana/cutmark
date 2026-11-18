@@ -1,7 +1,7 @@
 //! The MKV muxer: copies encoder packets into a Matroska file that stays
 //! playable if the process dies mid-take.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
@@ -38,6 +38,8 @@ struct StreamInfo {
 /// Writes encoded packets into a Matroska file and flushes on keyframes.
 pub struct Muxer {
     ctx: ffmpeg_next::format::context::Output,
+    /// The output file, read back for its final size after the trailer.
+    path: PathBuf,
     streams: Vec<StreamInfo>,
     started: bool,
 }
@@ -48,7 +50,7 @@ impl Muxer {
         let ctx = match container {
             Container::Mkv => ffmpeg_next::format::output_as(path, "matroska")?,
         };
-        Ok(Self { ctx, streams: Vec::new(), started: false })
+        Ok(Self { ctx, path: path.to_path_buf(), streams: Vec::new(), started: false })
     }
 
     /// Adds one video stream that copies the encoder's codec parameters,
@@ -100,7 +102,7 @@ impl Muxer {
     /// Rescales one packet's timestamps into the stream's time base and
     /// interleaved-writes it, flushing the output when it is a keyframe.
     pub fn write(&mut self, stream: usize, packet: &EncodedPacket) -> Result<(), MediaError> {
-        let Self { ctx, streams, started } = self;
+        let Self { ctx, streams, started, .. } = self;
         if !*started {
             return Err(MediaError::Null("muxer write before start"));
         }
@@ -142,17 +144,10 @@ impl Muxer {
         Ok(())
     }
 
-    /// The bytes the AVIO layer has written out so far.
-    #[allow(unsafe_code)]
-    fn bytes_written(&mut self) -> u64 {
-        // SAFETY: ctx is a live output context whose pb points at the
-        // AVIOContext that owns the open file; avio_tell only reads the
-        // current position.
-        unsafe {
-            let pb = (*self.ctx.as_mut_ptr()).pb;
-            let written = (*pb).bytes_written;
-            u64::try_from(written).unwrap_or(0)
-        }
+    /// The size of the finished file, read from the file system after the
+    /// trailer was written.
+    fn file_size(&self) -> u64 {
+        std::fs::metadata(&self.path).map(|meta| meta.len()).unwrap_or(0)
     }
 
     /// The number of streams added so far.
@@ -175,7 +170,7 @@ fn set_default_disposition(stream: &mut ffmpeg_next::format::stream::StreamMut<'
 /// The result of a finished mux thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MuxSummary {
-    /// Bytes the muxer wrote into the file.
+    /// The size of the finished file.
     pub bytes_written: u64,
     /// Packets written, one entry per stream index.
     pub packets: Vec<u64>,
@@ -183,14 +178,51 @@ pub struct MuxSummary {
     pub queue_full_waits: u64,
 }
 
-/// A background thread that owns the muxer and writes queued packets.
-pub struct MuxThread {
+/// Codec parameters that may be handed from the thread that owns the encoder
+/// to the thread that owns the muxer.
+pub struct SendParameters(pub Parameters);
+
+// SAFETY: the wrapper owns its AVCodecParameters copy outright and nothing
+// aliases it, so moving it to the mux owner thread is sound.
+#[allow(unsafe_code)]
+unsafe impl Send for SendParameters {}
+
+/// A clonable handle that queues packets into a MuxThread; hand one to every
+/// stream thread.
+#[derive(Clone)]
+pub struct MuxSender {
     /// The bounded queue feeding the mux thread.
     sender: SyncSender<(usize, EncodedPacket)>,
-    /// The mux thread's join handle, which returns its summary.
-    join: JoinHandle<Result<MuxSummary, MediaError>>,
     /// Counter for sends that had to wait for queue space.
     queue_full: Arc<AtomicU64>,
+}
+
+impl MuxSender {
+    /// Queues one packet for its stream, blocking until there is room and
+    /// counting how often that wait happened.
+    pub fn send(&self, stream: usize, packet: EncodedPacket) -> Result<(), MediaError> {
+        match self.sender.try_send((stream, packet)) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full((stream, packet))) => {
+                self.queue_full.fetch_add(1, Ordering::Relaxed);
+                self.sender.send((stream, packet)).map_err(|_| MediaError::Null("mux thread closed"))
+            }
+            Err(TrySendError::Disconnected(_)) => Err(MediaError::Null("mux thread closed")),
+        }
+    }
+
+    /// How often a send had to wait because the queue was full.
+    fn queue_full_waits(&self) -> u64 {
+        self.queue_full.load(Ordering::Relaxed)
+    }
+}
+
+/// A background thread that owns the muxer and writes queued packets.
+pub struct MuxThread {
+    /// The queue handle the owner and the stream threads share.
+    sender: MuxSender,
+    /// The mux thread's join handle, which returns its summary.
+    join: JoinHandle<Result<MuxSummary, MediaError>>,
 }
 
 impl MuxThread {
@@ -201,28 +233,25 @@ impl MuxThread {
         let queue_full = Arc::new(AtomicU64::new(0));
         let join =
             std::thread::Builder::new().name("mux".to_string()).spawn(move || mux_loop(muxer, receiver)).map_err(|_| MediaError::Null("mux thread spawn"))?;
-        Ok(Self { sender, join, queue_full })
+        Ok(Self { sender: MuxSender { sender, queue_full }, join })
     }
 
-    /// Queues one packet for its stream, blocking until there is room and
-    /// counting how often that wait happened.
+    /// A handle to the queue; every stream thread sends through one.
+    pub fn sender(&self) -> MuxSender {
+        self.sender.clone()
+    }
+
+    /// Queues one packet for its stream, blocking until there is room.
     pub fn send(&self, stream: usize, packet: EncodedPacket) -> Result<(), MediaError> {
-        match self.sender.try_send((stream, packet)) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full((stream, packet))) => {
-                self.queue_full.fetch_add(1, Ordering::Relaxed);
-                self.sender.send((stream, packet)).map_err(|_| MediaError::Null("mux thread closed"))?;
-                Ok(())
-            }
-            Err(TrySendError::Disconnected(_)) => Err(MediaError::Null("mux thread closed")),
-        }
+        self.sender.send(stream, packet)
     }
 
     /// Closes the queue, waits for the trailer and returns the summary.
     pub fn finish(self) -> Result<MuxSummary, MediaError> {
+        let queue_full_waits = self.sender.queue_full_waits();
         drop(self.sender);
         let mut summary = self.join.join().map_err(|_| MediaError::Null("mux thread panicked"))??;
-        summary.queue_full_waits = self.queue_full.load(Ordering::Relaxed);
+        summary.queue_full_waits = queue_full_waits;
         Ok(summary)
     }
 }
@@ -237,8 +266,8 @@ fn mux_loop(mut muxer: Muxer, receiver: Receiver<(usize, EncodedPacket)>) -> Res
         muxer.write(stream, &packet)?;
         *slot += 1;
     }
-    let bytes_written = muxer.bytes_written();
     muxer.write_trailer()?;
+    let bytes_written = muxer.file_size();
     Ok(MuxSummary { bytes_written, packets, queue_full_waits: 0 })
 }
 
