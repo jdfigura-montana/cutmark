@@ -21,7 +21,7 @@ directories = "6.0.0"
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }
 egui-phosphor = { workspace = true }
 ffmpeg-next = { workspace = true, features = ["codec", "format"] }
-hound = "3.5.1"
+hound = { workspace = true }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 rfd = { workspace = true }
 rtrb = "0.4.1"

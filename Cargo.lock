@@ -1469,6 +1469,7 @@ dependencies = [
  "egui",
  "env_logger",
  "global-hotkey",
+ "hound",
  "log",
  "media-io",
  "raw-window-handle",

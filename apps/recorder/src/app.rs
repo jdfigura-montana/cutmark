@@ -143,7 +143,20 @@ impl RecorderApp {
         let take = takes::next_take(&root, chrono::Local::now())?;
         let profile = Profile::shipped().into_iter().find(|profile| profile.name == self.settings.active_profile).unwrap_or_else(Profile::tutorial_av1_1440p60);
         self.active_fps = profile.fps;
-        let cfg = SessionConfig { adapter: 0, monitor: 0, cursor: true, profile, output_file: take.video_file.clone() };
+        let cfg = SessionConfig {
+            adapter: 0,
+            monitor: 0,
+            cursor: true,
+            profile,
+            output_file: take.video_file.clone(),
+            tracks: Vec::new(),
+            audio_codec: media_io::AudioCodec::Aac { kbps: 320 },
+            mixdown: false,
+            track_streams: false,
+            wav_sidecars: false,
+            take_folder: take.video_file.parent().map(std::path::Path::to_path_buf).unwrap_or_default(),
+            base_name: take.video_file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+        };
         let session = RecordingSession::start(cfg).map_err(|err| anyhow!("could not start recording into {}: {err}", take.video_file.display()))?;
         self.session = Some(session);
         self.take = Some(take);

@@ -32,6 +32,7 @@ eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }
 egui.workspace = true
 env_logger = "0.11.11"
 global-hotkey = "0.10.0"
+hound = { workspace = true }
 log.workspace = true
 media-io = { version = "0.1.0", path = "../../crates/media-io" }
 raw-window-handle = "0.6"

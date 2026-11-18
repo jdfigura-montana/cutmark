@@ -195,6 +195,7 @@ fn build_summary(file: &Path, pacer: &Pacer, fps: u32) -> Result<Summary, Engine
     let duration_ms = if fps == 0 { 0 } else { frames * 1000 / u64::from(fps) };
     Ok(Summary {
         file: file.to_path_buf(),
+        wav_files: Vec::new(),
         frames,
         duplicated: pacer.duplicated(),
         dropped: pacer.dropped(),

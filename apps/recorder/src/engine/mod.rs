@@ -8,6 +8,11 @@ pub mod bus;
 #[allow(dead_code)]
 pub mod audio_track;
 
+/// The audio thread: every track's capture and pipeline, WAV sidecars, the
+/// mixdown and per-track AAC streams, and their packets into the muxer.
+#[allow(dead_code)]
+pub mod audio;
+
 /// The constant frame rate pacer: QPC time to exact frame indexes, pure logic.
 pub mod pacer;
 
