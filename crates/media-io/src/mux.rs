@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread::JoinHandle;
@@ -94,6 +95,14 @@ impl Muxer {
 
     /// Writes the container header; call once after all streams are added.
     pub fn start(&mut self) -> Result<(), MediaError> {
+        // Matroska cannot store negative timestamps, so tell the muxer to
+        // shift the AAC priming gap instead of failing on the first packet.
+        // SAFETY: ctx is a live output context; setting avoid_negative_ts
+        // before write_header is what avformat's own callers do.
+        #[allow(unsafe_code)]
+        unsafe {
+            (*self.ctx.as_mut_ptr()).avoid_negative_ts = ffi::AVFMT_AVOID_NEG_TS_MAKE_ZERO as _;
+        }
         self.ctx.write_header()?;
         self.started = true;
         Ok(())
@@ -187,6 +196,9 @@ pub struct SendParameters(pub Parameters);
 #[allow(unsafe_code)]
 unsafe impl Send for SendParameters {}
 
+/// The first error the mux thread hit, shared with every sender handle.
+type SharedFailure = Arc<Mutex<Option<&'static str>>>;
+
 /// A clonable handle that queues packets into a MuxThread; hand one to every
 /// stream thread.
 #[derive(Clone)]
@@ -195,6 +207,8 @@ pub struct MuxSender {
     sender: SyncSender<(usize, EncodedPacket)>,
     /// Counter for sends that had to wait for queue space.
     queue_full: Arc<AtomicU64>,
+    /// The stored first failure of the mux thread, if it died.
+    failure: SharedFailure,
 }
 
 impl MuxSender {
@@ -205,10 +219,16 @@ impl MuxSender {
             Ok(()) => Ok(()),
             Err(TrySendError::Full((stream, packet))) => {
                 self.queue_full.fetch_add(1, Ordering::Relaxed);
-                self.sender.send((stream, packet)).map_err(|_| MediaError::Null("mux thread closed"))
+                self.sender.send((stream, packet)).map_err(|_| self.closed_error())
             }
-            Err(TrySendError::Disconnected(_)) => Err(MediaError::Null("mux thread closed")),
+            Err(TrySendError::Disconnected(_)) => Err(self.closed_error()),
         }
+    }
+
+    /// The stored first mux failure if the thread died, else the generic text.
+    fn closed_error(&self) -> MediaError {
+        let stored = self.failure.lock().ok().and_then(|slot| *slot);
+        MediaError::Null(stored.unwrap_or("mux thread closed"))
     }
 
     /// How often a send had to wait because the queue was full.
@@ -231,9 +251,13 @@ impl MuxThread {
     pub fn start(muxer: Muxer) -> Result<Self, MediaError> {
         let (sender, receiver) = sync_channel(1024);
         let queue_full = Arc::new(AtomicU64::new(0));
-        let join =
-            std::thread::Builder::new().name("mux".to_string()).spawn(move || mux_loop(muxer, receiver)).map_err(|_| MediaError::Null("mux thread spawn"))?;
-        Ok(Self { sender: MuxSender { sender, queue_full }, join })
+        let failure: SharedFailure = Arc::new(Mutex::new(None));
+        let thread_failure = failure.clone();
+        let join = std::thread::Builder::new()
+            .name("mux".to_string())
+            .spawn(move || mux_loop(muxer, receiver, thread_failure))
+            .map_err(|_| MediaError::Null("mux thread spawn"))?;
+        Ok(Self { sender: MuxSender { sender, queue_full, failure }, join })
     }
 
     /// A handle to the queue; every stream thread sends through one.
@@ -257,18 +281,33 @@ impl MuxThread {
 }
 
 /// Writes queued packets until the queue closes, then the trailer.
-fn mux_loop(mut muxer: Muxer, receiver: Receiver<(usize, EncodedPacket)>) -> Result<MuxSummary, MediaError> {
+fn mux_loop(mut muxer: Muxer, receiver: Receiver<(usize, EncodedPacket)>, failure: SharedFailure) -> Result<MuxSummary, MediaError> {
     let mut packets = vec![0u64; muxer.stream_count()];
     while let Ok((stream, packet)) = receiver.recv() {
-        let Some(slot) = packets.get_mut(stream) else {
-            return Err(MediaError::Null("mux thread stream index"));
+        let outcome = match packets.get_mut(stream) {
+            Some(slot) => muxer.write(stream, &packet).map(|()| *slot += 1),
+            None => Err(MediaError::Null("mux thread stream index")),
         };
-        muxer.write(stream, &packet)?;
-        *slot += 1;
+        if let Err(err) = outcome {
+            return Err(store_failure(&failure, stream, &packet, err));
+        }
     }
     muxer.write_trailer()?;
     let bytes_written = muxer.file_size();
     Ok(MuxSummary { bytes_written, packets, queue_full_waits: 0 })
+}
+
+/// Logs the first mux failure and keeps it, with the stream index, the
+/// packet's encoder-side timestamps and the FFmpeg error text.
+fn store_failure(failure: &SharedFailure, stream: usize, packet: &EncodedPacket, err: MediaError) -> MediaError {
+    let message: &'static str = Box::leak(format!("mux write failed on stream {stream} pts {:?} dts {:?}: {err}", packet.pts(), packet.dts()).into_boxed_str());
+    log::error!("{message}");
+    if let Ok(mut slot) = failure.lock()
+        && slot.is_none()
+    {
+        *slot = Some(message);
+    }
+    MediaError::Null(message)
 }
 
 /// Forces the AVIO layer out to the file so a killed process loses at most

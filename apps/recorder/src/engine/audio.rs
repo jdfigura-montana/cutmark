@@ -143,8 +143,18 @@ fn record(
         // The session gave up; leave quietly without writing any files.
         Err(_) => return Ok(AudioSummary { wav_files: Vec::new() }),
     };
-    let mut rig =
-        AudioRig::new(tracks.clone(), captures, mix_encoder, track_encoders, mixdown_on, job.wav_sidecars, &job.take_folder, &job.base_name, start.start_qpc)?;
+    let mut rig = AudioRig::new(
+        tracks.clone(),
+        captures,
+        mix_encoder,
+        track_encoders,
+        mixdown_on,
+        job.wav_sidecars,
+        &job.take_folder,
+        &job.base_name,
+        start.start_qpc,
+        start.streams,
+    )?;
     let mut start_100ns = start.start_qpc;
     let mut paused_at: Option<i64> = None;
     let mut was_paused = false;
@@ -200,9 +210,13 @@ fn record(
         rig.emit_block(frames, &start.mux, stats)?;
     }
     // Finish the encoders and queue their last packets for the muxer.
-    finish_stream(rig.mix_encoder.as_mut(), 0, &start.mux)?;
+    let mix_stream = rig.stream_indexes.first().copied().ok_or(EngineError::Failed("the mixdown stream index is missing".into()))?;
+    finish_stream(rig.mix_encoder.as_mut(), mix_stream, &start.mux)?;
     for (slot, encoder) in rig.track_encoders.iter_mut().enumerate() {
-        finish_stream(encoder.as_mut(), rig.first_track_slot + slot, &start.mux)?;
+        let Some(stream) = rig.stream_indexes.get(rig.first_track_slot + slot).copied() else {
+            return Err(EngineError::Failed("a track stream index is missing".into()));
+        };
+        finish_stream(encoder.as_mut(), stream, &start.mux)?;
     }
     rig.flush_wavs();
     Ok(AudioSummary { wav_files: rig.finalize_wavs() })
@@ -237,6 +251,9 @@ struct AudioRig {
     mixdown_on: bool,
     /// The first track stream's mux slot: 1 with a mixdown, 0 without.
     first_track_slot: usize,
+    /// The mux stream index per encoder slot: the mixdown first when present,
+    /// then one per track.
+    stream_indexes: Vec<usize>,
 }
 
 impl AudioRig {
@@ -252,6 +269,7 @@ impl AudioRig {
         take_folder: &Path,
         base_name: &str,
         start_100ns: i64,
+        stream_indexes: Vec<usize>,
     ) -> Result<Self, EngineError> {
         let mut pipelines = Vec::with_capacity(tracks.len());
         for track in &tracks {
@@ -286,6 +304,7 @@ impl AudioRig {
             mixdown_on,
             first_track_slot: usize::from(mixdown_on),
             tracks,
+            stream_indexes,
         })
     }
     /// Moves every queued packet from each capture into its pipeline.
@@ -348,6 +367,7 @@ impl AudioRig {
             *taken += common as u64;
         }
         if self.mixdown_on {
+            let stream = self.stream_indexes.first().copied().ok_or(EngineError::Failed("the mixdown stream index is missing".into()))?;
             let mut mix = vec![0.0f32; common * 2];
             for (block, track) in blocks.iter().zip(&self.tracks) {
                 if track.in_mixdown {
@@ -359,10 +379,13 @@ impl AudioRig {
             for sample in mix.iter_mut() {
                 *sample = sample.clamp(-1.0, 1.0);
             }
-            encode_stream(self.mix_encoder.as_mut(), 0, &mix, mux, stats)?;
+            encode_stream(self.mix_encoder.as_mut(), stream, &mix, mux, stats)?;
         }
         for (slot, (encoder, block)) in self.track_encoders.iter_mut().zip(&blocks).enumerate() {
-            encode_stream(encoder.as_mut(), self.first_track_slot + slot, block, mux, stats)?;
+            let Some(stream) = self.stream_indexes.get(self.first_track_slot + slot).copied() else {
+                return Err(EngineError::Failed("a track stream index is missing".into()));
+            };
+            encode_stream(encoder.as_mut(), stream, block, mux, stats)?;
         }
         Ok(())
     }
