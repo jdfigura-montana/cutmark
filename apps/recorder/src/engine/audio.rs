@@ -195,6 +195,7 @@ fn record(
             }
             was_paused = paused;
         }
+        rig.apply_controls(stats);
         rig.drain_captures();
         rig.fold_stats(stats);
         if last_reconnect.elapsed() >= RECONNECT_INTERVAL {
@@ -327,6 +328,23 @@ impl AudioRig {
             stream_indexes,
         })
     }
+    /// Applies the gain and mute the UI set since the last tick to each track's pipeline.
+    fn apply_controls(&mut self, stats: &Stats) {
+        for (index, (track, pipeline)) in self.tracks.iter_mut().zip(&mut self.pipelines).enumerate() {
+            let Some((gain_db, muted)) = stats.track_controls(index) else {
+                continue;
+            };
+            if gain_db != track.gain_db {
+                track.gain_db = gain_db;
+                pipeline.set_gain_db(gain_db);
+            }
+            if muted != track.muted {
+                track.muted = muted;
+                pipeline.set_muted(muted);
+            }
+        }
+    }
+
     /// Moves every queued packet from each capture into its pipeline.
     fn drain_captures(&mut self) {
         for (((capture, pipeline), lost), track) in self.captures.iter().zip(&mut self.pipelines).zip(self.lost.iter_mut()).zip(&self.tracks) {

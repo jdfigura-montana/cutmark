@@ -4,21 +4,29 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use anyhow::anyhow;
+use anyhow::{Context as _, anyhow};
+use capture::AudioDevice;
 
-use crate::config::{self, AudioCodecChoice, Profile, Settings};
+use crate::config::{self, AudioCodecChoice, Profile, Settings, TrackKind};
 use crate::engine::bus::{Bus, Command};
 use crate::engine::session::{RecordingSession, SessionConfig, StatsSnapshot, Summary, TrackSpec};
 use crate::hotkeys::Hotkeys;
 use crate::platform;
 use crate::takes::{self, TakePaths};
+use crate::tracks_ui::{self, LiveTrackStats, TracksChanged};
 use crate::tray::Tray;
 
 /// How many recent commands the window keeps.
 const RECENT_LIMIT: usize = 20;
 
-/// How often the status refreshes while recording.
+/// How long the bitrate is averaged over while recording.
 const STATUS_REFRESH: Duration = Duration::from_millis(250);
+
+/// How often the window repaints while recording, so the level meters move smoothly.
+const METER_REFRESH: Duration = Duration::from_millis(33);
+
+/// The name of the track the mute hotkey prefers.
+const MIC_TRACK_NAME: &str = "Mic";
 
 /// The Recorder app: settings, hotkeys, the tray icon, the command bus, the running take and the recent commands.
 pub struct RecorderApp {
@@ -35,6 +43,14 @@ pub struct RecorderApp {
     active_fps: u32,
     /// The bytes written at the previous stats sample, to work out the bitrate over the last second.
     last_poll: Option<(Instant, u64)>,
+    /// The bitrate measured at the previous stats sample, in megabits per second.
+    last_mbps: f64,
+    /// The audio devices that were present at the last refresh.
+    devices: Vec<AudioDevice>,
+    /// The level meters of the running take.
+    live_tracks: LiveTrackStats,
+    /// Whether the track settings changed and are not saved yet.
+    settings_dirty: bool,
     /// The summary of the last finished take, shown until the next one starts.
     summary: Option<Summary>,
     /// The text of the last start or stop error, shown in a red banner until the next take.
@@ -78,6 +94,7 @@ impl RecorderApp {
                 None
             }
         };
+        let devices = list_devices();
         Self {
             settings,
             hotkeys,
@@ -88,6 +105,10 @@ impl RecorderApp {
             take: None,
             active_fps: 60,
             last_poll: None,
+            last_mbps: 0.0,
+            devices,
+            live_tracks: LiveTrackStats::default(),
+            settings_dirty: false,
             summary: None,
             error: None,
             audio_notice: None,
@@ -111,10 +132,64 @@ impl RecorderApp {
             if matches!(command, Command::PauseResume) {
                 self.toggle_pause();
             }
+            if matches!(command, Command::Mute { .. }) {
+                self.toggle_mic_mute();
+            }
             if self.recent.len() == RECENT_LIMIT {
                 self.recent.pop_front();
             }
             self.recent.push_back(command);
+        }
+    }
+
+    /// Toggles mute on the track named Mic, or else on the first Input track, in the settings and in the running take.
+    fn toggle_mic_mute(&mut self) {
+        let tracks = &mut self.settings.audio.tracks;
+        let position = tracks
+            .iter()
+            .position(|track| track.name.eq_ignore_ascii_case(MIC_TRACK_NAME))
+            .or_else(|| tracks.iter().position(|track| track.kind == TrackKind::Input));
+        let Some(track) = position.and_then(|index| tracks.get_mut(index)) else {
+            log::warn!("mute hotkey: there is no Mic or Input track to mute");
+            return;
+        };
+        track.muted = !track.muted;
+        log::info!("track {} is now {}", track.name, if track.muted { "muted" } else { "unmuted" });
+        self.forward_live_controls();
+        self.save_settings();
+    }
+
+    /// Sends every track's gain and mute from the settings to the running take.
+    fn forward_live_controls(&self) {
+        let Some(session) = &self.session else { return };
+        // A take only has the enabled tracks, in settings order.
+        for (index, track) in self.settings.audio.tracks.iter().filter(|track| track.enabled).enumerate() {
+            session.set_track_gain_db(index, track.gain_db);
+            session.set_track_muted(index, track.muted);
+        }
+    }
+
+    /// Writes the settings now, unless the settings file on disk is one the Recorder could not read.
+    fn save_settings(&mut self) {
+        self.settings_dirty = false;
+        if let Err(err) = save_settings_file(&self.settings) {
+            log::error!("could not save the Recorder settings: {err:#}");
+        }
+    }
+
+    /// Acts on what the track panel reported this frame.
+    fn on_tracks_changed(&mut self, ctx: &egui::Context, changed: TracksChanged) {
+        self.settings_dirty |= changed.settings;
+        if changed.live {
+            self.forward_live_controls();
+        }
+        if changed.refresh_devices {
+            self.devices = list_devices();
+        }
+        // Save when an edit has ended, or when nothing is being dragged and no field has focus.
+        let settled = !ctx.input(|input| input.pointer.any_down()) && ctx.memory(|memory| memory.focused().is_none());
+        if self.settings_dirty && (changed.commit || settled) {
+            self.save_settings();
         }
     }
 
@@ -172,6 +247,7 @@ impl RecorderApp {
         self.session = Some(session);
         self.take = Some(take);
         self.last_poll = None;
+        self.live_tracks.clear();
         Ok(())
     }
 
@@ -203,6 +279,7 @@ impl RecorderApp {
         let Some(session) = self.session.take() else { return };
         self.take = None;
         self.last_poll = None;
+        self.live_tracks.clear();
         self.update_tray(false);
         match session.stop() {
             Ok(summary) => {
@@ -244,19 +321,26 @@ impl RecorderApp {
         }
     }
 
-    /// Samples the running session's counters and the bitrate since the previous sample.
+    /// Samples the running session's counters, feeds the level meters, and works out the bitrate over the last quarter second or more.
     fn live_stats(&mut self) -> Option<(StatsSnapshot, f64)> {
         let stats = self.session.as_ref()?.stats();
         let now = Instant::now();
-        let mbps = match self.last_poll {
+        self.live_tracks.update(&stats.tracks, now);
+        match self.last_poll {
             Some((then, bytes_then)) => {
                 let seconds = now.duration_since(then).as_secs_f64();
-                if seconds > 0.0 { stats.bytes_written.saturating_sub(bytes_then) as f64 * 8.0 / 1_000_000.0 / seconds } else { 0.0 }
+                // The window repaints faster than the bitrate should be sampled, so it keeps the last value in between.
+                if seconds >= STATUS_REFRESH.as_secs_f64() {
+                    self.last_mbps = stats.bytes_written.saturating_sub(bytes_then) as f64 * 8.0 / 1_000_000.0 / seconds;
+                    self.last_poll = Some((now, stats.bytes_written));
+                }
             }
-            None => 0.0,
-        };
-        self.last_poll = Some((now, stats.bytes_written));
-        Some((stats, mbps))
+            None => {
+                self.last_mbps = 0.0;
+                self.last_poll = Some((now, stats.bytes_written));
+            }
+        }
+        Some((stats, self.last_mbps))
     }
 
     /// Draws the status while a take is running or paused.
@@ -353,6 +437,41 @@ impl RecorderApp {
     }
 }
 
+/// Lists the audio devices that are present; on failure logs a warning and lists none.
+fn list_devices() -> Vec<AudioDevice> {
+    capture::list_audio_devices().unwrap_or_else(|err| {
+        log::warn!("could not list the audio devices: {err}");
+        Vec::new()
+    })
+}
+
+/// Writes settings.json through a temp file in the same folder, leaving a file the Recorder could not read alone.
+fn save_settings_file(settings: &Settings) -> anyhow::Result<()> {
+    let dirs = directories::BaseDirs::new().ok_or_else(|| anyhow!("the user's config folder could not be found"))?;
+    let path = dirs.config_dir().join("Cutmark").join("recorder").join("settings.json");
+    if let Ok(text) = std::fs::read_to_string(&path)
+        && serde_json::from_str::<Settings>(text.strip_prefix('\u{feff}').unwrap_or(&text)).is_err()
+    {
+        return Err(anyhow!("{} is not valid, so it was not overwritten", path.display()));
+    }
+    let mut text = serde_json::to_string_pretty(settings).context("could not turn the settings into JSON")?;
+    text.push('\n');
+    let tmp = path.with_extension("json.tmp");
+    let written = write_synced(&tmp, text.as_bytes()).and_then(|()| std::fs::rename(&tmp, &path));
+    if written.is_err() {
+        // Best effort: do not leave the temp file behind.
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written.with_context(|| format!("could not write {}", path.display()))
+}
+
+/// Writes the bytes to `path` and flushes them to disk.
+fn write_synced(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = std::fs::File::create(path)?;
+    std::io::Write::write_all(&mut file, bytes)?;
+    file.sync_all()
+}
+
 /// The audio codec the settings ask for, as the encoder takes it.
 fn audio_codec(choice: AudioCodecChoice) -> media_io::AudioCodec {
     match choice {
@@ -372,6 +491,9 @@ impl eframe::App for RecorderApp {
         if ctx.input(|input| input.viewport().close_requested()) {
             // The X button or the tray's Quit: finish the file before the app goes away, then let it close.
             self.stop_take();
+            if self.settings_dirty {
+                self.save_settings();
+            }
         }
         self.handle_commands();
         self.hide_to_tray_when_minimized(&ctx);
@@ -398,15 +520,21 @@ impl eframe::App for RecorderApp {
             }
             ui.add_space(8.0);
 
+            let recording = live.is_some();
             if let Some((stats, current_mbps)) = live {
                 self.recording_panel(ui, &stats, current_mbps);
-                ctx.request_repaint_after(STATUS_REFRESH);
+                ctx.request_repaint_after(METER_REFRESH);
             } else {
                 ui.label("Idle");
                 if let Some(summary) = &self.summary {
                     self.summary_panel(ui, summary);
                 }
             }
+            ui.add_space(8.0);
+
+            let live_tracks = if recording { Some(&self.live_tracks) } else { None };
+            let changed = tracks_ui::tracks_panel(ui, &mut self.settings.audio, &self.devices, live_tracks, recording);
+            self.on_tracks_changed(&ctx, changed);
             ui.add_space(8.0);
 
             ui.heading("Hotkeys");

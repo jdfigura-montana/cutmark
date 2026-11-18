@@ -2,7 +2,7 @@
 //! resume and stop calls that drive the video thread.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 
@@ -113,7 +113,7 @@ pub struct Stats {
 }
 
 impl Stats {
-    fn new(track_names: Vec<String>) -> Self {
+    fn new(tracks: &[TrackSpec]) -> Self {
         Self {
             frames: AtomicU64::new(0),
             duplicated: AtomicU64::new(0),
@@ -124,14 +124,16 @@ impl Stats {
             paused: AtomicBool::new(false),
             last_error: Mutex::new(None),
             audio_frames: AtomicU64::new(0),
-            tracks: track_names
-                .into_iter()
-                .map(|name| TrackSlot {
-                    name,
+            tracks: tracks
+                .iter()
+                .map(|track| TrackSlot {
+                    name: track.name.clone(),
                     meter: Mutex::new(TrackMeter { peak: 0.0, clipped: false }),
                     packets: AtomicU64::new(0),
                     overflows: AtomicU64::new(0),
                     device_lost: AtomicBool::new(false),
+                    gain_db_bits: AtomicU32::new(track.gain_db.to_bits()),
+                    muted: AtomicBool::new(track.muted),
                 })
                 .collect(),
         }
@@ -167,6 +169,26 @@ impl Stats {
             }
             meter.clipped |= clipped;
         }
+    }
+
+    /// Sets a track's live gain in dB; the audio thread applies it on its next tick.
+    fn set_track_gain_db(&self, index: usize, db: f32) {
+        if let Some(slot) = self.tracks.get(index) {
+            slot.gain_db_bits.store(db.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// Sets a track's live mute; the audio thread applies it on its next tick.
+    fn set_track_muted(&self, index: usize, muted: bool) {
+        if let Some(slot) = self.tracks.get(index) {
+            slot.muted.store(muted, Ordering::Relaxed);
+        }
+    }
+
+    /// A track's live gain in dB and mute, as the UI last set them.
+    pub(super) fn track_controls(&self, index: usize) -> Option<(f32, bool)> {
+        let slot = self.tracks.get(index)?;
+        Some((f32::from_bits(slot.gain_db_bits.load(Ordering::Relaxed)), slot.muted.load(Ordering::Relaxed)))
     }
 
     /// Records the text of the latest frame error.
@@ -229,6 +251,10 @@ struct TrackSlot {
     overflows: AtomicU64,
     /// Whether the endpoint was invalidated.
     device_lost: AtomicBool,
+    /// The track's live gain in dB, as f32 bits, set by the UI and applied by the audio thread.
+    gain_db_bits: AtomicU32,
+    /// Whether the track is muted right now, set by the UI and applied by the audio thread.
+    muted: AtomicBool,
 }
 
 /// One track's output meter, reset by every snapshot read.
@@ -345,7 +371,7 @@ impl RecordingSession {
         media_io::init()?;
         let output_file = cfg.output_file.clone();
         let fps = cfg.profile.fps;
-        let stats = Arc::new(Stats::new(cfg.tracks.iter().map(|track| track.name.clone()).collect()));
+        let stats = Arc::new(Stats::new(&cfg.tracks));
         let stop_flag = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
         let (start_tx, start_rx) = mpsc::channel::<StartCommand>();
@@ -449,6 +475,18 @@ impl RecordingSession {
     /// Continues recording with no gap in the frame indexes.
     pub fn resume(&self) {
         self.stats.paused.store(false, Ordering::Relaxed);
+    }
+
+    /// Sets a track's gain in dB right away; `index` counts the tracks of this take, in order.
+    pub fn set_track_gain_db(&self, index: usize, db: f32) {
+        if db.is_finite() {
+            self.stats.set_track_gain_db(index, db);
+        }
+    }
+
+    /// Mutes or unmutes a track right away; `index` counts the tracks of this take, in order.
+    pub fn set_track_muted(&self, index: usize, muted: bool) {
+        self.stats.set_track_muted(index, muted);
     }
 
     /// A snapshot of the live counters, safe to call from the UI thread at any time.

@@ -13,7 +13,10 @@
 //! sit in `assets/fonts` and must ship with any installer that uses ui-kit.
 
 pub mod fonts;
+pub mod meter;
 pub mod palette;
+
+pub use meter::level_meter;
 
 use palette::{
     ACCENT, BORDER, CONTROL_BORDER, CONTROL_FILL, CONTROL_HOVER, CONTROL_ROUNDING, FAINT_BG, PANEL_BG, RECESSED, TEXT_MUTED, TEXT_NORMAL, TEXT_PRIMARY,

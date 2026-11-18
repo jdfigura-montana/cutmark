@@ -8,6 +8,7 @@ mod engine;
 mod hotkeys;
 mod platform;
 mod takes;
+mod tracks_ui;
 mod tray;
 
 fn main() -> anyhow::Result<()> {
