@@ -27,27 +27,27 @@ mod session;
 #[path = "../src/engine/video.rs"]
 mod video;
 
-use capture::{AudioDevice, DeviceKind};
+use capture::AudioDevice;
 use config::Profile;
 use media_io::AudioCodec;
 use session::{RecordingSession, SessionConfig, TrackSpec};
 
-/// Builds the tracks with the suite default rule: a Stream Mix input plus the
-/// mic when one exists, or the desktop loopback plus the mic otherwise.
-fn default_tracks(devices: &[AudioDevice]) -> Vec<TrackSpec> {
-    let stream_mix = devices.iter().find(|d| d.kind == DeviceKind::Input && d.name.contains("Stream Mix"));
-    let desktop = devices.iter().find(|d| d.kind == DeviceKind::Output && d.is_default);
-    let mic = devices.iter().find(|d| d.kind == DeviceKind::Input && d.is_default);
-    let mut tracks = Vec::new();
-    if let Some(mix) = stream_mix {
-        tracks.push(TrackSpec { name: "Stream Mix".to_string(), device: mix.clone(), gain_db: 0.0, muted: false, offset_ms: 0, in_mixdown: true });
-    } else if let Some(desktop) = desktop {
-        tracks.push(TrackSpec { name: "Desktop".to_string(), device: desktop.clone(), gain_db: 0.0, muted: false, offset_ms: 0, in_mixdown: true });
-    }
-    if let Some(mic) = mic {
-        tracks.push(TrackSpec { name: "Mic".to_string(), device: mic.clone(), gain_db: 0.0, muted: false, offset_ms: 0, in_mixdown: stream_mix.is_none() });
-    }
-    tracks
+/// Builds the tracks from the suite default rule in config::default_tracks,
+/// each bound to its device from the list.
+fn default_track_specs(devices: &[AudioDevice]) -> Vec<TrackSpec> {
+    config::default_tracks(devices)
+        .into_iter()
+        .map(|track| TrackSpec {
+            device: devices.iter().find(|device| device.id == track.device_id).cloned(),
+            name: track.name,
+            device_id: track.device_id,
+            device_name: track.device_name,
+            gain_db: track.gain_db,
+            muted: track.muted,
+            offset_ms: track.offset_ms,
+            in_mixdown: track.in_mixdown,
+        })
+        .collect()
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -56,7 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = args.next().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("record_probe.mkv"));
 
     let devices = capture::list_audio_devices()?;
-    let tracks = default_tracks(&devices);
+    let tracks = default_track_specs(&devices);
     let take_folder = output.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
     let base_name = output.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "take".to_string());
     let cfg = SessionConfig {

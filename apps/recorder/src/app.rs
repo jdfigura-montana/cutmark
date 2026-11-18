@@ -6,9 +6,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 
-use crate::config::{self, Profile, Settings};
+use crate::config::{self, AudioCodecChoice, Profile, Settings};
 use crate::engine::bus::{Bus, Command};
-use crate::engine::session::{RecordingSession, SessionConfig, StatsSnapshot, Summary};
+use crate::engine::session::{RecordingSession, SessionConfig, StatsSnapshot, Summary, TrackSpec};
 use crate::hotkeys::Hotkeys;
 use crate::platform;
 use crate::takes::{self, TakePaths};
@@ -39,6 +39,8 @@ pub struct RecorderApp {
     summary: Option<Summary>,
     /// The text of the last start or stop error, shown in a red banner until the next take.
     error: Option<String>,
+    /// The text of the yellow banner naming audio devices that were missing when the take started.
+    audio_notice: Option<String>,
     /// True when the window could not be excluded from screen capture.
     capture_exclusion_failed: bool,
     /// Whether the window was minimized on the previous frame, to catch the moment it becomes minimized.
@@ -88,6 +90,7 @@ impl RecorderApp {
             last_poll: None,
             summary: None,
             error: None,
+            audio_notice: None,
             capture_exclusion_failed,
             was_minimized: false,
         }
@@ -127,6 +130,7 @@ impl RecorderApp {
     /// Starts a new take; on failure shows a red banner and stays idle.
     fn start_take(&mut self) {
         self.error = None;
+        self.audio_notice = None;
         self.summary = None;
         match self.start_take_inner() {
             Ok(()) => self.update_tray(true),
@@ -143,17 +147,24 @@ impl RecorderApp {
         let take = takes::next_take(&root, chrono::Local::now())?;
         let profile = Profile::shipped().into_iter().find(|profile| profile.name == self.settings.active_profile).unwrap_or_else(Profile::tutorial_av1_1440p60);
         self.active_fps = profile.fps;
+        let (tracks, missing) = self.track_specs();
+        if !missing.is_empty() {
+            log::warn!("recording without these audio devices: {}", missing.join(", "));
+            self.audio_notice =
+                Some(format!("Audio device not found for {}. Recording anyway; those tracks stay silent until the device returns.", missing.join(", ")));
+        }
+        let (mixdown, track_streams) = (profile.mixdown, profile.aac_tracks);
         let cfg = SessionConfig {
             adapter: 0,
             monitor: 0,
             cursor: true,
             profile,
             output_file: take.video_file.clone(),
-            tracks: Vec::new(),
-            audio_codec: media_io::AudioCodec::Aac { kbps: 320 },
-            mixdown: false,
-            track_streams: false,
-            wav_sidecars: false,
+            tracks,
+            audio_codec: audio_codec(self.settings.audio.codec),
+            mixdown,
+            track_streams,
+            wav_sidecars: self.settings.audio.wav_sidecars,
             take_folder: take.video_file.parent().map(std::path::Path::to_path_buf).unwrap_or_default(),
             base_name: take.video_file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
         };
@@ -162,6 +173,29 @@ impl RecorderApp {
         self.take = Some(take);
         self.last_poll = None;
         Ok(())
+    }
+
+    /// Builds a spec for every enabled track in the settings, resolving each device, and names the tracks whose device is missing.
+    fn track_specs(&self) -> (Vec<TrackSpec>, Vec<String>) {
+        let mut specs = Vec::new();
+        let mut missing = Vec::new();
+        for track in self.settings.audio.tracks.iter().filter(|track| track.enabled) {
+            let device = capture::find_device(&track.device_id, &track.device_name);
+            if device.is_none() {
+                missing.push(if track.device_name.is_empty() { track.name.clone() } else { format!("{} ({})", track.name, track.device_name) });
+            }
+            specs.push(TrackSpec {
+                name: track.name.clone(),
+                device,
+                device_id: track.device_id.clone(),
+                device_name: track.device_name.clone(),
+                gain_db: track.gain_db,
+                muted: track.muted,
+                offset_ms: track.offset_ms,
+                in_mixdown: track.in_mixdown,
+            });
+        }
+        (specs, missing)
     }
 
     /// Stops the running take, keeps its summary for the panel and returns the tray to idle.
@@ -319,6 +353,14 @@ impl RecorderApp {
     }
 }
 
+/// The audio codec the settings ask for, as the encoder takes it.
+fn audio_codec(choice: AudioCodecChoice) -> media_io::AudioCodec {
+    match choice {
+        AudioCodecChoice::Aac320 => media_io::AudioCodec::Aac { kbps: 320 },
+        AudioCodecChoice::Pcm24 => media_io::AudioCodec::Pcm24,
+    }
+}
+
 /// Formats a number of seconds as HH:MM:SS.
 fn format_hms(total_seconds: u64) -> String {
     format!("{:02}:{:02}:{:02}", total_seconds / 3600, total_seconds / 60 % 60, total_seconds % 60)
@@ -347,6 +389,9 @@ impl eframe::App for RecorderApp {
             }
             if let Some(message) = &self.error {
                 ui.colored_label(error, format!("Recording error: {message}"));
+            }
+            if let Some(notice) = &self.audio_notice {
+                ui.colored_label(warn, notice);
             }
             for problem in &self.hotkeys.problems {
                 ui.colored_label(warn, problem);

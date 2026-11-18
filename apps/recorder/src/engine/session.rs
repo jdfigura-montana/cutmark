@@ -44,8 +44,12 @@ pub enum EngineError {
 pub struct TrackSpec {
     /// The track name, used as the stream title and in the WAV file name.
     pub name: String,
-    /// The device captured for this track.
-    pub device: AudioDevice,
+    /// The device captured for this track; None when it was missing at start, and the track records silence until it returns.
+    pub device: Option<AudioDevice>,
+    /// The Windows endpoint ID of the device, used to find it again after it is lost.
+    pub device_id: String,
+    /// The friendly name of the device, the fallback when the ID no longer matches.
+    pub device_name: String,
     /// The track's output gain in dB.
     pub gain_db: f32,
     /// Whether the track's output is muted.

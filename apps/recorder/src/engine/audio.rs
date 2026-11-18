@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
-use capture::{AudioCapture, DeviceKind, qpc_now};
+use capture::{AudioCapture, DeviceKind, find_device, qpc_now};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use media_io::mux::{MuxSender, SendParameters};
 use media_io::{AudioCodec, AudioEncoder};
@@ -39,6 +39,8 @@ const OUTPUT_LEAD_FRAMES: u64 = 4_800;
 const INPUT_LEAD_FRAMES: u64 = 24_000;
 /// Largest block taken per tick, so one burst cannot build a huge encode.
 const MAX_BLOCK_FRAMES: usize = 4_800;
+/// How often every lost track looks for its device again.
+const RECONNECT_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Messages from the audio thread back to the session.
 pub(super) enum AudioMessage {
@@ -105,10 +107,18 @@ fn record(
     start_rx: Receiver<AudioStart>,
 ) -> Result<AudioSummary, EngineError> {
     let tracks = &job.tracks;
-    // One capture per track; a device that will not open ends the setup.
+    // One capture per track; a device that will not open ends the setup, but a
+    // device that is missing does not: that track starts lost and writes silence.
     let mut captures = Vec::with_capacity(tracks.len());
     for track in tracks {
-        captures.push(AudioCapture::start(&track.device)?);
+        let capture = match &track.device {
+            Some(device) => Some(AudioCapture::start(device)?),
+            None => {
+                log::warn!("audio track {}: its device is missing, recording silence until it returns", track.name);
+                None
+            }
+        };
+        captures.push(capture);
     }
     let mixdown_on = job.mixdown && tracks.iter().any(|track| track.in_mixdown);
     // The mixdown encoder comes first so its stream lands right after the video.
@@ -160,6 +170,7 @@ fn record(
     let mut was_paused = false;
     let mut next_tick = Instant::now();
     let mut last_flush = Instant::now();
+    let mut last_reconnect = Instant::now();
     while !stop_flag.load(Ordering::Relaxed) {
         let now_instant = Instant::now();
         if next_tick > now_instant {
@@ -186,6 +197,10 @@ fn record(
         }
         rig.drain_captures();
         rig.fold_stats(stats);
+        if last_reconnect.elapsed() >= RECONNECT_INTERVAL {
+            rig.reconnect_lost();
+            last_reconnect = Instant::now();
+        }
         if paused {
             continue;
         }
@@ -210,8 +225,11 @@ fn record(
         rig.emit_block(frames, &start.mux, stats)?;
     }
     // Finish the encoders and queue their last packets for the muxer.
-    let mix_stream = rig.stream_indexes.first().copied().ok_or(EngineError::Failed("the mixdown stream index is missing".into()))?;
-    finish_stream(rig.mix_encoder.as_mut(), mix_stream, &start.mux)?;
+    // A take without a mixdown has no mixdown stream, and may have no stream at all.
+    if let Some(encoder) = rig.mix_encoder.as_mut() {
+        let mix_stream = rig.stream_indexes.first().copied().ok_or(EngineError::Failed("the mixdown stream index is missing".into()))?;
+        finish_stream(Some(encoder), mix_stream, &start.mux)?;
+    }
     for (slot, encoder) in rig.track_encoders.iter_mut().enumerate() {
         let Some(stream) = rig.stream_indexes.get(rig.first_track_slot + slot).copied() else {
             return Err(EngineError::Failed("a track stream index is missing".into()));
@@ -231,8 +249,8 @@ struct SidecarWav {
 }
 /// Everything the audio thread owns while a take runs.
 struct AudioRig {
-    /// One capture per track, in track order.
-    captures: Vec<AudioCapture>,
+    /// One capture per track, in track order; None while the track's device is missing.
+    captures: Vec<Option<AudioCapture>>,
     /// One timeline-locked pipeline per track, in track order.
     pipelines: Vec<TrackPipeline>,
     /// Frames already taken from each pipeline, in track order.
@@ -261,7 +279,7 @@ impl AudioRig {
     #[allow(clippy::too_many_arguments)]
     fn new(
         tracks: Vec<TrackSpec>,
-        captures: Vec<AudioCapture>,
+        captures: Vec<Option<AudioCapture>>,
         mix_encoder: Option<AudioEncoder>,
         track_encoders: Vec<Option<AudioEncoder>>,
         mixdown_on: bool,
@@ -293,11 +311,13 @@ impl AudioRig {
             };
             wavs.push(wav);
         }
+        // A track with no capture starts lost.
+        let lost = captures.iter().map(Option::is_none).collect();
         Ok(Self {
             captures,
             pipelines,
             taken: vec![0; tracks.len()],
-            lost: vec![false; tracks.len()],
+            lost,
             wavs,
             mix_encoder,
             track_encoders,
@@ -309,11 +329,45 @@ impl AudioRig {
     }
     /// Moves every queued packet from each capture into its pipeline.
     fn drain_captures(&mut self) {
-        for ((capture, pipeline), lost) in self.captures.iter().zip(&mut self.pipelines).zip(self.lost.iter_mut()) {
+        for (((capture, pipeline), lost), track) in self.captures.iter().zip(&mut self.pipelines).zip(self.lost.iter_mut()).zip(&self.tracks) {
+            // A track with no capture stays lost until reconnect_lost finds its device.
+            let Some(capture) = capture else {
+                continue;
+            };
             while let Ok(packet) = capture.receiver().try_recv() {
                 pipeline.push(&packet);
             }
-            *lost = capture.device_lost();
+            let now_lost = capture.device_lost();
+            if now_lost && !*lost {
+                // A rare event, logged once per loss, never per tick.
+                log::warn!("audio track {}: its device was lost, recording silence until it returns", track.name);
+            }
+            *lost = now_lost;
+        }
+    }
+
+    /// Looks for the device of every lost track and starts a new capture for each one found.
+    ///
+    /// The pipeline's resync places the first new packet on the timeline, so
+    /// the gap in between stays silence.
+    fn reconnect_lost(&mut self) {
+        for ((track, capture), lost) in self.tracks.iter_mut().zip(&mut self.captures).zip(&mut self.lost) {
+            if !*lost {
+                continue;
+            }
+            let Some(device) = find_device(&track.device_id, &track.device_name) else {
+                continue;
+            };
+            match AudioCapture::start(&device) {
+                Ok(new_capture) => {
+                    log::info!("audio track {}: its device {} is back, recording again", track.name, device.name);
+                    // Replacing the capture drops the old one, whose thread has already ended.
+                    *capture = Some(new_capture);
+                    track.device = Some(device);
+                    *lost = false;
+                }
+                Err(err) => log::debug!("audio track {}: its device {} is listed but would not start yet: {err}", track.name, device.name),
+            }
         }
     }
 
@@ -322,17 +376,19 @@ impl AudioRig {
         for (n, ((capture, pipeline), lost)) in self.captures.iter().zip(&mut self.pipelines).zip(self.lost.iter_mut()).enumerate() {
             let peak = pipeline.peak_since_last_read();
             let clipped = pipeline.clipped();
-            stats.fold_audio_track(n, peak, clipped, capture.packets(), capture.overflows(), *lost);
+            let (packets, overflows) = capture.as_ref().map_or((0, 0), |capture| (capture.packets(), capture.overflows()));
+            stats.fold_audio_track(n, peak, clipped, packets, overflows, *lost);
         }
     }
 
     /// Keeps every track's silence lead filled on the timeline.
     fn fill_silence(&mut self, now_index: u64) {
         for ((track, pipeline), lost) in self.tracks.iter().zip(&mut self.pipelines).zip(&self.lost) {
-            if track.device.kind == DeviceKind::Output || *lost {
+            let kind = track.device.as_ref().map(|device| device.kind);
+            if kind == Some(DeviceKind::Output) || *lost {
                 pipeline.fill_silence_to(now_index.saturating_sub(OUTPUT_LEAD_FRAMES));
             }
-            if track.device.kind == DeviceKind::Input {
+            if kind == Some(DeviceKind::Input) {
                 pipeline.fill_silence_to(now_index.saturating_sub(INPUT_LEAD_FRAMES));
             }
         }
