@@ -11,8 +11,10 @@ use crate::engine::controller::{Controller, ControllerState, Phase, lock};
 use crate::engine::session::Summary;
 use crate::hotkeys::Hotkeys;
 use crate::label_popup::PopupHandle;
+use crate::marks_ui;
 use crate::platform;
 use crate::preview_ui::PreviewView;
+use crate::recovery::{self, RecoveryReport};
 use crate::tracks_ui::{self, LiveTrackStats, TracksChanged};
 use crate::tray::{Tray, TrayHandle, TrayState};
 
@@ -57,6 +59,12 @@ pub struct RecorderApp {
     preview_start_error: Option<String>,
     /// Whether the preview was last told to run, so the window only tells it about changes.
     preview_active: bool,
+    /// Where the startup recovery scan delivers its report, until it has.
+    recovery_rx: Option<std::sync::mpsc::Receiver<RecoveryReport>>,
+    /// What the recovery scan found, until the banner is dismissed.
+    recovery: Option<RecoveryReport>,
+    /// Whether the recovery banner lists the recovered take names.
+    recovery_details: bool,
 }
 
 impl RecorderApp {
@@ -107,6 +115,7 @@ impl RecorderApp {
             }
         };
         let devices = list_devices();
+        let recovery_rx = start_recovery(&settings, &controller, &cc.egui_ctx);
         let mut app = Self {
             settings,
             hotkeys,
@@ -128,9 +137,62 @@ impl RecorderApp {
             preview_gpu: None,
             preview_start_error: None,
             preview_active: true,
+            recovery_rx,
+            recovery: None,
+            recovery_details: false,
         };
         app.sync_preview(&cc.egui_ctx);
         app
+    }
+
+    /// Takes in the recovery report once the background scan has delivered it.
+    fn poll_recovery(&mut self) {
+        let Some(rx) = &self.recovery_rx else { return };
+        match rx.try_recv() {
+            Ok(report) => {
+                self.recovery = Some(report);
+                self.recovery_rx = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.recovery_rx = None,
+        }
+    }
+
+    /// Draws the recovery banners: an info banner for recovered takes and a warning for errors, with a dismiss button.
+    fn recovery_banner(&mut self, ui: &mut egui::Ui) {
+        let Some(report) = &self.recovery else { return };
+        let warn = ui.visuals().warn_fg_color;
+        let mut details = self.recovery_details;
+        let mut dismiss = false;
+        if !report.recovered.is_empty() {
+            ui.horizontal(|ui| {
+                ui.colored_label(ui_kit::palette::ACCENT, format!("Recovered marks for {} take(s)", report.recovered.len()));
+                if ui.small_button(if details { "Hide details" } else { "Details" }).clicked() {
+                    details = !details;
+                }
+                if ui.small_button("Dismiss").clicked() {
+                    dismiss = true;
+                }
+            });
+            if details {
+                for name in &report.recovered {
+                    ui.label(format!("    {name}"));
+                }
+            }
+        }
+        if !report.errors.is_empty() {
+            for error in &report.errors {
+                ui.colored_label(warn, format!("Marks recovery: {error}"));
+            }
+            if report.recovered.is_empty() && ui.small_button("Dismiss").clicked() {
+                dismiss = true;
+            }
+        }
+        self.recovery_details = details;
+        if dismiss {
+            self.recovery = None;
+            self.recovery_details = false;
+        }
     }
 
     /// Starts, restarts or stops the preview so it matches the toggle, the monitor and the cursor setting.
@@ -358,6 +420,33 @@ fn tray_state(phase: Phase) -> TrayState {
     }
 }
 
+/// Starts the marks recovery scan of the takes folder on a background thread and returns where its report arrives.
+///
+/// Returns None when no takes folder is set or the thread could not start.
+fn start_recovery(settings: &Settings, controller: &Controller, ctx: &egui::Context) -> Option<std::sync::mpsc::Receiver<RecoveryReport>> {
+    let root = settings.root_folder.clone()?;
+    let shared = controller.shared();
+    let ctx = ctx.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new().name("recovery".to_owned()).spawn(move || {
+        let is_recording = |folder: &std::path::Path, base_name: &str| {
+            let state = lock(&shared);
+            state.phase != Phase::Idle && state.take.as_ref().is_some_and(|take| take.folder == folder && take.base_name == base_name)
+        };
+        let report = recovery::scan(&root, &is_recording);
+        // The window may be gone by now; then nobody needs the report.
+        let _ = tx.send(report);
+        ctx.request_repaint();
+    });
+    match spawned {
+        Ok(_) => Some(rx),
+        Err(err) => {
+            log::warn!("the marks recovery could not start: {err}");
+            None
+        }
+    }
+}
+
 /// Lists the audio devices that are present; on failure logs a warning and lists none.
 fn list_devices() -> Vec<AudioDevice> {
     capture::list_audio_devices().unwrap_or_else(|err| {
@@ -411,6 +500,7 @@ impl eframe::App for RecorderApp {
         let shared = self.controller.shared();
         let mut state = lock(&shared);
         self.sync_from_controller(&mut state);
+        self.poll_recovery();
         let active = state.phase != Phase::Idle;
         self.hide_to_tray_when_minimized(&ctx, active);
         self.sync_preview(&ctx);
@@ -438,10 +528,14 @@ impl eframe::App for RecorderApp {
             if let Some(problem) = self.preview_problem() {
                 ui.colored_label(warn, format!("Preview: {problem}"));
             }
+            self.recovery_banner(ui);
             ui.add_space(8.0);
 
             ui.checkbox(&mut self.preview_enabled, "Preview");
             self.show_preview(ui);
+            ui.add_space(8.0);
+
+            marks_ui::show(ui, &state.recent_marks);
             ui.add_space(8.0);
 
             if active {
