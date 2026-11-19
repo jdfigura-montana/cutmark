@@ -15,25 +15,41 @@ pub struct RecoveryReport {
     pub errors: Vec<String>,
 }
 
-/// Recovers the marks of every crashed take in `root` and its direct subfolders.
+/// How many folder levels below the takes root the scan looks into: the root, a project folder and a take folder need two, and older layouts fewer.
+const MAX_DEPTH: usize = 4;
+
+/// Adds every folder under `folder`, down to `depth` more levels, to `found`; a folder that cannot be listed is skipped.
+fn collect_subfolders(folder: &Path, depth: usize, found: &mut Vec<PathBuf>) {
+    if depth == 0 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(folder) else {
+        log::info!("marks recovery: could not list {}, skipping it", folder.display());
+        return;
+    };
+    for path in entries.flatten().map(|entry| entry.path()).filter(|path| path.is_dir()) {
+        found.push(path.clone());
+        collect_subfolders(&path, depth - 1, found);
+    }
+}
+
+/// Recovers the marks of every crashed take in `root` and its subfolders, down to [`MAX_DEPTH`] levels.
 ///
 /// `is_recording` is asked for each journal with its folder and base name; a journal it accepts belongs to the running take and is left alone.
 pub fn scan(root: &Path, is_recording: &dyn Fn(&Path, &str) -> bool) -> RecoveryReport {
     log::info!("marks recovery: scanning {}", root.display());
     let mut report = RecoveryReport::default();
     let mut folders = vec![root.to_path_buf()];
-    match fs::read_dir(root) {
-        Ok(entries) => folders.extend(entries.flatten().map(|entry| entry.path()).filter(|path| path.is_dir())),
-        Err(err) => {
-            // A takes folder that does not exist yet has nothing to recover.
-            if root.exists() {
-                report.errors.push(format!("could not list {}: {err}", root.display()));
-            } else {
-                log::info!("marks recovery: {} does not exist, nothing to recover", root.display());
-            }
-            return report;
+    if let Err(err) = fs::read_dir(root) {
+        // A takes folder that does not exist yet has nothing to recover.
+        if root.exists() {
+            report.errors.push(format!("could not list {}: {err}", root.display()));
+        } else {
+            log::info!("marks recovery: {} does not exist, nothing to recover", root.display());
         }
+        return report;
     }
+    collect_subfolders(root, MAX_DEPTH, &mut folders);
     for folder in folders {
         log::info!("marks recovery: checking {}", folder.display());
         let journals = match ::marks::write::find_journals(&folder) {
@@ -150,6 +166,31 @@ mod tests {
         assert_eq!(report.recovered, vec![base.to_owned()]);
         assert!(take_folder.join(format!("{base}_marks.md")).exists());
         assert!(take_folder.join(format!("{base}.marks.json")).exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_journal_in_a_project_and_take_folder_is_recovered() {
+        let root = scratch("project_layout");
+        let base = "2026-11-19_04-20-23_take11";
+        let take_folder = root.join("Cutmark").join(base);
+        fs::create_dir_all(&take_folder).expect("take folder");
+        crashed_take(&take_folder, base);
+        // A journal deeper than the layout needs is still found, one beyond the depth limit is not.
+        let deep = root.join("a").join("b").join("c").join("d");
+        let too_deep = deep.join("e");
+        fs::create_dir_all(&too_deep).expect("deep folders");
+        crashed_take(&deep, "deep");
+        crashed_take(&too_deep, "too_deep");
+        let report = scan(&root, &|_, _| false);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let mut recovered = report.recovered.clone();
+        recovered.sort();
+        assert_eq!(recovered, vec![base.to_owned(), "deep".to_owned()]);
+        assert!(take_folder.join(format!("{base}_marks.md")).exists());
+        assert!(take_folder.join(format!("{base}.marks.json")).exists());
+        assert!(!take_folder.join(format!("{base}.marks.journal")).exists());
+        assert!(too_deep.join("too_deep.marks.journal").exists());
         let _ = fs::remove_dir_all(&root);
     }
 

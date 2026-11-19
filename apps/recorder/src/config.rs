@@ -13,6 +13,12 @@ use crate::profiles;
 /// Name of the profile that is active until the user picks another.
 const DEFAULT_PROFILE: &str = "Tutorial AV1 1440p60";
 
+/// The project name until the user picks another.
+pub const DEFAULT_PROJECT: &str = "Cutmark";
+
+/// The naming template until the user picks another.
+pub const DEFAULT_NAMING_TEMPLATE: &str = "{date}_{time}_take{take}";
+
 /// The most audio tracks a take can have.
 pub const MAX_TRACKS: usize = 6;
 
@@ -192,7 +198,9 @@ pub struct Settings {
     pub root_folder: Option<PathBuf>,
     /// Name of the profile in use.
     pub active_profile: String,
-    /// File name template with the tokens {project}, {date}, {time}, {take} and {profile}.
+    /// The project name: the folder under the root that holds the project's takes.
+    pub project: String,
+    /// Template of the take folder name and the file base name, with the tokens {project}, {date}, {time}, {take} and {profile}.
     pub naming_template: String,
     /// Countdown before recording starts: 0, 3 or 5 seconds.
     pub countdown_secs: u8,
@@ -226,7 +234,8 @@ impl Default for Settings {
         Self {
             root_folder: None,
             active_profile: DEFAULT_PROFILE.to_owned(),
-            naming_template: "{date}_{time}_take{take}".to_owned(),
+            project: DEFAULT_PROJECT.to_owned(),
+            naming_template: DEFAULT_NAMING_TEMPLATE.to_owned(),
             countdown_secs: 3,
             hide_countdown_when_prompter_linked: true,
             api: ApiSettings::default(),
@@ -511,6 +520,7 @@ mod tests {
         assert_eq!(settings.countdown_secs, 5);
         assert_eq!(settings.api, ApiSettings { enabled: true, port: 5000 });
         assert_eq!(settings.naming_template, "{date}_{time}_take{take}");
+        assert_eq!(settings.project, "Cutmark");
         fs::remove_dir_all(&dir)?;
         Ok(())
     }

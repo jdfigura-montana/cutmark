@@ -356,6 +356,90 @@ pub(super) struct AudioStreamSpec {
     pub(super) default: bool,
 }
 
+/// The take's session.json: what was recorded with, written at start and again at stop with the totals.
+struct SessionFile {
+    /// Where the file is written: `{base_name}_session.json` in the take folder.
+    path: PathBuf,
+    /// The JSON written to the file.
+    doc: serde_json::Value,
+}
+
+impl SessionFile {
+    /// Describes the take from its config: the app, the profile and the audio tracks with their devices.
+    fn begin(cfg: &SessionConfig) -> Self {
+        let tracks: Vec<serde_json::Value> = cfg
+            .tracks
+            .iter()
+            .map(|track| {
+                serde_json::json!({
+                    "name": track.name,
+                    "device_id": track.device_id,
+                    "device_name": track.device_name,
+                    "device_found": track.device.is_some(),
+                    "sample_rate": track.device.as_ref().map(|device| device.sample_rate),
+                    "channels": track.device.as_ref().map(|device| device.channels),
+                    "gain_db": track.gain_db,
+                    "muted": track.muted,
+                    "offset_ms": track.offset_ms,
+                    "in_mixdown": track.in_mixdown,
+                })
+            })
+            .collect();
+        let doc = serde_json::json!({
+            "app": "Cutmark Recorder",
+            "version": env!("CARGO_PKG_VERSION"),
+            "take": cfg.base_name,
+            "started_at": chrono::Local::now().to_rfc3339(),
+            "video_file": cfg.output_file.file_name().map(|name| name.to_string_lossy().into_owned()),
+            "profile": serde_json::to_value(&cfg.profile).unwrap_or(serde_json::Value::Null),
+            "audio": {
+                "codec": format!("{:?}", cfg.audio_codec),
+                "mixdown": cfg.mixdown,
+                "track_streams": cfg.track_streams,
+                "wav_sidecars": cfg.wav_sidecars,
+                "tracks": tracks,
+            },
+            "result": serde_json::Value::Null,
+        });
+        Self { path: cfg.take_folder.join(format!("{}_session.json", cfg.base_name)), doc }
+    }
+
+    /// Writes the file through a temp file in the same folder, then renames it over the target.
+    fn write(&self) -> Result<(), String> {
+        crate::config::write_json(&self.path, &self.doc).map_err(|err| err.to_string())
+    }
+
+    /// Fills in how the take ended: the totals when it finished, or the error and the counters so far when it did not.
+    fn finish(&mut self, outcome: &Result<Summary, EngineError>, so_far: &StatsSnapshot) {
+        let result = match outcome {
+            Ok(summary) => serde_json::json!({
+                "finished": true,
+                "ended_at": chrono::Local::now().to_rfc3339(),
+                "duration_ms": summary.duration_ms,
+                "frames": summary.frames,
+                "duplicated_frames": summary.duplicated,
+                "dropped_frames": summary.dropped,
+                "bytes_written": summary.bytes_written,
+                "average_mbps": summary.average_mbps,
+                "packets": summary.packets,
+                "wav_files": summary.wav_files.iter().filter_map(|wav| wav.file_name()).map(|name| name.to_string_lossy().into_owned()).collect::<Vec<_>>(),
+            }),
+            Err(err) => serde_json::json!({
+                "finished": false,
+                "ended_at": chrono::Local::now().to_rfc3339(),
+                "error": err.to_string(),
+                "frames": so_far.frames,
+                "duplicated_frames": so_far.duplicated,
+                "dropped_frames": so_far.dropped,
+                "bytes_written": so_far.bytes_written,
+            }),
+        };
+        if let Some(doc) = self.doc.as_object_mut() {
+            doc.insert("result".to_owned(), result);
+        }
+    }
+}
+
 /// One running recording: talks to the video thread through atomics and a channel.
 pub struct RecordingSession {
     stats: Arc<Stats>,
@@ -371,6 +455,8 @@ pub struct RecordingSession {
     marks_warning: MarksWarning,
     /// Frames per second of the video, for the video's length at stop.
     fps: u32,
+    /// The take's session.json, rewritten at stop.
+    session_file: SessionFile,
 }
 
 impl RecordingSession {
@@ -387,6 +473,7 @@ impl RecordingSession {
         let output_file = cfg.output_file.clone();
         let (take_folder, base_name) = (cfg.take_folder.clone(), cfg.base_name.clone());
         let fps = cfg.profile.fps;
+        let session_file = SessionFile::begin(&cfg);
         let stats = Arc::new(Stats::new(&cfg.tracks));
         let stop_flag = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
@@ -482,6 +569,11 @@ impl RecordingSession {
         }
         let marks_warning = MarksWarning::default();
         let marks = TakeMarks::begin(&take_folder, &base_name, &output_file, fps, MediaClock::new(start_qpc, qpc_freq), marks_warning.clone());
+        // A session.json that cannot be written is a warning, never a reason to stop the recording.
+        if let Err(err) = session_file.write() {
+            log::warn!("could not write the session file: {err}");
+            stats.set_last_error(format!("The session file could not be written: {err}"));
+        }
         Ok(Self {
             stats,
             stop_flag,
@@ -493,6 +585,7 @@ impl RecordingSession {
             marks: Some(marks),
             marks_warning,
             fps,
+            session_file,
         })
     }
 
@@ -590,6 +683,12 @@ impl RecordingSession {
             }
             (_, outcome) => outcome,
         };
+        // The totals go into session.json; a failed write is logged and shown as a warning, and the take is still finished.
+        self.session_file.finish(&outcome, &self.stats.snapshot());
+        if let Err(err) = self.session_file.write() {
+            log::warn!("could not update the session file: {err}");
+            self.stats.set_last_error(format!("The session file could not be updated: {err}"));
+        }
         outcome
     }
 }

@@ -11,9 +11,9 @@ use egui::{Button, ComboBox, DragValue, Slider, TextEdit, Ui};
 use media_io::AudioCodec;
 use media_io::encode::{Codec as EncoderCodec, CodecSupport, ConfigError, MAX_MBPS, NumericOption, OptionRanges, amf_options, check_combo, probe_amf};
 
-use crate::config::{AudioCodecChoice, Codec, Container, Preset, Profile, RateControl, Settings};
+use crate::config::{AudioCodecChoice, Codec, Container, Preset, Profile, RateControl, Settings, takes_root};
 use crate::engine::session::encoder_config;
-use crate::profiles;
+use crate::{profiles, takes};
 
 /// How long an edit waits for further edits before it is written to the profile file.
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
@@ -24,13 +24,16 @@ const SIZES: [(u32, u32); 4] = [(3840, 2160), (2560, 1440), (1920, 1080), (1280,
 /// The frame rates in the frame rate dropdown, besides Custom.
 const FPS_CHOICES: [u32; 2] = [30, 60];
 
+/// How long the next take's path in the preview line is kept before the takes folder is read again.
+const PREVIEW_REFRESH: Duration = Duration::from_secs(2);
+
 /// The size and frame rate the AMF probe ran for.
 type ProbeKey = (u32, u32, u32);
 
 /// What the Profile section changed this frame.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ProfileOutcome {
-    /// The active profile name in the settings changed, so the settings need saving and sending to the controller.
+    /// The active profile name, the project or the naming template in the settings changed, so the settings need saving and sending to the controller.
     pub active_changed: bool,
 }
 
@@ -179,6 +182,18 @@ pub struct ProfileSection {
     problem: Option<String>,
     /// Whether the profile being edited has an error, which blocks starting a take.
     has_errors: bool,
+    /// The last preview line of the next take's path, with when and for what it was worked out.
+    preview: Option<Preview>,
+}
+
+/// The preview line of the next take's path.
+struct Preview {
+    /// When the takes folder was read.
+    at: Instant,
+    /// What the line was worked out from: the root, project, template, profile and container.
+    key: String,
+    /// The path as shown.
+    text: String,
 }
 
 /// What a click in the profile row asks for.
@@ -206,6 +221,7 @@ impl ProfileSection {
             fps_custom: false,
             problem: None,
             has_errors: false,
+            preview: None,
         };
         section.reload();
         section.ensure_active(settings);
@@ -300,11 +316,44 @@ impl ProfileSection {
         ui.add_enabled_ui(!recording, |ui| {
             self.picker_row(ui, settings, outcome);
             self.fields(ui, &ctx, settings, source, audio, recording);
+            self.naming_fields(ui, settings, outcome);
         });
         if recording {
             ui.colored_label(ui_kit::palette::TEXT_MUTED, "Profile settings are locked while recording");
         }
         self.save_when_due(&ctx);
+    }
+
+    /// Draws the Project and Naming template fields, which are global settings, and the full path of the next take.
+    fn naming_fields(&mut self, ui: &mut Ui, settings: &mut Settings, outcome: &mut ProfileOutcome) {
+        ui.separator();
+        let mut changed = false;
+        egui::Grid::new("naming-fields").num_columns(2).show(ui, |ui| {
+            ui.label("Project");
+            changed |= ui.add(TextEdit::singleline(&mut settings.project).desired_width(240.0)).changed();
+            ui.end_row();
+            ui.label("Naming template");
+            changed |= ui.add(TextEdit::singleline(&mut settings.naming_template).desired_width(320.0)).changed();
+            ui.end_row();
+        });
+        ui.colored_label(ui_kit::palette::TEXT_MUTED, "Tokens: {project} {date} {time} {take} {profile}. Both fields apply to every profile.");
+        if changed {
+            outcome.active_changed = true;
+        }
+        let container = self.profiles.iter().find(|profile| profile.name == settings.active_profile).map(|profile| profile.container).unwrap_or_default();
+        let root = takes_root(settings);
+        let key = format!("{}|{}|{}|{}|{}", root.display(), settings.project, settings.naming_template, settings.active_profile, container.extension());
+        if self.preview.as_ref().is_none_or(|preview| preview.key != key || preview.at.elapsed() > PREVIEW_REFRESH) {
+            let naming = takes::Naming { project: &settings.project, template: &settings.naming_template, profile: &settings.active_profile };
+            let text = match takes::plan_take(&root, chrono::Local::now(), container, &naming) {
+                Ok(paths) => paths.video_file.display().to_string(),
+                Err(err) => format!("The takes folder could not be read: {err}"),
+            };
+            self.preview = Some(Preview { at: Instant::now(), key, text });
+        }
+        if let Some(preview) = &self.preview {
+            ui.label(format!("Next take: {}", preview.text));
+        }
     }
 
     /// Draws the profile dropdown and the New, Duplicate, Rename and Delete buttons.
