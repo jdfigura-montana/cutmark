@@ -4,13 +4,14 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, anyhow};
-use capture::AudioDevice;
+use capture::{AudioDevice, Gpu, Preview};
 
 use crate::config::{self, Settings};
 use crate::engine::controller::{Controller, ControllerState, Phase, lock};
 use crate::engine::session::Summary;
 use crate::hotkeys::Hotkeys;
 use crate::platform;
+use crate::preview_ui::PreviewView;
 use crate::tracks_ui::{self, LiveTrackStats, TracksChanged};
 use crate::tray::{Tray, TrayHandle, TrayState};
 
@@ -37,6 +38,24 @@ pub struct RecorderApp {
     seen_settings_rev: u64,
     /// Whether a take was running on the previous frame, to clear the meters when it starts or ends.
     was_active: bool,
+    /// The live monitor preview, or None while it is off or could not start.
+    preview: Option<Preview>,
+    /// Draws the preview picture.
+    preview_view: PreviewView,
+    /// The Preview toggle; on at every start and not saved.
+    preview_enabled: bool,
+    /// The monitor the preview shows; there is no source setting yet, so this is the primary monitor like the recording.
+    preview_monitor: usize,
+    /// Whether the preview shows the cursor, like the recording.
+    preview_cursor: bool,
+    /// The monitor and cursor setting the preview was last started for, or None while it is off.
+    preview_started_with: Option<(usize, bool)>,
+    /// The graphics device of the preview, kept apart from the recording session's.
+    preview_gpu: Option<Gpu>,
+    /// Why the preview could not start, for the yellow banner.
+    preview_start_error: Option<String>,
+    /// Whether the preview was last told to run, so the window only tells it about changes.
+    preview_active: bool,
 }
 
 impl RecorderApp {
@@ -87,7 +106,7 @@ impl RecorderApp {
             }
         };
         let devices = list_devices();
-        Self {
+        let mut app = Self {
             settings,
             hotkeys,
             tray,
@@ -99,7 +118,81 @@ impl RecorderApp {
             was_minimized: false,
             seen_settings_rev: 0,
             was_active: false,
+            preview: None,
+            preview_view: PreviewView::default(),
+            preview_enabled: true,
+            preview_monitor: 0,
+            preview_cursor: true,
+            preview_started_with: None,
+            preview_gpu: None,
+            preview_start_error: None,
+            preview_active: true,
+        };
+        app.sync_preview(&cc.egui_ctx);
+        app
+    }
+
+    /// Starts, restarts or stops the preview so it matches the toggle, the monitor and the cursor setting.
+    fn sync_preview(&mut self, ctx: &egui::Context) {
+        let wanted = self.preview_enabled.then_some((self.preview_monitor, self.preview_cursor));
+        if wanted == self.preview_started_with {
+            return;
         }
+        // Dropping the old preview ends its thread and its capture before the new one starts.
+        self.preview = None;
+        self.preview_view.reset();
+        self.preview_started_with = wanted;
+        self.preview_start_error = None;
+        let Some((monitor, cursor)) = wanted else { return };
+        match self.open_preview(ctx, monitor, cursor) {
+            Ok(preview) => {
+                self.preview = Some(preview);
+                self.preview_active = true;
+            }
+            Err(err) => {
+                log::warn!("the preview could not start: {err:#}");
+                self.preview_start_error = Some(format!("{err:#}"));
+            }
+        }
+    }
+
+    /// Starts a preview of one monitor on the preview's own graphics device.
+    fn open_preview(&mut self, ctx: &egui::Context, monitor_index: usize, cursor: bool) -> anyhow::Result<Preview> {
+        if self.preview_gpu.is_none() {
+            self.preview_gpu = Some(Gpu::create(Some(0)).context("could not open the graphics adapter")?);
+        }
+        let gpu = self.preview_gpu.as_ref().ok_or_else(|| anyhow!("the graphics device is missing"))?;
+        let monitors = capture::list_monitors().context("could not list the monitors")?;
+        let monitor = monitors.get(monitor_index).ok_or_else(|| anyhow!("monitor {monitor_index} was not found"))?;
+        let preview = Preview::start(gpu, monitor, cursor).context("could not start the capture")?;
+        let repaint_ctx = ctx.clone();
+        preview.set_frame_callback(Box::new(move || repaint_ctx.request_repaint()));
+        Ok(preview)
+    }
+
+    /// Pauses the preview while the window is minimized or hidden to the tray, and resumes it when the window is back.
+    fn update_preview_activity(&mut self, ctx: &egui::Context) {
+        let shown = !ctx.input(|input| input.viewport().minimized).unwrap_or(false);
+        if shown != self.preview_active {
+            self.preview_active = shown;
+            if let Some(preview) = &self.preview {
+                preview.set_active(shown);
+            }
+        }
+    }
+
+    /// Draws the preview, or a plain placeholder when it is off or could not start.
+    fn show_preview(&mut self, ui: &mut egui::Ui) {
+        match (&self.preview, self.preview_enabled) {
+            (Some(preview), true) => self.preview_view.show(ui, preview),
+            (_, true) => PreviewView::placeholder(ui, "Preview unavailable"),
+            (_, false) => PreviewView::placeholder(ui, "Preview off"),
+        }
+    }
+
+    /// The text of the preview's warning, if it has one.
+    fn preview_problem(&self) -> Option<String> {
+        self.preview_start_error.clone().or_else(|| self.preview.as_ref().and_then(Preview::error))
     }
 
     /// Takes in what the controller published: its settings changes and the level peaks.
@@ -319,6 +412,8 @@ impl eframe::App for RecorderApp {
         self.sync_from_controller(&mut state);
         let active = state.phase != Phase::Idle;
         self.hide_to_tray_when_minimized(&ctx, active);
+        self.sync_preview(&ctx);
+        self.update_preview_activity(&ctx);
 
         egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("Cutmark Recorder");
@@ -339,6 +434,13 @@ impl eframe::App for RecorderApp {
             for problem in &self.hotkeys.problems {
                 ui.colored_label(warn, problem);
             }
+            if let Some(problem) = self.preview_problem() {
+                ui.colored_label(warn, format!("Preview: {problem}"));
+            }
+            ui.add_space(8.0);
+
+            ui.checkbox(&mut self.preview_enabled, "Preview");
+            self.show_preview(ui);
             ui.add_space(8.0);
 
             if active {

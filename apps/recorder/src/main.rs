@@ -7,6 +7,7 @@ mod config;
 mod engine;
 mod hotkeys;
 mod platform;
+mod preview_ui;
 mod takes;
 mod tracks_ui;
 mod tray;

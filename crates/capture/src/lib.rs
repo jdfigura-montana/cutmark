@@ -14,6 +14,8 @@ mod gpu;
 #[cfg(windows)]
 mod monitor;
 #[cfg(windows)]
+mod preview;
+#[cfg(windows)]
 mod wgc;
 
 #[cfg(windows)]
@@ -24,6 +26,8 @@ pub use convert::Nv12Converter;
 pub use gpu::{AdapterInfo, Gpu, list_adapters};
 #[cfg(windows)]
 pub use monitor::{MonitorInfo, list_monitors};
+#[cfg(windows)]
+pub use preview::{Preview, PreviewFrame};
 #[cfg(windows)]
 pub use wgc::{LatestFrame, MonitorCapture};
 
