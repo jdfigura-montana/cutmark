@@ -202,6 +202,23 @@ pub struct Settings {
     pub audio: AudioSettings,
 }
 
+/// The folder takes go into: the settings root folder, or else the user's Videos folder joined with Cutmark.
+///
+/// Recording and the launch recovery scan both use this. If the user's Videos folder cannot be found it falls back to a
+/// Cutmark folder relative to the working directory.
+pub fn takes_root(settings: &Settings) -> PathBuf {
+    if let Some(root) = &settings.root_folder {
+        return root.clone();
+    }
+    match directories::UserDirs::new().and_then(|dirs| dirs.video_dir().map(|videos| videos.join("Cutmark"))) {
+        Some(root) => root,
+        None => {
+            log::warn!("the user's Videos folder could not be found, using a Cutmark folder in the working directory");
+            PathBuf::from("Cutmark")
+        }
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {

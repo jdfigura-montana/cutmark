@@ -4,7 +4,6 @@
 //! while the window is hidden and no frames run.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
@@ -15,7 +14,7 @@ use thiserror::Error;
 use super::bus::{Bus, BusSender, Command, CommandKind, MarkKind};
 use super::marks::{MarksWarning, RecentMark, TakeMarks};
 use super::session::{RecordingSession, SessionConfig, StatsSnapshot, Summary, TrackSpec};
-use crate::config::{AudioCodecChoice, Profile, Settings, TrackKind};
+use crate::config::{AudioCodecChoice, Profile, Settings, TrackKind, takes_root};
 use crate::label_popup::PopupHandle;
 use crate::takes::{self, TakePaths};
 
@@ -207,9 +206,6 @@ struct ActiveTake {
 /// Why a take could not start.
 #[derive(Debug, Error)]
 enum StartError {
-    /// The folder takes go into could not be found.
-    #[error("{0}")]
-    Folder(&'static str),
     /// The take folder could not be chosen.
     #[error("{0}")]
     Take(String),
@@ -332,7 +328,7 @@ impl Worker {
 
     /// Picks the take folder, builds the session config from the active profile and starts the session.
     fn start_take_inner(&mut self) -> Result<(), StartError> {
-        let root = take_root(&self.settings)?;
+        let root = takes_root(&self.settings);
         let take = takes::next_take(&root, chrono::Local::now()).map_err(|err| StartError::Take(err.to_string()))?;
         let profile = Profile::shipped().into_iter().find(|profile| profile.name == self.settings.active_profile).unwrap_or_else(Profile::tutorial_av1_1440p60);
         let fps = profile.fps;
@@ -572,15 +568,6 @@ impl Worker {
             state.mbps = mbps;
         });
     }
-}
-
-/// The folder takes go into: the settings root folder, or else the user's Videos folder joined with Cutmark.
-fn take_root(settings: &Settings) -> Result<PathBuf, StartError> {
-    if let Some(root) = &settings.root_folder {
-        return Ok(root.clone());
-    }
-    let dirs = directories::UserDirs::new().ok_or(StartError::Folder("the user's profile folders could not be found"))?;
-    dirs.video_dir().map(|videos| videos.join("Cutmark")).ok_or(StartError::Folder("the user's Videos folder could not be found"))
 }
 
 /// Builds a spec for every enabled track in the settings, resolving each device, and names the tracks whose device is missing.
