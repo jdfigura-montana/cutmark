@@ -16,6 +16,7 @@ use super::marks::{MarksWarning, RecentMark, TakeMarks};
 use super::session::{RecordingSession, SessionConfig, StatsSnapshot, Summary, TrackSpec};
 use crate::config::{AudioCodecChoice, Profile, Settings, TrackKind, takes_root};
 use crate::label_popup::PopupHandle;
+use crate::profiles;
 use crate::takes::{self, TakePaths};
 
 /// How many recent commands the state keeps.
@@ -329,7 +330,7 @@ impl Worker {
     /// Picks the take folder, builds the session config from the active profile and starts the session.
     fn start_take_inner(&mut self) -> Result<(), StartError> {
         let root = takes_root(&self.settings);
-        let profile = Profile::shipped().into_iter().find(|profile| profile.name == self.settings.active_profile).unwrap_or_else(Profile::tutorial_av1_1440p60);
+        let profile = profiles::find(&self.settings.active_profile).unwrap_or_else(Profile::tutorial_av1_1440p60);
         let take = takes::next_take(&root, chrono::Local::now(), profile.container).map_err(|err| StartError::Take(err.to_string()))?;
         let fps = profile.fps;
         let (tracks, missing) = track_specs(&self.settings);
@@ -504,7 +505,7 @@ impl Worker {
             log::warn!("the profile cannot change while a take is running");
             return;
         }
-        if !Profile::shipped().iter().any(|profile| profile.name == name) {
+        if profiles::find(name).is_none() {
             log::warn!("there is no profile named {name}");
             return;
         }

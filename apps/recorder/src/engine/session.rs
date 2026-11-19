@@ -11,15 +11,14 @@ use thiserror::Error;
 use capture::{AudioDevice, CaptureError, qpc_frequency, qpc_now};
 use media_io::AudioCodec;
 use media_io::MediaError;
-use media_io::encode::RateControl as EncoderRateControl;
-use media_io::encode::{Codec as EncoderCodec, ComboError, EncoderConfig, Preset, check_combo};
+use media_io::encode::{ComboError, EncoderConfig, check_combo};
 use media_io::mux::{MuxSender, MuxThread, Muxer, SendParameters};
 
 use super::audio::{self, AudioMessage, AudioStart};
 use super::clock::MediaClock;
 use super::marks::{MarksWarning, TakeMarks, wav_length_ms};
 use super::video;
-use crate::config::{Codec, Container, Profile, RateControl};
+use crate::config::{Container, Profile};
 
 /// Why starting, pausing or stopping a recording failed.
 #[derive(Debug, Error)]
@@ -378,9 +377,12 @@ impl RecordingSession {
     /// Starts a recording: the video and audio threads set up, the session
     /// builds the muxer around their streams, then every stream starts from
     /// one instant.
-    pub fn start(cfg: SessionConfig) -> Result<Self, EngineError> {
+    pub fn start(mut cfg: SessionConfig) -> Result<Self, EngineError> {
+        resolve_source_size(&mut cfg)?;
         let container = cfg.profile.container;
-        check_combo(container, encoder_config(&cfg.profile).codec, cfg.profile.height, cfg.audio_codec)?;
+        let encoder = encoder_config(&cfg.profile);
+        encoder.validate().map_err(media_io::encode::EncoderError::Config)?;
+        check_combo(container, encoder.codec, cfg.profile.height, cfg.audio_codec)?;
         media_io::init()?;
         let output_file = cfg.output_file.clone();
         let (take_folder, base_name) = (cfg.take_folder.clone(), cfg.base_name.clone());
@@ -645,25 +647,29 @@ impl Drop for RecordingSession {
     }
 }
 
-/// Maps a profile onto the media-io encoder configuration (phase 2: AMF only).
-pub(super) fn encoder_config(profile: &Profile) -> EncoderConfig {
+/// Replaces a profile's Source output size (0x0) with the size of the captured monitor, rounded down to even numbers.
+fn resolve_source_size(cfg: &mut SessionConfig) -> Result<(), EngineError> {
+    if !cfg.profile.is_source_size() {
+        return Ok(());
+    }
+    let monitor = capture::list_monitors()?.into_iter().nth(cfg.monitor).ok_or(EngineError::MonitorIndex(cfg.monitor))?;
+    cfg.profile.width = u32::try_from(monitor.width).unwrap_or(0) & !1;
+    cfg.profile.height = u32::try_from(monitor.height).unwrap_or(0) & !1;
+    Ok(())
+}
+
+/// Maps a profile onto the media-io encoder configuration: codec, size, frame rate, rate control, preset and keyframe interval.
+///
+/// A profile with the Source size must have it resolved first.
+pub(crate) fn encoder_config(profile: &Profile) -> EncoderConfig {
     EncoderConfig {
-        codec: match profile.codec {
-            Codec::Av1 => EncoderCodec::Av1,
-            Codec::Hevc => EncoderCodec::Hevc,
-            Codec::H264 => EncoderCodec::H264,
-        },
+        codec: profile.codec.into(),
         width: profile.width,
         height: profile.height,
         fps_num: profile.fps,
         fps_den: 1,
-        rate_control: match profile.rate_control {
-            RateControl::Qvbr { quality, max_mbps } => EncoderRateControl::ConstantQuality { quality, max_mbps },
-            RateControl::Vbr { target_mbps, max_mbps } => EncoderRateControl::VbrPeak { target_mbps, max_mbps },
-            RateControl::Cbr { mbps } => EncoderRateControl::Cbr { mbps },
-            RateControl::Cqp { qp_i, qp_p } => EncoderRateControl::ConstantQp { qp_i, qp_p },
-        },
-        preset: Preset::Balanced,
-        keyframe_secs: 2.0,
+        rate_control: profile.rate_control,
+        preset: profile.preset,
+        keyframe_secs: profile.keyframe_secs,
     }
 }

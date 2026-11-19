@@ -8,6 +8,8 @@ use capture::{AudioDevice, CaptureError, DeviceKind};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::profiles;
+
 /// Name of the profile that is active until the user picks another.
 const DEFAULT_PROFILE: &str = "Tutorial AV1 1440p60";
 
@@ -245,40 +247,31 @@ pub enum Codec {
     H264,
 }
 
-/// How the encoder spends bits, tagged by `mode` in the JSON.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case")]
-pub enum RateControl {
-    /// Constant quality with a bitrate ceiling.
-    Qvbr {
-        /// Quality level, lower is better.
-        quality: u8,
-        /// Bitrate ceiling in megabits per second.
-        max_mbps: f32,
-    },
-    /// Variable bitrate around a target, with a peak.
-    Vbr {
-        /// Target bitrate in megabits per second.
-        target_mbps: f32,
-        /// Peak bitrate in megabits per second.
-        max_mbps: f32,
-    },
-    /// Constant bitrate.
-    Cbr {
-        /// Bitrate in megabits per second.
-        mbps: f32,
-    },
-    /// Constant quantizer.
-    Cqp {
-        /// Quantizer for I frames.
-        qp_i: u8,
-        /// Quantizer for P frames.
-        qp_p: u8,
-    },
+impl From<Codec> for media_io::encode::Codec {
+    fn from(codec: Codec) -> Self {
+        match codec {
+            Codec::Av1 => Self::Av1,
+            Codec::Hevc => Self::Hevc,
+            Codec::H264 => Self::H264,
+        }
+    }
 }
 
-/// The file container of a profile, shared with the media-io muxer.
-pub use media_io::encode::Container;
+/// How the encoder spends bits, and the speed preset and file container of a profile, shared with media-io.
+pub use media_io::encode::{Container, Preset, RateControl};
+
+/// The keyframe interval of a profile file that has none, in seconds.
+const DEFAULT_KEYFRAME_SECS: f32 = 2.0;
+
+/// The preset of a profile file that has none.
+fn default_preset() -> Preset {
+    Preset::Balanced
+}
+
+/// The keyframe interval of a profile file that has none.
+fn default_keyframe_secs() -> f32 {
+    DEFAULT_KEYFRAME_SECS
+}
 
 /// One capture and encode profile, stored as profiles\{name}.json.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -289,9 +282,15 @@ pub struct Profile {
     pub codec: Codec,
     /// Rate control mode and its numbers.
     pub rate_control: RateControl,
-    /// Output width in pixels.
+    /// Speed and quality preset; profile files without one are Balanced.
+    #[serde(default = "default_preset")]
+    pub preset: Preset,
+    /// Seconds between keyframes; profile files without one use 2.
+    #[serde(default = "default_keyframe_secs")]
+    pub keyframe_secs: f32,
+    /// Output width in pixels; 0 means the size of the captured monitor.
     pub width: u32,
-    /// Output height in pixels.
+    /// Output height in pixels; 0 means the size of the captured monitor.
     pub height: u32,
     /// Output frames per second.
     pub fps: u32,
@@ -310,7 +309,9 @@ impl Profile {
         Self {
             name: DEFAULT_PROFILE.to_owned(),
             codec: Codec::Av1,
-            rate_control: RateControl::Qvbr { quality: 23, max_mbps: 60.0 },
+            rate_control: RateControl::ConstantQuality { quality: 70, max_mbps: 40.0 },
+            preset: Preset::Balanced,
+            keyframe_secs: DEFAULT_KEYFRAME_SECS,
             width: 2560,
             height: 1440,
             fps: 60,
@@ -325,7 +326,9 @@ impl Profile {
         Self {
             name: "Premiere HEVC 1080p60".to_owned(),
             codec: Codec::Hevc,
-            rate_control: RateControl::Vbr { target_mbps: 40.0, max_mbps: 60.0 },
+            rate_control: RateControl::VbrPeak { target_mbps: 20.0, max_mbps: 40.0 },
+            preset: Preset::Balanced,
+            keyframe_secs: DEFAULT_KEYFRAME_SECS,
             width: 1920,
             height: 1080,
             fps: 60,
@@ -335,30 +338,14 @@ impl Profile {
         }
     }
 
-    /// Shipped profile: AV1 constant quality, 1920x1080 at 30 fps, MKV, for the webcam alone.
-    pub fn cam_only_av1() -> Self {
-        Self {
-            name: "Cam only AV1".to_owned(),
-            codec: Codec::Av1,
-            rate_control: RateControl::Qvbr { quality: 23, max_mbps: 20.0 },
-            width: 1920,
-            height: 1080,
-            fps: 30,
-            container: Container::Mkv,
-            aac_tracks: true,
-            mixdown: true,
-        }
+    /// The two profiles that ship with the app.
+    pub fn shipped() -> [Self; 2] {
+        [Self::tutorial_av1_1440p60(), Self::premiere_hevc_1080p60()]
     }
 
-    /// The three profiles that ship with the app.
-    pub fn shipped() -> [Self; 3] {
-        [Self::tutorial_av1_1440p60(), Self::premiere_hevc_1080p60(), Self::cam_only_av1()]
-    }
-
-    /// The profile's file name, with characters Windows does not allow in file names replaced.
-    fn file_name(&self) -> String {
-        let stem: String = self.name.chars().map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c }).collect();
-        format!("{stem}.json")
+    /// Whether the output size is the size of the captured monitor.
+    pub fn is_source_size(&self) -> bool {
+        self.width == 0 || self.height == 0
     }
 }
 
@@ -378,6 +365,14 @@ fn load_or_init_in(dir: &Path, list_devices: impl FnOnce() -> Result<Vec<AudioDe
     fs::create_dir_all(&profiles).map_err(|source| ConfigError::Io { path: profiles.clone(), source })?;
     let settings_path = dir.join("settings.json");
     let (mut settings, saveable) = load_settings(&settings_path)?;
+    if saveable {
+        // An older settings file that held one profile gives it up to a profile file, once: the next write drops the key.
+        let text = fs::read_to_string(&settings_path).unwrap_or_default();
+        if let Some(name) = profiles::migrate_legacy(&text, &profiles)? {
+            settings.active_profile = name;
+            write_json(&settings_path, &settings)?;
+        }
+    }
     if settings.audio.tracks.is_empty() {
         match list_devices() {
             Ok(devices) => {
@@ -390,7 +385,7 @@ fn load_or_init_in(dir: &Path, list_devices: impl FnOnce() -> Result<Vec<AudioDe
             Err(err) => log::warn!("could not list the audio devices, so no default tracks were made: {err}"),
         }
     }
-    write_shipped_profiles_if_none(&profiles)?;
+    profiles::init(&profiles)?;
     Ok(settings)
 }
 
@@ -421,21 +416,8 @@ fn load_settings(path: &Path) -> Result<(Settings, bool), ConfigError> {
     }
 }
 
-/// Writes the three shipped profiles when the folder holds no profile file.
-fn write_shipped_profiles_if_none(profiles: &Path) -> Result<(), ConfigError> {
-    let entries = fs::read_dir(profiles).map_err(|source| ConfigError::Io { path: profiles.to_path_buf(), source })?;
-    let has_profile = entries.filter_map(Result::ok).any(|entry| entry.path().extension().is_some_and(|ext| ext.eq_ignore_ascii_case("json")));
-    if has_profile {
-        return Ok(());
-    }
-    for profile in Profile::shipped() {
-        write_json(&profiles.join(profile.file_name()), &profile)?;
-    }
-    Ok(())
-}
-
 /// Writes `value` as pretty JSON through a temp file in the same folder.
-fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), ConfigError> {
+pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), ConfigError> {
     let mut text = serde_json::to_string_pretty(value).map_err(|source| ConfigError::Json { path: path.to_path_buf(), source })?;
     text.push('\n');
     write_atomic(path, text.as_bytes()).map_err(|source| ConfigError::Io { path: path.to_path_buf(), source })
@@ -501,7 +483,7 @@ mod tests {
         assert_eq!(on_disk, Settings::default());
 
         let names: Vec<String> = fs::read_dir(dir.join("profiles"))?.filter_map(Result::ok).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-        assert_eq!(names.len(), 3, "{names:?}");
+        assert_eq!(names.len(), 2, "{names:?}");
         assert!(names.iter().all(|name| name.ends_with(".json")), "{names:?}");
 
         let first: Profile = serde_json::from_str(&fs::read_to_string(dir.join("profiles").join("Tutorial AV1 1440p60.json"))?)?;
@@ -546,7 +528,7 @@ mod tests {
     fn existing_profiles_are_left_alone() -> Result<(), Box<dyn Error>> {
         let dir = fresh_dir("existing-profiles")?;
         fs::create_dir_all(dir.join("profiles"))?;
-        write_json(&dir.join("profiles").join("Mine.json"), &Profile::cam_only_av1())?;
+        write_json(&dir.join("profiles").join("Mine.json"), &Profile::premiere_hevc_1080p60())?;
         load_or_init_in(&dir, no_devices)?;
         assert_eq!(fs::read_dir(dir.join("profiles"))?.count(), 1);
         fs::remove_dir_all(&dir)?;

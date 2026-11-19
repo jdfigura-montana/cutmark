@@ -14,6 +14,7 @@ use crate::label_popup::PopupHandle;
 use crate::marks_ui;
 use crate::platform;
 use crate::preview_ui::PreviewView;
+use crate::profile_ui::{ProfileOutcome, ProfileSection};
 use crate::recovery::{self, RecoveryReport};
 use crate::tracks_ui::{self, LiveTrackStats, TracksChanged};
 use crate::tray::{Tray, TrayHandle, TrayState};
@@ -65,6 +66,10 @@ pub struct RecorderApp {
     recovery: Option<RecoveryReport>,
     /// Whether the recovery banner lists the recovered take names.
     recovery_details: bool,
+    /// The profile dropdown, its buttons and every encoder option.
+    profile_section: ProfileSection,
+    /// The size of the captured monitor, which a profile with the Source output size records at.
+    source_size: (u32, u32),
 }
 
 impl RecorderApp {
@@ -78,10 +83,13 @@ impl RecorderApp {
                 true
             }
         };
-        let settings = config::load_or_init().unwrap_or_else(|err| {
+        let mut settings = config::load_or_init().unwrap_or_else(|err| {
             log::error!("could not load the Recorder settings, using the defaults: {err}");
             Settings::default()
         });
+        let source_size = monitor_size();
+        // This also makes the active profile one that exists, before the controller reads the settings.
+        let profile_section = ProfileSection::new(&cc.egui_ctx, &mut settings, source_size);
         let repaint_ctx = cc.egui_ctx.clone();
         // The tray needs the controller's senders, and the controller's listener needs the tray handle, so the handle arrives later.
         let tray_slot: Arc<OnceLock<TrayHandle>> = Arc::default();
@@ -140,6 +148,8 @@ impl RecorderApp {
             recovery_rx,
             recovery: None,
             recovery_details: false,
+            profile_section,
+            source_size,
         };
         app.sync_preview(&cc.egui_ctx);
         app
@@ -447,6 +457,18 @@ fn start_recovery(settings: &Settings, controller: &Controller, ctx: &egui::Cont
     }
 }
 
+/// The size of the primary monitor, rounded down to even numbers; 1920x1080 when it cannot be found.
+fn monitor_size() -> (u32, u32) {
+    let monitors = capture::list_monitors().unwrap_or_else(|err| {
+        log::warn!("could not list the monitors: {err}");
+        Vec::new()
+    });
+    match monitors.first() {
+        Some(monitor) => (u32::try_from(monitor.width).unwrap_or(1920) & !1, u32::try_from(monitor.height).unwrap_or(1080) & !1),
+        None => (1920, 1080),
+    }
+}
+
 /// Lists the audio devices that are present; on failure logs a warning and lists none.
 fn list_devices() -> Vec<AudioDevice> {
     capture::list_audio_devices().unwrap_or_else(|err| {
@@ -493,6 +515,7 @@ impl eframe::App for RecorderApp {
         if ctx.input(|input| input.viewport().close_requested()) {
             // The X button or the tray's Quit: the controller finishes the take's file before the app goes away.
             self.controller.stop();
+            self.profile_section.flush();
             if self.settings_dirty {
                 self.save_settings();
             }
@@ -508,7 +531,7 @@ impl eframe::App for RecorderApp {
 
         egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("Cutmark Recorder");
-            ui.label(format!("Active profile: {}", state.active_profile));
+            ui.label(format!("Active profile: {}", self.settings.active_profile));
             ui.add_space(8.0);
 
             let warn = ui.visuals().warn_fg_color;
@@ -542,10 +565,22 @@ impl eframe::App for RecorderApp {
                 self.recording_panel(ui, &state);
                 ctx.request_repaint_after(METER_REFRESH);
             } else {
-                ui.label("Idle");
+                if self.profile_section.blocked() {
+                    ui.colored_label(error, "Idle. Starting is blocked until the profile errors below are fixed");
+                } else {
+                    ui.label("Idle");
+                }
                 if let Some(summary) = &state.summary {
                     self.summary_panel(ui, summary);
                 }
+            }
+            ui.add_space(8.0);
+
+            let mut profile_outcome = ProfileOutcome::default();
+            self.profile_section.show(ui, &mut self.settings, self.source_size, active, &mut profile_outcome);
+            if profile_outcome.active_changed {
+                self.controller.set_settings(self.settings.clone());
+                self.save_settings();
             }
             ui.add_space(8.0);
 

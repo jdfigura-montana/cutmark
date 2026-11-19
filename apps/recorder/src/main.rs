@@ -10,6 +10,8 @@ mod label_popup;
 mod marks_ui;
 mod platform;
 mod preview_ui;
+mod profile_ui;
+mod profiles;
 mod recovery;
 mod takes;
 mod tracks_ui;
