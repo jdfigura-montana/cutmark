@@ -16,7 +16,10 @@ use capture::{Gpu, LatestFrame, MonitorCapture, Nv12Converter, list_monitors};
 use ffmpeg_next::ffi;
 use media_io::encode::{Codec, CodecSupport, Encoder, Preset, RateControl, amf_options, probe_amf};
 use media_io::{AmfEncoder, Container, D3d11Device, D3d11FramePool, EncodedPacket, EncoderConfig, HwFrame, Muxer};
-use windows::Win32::Graphics::Direct3D11::{D3D11_BIND_SHADER_RESOURCE, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, ID3D11DeviceContext, ID3D11Texture2D};
+use windows::Win32::Graphics::Direct3D11::{
+    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_WRITE, D3D11_MAP_WRITE, D3D11_MAPPED_SUBRESOURCE, D3D11_TEXTURE2D_DESC,
+    D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, ID3D11DeviceContext, ID3D11Texture2D,
+};
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 
 /// The noise source's frame size.
@@ -167,7 +170,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         next_tick += period;
         if let Some(noise) = noise.as_mut() {
-            noise.upload_next(gpu.context());
+            noise.upload_next(gpu.context())?;
             converter.convert(noise.texture(), &nv12)?;
         } else {
             let Some(frame) = capture.as_ref().and_then(|capture| capture.latest()) else {
@@ -223,18 +226,21 @@ fn print_mapped_options(cfg: &EncoderConfig) {
     }
 }
 
-/// A texture refilled every frame with fresh seeded pseudo-random blocks.
+/// A texture refilled every frame with fresh seeded pseudo-random blocks. The noise is
+/// written into a CPU-writable staging texture, then copied into a default-usage
+/// texture, which is what the video processor accepts as input.
 struct NoiseSource {
+    staging: ID3D11Texture2D,
     texture: ID3D11Texture2D,
     pixels: Vec<u8>,
     state: u64,
 }
 
 impl NoiseSource {
-    /// Creates the BGRA texture the converter reads from.
+    /// Creates the staging texture and the default-usage BGRA texture the converter reads from.
     #[allow(unsafe_code)]
     fn create(gpu: &Gpu) -> Result<Self, Box<dyn std::error::Error>> {
-        let desc = D3D11_TEXTURE2D_DESC {
+        let mut desc = D3D11_TEXTURE2D_DESC {
             Width: NOISE_WIDTH as u32,
             Height: NOISE_HEIGHT as u32,
             MipLevels: 1,
@@ -242,7 +248,7 @@ impl NoiseSource {
             Format: DXGI_FORMAT_B8G8R8A8_UNORM,
             SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
             Usage: D3D11_USAGE_DEFAULT,
-            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
             CPUAccessFlags: 0,
             MiscFlags: 0,
         };
@@ -250,21 +256,45 @@ impl NoiseSource {
         // SAFETY: the descriptor and the out pointer are live locals for the call.
         unsafe { gpu.device().CreateTexture2D(&desc, None, Some(&mut texture))? };
         let texture = texture.ok_or("CreateTexture2D returned no texture")?;
-        Ok(Self { texture, pixels: vec![0; NOISE_WIDTH * NOISE_HEIGHT * 4], state: NOISE_SEED })
+
+        desc.Usage = D3D11_USAGE_STAGING;
+        desc.BindFlags = 0;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE.0 as u32;
+        let mut staging: Option<ID3D11Texture2D> = None;
+        // SAFETY: the descriptor and the out pointer are live locals for the call.
+        unsafe { gpu.device().CreateTexture2D(&desc, None, Some(&mut staging))? };
+        let staging = staging.ok_or("CreateTexture2D returned no staging texture")?;
+        Ok(Self { staging, texture, pixels: vec![0; NOISE_WIDTH * NOISE_HEIGHT * 4], state: NOISE_SEED })
     }
 
-    /// The texture holding the latest noise frame.
+    /// The default-usage texture holding the latest noise frame.
     fn texture(&self) -> &ID3D11Texture2D {
         &self.texture
     }
 
-    /// Fills a fresh frame of noise and uploads it to the texture.
+    /// Fills a fresh frame of noise, writes it into the staging texture and copies it across.
     #[allow(unsafe_code)]
-    fn upload_next(&mut self, context: &ID3D11DeviceContext) {
+    fn upload_next(&mut self, context: &ID3D11DeviceContext) -> Result<(), Box<dyn std::error::Error>> {
         fill_noise(&mut self.pixels, NOISE_WIDTH, NOISE_HEIGHT, &mut self.state);
-        // SAFETY: pixels holds NOISE_HEIGHT rows of NOISE_WIDTH * 4 bytes, matching
-        // the texture's size and format, and the data is copied during the call.
-        unsafe { context.UpdateSubresource(&self.texture, 0, None, self.pixels.as_ptr().cast::<c_void>(), (NOISE_WIDTH * 4) as u32, 0) };
+        let row_bytes = NOISE_WIDTH * 4;
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        // SAFETY: the staging texture was created with CPU write access and the out pointer
+        // is a live local.
+        unsafe { context.Map(&self.staging, 0, D3D11_MAP_WRITE, 0, Some(&mut mapped))? };
+        for (row, source) in self.pixels.chunks_exact(row_bytes).enumerate() {
+            // SAFETY: the mapping spans NOISE_HEIGHT rows of RowPitch bytes, each at least
+            // row_bytes long, and the source row is row_bytes long.
+            unsafe {
+                let destination = mapped.pData.cast::<u8>().add(row * mapped.RowPitch as usize);
+                std::ptr::copy_nonoverlapping(source.as_ptr(), destination, row_bytes);
+            }
+        }
+        // SAFETY: the staging texture is mapped by the call above.
+        unsafe {
+            context.Unmap(&self.staging, 0);
+            context.CopyResource(&self.texture, &self.staging);
+        }
+        Ok(())
     }
 }
 
