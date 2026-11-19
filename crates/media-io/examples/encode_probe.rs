@@ -2,8 +2,11 @@
 //! option ranges they report. Otherwise it prints the AMF encoders' private options, then
 //! encodes the primary monitor to probe_<codec>_<rc>.mkv.
 //!
-//! Usage: encode_probe [--probe] [--codec av1|hevc|h264] [--rc cq|cqp|cbr|vbr] [--quality N] [--seconds N]
+//! Usage: encode_probe [--probe] [--codec av1|hevc|h264] [--rc cq|cqp|cbr|vbr] [--quality N] [--seconds N] [--source screen|noise]
 //! The cq output is named probe_<codec>_cq<N>.mkv; --quality (1 to 100) only applies to --rc cq.
+//! The default source is the primary monitor. The noise source fills every frame with fresh
+//! seeded pseudo-random 16x16 blocks, which compress badly, and takes the same upload and
+//! NV12 path. Before opening, the option list the configuration maps to is printed.
 
 use std::ffi::{CStr, CString, c_void};
 use std::path::Path;
@@ -11,12 +14,24 @@ use std::time::{Duration, Instant};
 
 use capture::{Gpu, LatestFrame, MonitorCapture, Nv12Converter, list_monitors};
 use ffmpeg_next::ffi;
-use media_io::encode::{Codec, CodecSupport, Encoder, Preset, RateControl, probe_amf};
+use media_io::encode::{Codec, CodecSupport, Encoder, Preset, RateControl, amf_options, probe_amf};
 use media_io::{AmfEncoder, Container, D3d11Device, D3d11FramePool, EncodedPacket, EncoderConfig, HwFrame, Muxer};
+use windows::Win32::Graphics::Direct3D11::{D3D11_BIND_SHADER_RESOURCE, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, ID3D11DeviceContext, ID3D11Texture2D};
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
+
+/// The noise source's frame size.
+const NOISE_WIDTH: usize = 1920;
+/// The noise source's frame height.
+const NOISE_HEIGHT: usize = 1080;
+/// The side of one noise block, in pixels.
+const NOISE_BLOCK: usize = 16;
+/// The fixed seed that makes the noise sequence repeatable.
+const NOISE_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// The command line options.
 struct Args {
     probe_only: bool,
+    noise: bool,
     codec: Codec,
     codec_name: &'static str,
     rc_name: String,
@@ -27,6 +42,7 @@ struct Args {
 /// Parses the command line, with the documented defaults.
 fn parse_args() -> Result<Args, String> {
     let mut probe_only = false;
+    let mut noise = false;
     let mut codec = (Codec::Av1, "av1");
     let mut rc = ("cq", RateControl::ConstantQuality { quality: 70, max_mbps: 40.0 });
     let mut seconds = 10u64;
@@ -60,6 +76,13 @@ fn parse_args() -> Result<Args, String> {
                         .ok_or("--quality wants a whole number from 1 to 100")?,
                 );
             }
+            "--source" => {
+                noise = match args.next().as_deref() {
+                    Some("screen") => false,
+                    Some("noise") => true,
+                    other => return Err(format!("--source wants screen or noise, got {other:?}")),
+                };
+            }
             "--seconds" => {
                 seconds = args.next().and_then(|value| value.parse().ok()).filter(|&n| n > 0).ok_or("--seconds wants a whole number above 0")?;
             }
@@ -78,7 +101,7 @@ fn parse_args() -> Result<Args, String> {
     } else if let RateControl::ConstantQuality { quality, .. } = rc.1 {
         rc_name = format!("cq{quality}");
     }
-    Ok(Args { probe_only, codec: codec.0, codec_name: codec.1, rc_name, rate_control: rc.1, seconds })
+    Ok(Args { probe_only, noise, codec: codec.0, codec_name: codec.1, rc_name, rate_control: rc.1, seconds })
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -94,12 +117,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let gpu = Gpu::create(Some(0))?;
     let hw_device = D3d11Device::from_device(gpu.device())?;
-    let monitor = list_monitors()?.into_iter().find(|m| m.primary).ok_or("no primary monitor")?;
-    let capture = MonitorCapture::start(&gpu, &monitor, false)?;
-    let first = wait_for_frame(&capture).ok_or("no frame arrived from the capture session")?;
-    println!("captured {}x{}", first.width, first.height);
+    let (capture, mut noise, source_size) = if args.noise {
+        let noise = NoiseSource::create(&gpu)?;
+        println!("source: noise {NOISE_WIDTH}x{NOISE_HEIGHT}");
+        (None, Some(noise), (NOISE_WIDTH as u32, NOISE_HEIGHT as u32))
+    } else {
+        let monitor = list_monitors()?.into_iter().find(|m| m.primary).ok_or("no primary monitor")?;
+        let capture = MonitorCapture::start(&gpu, &monitor, false)?;
+        let first = wait_for_frame(&capture).ok_or("no frame arrived from the capture session")?;
+        println!("captured {}x{}", first.width, first.height);
+        (Some(capture), None, (first.width as u32, first.height as u32))
+    };
 
-    let mut converter = Nv12Converter::new(&gpu, first.width as u32, first.height as u32, 1920, 1080, 60)?;
+    let mut converter = Nv12Converter::new(&gpu, source_size.0, source_size.1, 1920, 1080, 60)?;
     let nv12 = converter.create_output()?;
     let pool = D3d11FramePool::new(&hw_device, 1920, 1080, 8)?;
     println!("pool mode: {:?}", pool.mode());
@@ -115,6 +145,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         keyframe_secs: 2.0,
     };
     println!("config: {cfg:?}");
+    print_mapped_options(&cfg);
     let mut encoder = AmfEncoder::open(&cfg, &pool)?;
     println!("encoder time base: {:?}", encoder.time_base());
 
@@ -135,10 +166,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::thread::sleep(next_tick - now);
         }
         next_tick += period;
-        let Some(frame) = capture.latest() else {
-            continue;
-        };
-        converter.convert(&frame.texture, &nv12)?;
+        if let Some(noise) = noise.as_mut() {
+            noise.upload_next(gpu.context());
+            converter.convert(noise.texture(), &nv12)?;
+        } else {
+            let Some(frame) = capture.as_ref().and_then(|capture| capture.latest()) else {
+                continue;
+            };
+            converter.convert(&frame.texture, &nv12)?;
+        }
         let mut hw = HwFrame::from_pool(&pool)?;
         hw.copy_from(gpu.context(), &nv12)?;
         hw.set_pts(frames_sent as i64);
@@ -149,7 +185,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         frames_sent += 1;
     }
     encoder.finish(&mut |packet| sink.record(&packet))?;
-    capture.stop();
+    if let Some(capture) = capture {
+        capture.stop();
+    }
     if let Some(err) = sink.error {
         return Err(err.into());
     }
@@ -165,6 +203,94 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("wrote {path_text}");
     Ok(())
+}
+
+/// Prints the option list the configuration maps to on its codec, one line per option.
+fn print_mapped_options(cfg: &EncoderConfig) {
+    let support = probe_amf(cfg.width, cfg.height, cfg.fps_num);
+    let Some(row) = support.iter().find(|row| row.codec == cfg.codec) else {
+        println!("amf options: codec not probed");
+        return;
+    };
+    match amf_options(cfg.codec, cfg, &row.ranges) {
+        Ok(options) => {
+            println!("amf options for {:?}:", cfg.codec);
+            for (name, value) in options {
+                println!("    {name} = {value}");
+            }
+        }
+        Err(err) => println!("amf options: {err}"),
+    }
+}
+
+/// A texture refilled every frame with fresh seeded pseudo-random blocks.
+struct NoiseSource {
+    texture: ID3D11Texture2D,
+    pixels: Vec<u8>,
+    state: u64,
+}
+
+impl NoiseSource {
+    /// Creates the BGRA texture the converter reads from.
+    #[allow(unsafe_code)]
+    fn create(gpu: &Gpu) -> Result<Self, Box<dyn std::error::Error>> {
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: NOISE_WIDTH as u32,
+            Height: NOISE_HEIGHT as u32,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let mut texture: Option<ID3D11Texture2D> = None;
+        // SAFETY: the descriptor and the out pointer are live locals for the call.
+        unsafe { gpu.device().CreateTexture2D(&desc, None, Some(&mut texture))? };
+        let texture = texture.ok_or("CreateTexture2D returned no texture")?;
+        Ok(Self { texture, pixels: vec![0; NOISE_WIDTH * NOISE_HEIGHT * 4], state: NOISE_SEED })
+    }
+
+    /// The texture holding the latest noise frame.
+    fn texture(&self) -> &ID3D11Texture2D {
+        &self.texture
+    }
+
+    /// Fills a fresh frame of noise and uploads it to the texture.
+    #[allow(unsafe_code)]
+    fn upload_next(&mut self, context: &ID3D11DeviceContext) {
+        fill_noise(&mut self.pixels, NOISE_WIDTH, NOISE_HEIGHT, &mut self.state);
+        // SAFETY: pixels holds NOISE_HEIGHT rows of NOISE_WIDTH * 4 bytes, matching
+        // the texture's size and format, and the data is copied during the call.
+        unsafe { context.UpdateSubresource(&self.texture, 0, None, self.pixels.as_ptr().cast::<c_void>(), (NOISE_WIDTH * 4) as u32, 0) };
+    }
+}
+
+/// The next value of a xorshift64* sequence.
+fn next_random(state: &mut u64) -> u64 {
+    *state ^= *state >> 12;
+    *state ^= *state << 25;
+    *state ^= *state >> 27;
+    state.wrapping_mul(0x2545_F491_4F6C_DD1D)
+}
+
+/// Fills a BGRA buffer with random pixels, one 16x16 block at a time, fully opaque.
+fn fill_noise(pixels: &mut [u8], width: usize, height: usize, state: &mut u64) {
+    for block_y in (0..height).step_by(NOISE_BLOCK) {
+        for block_x in (0..width).step_by(NOISE_BLOCK) {
+            let rows = NOISE_BLOCK.min(height - block_y);
+            let columns = NOISE_BLOCK.min(width - block_x);
+            for row in 0..rows {
+                let start = ((block_y + row) * width + block_x) * 4;
+                for pixel in pixels[start..start + columns * 4].as_chunks_mut::<4>().0 {
+                    let random = next_random(state).to_le_bytes();
+                    *pixel = [random[0], random[1], random[2], 255];
+                }
+            }
+        }
+    }
 }
 
 /// Prints one row per probed codec: status, then the option ranges the encoder reported.

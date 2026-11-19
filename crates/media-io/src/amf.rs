@@ -37,10 +37,19 @@ pub struct AmfEncoder {
 pub struct NumericOption {
     /// The option name as this encoder spells it.
     pub name: String,
-    /// The smallest value the encoder's option table allows.
+    /// The smallest usable value. A reported minimum of -1 means "unset" and is replaced by the floor.
     pub min: i64,
     /// The largest value the encoder's option table allows.
     pub max: i64,
+}
+
+impl NumericOption {
+    /// Builds an option from the bounds an option table reports. The table's -1
+    /// sentinel (and anything else below the floor) becomes the floor, the
+    /// lowest value that really selects something.
+    pub fn from_reported(name: &str, min: i64, max: i64, floor: i64) -> Self {
+        Self { name: name.to_string(), min: min.max(floor), max }
+    }
 }
 
 /// What one encoder's option table offers, read with av_opt_find at open time.
@@ -58,6 +67,8 @@ pub struct OptionRanges {
     pub preset_option: Option<String>,
     /// The named values of the preset option.
     pub presets: Vec<String>,
+    /// Whether the encoder has a filler_data option.
+    pub has_filler_data: bool,
 }
 
 /// The outcome of probing one AMF codec.
@@ -330,9 +341,10 @@ fn find_option(priv_data: *mut c_void, option: &CStr) -> *const ffi::AVOption {
     entry
 }
 
-/// Reads the numeric range of the first of the candidate option names the encoder has.
+/// Reads the numeric range of the first of the candidate option names the encoder has,
+/// raising an unset minimum to the floor.
 #[allow(unsafe_code)]
-fn numeric_option(priv_data: *mut c_void, candidates: &[&CStr]) -> Option<NumericOption> {
+fn numeric_option(priv_data: *mut c_void, candidates: &[&CStr], floor: i64) -> Option<NumericOption> {
     for candidate in candidates {
         let entry = find_option(priv_data, candidate);
         if entry.is_null() {
@@ -341,7 +353,7 @@ fn numeric_option(priv_data: *mut c_void, candidates: &[&CStr]) -> Option<Numeri
         // SAFETY: entry points into the static option table; min and max are plain numbers.
         let (min, max) = unsafe { ((*entry).min, (*entry).max) };
         // The saturating float to integer casts are the intended clamp.
-        return Some(NumericOption { name: candidate.to_string_lossy().into_owned(), min: min as i64, max: max as i64 });
+        return Some(NumericOption::from_reported(&candidate.to_string_lossy(), min as i64, max as i64, floor));
     }
     None
 }
@@ -384,12 +396,13 @@ fn named_values(priv_data: *mut c_void, option: &CStr) -> Vec<String> {
 fn read_option_ranges(priv_data: *mut c_void) -> OptionRanges {
     let preset_name = [c"quality", c"preset"].into_iter().find(|name| !find_option(priv_data, name).is_null());
     OptionRanges {
-        quality_level: numeric_option(priv_data, &[c"qvbr_quality_level"]),
-        qp_i: numeric_option(priv_data, &[c"qp_i", c"qp_I"]),
-        qp_p: numeric_option(priv_data, &[c"qp_p", c"qp_P"]),
+        quality_level: numeric_option(priv_data, &[c"qvbr_quality_level"], 1),
+        qp_i: numeric_option(priv_data, &[c"qp_i", c"qp_I"], 0),
+        qp_p: numeric_option(priv_data, &[c"qp_p", c"qp_P"], 0),
         rc_modes: named_values(priv_data, c"rc"),
         preset_option: preset_name.map(|name| name.to_string_lossy().into_owned()),
         presets: preset_name.map(|name| named_values(priv_data, name)).unwrap_or_default(),
+        has_filler_data: !find_option(priv_data, c"filler_data").is_null(),
     }
 }
 
@@ -439,6 +452,10 @@ pub fn amf_options(codec: Codec, cfg: &EncoderConfig, ranges: &OptionRanges) -> 
             push(&mut options, "rc", rc_mode(encoder, ranges, &["hqcbr", "cbr"])?);
             let rate = bits_per_second(mbps);
             push_rates(&mut options, rate, rate, rate);
+            // Filler data pads the stream so the bitrate really is constant.
+            if ranges.has_filler_data {
+                push(&mut options, "filler_data", "1".to_string());
+            }
         }
         RateControl::VbrPeak { target_mbps, max_mbps } => {
             push(&mut options, "rc", rc_mode(encoder, ranges, &["hqvbr", "vbr_peak"])?);
@@ -491,8 +508,8 @@ fn rc_mode(encoder: &str, ranges: &OptionRanges, wanted: &[&str]) -> Result<Stri
 }
 
 /// Maps the 1 to 100 quality (100 is best) linearly onto the encoder's quality level
-/// range. AMF's QVBR level works like a quantiser, where a lower number is a better
-/// picture, so the scale is inverted. A sentinel minimum below 1 is raised to 1.
+/// range. AMF's QVBR level is higher for a better picture, so quality 1 is the lowest
+/// usable level and 100 the highest. A sentinel minimum below 1 is raised to 1.
 fn map_quality(encoder: &str, option: &NumericOption, quality: u8) -> Result<i64, ConfigError> {
     let low = option.min.max(1);
     let high = option.max;
@@ -502,7 +519,7 @@ fn map_quality(encoder: &str, option: &NumericOption, quality: u8) -> Result<i64
     let steps = i64::from(quality.saturating_sub(1));
     // Rounded steps * span / 99, in integers.
     let offset = (steps * (high - low) * 2 + 99) / 198;
-    Ok(high - offset)
+    Ok(low + offset)
 }
 
 /// Checks a quantiser against the range the encoder allows for it.
@@ -535,12 +552,13 @@ mod tests {
     fn fake_ranges(codec: Codec) -> OptionRanges {
         let qp_max = if codec == Codec::Av1 { 255 } else { 51 };
         OptionRanges {
-            quality_level: Some(NumericOption { name: "qvbr_quality_level".into(), min: -1, max: 51 }),
+            quality_level: Some(NumericOption::from_reported("qvbr_quality_level", -1, 51, 1)),
             qp_i: Some(NumericOption { name: "qp_i".into(), min: 0, max: qp_max }),
             qp_p: Some(NumericOption { name: "qp_p".into(), min: 0, max: qp_max }),
             rc_modes: ["cqp", "cbr", "vbr_peak", "vbr_latency", "qvbr", "hqvbr", "hqcbr"].map(String::from).to_vec(),
             preset_option: Some("quality".into()),
             presets: ["speed", "balanced", "quality"].map(String::from).to_vec(),
+            has_filler_data: true,
         }
     }
 
@@ -568,13 +586,43 @@ mod tests {
     }
 
     #[test]
-    fn quality_maps_linearly_and_inverted_onto_the_level_range() {
-        let expected = [(1u8, "51"), (50, "26"), (100, "1")];
+    fn quality_maps_linearly_onto_the_level_range_with_higher_meaning_better() {
+        let expected = [(1u8, "1"), (50, "26"), (100, "51")];
         for (quality, level) in expected {
             let cfg = config(Codec::Av1, RateControl::ConstantQuality { quality, max_mbps: 40.0 });
             let options = amf_options(Codec::Av1, &cfg, &fake_ranges(Codec::Av1)).unwrap();
             assert_eq!(value(&options, "qvbr_quality_level"), level, "quality {quality}");
         }
+    }
+
+    #[test]
+    fn a_reported_minimum_of_minus_one_is_unset_and_raised_to_the_floor() {
+        let level = NumericOption::from_reported("qvbr_quality_level", -1, 51, 1);
+        assert_eq!((level.min, level.max), (1, 51));
+        let qp = NumericOption::from_reported("qp_i", -1, 255, 0);
+        assert_eq!((qp.min, qp.max), (0, 255));
+        // A real minimum above the floor is kept, and QP ranges stay as read.
+        let kept = NumericOption::from_reported("qp_i", 0, 51, 0);
+        assert_eq!((kept.min, kept.max), (0, 51));
+        // Even a raw -1 handed straight to the mapper still maps onto 1..max.
+        let raw = NumericOption { name: "qvbr_quality_level".into(), min: -1, max: 51 };
+        assert_eq!(map_quality("av1_amf", &raw, 1).unwrap(), 1);
+        assert_eq!(map_quality("av1_amf", &raw, 100).unwrap(), 51);
+    }
+
+    #[test]
+    fn cbr_enables_filler_data_only_when_the_encoder_has_it() {
+        let cfg = config(Codec::Hevc, RateControl::Cbr { mbps: 20.0 });
+        let options = amf_options(Codec::Hevc, &cfg, &fake_ranges(Codec::Hevc)).unwrap();
+        assert_eq!(value(&options, "filler_data"), "1");
+        let mut ranges = fake_ranges(Codec::Hevc);
+        ranges.has_filler_data = false;
+        let options = amf_options(Codec::Hevc, &cfg, &ranges).unwrap();
+        assert!(!options.iter().any(|(key, _)| key == "filler_data"));
+        // Other modes never set it.
+        let vbr = config(Codec::Hevc, RateControl::VbrPeak { target_mbps: 20.0, max_mbps: 40.0 });
+        let options = amf_options(Codec::Hevc, &vbr, &fake_ranges(Codec::Hevc)).unwrap();
+        assert!(!options.iter().any(|(key, _)| key == "filler_data"));
     }
 
     #[test]
