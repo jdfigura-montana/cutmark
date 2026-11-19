@@ -2,11 +2,13 @@
 //! option ranges they report. Otherwise it prints the AMF encoders' private options, then
 //! encodes the primary monitor to probe_<codec>_<rc>.mkv.
 //!
-//! Usage: encode_probe [--probe] [--codec av1|hevc|h264] [--rc cq|cqp|cbr|vbr] [--quality N] [--seconds N] [--source screen|noise]
+//! Usage: encode_probe [--probe] [--codec av1|hevc|h264] [--rc cq|cqp|cbr|vbr] [--quality N] [--seconds N] [--source screen|noise|motion]
 //! The cq output is named probe_<codec>_cq<N>.mkv; --quality (1 to 100) only applies to --rc cq.
 //! The default source is the primary monitor. The noise source fills every frame with fresh
 //! seeded pseudo-random 16x16 blocks, which compress badly, and takes the same upload and
-//! NV12 path. Before opening, the option list the configuration maps to is printed.
+//! NV12 path. The motion source is a diagonal gradient scrolling 4 px per frame, a bouncing
+//! 400x300 checkerboard square and 5% of the 16x16 blocks re-randomized each frame (seeded),
+//! on the same texture path. Before opening, the option list the configuration maps to is printed.
 
 use std::ffi::{CStr, CString, c_void};
 use std::path::Path;
@@ -30,11 +32,31 @@ const NOISE_HEIGHT: usize = 1080;
 const NOISE_BLOCK: usize = 16;
 /// The fixed seed that makes the noise sequence repeatable.
 const NOISE_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+/// How far the motion source's gradient scrolls each frame, in pixels.
+const MOTION_SCROLL: usize = 4;
+/// The motion source's checkerboard square width.
+const MOTION_SQUARE_WIDTH: usize = 400;
+/// The motion source's checkerboard square height.
+const MOTION_SQUARE_HEIGHT: usize = 300;
+/// The side of one checkerboard cell, in pixels.
+const MOTION_CELL: usize = 50;
+/// How far the square moves each frame, horizontally and vertically, in pixels.
+const MOTION_SQUARE_STEP: (usize, usize) = (7, 5);
+/// The percentage of 16x16 blocks the motion source re-randomizes each frame.
+const MOTION_RANDOM_PERCENT: u64 = 5;
+
+/// Where the frames come from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Source {
+    Screen,
+    Noise,
+    Motion,
+}
 
 /// The command line options.
 struct Args {
     probe_only: bool,
-    noise: bool,
+    source: Source,
     codec: Codec,
     codec_name: &'static str,
     rc_name: String,
@@ -45,7 +67,7 @@ struct Args {
 /// Parses the command line, with the documented defaults.
 fn parse_args() -> Result<Args, String> {
     let mut probe_only = false;
-    let mut noise = false;
+    let mut source = Source::Screen;
     let mut codec = (Codec::Av1, "av1");
     let mut rc = ("cq", RateControl::ConstantQuality { quality: 70, max_mbps: 40.0 });
     let mut seconds = 10u64;
@@ -80,10 +102,11 @@ fn parse_args() -> Result<Args, String> {
                 );
             }
             "--source" => {
-                noise = match args.next().as_deref() {
-                    Some("screen") => false,
-                    Some("noise") => true,
-                    other => return Err(format!("--source wants screen or noise, got {other:?}")),
+                source = match args.next().as_deref() {
+                    Some("screen") => Source::Screen,
+                    Some("noise") => Source::Noise,
+                    Some("motion") => Source::Motion,
+                    other => return Err(format!("--source wants screen, noise or motion, got {other:?}")),
                 };
             }
             "--seconds" => {
@@ -104,7 +127,7 @@ fn parse_args() -> Result<Args, String> {
     } else if let RateControl::ConstantQuality { quality, .. } = rc.1 {
         rc_name = format!("cq{quality}");
     }
-    Ok(Args { probe_only, noise, codec: codec.0, codec_name: codec.1, rc_name, rate_control: rc.1, seconds })
+    Ok(Args { probe_only, source, codec: codec.0, codec_name: codec.1, rc_name, rate_control: rc.1, seconds })
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -120,9 +143,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let gpu = Gpu::create(Some(0))?;
     let hw_device = D3d11Device::from_device(gpu.device())?;
-    let (capture, mut noise, source_size) = if args.noise {
-        let noise = NoiseSource::create(&gpu)?;
-        println!("source: noise {NOISE_WIDTH}x{NOISE_HEIGHT}");
+    let (capture, mut noise, source_size) = if args.source != Source::Screen {
+        let noise = NoiseSource::create(&gpu, args.source)?;
+        let label = if args.source == Source::Motion { "motion" } else { "noise" };
+        println!("source: {label} {NOISE_WIDTH}x{NOISE_HEIGHT}");
         (None, Some(noise), (NOISE_WIDTH as u32, NOISE_HEIGHT as u32))
     } else {
         let monitor = list_monitors()?.into_iter().find(|m| m.primary).ok_or("no primary monitor")?;
@@ -226,7 +250,8 @@ fn print_mapped_options(cfg: &EncoderConfig) {
     }
 }
 
-/// A texture refilled every frame with fresh seeded pseudo-random blocks. The noise is
+/// A texture refilled every frame, with fresh seeded pseudo-random blocks (noise) or the
+/// scrolling gradient, bouncing square and sparse random blocks (motion). The pixels are
 /// written into a CPU-writable staging texture, then copied into a default-usage
 /// texture, which is what the video processor accepts as input.
 struct NoiseSource {
@@ -234,12 +259,14 @@ struct NoiseSource {
     texture: ID3D11Texture2D,
     pixels: Vec<u8>,
     state: u64,
+    source: Source,
+    frame: u64,
 }
 
 impl NoiseSource {
     /// Creates the staging texture and the default-usage BGRA texture the converter reads from.
     #[allow(unsafe_code)]
-    fn create(gpu: &Gpu) -> Result<Self, Box<dyn std::error::Error>> {
+    fn create(gpu: &Gpu, source: Source) -> Result<Self, Box<dyn std::error::Error>> {
         let mut desc = D3D11_TEXTURE2D_DESC {
             Width: NOISE_WIDTH as u32,
             Height: NOISE_HEIGHT as u32,
@@ -264,7 +291,7 @@ impl NoiseSource {
         // SAFETY: the descriptor and the out pointer are live locals for the call.
         unsafe { gpu.device().CreateTexture2D(&desc, None, Some(&mut staging))? };
         let staging = staging.ok_or("CreateTexture2D returned no staging texture")?;
-        Ok(Self { staging, texture, pixels: vec![0; NOISE_WIDTH * NOISE_HEIGHT * 4], state: NOISE_SEED })
+        Ok(Self { staging, texture, pixels: vec![0; NOISE_WIDTH * NOISE_HEIGHT * 4], state: NOISE_SEED, source, frame: 0 })
     }
 
     /// The default-usage texture holding the latest noise frame.
@@ -272,10 +299,15 @@ impl NoiseSource {
         &self.texture
     }
 
-    /// Fills a fresh frame of noise, writes it into the staging texture and copies it across.
+    /// Fills the next frame, writes it into the staging texture and copies it across.
     #[allow(unsafe_code)]
     fn upload_next(&mut self, context: &ID3D11DeviceContext) -> Result<(), Box<dyn std::error::Error>> {
-        fill_noise(&mut self.pixels, NOISE_WIDTH, NOISE_HEIGHT, &mut self.state);
+        if self.source == Source::Motion {
+            fill_motion(&mut self.pixels, NOISE_WIDTH, NOISE_HEIGHT, self.frame, &mut self.state);
+        } else {
+            fill_noise(&mut self.pixels, NOISE_WIDTH, NOISE_HEIGHT, &mut self.state);
+        }
+        self.frame += 1;
         let row_bytes = NOISE_WIDTH * 4;
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         // SAFETY: the staging texture was created with CPU write access and the out pointer
@@ -310,17 +342,64 @@ fn next_random(state: &mut u64) -> u64 {
 fn fill_noise(pixels: &mut [u8], width: usize, height: usize, state: &mut u64) {
     for block_y in (0..height).step_by(NOISE_BLOCK) {
         for block_x in (0..width).step_by(NOISE_BLOCK) {
-            let rows = NOISE_BLOCK.min(height - block_y);
-            let columns = NOISE_BLOCK.min(width - block_x);
-            for row in 0..rows {
-                let start = ((block_y + row) * width + block_x) * 4;
-                for pixel in pixels[start..start + columns * 4].as_chunks_mut::<4>().0 {
-                    let random = next_random(state).to_le_bytes();
-                    *pixel = [random[0], random[1], random[2], 255];
-                }
+            fill_random_block(pixels, width, height, block_x, block_y, state);
+        }
+    }
+}
+
+/// Fills the 16x16 block at the given pixel corner (clipped to the frame) with random pixels.
+fn fill_random_block(pixels: &mut [u8], width: usize, height: usize, block_x: usize, block_y: usize, state: &mut u64) {
+    let rows = NOISE_BLOCK.min(height - block_y);
+    let columns = NOISE_BLOCK.min(width - block_x);
+    for row in 0..rows {
+        let start = ((block_y + row) * width + block_x) * 4;
+        for pixel in pixels[start..start + columns * 4].as_chunks_mut::<4>().0 {
+            let random = next_random(state).to_le_bytes();
+            *pixel = [random[0], random[1], random[2], 255];
+        }
+    }
+}
+
+/// Fills a BGRA buffer with the motion frame: a diagonal gradient scrolled 4 px per frame,
+/// a checkerboard square bouncing around the frame, then 5% of the 16x16 blocks re-randomized.
+fn fill_motion(pixels: &mut [u8], width: usize, height: usize, frame: u64, state: &mut u64) {
+    let offset = frame as usize * MOTION_SCROLL;
+    for (y, row) in pixels.chunks_exact_mut(width * 4).enumerate() {
+        for (x, pixel) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let phase = x + y + offset;
+            *pixel = [triangle(phase), triangle(phase + 171), triangle(phase + 341), 255];
+        }
+    }
+
+    let left = bounce(frame as usize * MOTION_SQUARE_STEP.0, width - MOTION_SQUARE_WIDTH);
+    let top = bounce(frame as usize * MOTION_SQUARE_STEP.1, height - MOTION_SQUARE_HEIGHT);
+    for row in 0..MOTION_SQUARE_HEIGHT {
+        let start = ((top + row) * width + left) * 4;
+        for (column, pixel) in pixels[start..start + MOTION_SQUARE_WIDTH * 4].as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let value = if (row / MOTION_CELL + column / MOTION_CELL).is_multiple_of(2) { 16 } else { 240 };
+            *pixel = [value, value, value, 255];
+        }
+    }
+
+    for block_y in (0..height).step_by(NOISE_BLOCK) {
+        for block_x in (0..width).step_by(NOISE_BLOCK) {
+            if next_random(state) % 100 < MOTION_RANDOM_PERCENT {
+                fill_random_block(pixels, width, height, block_x, block_y, state);
             }
         }
     }
+}
+
+/// A smooth wave from 0 up to 255 and back down, repeating every 512 steps.
+fn triangle(phase: usize) -> u8 {
+    let step = phase % 512;
+    (if step < 256 { step } else { 511 - step }) as u8
+}
+
+/// A position that moves by `travel` and reflects between 0 and `range`.
+fn bounce(travel: usize, range: usize) -> usize {
+    let step = travel % (2 * range);
+    if step <= range { step } else { 2 * range - step }
 }
 
 /// Prints one row per probed codec: status, then the option ranges the encoder reported.
