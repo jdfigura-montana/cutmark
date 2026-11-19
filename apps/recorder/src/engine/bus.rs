@@ -28,6 +28,13 @@ pub enum CommandKind {
     PauseResume,
     /// Add a mark of the given kind.
     Mark(MarkKind),
+    /// Add a point mark of this category with an optional label, saved by the label popup.
+    LabeledMark {
+        /// The mark type the popup's category maps to.
+        category: ::marks::MarkType,
+        /// The label the user typed, or none.
+        label: Option<String>,
+    },
     /// Toggle mute on one audio track.
     Mute {
         /// Index of the track to toggle.

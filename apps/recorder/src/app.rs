@@ -10,6 +10,7 @@ use crate::config::{self, Settings};
 use crate::engine::controller::{Controller, ControllerState, Phase, lock};
 use crate::engine::session::Summary;
 use crate::hotkeys::Hotkeys;
+use crate::label_popup::PopupHandle;
 use crate::platform;
 use crate::preview_ui::PreviewView;
 use crate::tracks_ui::{self, LiveTrackStats, TracksChanged};
@@ -84,7 +85,7 @@ impl RecorderApp {
             }
             listener_ctx.request_repaint();
         });
-        let controller = Controller::start(settings.clone(), Box::new(move || repaint_ctx.request_repaint()), listener);
+        let controller = Controller::start(settings.clone(), Box::new(move || repaint_ctx.request_repaint()), listener, PopupHandle::start());
         let hotkeys = Hotkeys::start(controller.sender());
         let hwnd = match platform::raw_hwnd(cc) {
             Ok(hwnd) => Some(hwnd),

@@ -16,6 +16,7 @@ use super::bus::{Bus, BusSender, Command, CommandKind, MarkKind};
 use super::marks::{MarksWarning, RecentMark, TakeMarks};
 use super::session::{RecordingSession, SessionConfig, StatsSnapshot, Summary, TrackSpec};
 use crate::config::{AudioCodecChoice, Profile, Settings, TrackKind};
+use crate::label_popup::PopupHandle;
 use crate::takes::{self, TakePaths};
 
 /// How many recent commands the state keeps.
@@ -124,9 +125,11 @@ pub struct Controller {
 impl Controller {
     /// Starts the "controller" thread with a settings snapshot, a callback that asks the window to repaint and a
     /// listener that is called with the state after every change, so the tray can follow while no frames run.
-    pub fn start(settings: Settings, repaint: Box<dyn Fn() + Send>, listener: Box<dyn Fn(&ControllerState) + Send>) -> Self {
+    /// The label popup sends its saved marks to this controller's bus.
+    pub fn start(settings: Settings, repaint: Box<dyn Fn() + Send>, listener: Box<dyn Fn(&ControllerState) + Send>, popup: PopupHandle) -> Self {
         let bus = Bus::default();
         let bus_sender = bus.sender();
+        popup.connect(bus.sender());
         let (control_tx, control_rx) = mpsc::channel();
         let shared = Arc::new(Mutex::new(ControllerState {
             fps: 60,
@@ -134,7 +137,8 @@ impl Controller {
             track_muted: settings.audio.tracks.iter().map(|track| track.muted).collect(),
             ..ControllerState::default()
         }));
-        let worker = Worker { bus, control: control_rx, shared: Arc::clone(&shared), repaint, listener, settings, active: None };
+        let worker =
+            Worker { bus, control: control_rx, shared: Arc::clone(&shared), repaint, listener, settings, active: None, popup, deferred: VecDeque::new() };
         let handle = match std::thread::Builder::new().name("controller".to_owned()).spawn(move || worker.run()) {
             Ok(handle) => Some(handle),
             Err(err) => {
@@ -228,6 +232,9 @@ struct Worker {
     listener: Box<dyn Fn(&ControllerState) + Send>,
     settings: Settings,
     active: Option<ActiveTake>,
+    popup: PopupHandle,
+    /// Commands that were taken off the bus while a stop collected the popup's mark; handled before new ones.
+    deferred: VecDeque<Command>,
 }
 
 impl Worker {
@@ -235,7 +242,7 @@ impl Worker {
     fn run(mut self) {
         while self.drain_control() {
             let wait = if self.active.is_some() { ACTIVE_POLL } else { IDLE_POLL };
-            if let Some(command) = self.bus.recv_timeout(wait) {
+            if let Some(command) = self.deferred.pop_front().or_else(|| self.bus.recv_timeout(wait)) {
                 self.handle(command);
             }
             self.poll_stats();
@@ -296,6 +303,7 @@ impl Worker {
             CommandKind::Mute { .. } => self.toggle_mic_mute(),
             CommandKind::SetProfile(name) => self.set_profile(name),
             CommandKind::Mark(kind) => self.add_mark(*kind, press),
+            CommandKind::LabeledMark { category, label } => self.add_labeled(*category, label.clone(), press),
             CommandKind::GetStatus => log::info!("status requested (the control API answers it in a later phase)"),
         }
         self.update(|state| {
@@ -367,6 +375,10 @@ impl Worker {
 
     /// Stops the running take, keeps its summary for the window and returns to idle.
     fn stop_take(&mut self) {
+        if self.active.is_none() {
+            return;
+        }
+        self.commit_popup();
         let Some(active) = self.active.take() else { return };
         let marks_warning = active.marks_warning.clone();
         self.update(|state| {
@@ -422,11 +434,35 @@ impl Worker {
             log::info!("mark {kind:?} ignored: no take is running");
             return;
         }
-        self.with_marks(|marks| match kind {
-            // The label popup arrives in a later phase; until then a labelled mark is a plain note.
-            MarkKind::Silent | MarkKind::WithLabel => marks.note(press_qpc),
-            MarkKind::HighlightLast => marks.highlight_last(press_qpc),
-        });
+        match kind {
+            MarkKind::Silent => self.with_marks(|marks| marks.note(press_qpc)),
+            MarkKind::WithLabel => self.popup.open(press_qpc),
+            MarkKind::HighlightLast => self.with_marks(|marks| marks.highlight_last(press_qpc)),
+        }
+    }
+
+    /// Adds the popup's labeled point mark to the running take; with no take it is ignored.
+    fn add_labeled(&mut self, category: ::marks::MarkType, label: Option<String>, press_qpc: i64) {
+        if self.active.is_none() {
+            log::info!("labeled mark ignored: no take is running");
+            return;
+        }
+        self.with_marks(|marks| marks.labeled(press_qpc, category, label));
+    }
+
+    /// Saves an open popup so its mark lands in the take that is stopping.
+    ///
+    /// The popup's command is on the bus by the time `commit_now` returns. It is handled here, and any other
+    /// command taken off the bus on the way waits in `deferred` for the main loop.
+    fn commit_popup(&mut self) {
+        self.popup.commit_now();
+        while let Some(command) = self.bus.recv_timeout(Duration::ZERO) {
+            if matches!(command.kind, CommandKind::LabeledMark { .. }) {
+                self.handle(command);
+            } else {
+                self.deferred.push_back(command);
+            }
+        }
     }
 
     /// Changes the running take's marks, then publishes their count, list and any warning.

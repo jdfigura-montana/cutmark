@@ -6,6 +6,7 @@ mod app;
 mod config;
 mod engine;
 mod hotkeys;
+mod label_popup;
 mod platform;
 mod preview_ui;
 mod takes;

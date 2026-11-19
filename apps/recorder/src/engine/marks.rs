@@ -88,6 +88,14 @@ impl TakeMarks {
         self.add(NewMark { media: Some(0), ..NewMark::point(MarkType::Note, t_ms, Source::Hotkey) });
     }
 
+    /// Adds a point mark of `category` with an optional label at the moment of the press.
+    pub fn labeled(&mut self, press_qpc: i64, category: MarkType, label: Option<String>) {
+        let t_ms = self.media_ms(press_qpc);
+        let mut mark = NewMark { media: Some(0), ..NewMark::point(category, t_ms, Source::Hotkey) };
+        mark.label = label;
+        self.add(mark);
+    }
+
     /// Adds a Highlight that ends at the press and starts 30 seconds earlier, or at 0.
     pub fn highlight_last(&mut self, press_qpc: i64) {
         let end_ms = self.media_ms(press_qpc);
@@ -301,6 +309,17 @@ mod tests {
         assert!(md.contains("| System | Paused |") && md.contains("| System | Resumed |"), "{md}");
         let csv = fs::read_to_string(dir.join("take_marks.csv")).expect("csv log");
         assert!(csv.contains(",system,Paused,") && csv.contains(",system,Resumed,"), "{csv}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_popup_mark_is_a_point_at_the_press_even_for_a_highlight() {
+        let dir = scratch("popup");
+        let mut take = TakeMarks::begin(&dir, "popup", &dir.join("popup.mkv"), 60, MediaClock::new(START, FREQ), MarksWarning::default());
+        take.labeled(at_seconds(3), MarkType::Cut, Some("oops".to_owned()));
+        take.labeled(at_seconds(5), MarkType::Highlight, None);
+        let chapters = take.finish(&[], &[10_000]);
+        assert_eq!(chapters, vec![(3000, 5000, "Cut: oops".to_owned()), (5000, 10_000, "Highlight".to_owned())]);
         let _ = fs::remove_dir_all(&dir);
     }
 
