@@ -30,6 +30,8 @@ pub struct AmfEncoder {
     time_base: (i32, i32),
     /// Whether end of stream has been sent.
     finished: bool,
+    /// The applied options as read back from the opened encoder.
+    read_back: Vec<(String, String)>,
 }
 
 /// One numeric encoder option: its name on this encoder and the range it allows.
@@ -69,6 +71,8 @@ pub struct OptionRanges {
     pub presets: Vec<String>,
     /// Whether the encoder has a filler_data option.
     pub has_filler_data: bool,
+    /// Whether the encoder has an enforce_hrd option.
+    pub has_enforce_hrd: bool,
 }
 
 /// The outcome of probing one AMF codec.
@@ -114,9 +118,16 @@ impl AmfEncoder {
         video.set_time_base(Rational::new(time_base_num(cfg), time_base_den(cfg)));
         video.set_frame_rate(Some(Rational::new(frame_rate_num(cfg), frame_rate_den(cfg))));
         video.set_format(Pixel::from(ffi::AVPixelFormat::AV_PIX_FMT_D3D11));
-        apply_options(context_ptr, name, &options)?;
+        apply_options(context_ptr, priv_data, name, &options)?;
         let encoder = video.open().map_err(MediaError::Init)?;
-        Ok(Self { encoder, time_base: (time_base_num(cfg), time_base_den(cfg)), finished: false })
+        let mut opened = Self { encoder, time_base: (time_base_num(cfg), time_base_den(cfg)), finished: false, read_back: Vec::new() };
+        opened.read_back = read_back_options(opened.context_ptr(), name, &options)?;
+        Ok(opened)
+    }
+
+    /// Every applied option as the opened encoder reports it, in the order they were set.
+    pub fn read_back(&self) -> &[(String, String)] {
+        &self.read_back
     }
 
     /// Hands every ready packet to the callback, stopping at EAGAIN, and also
@@ -403,25 +414,145 @@ fn read_option_ranges(priv_data: *mut c_void) -> OptionRanges {
         preset_option: preset_name.map(|name| name.to_string_lossy().into_owned()),
         presets: preset_name.map(|name| named_values(priv_data, name)).unwrap_or_default(),
         has_filler_data: !find_option(priv_data, c"filler_data").is_null(),
+        has_enforce_hrd: !find_option(priv_data, c"enforce_hrd").is_null(),
     }
 }
 
-/// Sets each option on the codec context, reaching the private AMF options through its children.
+/// FFmpeg's AVERROR_OPTION_NOT_FOUND, which the bindings do not export.
+const AVERROR_OPTION_NOT_FOUND: c_int = -1_414_549_496;
+
+/// The generic AVCodecContext options amf_options emits; every other option is private to the encoder.
+const CONTEXT_OPTIONS: [&str; 4] = ["b", "maxrate", "bufsize", "g"];
+
+/// Where one option is applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptionTarget {
+    /// The generic AVCodecContext.
+    Context,
+    /// The encoder's private data (priv_data).
+    Private,
+}
+
+/// Which object an option belongs to.
+pub fn option_target(name: &str) -> OptionTarget {
+    if CONTEXT_OPTIONS.contains(&name) { OptionTarget::Context } else { OptionTarget::Private }
+}
+
+/// A list of option names and values.
+pub type OptionList = Vec<(String, String)>;
+
+/// Splits a mapped option list into the context options and the private ones, keeping order.
+pub fn split_options(options: &[(String, String)]) -> (OptionList, OptionList) {
+    options.iter().cloned().partition(|(name, _)| option_target(name) == OptionTarget::Context)
+}
+
+/// The error for one option FFmpeg refused: a missing option or a rejected value.
+fn option_error(encoder: &str, name: &str, value: &str, code: c_int) -> ConfigError {
+    if code == AVERROR_OPTION_NOT_FOUND {
+        missing(encoder, name)
+    } else {
+        out_of_range(encoder, name, value, &format!("a value FFmpeg accepts (it said: {})", ff_error(code)))
+    }
+}
+
+/// Sets each option on the object it belongs to: generic ones on the codec context,
+/// the rest on the encoder's private data. Any option FFmpeg does not take is an error naming it.
 #[allow(unsafe_code)]
-fn apply_options(context: *mut ffi::AVCodecContext, encoder_name: &str, options: &[(String, String)]) -> Result<(), MediaError> {
-    for (name, value) in options {
+fn apply_options(context: *mut ffi::AVCodecContext, priv_data: *mut c_void, encoder_name: &str, options: &[(String, String)]) -> Result<(), EncoderError> {
+    if priv_data.is_null() {
+        return Err(MediaError::Null("priv_data").into());
+    }
+    let (generic, private) = split_options(options);
+    let targets = generic.iter().map(|option| (context.cast::<c_void>(), option)).chain(private.iter().map(|option| (priv_data, option)));
+    for (target, (name, value)) in targets {
         let (Ok(cname), Ok(cvalue)) = (CString::new(name.as_str()), CString::new(value.as_str())) else {
-            return Err(MediaError::Null("option string"));
+            return Err(MediaError::Null("option string").into());
         };
-        // SAFETY: the context is live and exclusively owned by the encoder being
-        // built; both strings outlive the call and av_opt_set copies the value.
-        let code = unsafe { ffi::av_opt_set(context.cast::<c_void>(), cname.as_ptr(), cvalue.as_ptr(), SEARCH_CHILDREN) };
+        // SAFETY: the context and its private data are live and exclusively owned by
+        // the encoder being built; both strings outlive the call and av_opt_set copies
+        // the value. Flag 0 searches only the named object, so nothing can land elsewhere.
+        let code = unsafe { ffi::av_opt_set(target, cname.as_ptr(), cvalue.as_ptr(), 0) };
         if code < 0 {
-            return Err(ff_error(code));
+            return Err(option_error(encoder_name, name, value, code).into());
         }
-        log::debug!("AMF {encoder_name}: {name} = {value}");
+        log::debug!("AMF {encoder_name}: {name} = {value} ({:?})", option_target(name));
     }
     Ok(())
+}
+
+/// Reads every planned option back from the opened encoder, logs it, and warns when it differs.
+/// Returns (name, value) pairs; named values read as "name (number)".
+#[allow(unsafe_code)]
+fn read_back_options(context: *mut ffi::AVCodecContext, encoder_name: &str, options: &[(String, String)]) -> Result<Vec<(String, String)>, EncoderError> {
+    // SAFETY: the context is live; priv_data stays allocated while it is.
+    let priv_data = unsafe { (*context).priv_data };
+    let canon = |text: &str| match text {
+        "true" => "1".to_string(),
+        "false" => "0".to_string(),
+        other => other.to_string(),
+    };
+    let mut read = Vec::with_capacity(options.len());
+    for (name, planned) in options {
+        let Ok(cname) = CString::new(name.as_str()) else {
+            return Err(MediaError::Null("option string").into());
+        };
+        let mut raw: *mut u8 = std::ptr::null_mut();
+        // SAFETY: the context is live, the name outlives the call and raw is a live
+        // out pointer; on success FFmpeg hands over an allocated string.
+        let code = unsafe { ffi::av_opt_get(context.cast::<c_void>(), cname.as_ptr(), SEARCH_CHILDREN, &mut raw) };
+        if code < 0 || raw.is_null() {
+            return Err(option_error(encoder_name, name, planned, if code < 0 { code } else { AVERROR_OPTION_NOT_FOUND }).into());
+        }
+        // SAFETY: raw is a NUL terminated string allocated by av_opt_get; it is freed once, after the copy.
+        let text = unsafe {
+            let text = CStr::from_ptr(raw.cast()).to_string_lossy().into_owned();
+            ffi::av_free(raw.cast::<c_void>());
+            text
+        };
+        let shown = value_label(priv_data, name, &text);
+        if canon(&text) == *planned || shown.starts_with(&format!("{planned} (")) {
+            log::info!("AMF {encoder_name}: {name} = {shown}");
+            read.push((name.clone(), shown));
+        } else {
+            log::warn!("AMF {encoder_name}: {name} planned {planned} but the encoder reports {shown}");
+            read.push((name.clone(), format!("{shown}  <-- MISMATCH, planned {planned}")));
+        }
+    }
+    Ok(read)
+}
+
+/// Adds the name of a named constant to a numeric read-back value, when the option has one.
+#[allow(unsafe_code)]
+fn value_label(priv_data: *mut c_void, name: &str, raw: &str) -> String {
+    let (Ok(cname), Ok(number)) = (CString::new(name), raw.parse::<i64>()) else {
+        return raw.to_string();
+    };
+    if priv_data.is_null() {
+        return raw.to_string();
+    }
+    let entry = find_option(priv_data, &cname);
+    // SAFETY: a non-null entry points into the encoder's static option table.
+    let unit = if entry.is_null() { std::ptr::null() } else { unsafe { (*entry).unit } };
+    if unit.is_null() {
+        return raw.to_string();
+    }
+    let mut prev: *const ffi::AVOption = std::ptr::null();
+    loop {
+        // SAFETY: priv_data starts with its AVClass pointer, which is what av_opt_next reads; the table is static.
+        let next = unsafe { ffi::av_opt_next(priv_data.cast_const(), prev) };
+        if next.is_null() {
+            return raw.to_string();
+        }
+        prev = next;
+        // SAFETY: next points into the static option table; every field read is a
+        // static string or a plain integer.
+        unsafe {
+            let same_unit = !(*next).unit.is_null() && CStr::from_ptr((*next).unit) == CStr::from_ptr(unit);
+            if (*next).type_ == ffi::AVOptionType::AV_OPT_TYPE_CONST && same_unit && (*next).default_val.i64_ == number {
+                return format!("{} ({raw})", CStr::from_ptr((*next).name).to_string_lossy());
+            }
+        }
+    }
 }
 
 /// Maps the vendor-neutral configuration onto the option names and values of one AMF encoder.
@@ -456,11 +587,13 @@ pub fn amf_options(codec: Codec, cfg: &EncoderConfig, ranges: &OptionRanges) -> 
             if ranges.has_filler_data {
                 push(&mut options, "filler_data", "1".to_string());
             }
+            push_enforce_hrd(&mut options, ranges);
         }
         RateControl::VbrPeak { target_mbps, max_mbps } => {
             push(&mut options, "rc", rc_mode(encoder, ranges, &["hqvbr", "vbr_peak"])?);
             let ceiling = bits_per_second(max_mbps);
             push_rates(&mut options, bits_per_second(target_mbps), ceiling, ceiling);
+            push_enforce_hrd(&mut options, ranges);
         }
     }
     let preset_option = ranges.preset_option.as_deref().ok_or_else(|| missing(encoder, "quality"))?;
@@ -487,6 +620,13 @@ fn push_rates(options: &mut Vec<(String, String)>, bit_rate: i64, max_rate: i64,
     push(options, "b", bit_rate.to_string());
     push(options, "maxrate", max_rate.to_string());
     push(options, "bufsize", buffer_bits.to_string());
+}
+
+/// Turns on enforce_hrd, when the encoder has it, so maxrate and bufsize are binding.
+fn push_enforce_hrd(options: &mut Vec<(String, String)>, ranges: &OptionRanges) {
+    if ranges.has_enforce_hrd {
+        push(options, "enforce_hrd", "1".to_string());
+    }
 }
 
 /// Megabits per second as whole bits per second.
@@ -559,6 +699,7 @@ mod tests {
             preset_option: Some("quality".into()),
             presets: ["speed", "balanced", "quality"].map(String::from).to_vec(),
             has_filler_data: true,
+            has_enforce_hrd: true,
         }
     }
 
@@ -679,6 +820,55 @@ mod tests {
             let options = amf_options(codec, &cfg, &ranges).unwrap();
             assert_eq!(value(&options, "rc"), "vbr_peak");
         }
+    }
+
+    /// The names in an option list, in order.
+    fn names(options: &[(String, String)]) -> Vec<&str> {
+        options.iter().map(|(name, _)| name.as_str()).collect()
+    }
+
+    #[test]
+    fn options_split_between_the_context_and_private_data_for_every_mode() {
+        let modes = [
+            (RateControl::ConstantQuality { quality: 70, max_mbps: 40.0 }, vec!["b", "maxrate", "bufsize", "g"], vec!["rc", "qvbr_quality_level", "quality"]),
+            (RateControl::ConstantQp { qp_i: 24, qp_p: 26 }, vec!["g"], vec!["rc", "qp_i", "qp_p", "quality"]),
+            (RateControl::Cbr { mbps: 20.0 }, vec!["b", "maxrate", "bufsize", "g"], vec!["rc", "filler_data", "enforce_hrd", "quality"]),
+            (RateControl::VbrPeak { target_mbps: 20.0, max_mbps: 40.0 }, vec!["b", "maxrate", "bufsize", "g"], vec!["rc", "enforce_hrd", "quality"]),
+        ];
+        for codec in ALL_CODECS {
+            for (rate_control, context_names, private_names) in &modes {
+                let options = amf_options(codec, &config(codec, *rate_control), &fake_ranges(codec)).unwrap();
+                let (context, private) = split_options(&options);
+                let mut got_context = names(&context);
+                let mut got_private = names(&private);
+                let mut want_context = context_names.clone();
+                let mut want_private = private_names.clone();
+                got_context.sort_unstable();
+                got_private.sort_unstable();
+                want_context.sort_unstable();
+                want_private.sort_unstable();
+                assert_eq!(got_context, want_context, "{codec:?} {rate_control:?} context");
+                assert_eq!(got_private, want_private, "{codec:?} {rate_control:?} private");
+                assert_eq!(context.len() + private.len(), options.len());
+            }
+        }
+    }
+
+    #[test]
+    fn enforce_hrd_is_set_for_cbr_and_vbr_only_when_the_encoder_has_it() {
+        let cbr = config(Codec::Hevc, RateControl::Cbr { mbps: 20.0 });
+        let vbr = config(Codec::Hevc, RateControl::VbrPeak { target_mbps: 20.0, max_mbps: 40.0 });
+        for cfg in [&cbr, &vbr] {
+            let options = amf_options(Codec::Hevc, cfg, &fake_ranges(Codec::Hevc)).unwrap();
+            assert_eq!(value(&options, "enforce_hrd"), "1");
+            let mut ranges = fake_ranges(Codec::Hevc);
+            ranges.has_enforce_hrd = false;
+            let options = amf_options(Codec::Hevc, cfg, &ranges).unwrap();
+            assert!(!options.iter().any(|(key, _)| key == "enforce_hrd"));
+        }
+        let quality = config(Codec::Hevc, RateControl::ConstantQuality { quality: 70, max_mbps: 40.0 });
+        let options = amf_options(Codec::Hevc, &quality, &fake_ranges(Codec::Hevc)).unwrap();
+        assert!(!options.iter().any(|(key, _)| key == "enforce_hrd"));
     }
 
     #[test]

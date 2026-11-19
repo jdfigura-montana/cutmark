@@ -8,7 +8,7 @@
 //! seeded pseudo-random 16x16 blocks, which compress badly, and takes the same upload and
 //! NV12 path. The motion source is a diagonal gradient scrolling 4 px per frame, a bouncing
 //! 400x300 checkerboard square and 5% of the 16x16 blocks re-randomized each frame (seeded),
-//! on the same texture path. Before opening, the option list the configuration maps to is printed.
+//! on the same texture path. After opening, every option is printed as the encoder reports it.
 
 use std::ffi::{CStr, CString, c_void};
 use std::path::Path;
@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use capture::{Gpu, LatestFrame, MonitorCapture, Nv12Converter, list_monitors};
 use ffmpeg_next::ffi;
-use media_io::encode::{Codec, CodecSupport, Encoder, Preset, RateControl, amf_options, probe_amf};
+use media_io::encode::{Codec, CodecSupport, Encoder, Preset, RateControl, probe_amf};
 use media_io::{AmfEncoder, Container, D3d11Device, D3d11FramePool, EncodedPacket, EncoderConfig, HwFrame, Muxer};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_WRITE, D3D11_MAP_WRITE, D3D11_MAPPED_SUBRESOURCE, D3D11_TEXTURE2D_DESC,
@@ -172,8 +172,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         keyframe_secs: 2.0,
     };
     println!("config: {cfg:?}");
-    print_mapped_options(&cfg);
     let mut encoder = AmfEncoder::open(&cfg, &pool)?;
+    print_read_back(&encoder);
     println!("encoder time base: {:?}", encoder.time_base());
 
     let path_text = format!("probe_{}_{}.mkv", args.codec_name, args.rc_name);
@@ -232,21 +232,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Prints the option list the configuration maps to on its codec, one line per option.
-fn print_mapped_options(cfg: &EncoderConfig) {
-    let support = probe_amf(cfg.width, cfg.height, cfg.fps_num);
-    let Some(row) = support.iter().find(|row| row.codec == cfg.codec) else {
-        println!("amf options: codec not probed");
-        return;
-    };
-    match amf_options(cfg.codec, cfg, &row.ranges) {
-        Ok(options) => {
-            println!("amf options for {:?}:", cfg.codec);
-            for (name, value) in options {
-                println!("    {name} = {value}");
-            }
-        }
-        Err(err) => println!("amf options: {err}"),
+/// Prints every option as the opened encoder reports it (read with av_opt_get), one line each.
+fn print_read_back(encoder: &AmfEncoder) {
+    println!("amf options read back from the opened encoder:");
+    for (name, value) in encoder.read_back() {
+        println!("    {name} = {value}");
     }
 }
 
