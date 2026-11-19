@@ -1,5 +1,6 @@
 //! The Recorder window: draws what the engine controller publishes and sends it commands and settings.
 
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, anyhow};
@@ -11,7 +12,7 @@ use crate::engine::session::Summary;
 use crate::hotkeys::Hotkeys;
 use crate::platform;
 use crate::tracks_ui::{self, LiveTrackStats, TracksChanged};
-use crate::tray::Tray;
+use crate::tray::{Tray, TrayHandle, TrayState};
 
 /// How often the window repaints while recording, so the level meters move smoothly.
 const METER_REFRESH: Duration = Duration::from_millis(33);
@@ -36,8 +37,6 @@ pub struct RecorderApp {
     seen_settings_rev: u64,
     /// Whether a take was running on the previous frame, to clear the meters when it starts or ends.
     was_active: bool,
-    /// The recording state last shown on the tray icon.
-    tray_recording: Option<bool>,
 }
 
 impl RecorderApp {
@@ -56,7 +55,17 @@ impl RecorderApp {
             Settings::default()
         });
         let repaint_ctx = cc.egui_ctx.clone();
-        let controller = Controller::start(settings.clone(), Box::new(move || repaint_ctx.request_repaint()));
+        // The tray needs the controller's senders, and the controller's listener needs the tray handle, so the handle arrives later.
+        let tray_slot: Arc<OnceLock<TrayHandle>> = Arc::default();
+        let listener_slot = Arc::clone(&tray_slot);
+        let listener_ctx = cc.egui_ctx.clone();
+        let listener = Box::new(move |state: &ControllerState| {
+            if let Some(handle) = listener_slot.get() {
+                handle.set_state(tray_state(state.phase));
+            }
+            listener_ctx.request_repaint();
+        });
+        let controller = Controller::start(settings.clone(), Box::new(move || repaint_ctx.request_repaint()), listener);
         let hotkeys = Hotkeys::start(controller.sender());
         let hwnd = match platform::raw_hwnd(cc) {
             Ok(hwnd) => Some(hwnd),
@@ -66,7 +75,12 @@ impl RecorderApp {
             }
         };
         let tray = match Tray::new(&cc.egui_ctx, hwnd, controller.sender(), controller.control_sender()) {
-            Ok(tray) => Some(tray),
+            Ok(tray) => {
+                if tray_slot.set(tray.handle()).is_err() {
+                    log::warn!("the tray handle was already set");
+                }
+                Some(tray)
+            }
             Err(err) => {
                 log::warn!("running without a tray icon: {err}");
                 None
@@ -85,11 +99,10 @@ impl RecorderApp {
             was_minimized: false,
             seen_settings_rev: 0,
             was_active: false,
-            tray_recording: None,
         }
     }
 
-    /// Takes in what the controller published: its settings changes, the level peaks and the tray state.
+    /// Takes in what the controller published: its settings changes and the level peaks.
     fn sync_from_controller(&mut self, state: &mut ControllerState) {
         if state.settings_rev != self.seen_settings_rev {
             // The controller changed the profile or a mute (a hotkey); the window keeps its own copy of the rest.
@@ -112,14 +125,6 @@ impl RecorderApp {
                 self.live_tracks.update(&stats.tracks, Instant::now());
             }
             state.ui_seen_seq = state.stats_seq;
-        }
-        // The tray follows the state on the next frame; it shows paused as not recording.
-        let recording = state.phase == Phase::Recording;
-        if self.tray_recording != Some(recording) {
-            if let Some(tray) = &self.tray {
-                tray.set_recording(recording);
-            }
-            self.tray_recording = Some(recording);
         }
     }
 
@@ -247,6 +252,15 @@ impl RecorderApp {
                 ui.end_row();
             }
         });
+    }
+}
+
+/// The tray icon state that matches a controller phase.
+fn tray_state(phase: Phase) -> TrayState {
+    match phase {
+        Phase::Idle => TrayState::Idle,
+        Phase::Recording => TrayState::Recording,
+        Phase::Paused => TrayState::Paused,
     }
 }
 

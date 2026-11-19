@@ -116,8 +116,9 @@ pub struct Controller {
 }
 
 impl Controller {
-    /// Starts the "controller" thread with a settings snapshot and a callback that asks the window to repaint.
-    pub fn start(settings: Settings, repaint: Box<dyn Fn() + Send>) -> Self {
+    /// Starts the "controller" thread with a settings snapshot, a callback that asks the window to repaint and a
+    /// listener that is called with the state after every change, so the tray can follow while no frames run.
+    pub fn start(settings: Settings, repaint: Box<dyn Fn() + Send>, listener: Box<dyn Fn(&ControllerState) + Send>) -> Self {
         let bus = Bus::default();
         let bus_sender = bus.sender();
         let (control_tx, control_rx) = mpsc::channel();
@@ -127,7 +128,7 @@ impl Controller {
             track_muted: settings.audio.tracks.iter().map(|track| track.muted).collect(),
             ..ControllerState::default()
         }));
-        let worker = Worker { bus, control: control_rx, shared: Arc::clone(&shared), repaint, settings, active: None };
+        let worker = Worker { bus, control: control_rx, shared: Arc::clone(&shared), repaint, listener, settings, active: None };
         let handle = match std::thread::Builder::new().name("controller".to_owned()).spawn(move || worker.run()) {
             Ok(handle) => Some(handle),
             Err(err) => {
@@ -217,6 +218,7 @@ struct Worker {
     control: Receiver<Control>,
     shared: Arc<Mutex<ControllerState>>,
     repaint: Box<dyn Fn() + Send>,
+    listener: Box<dyn Fn(&ControllerState) + Send>,
     settings: Settings,
     active: Option<ActiveTake>,
 }
@@ -248,9 +250,13 @@ impl Worker {
         }
     }
 
-    /// Changes the shared state and asks the window to repaint.
+    /// Changes the shared state, tells the listener about it and asks the window to repaint.
     fn update(&self, change: impl FnOnce(&mut ControllerState)) {
-        change(&mut lock(&self.shared));
+        {
+            let mut state = lock(&self.shared);
+            change(&mut state);
+            (self.listener)(&state);
+        }
         (self.repaint)();
     }
 
