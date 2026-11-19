@@ -195,6 +195,19 @@ mod tests {
     }
 
     #[test]
+    fn a_journal_two_folders_below_the_root_is_found_and_reported() {
+        let root = scratch("two_below");
+        let base = "2026-11-19_04-20-23_take01";
+        let take_folder = root.join("Test4a").join(base);
+        fs::create_dir_all(&take_folder).expect("take folder");
+        crashed_take(&take_folder, base);
+        let report = scan(&root, &|_, _| false);
+        assert_eq!(report, RecoveryReport { recovered: vec![base.to_owned()], errors: Vec::new() });
+        assert!(take_folder.join(format!("{base}.marks.json")).exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn the_running_take_is_skipped() {
         let root = scratch("running");
         crashed_take(&root, "live");

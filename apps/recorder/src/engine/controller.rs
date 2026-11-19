@@ -14,7 +14,7 @@ use thiserror::Error;
 use super::bus::{Bus, BusSender, Command, CommandKind, MarkKind};
 use super::marks::{MarksWarning, RecentMark, TakeMarks};
 use super::session::{RecordingSession, SessionConfig, StatsSnapshot, Summary, TrackSpec};
-use crate::config::{AudioCodecChoice, Profile, Settings, TrackKind, takes_root};
+use crate::config::{AudioCodecChoice, Profile, Settings, TrackKind};
 use crate::label_popup::PopupHandle;
 use crate::profiles;
 use crate::takes::{self, TakePaths};
@@ -249,16 +249,11 @@ impl Worker {
 
     /// Applies the queued settings; false once the stop request came or the app dropped its handles.
     fn drain_control(&mut self) -> bool {
-        loop {
-            match self.control.try_recv() {
-                Ok(Control::Settings(settings)) => {
-                    self.settings = *settings;
-                    self.forward_live_controls();
-                }
-                Ok(Control::Stop) | Err(TryRecvError::Disconnected) => return false,
-                Err(TryRecvError::Empty) => return true,
-            }
+        let (keep_running, changed) = apply_control(&self.control, &mut self.settings);
+        if changed {
+            self.forward_live_controls();
         }
+        keep_running
     }
 
     /// Changes the shared state, tells the listener about it and asks the window to repaint.
@@ -329,9 +324,8 @@ impl Worker {
 
     /// Picks the take folder, builds the session config from the active profile and starts the session.
     fn start_take_inner(&mut self) -> Result<(), StartError> {
-        let root = takes_root(&self.settings);
         let profile = profiles::find(&self.settings.active_profile).unwrap_or_else(Profile::tutorial_av1_1440p60);
-        let take = takes::next_take(&root, chrono::Local::now(), profile.container).map_err(|err| StartError::Take(err.to_string()))?;
+        let take = takes::next_take_for(&self.settings, chrono::Local::now(), profile.container).map_err(|err| StartError::Take(err.to_string()))?;
         let fps = profile.fps;
         let (tracks, missing) = track_specs(&self.settings);
         if !missing.is_empty() {
@@ -571,6 +565,23 @@ impl Worker {
     }
 }
 
+/// Takes every queued control message: the last settings replace `settings`, and a stop request or a dropped sender ends the run.
+///
+/// Returns whether the thread keeps running, and whether `settings` changed.
+fn apply_control(control: &Receiver<Control>, settings: &mut Settings) -> (bool, bool) {
+    let mut changed = false;
+    loop {
+        match control.try_recv() {
+            Ok(Control::Settings(new)) => {
+                *settings = *new;
+                changed = true;
+            }
+            Ok(Control::Stop) | Err(TryRecvError::Disconnected) => return (false, changed),
+            Err(TryRecvError::Empty) => return (true, changed),
+        }
+    }
+}
+
 /// Builds a spec for every enabled track in the settings, resolving each device, and names the tracks whose device is missing.
 fn track_specs(settings: &Settings) -> (Vec<TrackSpec>, Vec<String>) {
     let mut specs = Vec::new();
@@ -599,5 +610,42 @@ fn audio_codec(choice: AudioCodecChoice) -> media_io::AudioCodec {
     match choice {
         AudioCodecChoice::Aac320 => media_io::AudioCodec::Aac { kbps: 320 },
         AudioCodecChoice::Pcm24 => media_io::AudioCodec::Pcm24,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use chrono::{Local, TimeZone};
+
+    use super::*;
+    use crate::config::Container;
+
+    #[test]
+    fn a_settings_change_before_start_changes_the_take_folder() -> Result<(), Box<dyn Error>> {
+        let root = std::env::temp_dir().join(format!("cutmark-recorder-test-{}-controller-settings", std::process::id()));
+        let now = Local.with_ymd_and_hms(2026, 11, 19, 10, 0, 0).single().ok_or("the test date does not exist")?;
+        let mut settings = Settings { root_folder: Some(root.clone()), ..Settings::default() };
+        let (tx, rx) = mpsc::channel();
+        let sender = ControlSender { tx };
+
+        let before = takes::plan_take_for(&settings, now, Container::Mkv)?;
+        assert_eq!(before.folder, root.join("Cutmark").join("2026-11-19_10-00-00_take01"));
+
+        let mut changed = settings.clone();
+        changed.project = "Test4a".to_owned();
+        changed.naming_template = "{project}_{take}".to_owned();
+        sender.set_settings(changed);
+        let (keep_running, was_changed) = apply_control(&rx, &mut settings);
+        assert!(keep_running && was_changed);
+
+        let after = takes::plan_take_for(&settings, now, Container::Mkv)?;
+        assert_eq!(after.folder, root.join("Test4a").join("Test4a_01"));
+        assert_ne!(before.folder, after.folder);
+
+        sender.stop();
+        assert_eq!(apply_control(&rx, &mut settings), (false, false));
+        Ok(())
     }
 }

@@ -22,9 +22,16 @@ use crate::tray::{Tray, TrayHandle, TrayState};
 /// How often the window repaints while recording, so the level meters move smoothly.
 const METER_REFRESH: Duration = Duration::from_millis(33);
 
+/// How often the window looks for the recovery report until it has arrived.
+const RECOVERY_POLL: Duration = Duration::from_millis(250);
+
 /// The Recorder app: settings, hotkeys, the tray icon and the window over the engine controller.
 pub struct RecorderApp {
     settings: Settings,
+    /// The settings the controller was last given, to notice every change the window makes.
+    sent_settings: Settings,
+    /// The main window's handle, or None when it could not be read.
+    hwnd: Option<isize>,
     hotkeys: Hotkeys,
     tray: Option<Tray>,
     controller: Controller,
@@ -76,17 +83,18 @@ impl RecorderApp {
     /// Applies the suite theme, excludes the window from capture, loads settings, starts the controller, the hotkeys and the tray icon.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         ui_kit::apply(&cc.egui_ctx);
-        let capture_exclusion_failed = match platform::exclude_from_capture(cc) {
-            Ok(()) => false,
-            Err(err) => {
-                log::warn!("could not exclude the Recorder window from screen capture: {err}");
-                true
-            }
-        };
         let mut settings = config::load_or_init().unwrap_or_else(|err| {
             log::error!("could not load the Recorder settings, using the defaults: {err}");
             Settings::default()
         });
+        let hwnd = match platform::raw_hwnd(cc) {
+            Ok(hwnd) => Some(hwnd),
+            Err(err) => {
+                log::warn!("could not get the window handle, tray Show and Quit will only send commands: {err}");
+                None
+            }
+        };
+        let capture_exclusion_failed = !apply_capture_exclusion(hwnd, settings.hide_from_capture);
         let source_size = monitor_size();
         // This also makes the active profile one that exists, before the controller reads the settings.
         let profile_section = ProfileSection::new(&cc.egui_ctx, &mut settings, source_size);
@@ -103,13 +111,6 @@ impl RecorderApp {
         });
         let controller = Controller::start(settings.clone(), Box::new(move || repaint_ctx.request_repaint()), listener, PopupHandle::start());
         let hotkeys = Hotkeys::start(controller.sender());
-        let hwnd = match platform::raw_hwnd(cc) {
-            Ok(hwnd) => Some(hwnd),
-            Err(err) => {
-                log::warn!("could not get the window handle, tray Show and Quit will only send commands: {err}");
-                None
-            }
-        };
         let tray = match Tray::new(&cc.egui_ctx, hwnd, controller.sender(), controller.control_sender()) {
             Ok(tray) => {
                 if tray_slot.set(tray.handle()).is_err() {
@@ -125,6 +126,8 @@ impl RecorderApp {
         let devices = list_devices();
         let recovery_rx = start_recovery(&settings, &controller, &cc.egui_ctx);
         let mut app = Self {
+            sent_settings: settings.clone(),
+            hwnd,
             settings,
             hotkeys,
             tray,
@@ -294,6 +297,23 @@ impl RecorderApp {
         }
     }
 
+    /// Gives the controller the settings whenever they differ from what it last got, and marks them to be saved.
+    ///
+    /// Every UI change (project, naming template, root folder, profile, tracks) reaches the controller through here,
+    /// so the next take is built from the settings on screen.
+    fn push_settings_if_changed(&mut self) {
+        if self.settings != self.sent_settings {
+            self.sent_settings.clone_from(&self.settings);
+            self.controller.set_settings(self.settings.clone());
+            self.settings_dirty = true;
+        }
+    }
+
+    /// Applies the Hide from screen captures switch to the main window; shows the warning when hiding failed.
+    fn apply_hide_from_capture(&mut self) {
+        self.capture_exclusion_failed = !apply_capture_exclusion(self.hwnd, self.settings.hide_from_capture);
+    }
+
     /// Writes the settings now, unless the settings file on disk is one the Recorder could not read.
     fn save_settings(&mut self) {
         self.settings_dirty = false;
@@ -421,6 +441,18 @@ impl RecorderApp {
     }
 }
 
+/// Hides the window from screen capture or shows it to capture again; false when that failed or there is no window handle.
+fn apply_capture_exclusion(hwnd: Option<isize>, exclude: bool) -> bool {
+    let Some(hwnd) = hwnd else { return !exclude };
+    match platform::set_capture_exclusion(hwnd, exclude) {
+        Ok(()) => true,
+        Err(err) => {
+            log::warn!("could not change whether the Recorder window is hidden from screen capture: {err}");
+            false
+        }
+    }
+}
+
 /// The tray icon state that matches a controller phase.
 fn tray_state(phase: Phase) -> TrayState {
     match phase {
@@ -524,6 +556,10 @@ impl eframe::App for RecorderApp {
         let mut state = lock(&shared);
         self.sync_from_controller(&mut state);
         self.poll_recovery();
+        if self.recovery_rx.is_some() {
+            // Do not depend on the scan thread's wake-up alone: look again soon until the report has arrived.
+            ctx.request_repaint_after(RECOVERY_POLL);
+        }
         let active = state.phase != Phase::Idle;
         self.hide_to_tray_when_minimized(&ctx, active);
         self.sync_preview(&ctx);
@@ -556,6 +592,9 @@ impl eframe::App for RecorderApp {
                 ui.add_space(8.0);
 
                 ui.checkbox(&mut self.preview_enabled, "Preview");
+                if ui.checkbox(&mut self.settings.hide_from_capture, "Hide Recorder from screen captures").changed() {
+                    self.apply_hide_from_capture();
+                }
                 self.show_preview(ui);
                 ui.add_space(8.0);
 
@@ -587,6 +626,7 @@ impl eframe::App for RecorderApp {
 
                 let live_tracks = if active { Some(&self.live_tracks) } else { None };
                 let changed = tracks_ui::tracks_panel(ui, &mut self.settings.audio, &self.devices, live_tracks, active);
+                self.push_settings_if_changed();
                 self.on_tracks_changed(&ctx, changed);
                 ui.add_space(8.0);
 

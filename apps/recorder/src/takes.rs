@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Datelike, Local, Timelike};
 
-use crate::config::{Container, DEFAULT_NAMING_TEMPLATE, DEFAULT_PROJECT};
+#[cfg(test)]
+use crate::config::DEFAULT_NAMING_TEMPLATE;
+use crate::config::{Container, DEFAULT_PROJECT, Settings, takes_root};
 
 /// The paths of one take: its folder, its base name and its video file.
 pub struct TakePaths {
@@ -219,7 +221,26 @@ pub fn next_take_with(root: &Path, now: DateTime<Local>, container: Container, n
     Ok(take)
 }
 
+/// Works out the next take's paths for the settings' root folder, project and naming template without creating anything.
+///
+/// It is the planning half of [`next_take_for`], so a plan always matches the folder a recording creates.
+#[cfg(test)]
+pub fn plan_take_for(settings: &Settings, now: DateTime<Local>, container: Container) -> Result<TakePaths, io::Error> {
+    plan_take(&takes_root(settings), now, container, &naming_of(settings))
+}
+
+/// Picks the next take folder for the settings' root folder, project and naming template, creates it and returns its paths.
+pub fn next_take_for(settings: &Settings, now: DateTime<Local>, container: Container) -> Result<TakePaths, io::Error> {
+    next_take_with(&takes_root(settings), now, container, &naming_of(settings))
+}
+
+/// The naming the settings ask for: their project, template and active profile.
+fn naming_of(settings: &Settings) -> Naming<'_> {
+    Naming { project: &settings.project, template: &settings.naming_template, profile: &settings.active_profile }
+}
+
 /// Picks the next take folder with the default project, template and no profile name.
+#[cfg(test)]
 pub fn next_take(root: &Path, now: DateTime<Local>, container: Container) -> Result<TakePaths, io::Error> {
     next_take_with(root, now, container, &Naming { project: DEFAULT_PROJECT, template: DEFAULT_NAMING_TEMPLATE, profile: "" })
 }
@@ -428,6 +449,23 @@ mod tests {
         let now = at(2026, 11, 17, 15, 0, 0)?;
         assert_eq!(plan_take(&root, now, Container::Mkv, &default_naming("Show"))?.base_name, "2026-11-17_15-00-00_take01");
         assert_eq!(plan_take(&root, now, Container::Mkv, &default_naming("Other"))?.base_name, "2026-11-17_15-00-00_take08");
+        fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn the_settings_pick_the_root_project_and_template() -> Result<(), Box<dyn Error>> {
+        let root = fresh_dir("for-settings")?;
+        let now = at(2026, 11, 17, 15, 0, 0)?;
+        let mut settings = Settings { root_folder: Some(root.clone()), ..Settings::default() };
+        let first = plan_take_for(&settings, now, Container::Mkv)?;
+        assert_eq!(first.folder, root.join("Cutmark").join("2026-11-17_15-00-00_take01"));
+        settings.project = "Test4a".to_owned();
+        settings.naming_template = "{project}_{take}".to_owned();
+        let second = next_take_for(&settings, now, Container::Mp4)?;
+        assert_eq!(second.folder, root.join("Test4a").join("Test4a_01"));
+        assert_eq!(second.video_file, second.folder.join("Test4a_01.mp4"));
+        assert!(second.folder.is_dir());
         fs::remove_dir_all(&root)?;
         Ok(())
     }

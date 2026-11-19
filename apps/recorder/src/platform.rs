@@ -2,21 +2,15 @@
 
 use raw_window_handle::HasWindowHandle;
 
-/// Hides a window from screen capture; every Recorder window or popup must call this when it is created.
-pub fn exclude_from_capture(handle: &impl HasWindowHandle) -> Result<(), String> {
+/// Hides a window from screen capture, or shows it to capture again, on a raw window handle value.
+pub fn set_capture_exclusion(raw_hwnd: isize, exclude: bool) -> Result<(), String> {
     #[cfg(windows)]
     {
-        use raw_window_handle::RawWindowHandle;
-
-        let window = handle.window_handle().map_err(|err| format!("no window handle: {err}"))?;
-        match window.as_raw() {
-            RawWindowHandle::Win32(win32) => set_display_affinity(win32.hwnd.get()),
-            other => Err(format!("not a Win32 window handle: {other:?}")),
-        }
+        set_display_affinity(raw_hwnd, exclude)
     }
     #[cfg(not(windows))]
     {
-        let _ = handle;
+        let _ = (raw_hwnd, exclude);
         Ok(())
     }
 }
@@ -65,15 +59,16 @@ fn show_and_focus_win32(raw_hwnd: isize) {
     }
 }
 
-/// Calls `SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)` on a raw window handle value.
+/// Calls `SetWindowDisplayAffinity` with `WDA_EXCLUDEFROMCAPTURE` or `WDA_NONE` on a raw window handle value.
 #[cfg(windows)]
-#[allow(unsafe_code, reason = "the only FFI call in the Recorder: a Win32 flag that excludes a window from capture")]
-fn set_display_affinity(raw_hwnd: isize) -> Result<(), String> {
+#[allow(unsafe_code, reason = "the only FFI call in the Recorder besides the tray helpers: a Win32 flag that excludes a window from capture")]
+fn set_display_affinity(raw_hwnd: isize, exclude: bool) -> Result<(), String> {
     use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::{SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE};
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE};
 
     let hwnd = HWND(raw_hwnd as *mut core::ffi::c_void);
-    // SAFETY: `raw_hwnd` comes from a live `HasWindowHandle` that the caller borrows for the whole call, so
-    // the window exists. The call only reads the handle and a plain flag value, and it hands back no pointers.
-    unsafe { SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) }.map_err(|err| format!("SetWindowDisplayAffinity failed: {err}"))
+    let affinity = if exclude { WDA_EXCLUDEFROMCAPTURE } else { WDA_NONE };
+    // SAFETY: `raw_hwnd` was taken from the live creation context of this window, so the window exists.
+    // The call only reads the handle and a plain flag value, and it hands back no pointers.
+    unsafe { SetWindowDisplayAffinity(hwnd, affinity) }.map_err(|err| format!("SetWindowDisplayAffinity failed: {err}"))
 }

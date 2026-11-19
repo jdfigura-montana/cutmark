@@ -210,6 +210,8 @@ pub struct Settings {
     pub api: ApiSettings,
     /// The audio tracks, the WAV sidecar switch and the audio codec.
     pub audio: AudioSettings,
+    /// Whether the main window is hidden from screen captures; the label popup is always hidden.
+    pub hide_from_capture: bool,
 }
 
 /// The folder takes go into: the settings root folder, or else the user's Videos folder joined with Cutmark.
@@ -240,6 +242,7 @@ impl Default for Settings {
             hide_countdown_when_prompter_linked: true,
             api: ApiSettings::default(),
             audio: AudioSettings::default(),
+            hide_from_capture: true,
         }
     }
 }
@@ -521,6 +524,7 @@ mod tests {
         assert_eq!(settings.api, ApiSettings { enabled: true, port: 5000 });
         assert_eq!(settings.naming_template, "{date}_{time}_take{take}");
         assert_eq!(settings.project, "Cutmark");
+        assert!(settings.hide_from_capture);
         fs::remove_dir_all(&dir)?;
         Ok(())
     }
