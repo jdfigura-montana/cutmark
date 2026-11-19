@@ -21,6 +21,7 @@ panic = "deny"
 [dependencies]
 ffmpeg-next = { workspace = true, features = ["codec", "format"] }
 log.workspace = true
+serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]

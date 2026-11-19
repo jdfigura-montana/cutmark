@@ -1,19 +1,93 @@
-//! Probes the AMF encoder path: prints the AMF encoders' private options, then
-//! encodes three seconds of the primary monitor to probe.ivf as AV1.
+//! Probes the AMF encoder path. With --probe it only prints which AMF codecs open and the
+//! option ranges they report. Otherwise it prints the AMF encoders' private options, then
+//! encodes the primary monitor to probe_<codec>_<rc>.mkv.
+//!
+//! Usage: encode_probe [--probe] [--codec av1|hevc|h264] [--rc cq|cqp|cbr|vbr] [--quality N] [--seconds N]
+//! The cq output is named probe_<codec>_cq<N>.mkv; --quality (1 to 100) only applies to --rc cq.
 
 use std::ffi::{CStr, CString, c_void};
-use std::fs::File;
-use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use capture::{Gpu, LatestFrame, MonitorCapture, Nv12Converter, list_monitors};
 use ffmpeg_next::ffi;
-use media_io::encode::{Codec, Encoder, Preset, RateControl};
-use media_io::{AmfEncoder, D3d11Device, D3d11FramePool, EncodedPacket, EncoderConfig, HwFrame};
+use media_io::encode::{Codec, CodecSupport, Encoder, Preset, RateControl, probe_amf};
+use media_io::{AmfEncoder, Container, D3d11Device, D3d11FramePool, EncodedPacket, EncoderConfig, HwFrame, Muxer};
+
+/// The command line options.
+struct Args {
+    probe_only: bool,
+    codec: Codec,
+    codec_name: &'static str,
+    rc_name: String,
+    rate_control: RateControl,
+    seconds: u64,
+}
+
+/// Parses the command line, with the documented defaults.
+fn parse_args() -> Result<Args, String> {
+    let mut probe_only = false;
+    let mut codec = (Codec::Av1, "av1");
+    let mut rc = ("cq", RateControl::ConstantQuality { quality: 70, max_mbps: 40.0 });
+    let mut seconds = 10u64;
+    let mut quality: Option<u8> = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--probe" => probe_only = true,
+            "--codec" => {
+                codec = match args.next().as_deref() {
+                    Some("av1") => (Codec::Av1, "av1"),
+                    Some("hevc") => (Codec::Hevc, "hevc"),
+                    Some("h264") => (Codec::H264, "h264"),
+                    other => return Err(format!("--codec wants av1, hevc or h264, got {other:?}")),
+                };
+            }
+            "--rc" => {
+                rc = match args.next().as_deref() {
+                    Some("cq") => ("cq", RateControl::ConstantQuality { quality: 70, max_mbps: 40.0 }),
+                    Some("cqp") => ("cqp", RateControl::ConstantQp { qp_i: 24, qp_p: 26 }),
+                    Some("cbr") => ("cbr", RateControl::Cbr { mbps: 20.0 }),
+                    Some("vbr") => ("vbr", RateControl::VbrPeak { target_mbps: 20.0, max_mbps: 40.0 }),
+                    other => return Err(format!("--rc wants cq, cqp, cbr or vbr, got {other:?}")),
+                };
+            }
+            "--quality" => {
+                quality = Some(
+                    args.next()
+                        .and_then(|value| value.parse::<u8>().ok())
+                        .filter(|n| (1..=100).contains(n))
+                        .ok_or("--quality wants a whole number from 1 to 100")?,
+                );
+            }
+            "--seconds" => {
+                seconds = args.next().and_then(|value| value.parse().ok()).filter(|&n| n > 0).ok_or("--seconds wants a whole number above 0")?;
+            }
+            other => return Err(format!("unknown argument {other}")),
+        }
+    }
+    let mut rc_name = rc.0.to_string();
+    if let Some(quality) = quality {
+        match &mut rc.1 {
+            RateControl::ConstantQuality { quality: current, .. } => {
+                *current = quality;
+                rc_name = format!("cq{quality}");
+            }
+            _ => return Err("--quality only applies to --rc cq".to_string()),
+        }
+    } else if let RateControl::ConstantQuality { quality, .. } = rc.1 {
+        rc_name = format!("cq{quality}");
+    }
+    Ok(Args { probe_only, codec: codec.0, codec_name: codec.1, rc_name, rate_control: rc.1, seconds })
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = parse_args()?;
     media_io::init()?;
+    if args.probe_only {
+        print_probe_table(&probe_amf(1920, 1080, 60));
+        return Ok(());
+    }
     print_amf_options("av1_amf");
     print_amf_options("hevc_amf");
     print_amf_options("h264_amf");
@@ -31,27 +105,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("pool mode: {:?}", pool.mode());
 
     let cfg = EncoderConfig {
-        codec: Codec::Av1,
+        codec: args.codec,
         width: 1920,
         height: 1080,
         fps_num: 60,
         fps_den: 1,
-        rate_control: RateControl::Qvbr { quality: 23, max_mbps: 20 },
+        rate_control: args.rate_control,
         preset: Preset::Balanced,
-        keyframe_seconds: 2,
+        keyframe_secs: 2.0,
     };
+    println!("config: {cfg:?}");
     let mut encoder = AmfEncoder::open(&cfg, &pool)?;
     println!("encoder time base: {:?}", encoder.time_base());
 
-    let mut writer = IvfWriter::create(Path::new("probe.ivf"), 1920, 1080, 60, 1)?;
-    let mut stats = Stats::default();
+    let path_text = format!("probe_{}_{}.mkv", args.codec_name, args.rc_name);
+    let mut muxer = Muxer::create(Path::new(&path_text), Container::Mkv)?;
+    let stream = muxer.add_video(encoder.parameters(), encoder.time_base(), (60, 1))?;
+    muxer.start()?;
+    let mut sink = Sink { muxer, stream, stats: Stats::default(), error: None };
     let mut frames_sent = 0u64;
     let mut encode_ns = 0u128;
 
     let period = Duration::from_nanos(1_000_000_000 / 60);
     let start = Instant::now();
     let mut next_tick = start;
-    while start.elapsed() < Duration::from_secs(3) {
+    while start.elapsed() < Duration::from_secs(args.seconds) {
         let now = Instant::now();
         if now < next_tick {
             std::thread::sleep(next_tick - now);
@@ -66,16 +144,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         hw.set_pts(frames_sent as i64);
         let begin = Instant::now();
         encoder.send(hw)?;
-        encoder.receive(&mut |packet| record_packet(&packet, &mut writer, &mut stats))?;
+        encoder.receive(&mut |packet| sink.record(&packet))?;
         encode_ns += begin.elapsed().as_nanos();
         frames_sent += 1;
     }
-    encoder.finish(&mut |packet| record_packet(&packet, &mut writer, &mut stats))?;
-    if let Some(err) = writer.take_error() {
+    encoder.finish(&mut |packet| sink.record(&packet))?;
+    capture.stop();
+    if let Some(err) = sink.error {
         return Err(err.into());
     }
-    writer.finish()?;
-    capture.stop();
+    let stats = sink.stats;
+    sink.muxer.finish()?;
 
     let seconds = start.elapsed().as_secs_f64();
     let mbps = stats.bytes as f64 * 8.0 / seconds / 1_000_000.0;
@@ -84,8 +163,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "frames sent: {frames_sent}, packets: {}, keyframes: {}, bytes: {}, average {:.2} Mbps, average send+receive {:.2} ms/frame",
         stats.packets, stats.keyframes, stats.bytes, mbps, ms_per_frame
     );
-    println!("wrote probe.ivf");
+    println!("wrote {path_text}");
     Ok(())
+}
+
+/// Prints one row per probed codec: status, then the option ranges the encoder reported.
+fn print_probe_table(support: &[CodecSupport]) {
+    println!("{:<6} {:<8} {:<26} {:<16} {:<16} rc modes", "codec", "status", "quality level", "qp_i", "qp_p");
+    for row in support {
+        let status = if row.result.is_ok() { "ok" } else { "failed" };
+        println!(
+            "{:<6} {:<8} {:<26} {:<16} {:<16} {}",
+            format!("{:?}", row.codec),
+            status,
+            describe_range(row.ranges.quality_level.as_ref()),
+            describe_range(row.ranges.qp_i.as_ref()),
+            describe_range(row.ranges.qp_p.as_ref()),
+            row.ranges.rc_modes.join(",")
+        );
+        if let Err(reason) = &row.result {
+            println!("       error: {reason}");
+        }
+    }
+}
+
+/// Formats one numeric option as "name min..max", or "none".
+fn describe_range(option: Option<&media_io::encode::NumericOption>) -> String {
+    match option {
+        Some(option) => format!("{} {}..{}", option.name, option.min, option.max),
+        None => "none".to_string(),
+    }
 }
 
 /// Waits for the first captured frame.
@@ -107,70 +214,28 @@ struct Stats {
     bytes: u64,
 }
 
-/// Records one packet into the writer and the stats.
-fn record_packet(packet: &EncodedPacket, writer: &mut IvfWriter, stats: &mut Stats) {
-    stats.packets += 1;
-    if packet.is_key() {
-        stats.keyframes += 1;
-    }
-    stats.bytes += packet.size() as u64;
-    let pts = packet.pts().unwrap_or(0).max(0) as u64;
-    writer.write_packet(pts, packet.data());
+/// Where packets go: the muxer, the totals, and the first write error.
+struct Sink {
+    muxer: Muxer,
+    stream: usize,
+    stats: Stats,
+    error: Option<media_io::MediaError>,
 }
 
-/// A minimal IVF writer for the AV1 probe output.
-struct IvfWriter {
-    file: File,
-    frames: u32,
-    error: Option<std::io::Error>,
-}
-
-impl IvfWriter {
-    /// Creates the file and writes the 32-byte IVF header.
-    fn create(path: &Path, width: u16, height: u16, timebase_den: u32, timebase_num: u32) -> std::io::Result<Self> {
-        let mut file = File::create(path)?;
-        let mut header = [0u8; 32];
-        header[0..4].copy_from_slice(b"DKIF");
-        header[4..6].copy_from_slice(&0u16.to_le_bytes());
-        header[6..8].copy_from_slice(&32u16.to_le_bytes());
-        header[8..12].copy_from_slice(b"AV01");
-        header[12..14].copy_from_slice(&width.to_le_bytes());
-        header[14..16].copy_from_slice(&height.to_le_bytes());
-        header[16..20].copy_from_slice(&timebase_den.to_le_bytes());
-        header[20..24].copy_from_slice(&timebase_num.to_le_bytes());
-        file.write_all(&header)?;
-        Ok(Self { file, frames: 0, error: None })
-    }
-
-    /// Writes the 12-byte frame header and the payload, keeping the first error.
-    fn write_packet(&mut self, pts: u64, data: Option<&[u8]>) {
+impl Sink {
+    /// Records one packet into the totals and the muxer, keeping the first error.
+    fn record(&mut self, packet: &EncodedPacket) {
+        self.stats.packets += 1;
+        if packet.is_key() {
+            self.stats.keyframes += 1;
+        }
+        self.stats.bytes += packet.size() as u64;
         if self.error.is_some() {
             return;
         }
-        let data = data.unwrap_or(&[]);
-        let result = (|| -> std::io::Result<()> {
-            self.file.write_all(&(data.len() as u32).to_le_bytes())?;
-            self.file.write_all(&pts.to_le_bytes())?;
-            self.file.write_all(data)?;
-            Ok(())
-        })();
-        if let Err(err) = result {
+        if let Err(err) = self.muxer.write(self.stream, packet) {
             self.error = Some(err);
-            return;
         }
-        self.frames += 1;
-    }
-
-    /// Rewrites the frame count in the header and flushes.
-    fn finish(&mut self) -> std::io::Result<()> {
-        self.file.seek(SeekFrom::Start(24))?;
-        self.file.write_all(&self.frames.to_le_bytes())?;
-        self.file.flush()
-    }
-
-    /// The first write error, if any.
-    fn take_error(&mut self) -> Option<std::io::Error> {
-        self.error.take()
     }
 }
 

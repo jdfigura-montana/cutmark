@@ -3967,6 +3967,7 @@ dependencies = [
  "capture",
  "ffmpeg-next",
  "log",
+ "serde",
  "thiserror 2.0.21",
  "windows 0.62.2",
 ]

@@ -43,9 +43,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         height: 1080,
         fps_num: 60,
         fps_den: 1,
-        rate_control: RateControl::Qvbr { quality: 23, max_mbps: 20 },
+        rate_control: RateControl::ConstantQuality { quality: 70, max_mbps: 40.0 },
         preset: Preset::Balanced,
-        keyframe_seconds: 2,
+        keyframe_secs: 2.0,
     };
     let mut encoder = AmfEncoder::open(&cfg, &pool)?;
     println!("encoder time base: {:?}", encoder.time_base());

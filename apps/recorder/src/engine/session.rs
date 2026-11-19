@@ -30,6 +30,9 @@ pub enum EngineError {
     /// A media IO call failed.
     #[error(transparent)]
     Media(#[from] MediaError),
+    /// The encoder rejected its configuration or could not be opened.
+    #[error(transparent)]
+    Encoder(#[from] media_io::encode::EncoderError),
     /// The requested monitor index does not exist.
     #[error("no monitor with index {0}")]
     MonitorIndex(usize),
@@ -647,12 +650,12 @@ pub(super) fn encoder_config(profile: &Profile) -> EncoderConfig {
         fps_num: profile.fps,
         fps_den: 1,
         rate_control: match profile.rate_control {
-            RateControl::Qvbr { quality, max_mbps } => EncoderRateControl::Qvbr { quality, max_mbps: max_mbps as u32 },
-            RateControl::Vbr { target_mbps, max_mbps } => EncoderRateControl::VbrPeak { target_mbps: target_mbps as u32, max_mbps: max_mbps as u32 },
-            RateControl::Cbr { mbps } => EncoderRateControl::Cbr { mbps: mbps as u32 },
-            RateControl::Cqp { qp_i, qp_p } => EncoderRateControl::Cqp { qp_i, qp_p },
+            RateControl::Qvbr { quality, max_mbps } => EncoderRateControl::ConstantQuality { quality, max_mbps },
+            RateControl::Vbr { target_mbps, max_mbps } => EncoderRateControl::VbrPeak { target_mbps, max_mbps },
+            RateControl::Cbr { mbps } => EncoderRateControl::Cbr { mbps },
+            RateControl::Cqp { qp_i, qp_p } => EncoderRateControl::ConstantQp { qp_i, qp_p },
         },
         preset: Preset::Balanced,
-        keyframe_seconds: 2,
+        keyframe_secs: 2.0,
     }
 }
