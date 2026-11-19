@@ -534,75 +534,77 @@ impl eframe::App for RecorderApp {
             ui.label(format!("Active profile: {}", self.settings.active_profile));
             ui.add_space(8.0);
 
-            let warn = ui.visuals().warn_fg_color;
-            let error = ui.visuals().error_fg_color;
-            if self.capture_exclusion_failed {
-                ui.colored_label(warn, "This window may appear in recordings");
-            }
-            if let Some(message) = &state.error {
-                ui.colored_label(error, format!("Recording error: {message}"));
-            }
-            if let Some(notice) = &state.audio_notice {
-                ui.colored_label(warn, notice);
-            }
-            for problem in &self.hotkeys.problems {
-                ui.colored_label(warn, problem);
-            }
-            if let Some(problem) = self.preview_problem() {
-                ui.colored_label(warn, format!("Preview: {problem}"));
-            }
-            self.recovery_banner(ui);
-            ui.add_space(8.0);
+            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                let warn = ui.visuals().warn_fg_color;
+                let error = ui.visuals().error_fg_color;
+                if self.capture_exclusion_failed {
+                    ui.colored_label(warn, "This window may appear in recordings");
+                }
+                if let Some(message) = &state.error {
+                    ui.colored_label(error, format!("Recording error: {message}"));
+                }
+                if let Some(notice) = &state.audio_notice {
+                    ui.colored_label(warn, notice);
+                }
+                for problem in &self.hotkeys.problems {
+                    ui.colored_label(warn, problem);
+                }
+                if let Some(problem) = self.preview_problem() {
+                    ui.colored_label(warn, format!("Preview: {problem}"));
+                }
+                self.recovery_banner(ui);
+                ui.add_space(8.0);
 
-            ui.checkbox(&mut self.preview_enabled, "Preview");
-            self.show_preview(ui);
-            ui.add_space(8.0);
+                ui.checkbox(&mut self.preview_enabled, "Preview");
+                self.show_preview(ui);
+                ui.add_space(8.0);
 
-            marks_ui::show(ui, &state.recent_marks);
-            ui.add_space(8.0);
+                marks_ui::show(ui, &state.recent_marks);
+                ui.add_space(8.0);
 
-            if active {
-                self.recording_panel(ui, &state);
-                ctx.request_repaint_after(METER_REFRESH);
-            } else {
-                if self.profile_section.blocked() {
-                    ui.colored_label(error, "Idle. Starting is blocked until the profile errors below are fixed");
+                if active {
+                    self.recording_panel(ui, &state);
+                    ctx.request_repaint_after(METER_REFRESH);
                 } else {
-                    ui.label("Idle");
-                }
-                if let Some(summary) = &state.summary {
-                    self.summary_panel(ui, summary);
-                }
-            }
-            ui.add_space(8.0);
-
-            let mut profile_outcome = ProfileOutcome::default();
-            self.profile_section.show(ui, &mut self.settings, self.source_size, active, &mut profile_outcome);
-            if profile_outcome.active_changed {
-                self.controller.set_settings(self.settings.clone());
-                self.save_settings();
-            }
-            ui.add_space(8.0);
-
-            let live_tracks = if active { Some(&self.live_tracks) } else { None };
-            let changed = tracks_ui::tracks_panel(ui, &mut self.settings.audio, &self.devices, live_tracks, active);
-            self.on_tracks_changed(&ctx, changed);
-            ui.add_space(8.0);
-
-            ui.heading("Hotkeys");
-            self.hotkey_grid(ui);
-            ui.add_space(8.0);
-
-            ui.heading("Recent commands");
-            if state.recent.is_empty() {
-                ui.label("None yet. Press a hotkey.");
-            } else {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for command in state.recent.iter().rev() {
-                        ui.label(format!("{:?}", command.kind));
+                    if self.profile_section.blocked() {
+                        ui.colored_label(error, "Idle. Starting is blocked until the profile errors below are fixed");
+                    } else {
+                        ui.label("Idle");
                     }
-                });
-            }
+                    if let Some(summary) = &state.summary {
+                        self.summary_panel(ui, summary);
+                    }
+                }
+                ui.add_space(8.0);
+
+                let mut profile_outcome = ProfileOutcome::default();
+                self.profile_section.show(ui, &mut self.settings, self.source_size, active, &mut profile_outcome);
+                if profile_outcome.active_changed {
+                    self.controller.set_settings(self.settings.clone());
+                    self.save_settings();
+                }
+                ui.add_space(8.0);
+
+                let live_tracks = if active { Some(&self.live_tracks) } else { None };
+                let changed = tracks_ui::tracks_panel(ui, &mut self.settings.audio, &self.devices, live_tracks, active);
+                self.on_tracks_changed(&ctx, changed);
+                ui.add_space(8.0);
+
+                ui.heading("Hotkeys");
+                self.hotkey_grid(ui);
+                ui.add_space(8.0);
+
+                ui.heading("Recent commands");
+                if state.recent.is_empty() {
+                    ui.label("None yet. Press a hotkey.");
+                } else {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for command in state.recent.iter().rev() {
+                            ui.label(format!("{:?}", command.kind));
+                        }
+                    });
+                }
+            });
         });
     }
 }
