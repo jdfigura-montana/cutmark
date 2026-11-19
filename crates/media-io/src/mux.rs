@@ -21,12 +21,13 @@ use crate::encode::EncodedPacket;
 /// The stream time base for Matroska tracks: milliseconds.
 const MKV_TIME_BASE: Rational = Rational(1, 1000);
 
-/// The output container to write. MP4 and MOV arrive in phase 4.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Container {
-    /// Matroska, via FFmpeg's matroska muxer.
-    Mkv,
-}
+/// The stream time base for MP4 and MOV tracks: the 90 kHz clock, fine enough for any frame rate.
+const MOV_TIME_BASE: Rational = Rational(1, 90_000);
+
+/// The movflags that make a killed process leave a playable fragmented file.
+const FRAGMENT_FLAGS: &str = "frag_keyframe+empty_moov+default_base_moof";
+
+pub use crate::encode::Container;
 
 /// The timing facts of one added stream, kept for rescaling on write.
 struct StreamInfo {
@@ -41,6 +42,8 @@ pub struct Muxer {
     ctx: ffmpeg_next::format::context::Output,
     /// The output file, read back for its final size after the trailer.
     path: PathBuf,
+    /// The container being written.
+    container: Container,
     streams: Vec<StreamInfo>,
     started: bool,
     /// The chapters added just before the trailer, as start ms, end ms and title.
@@ -52,13 +55,25 @@ impl Muxer {
     pub fn create(path: &Path, container: Container) -> Result<Self, MediaError> {
         let ctx = match container {
             Container::Mkv => ffmpeg_next::format::output_as(path, "matroska")?,
+            Container::Mp4 => ffmpeg_next::format::output_as(path, "mp4")?,
+            Container::Mov => ffmpeg_next::format::output_as(path, "mov")?,
         };
-        Ok(Self { ctx, path: path.to_path_buf(), streams: Vec::new(), started: false, chapters: Vec::new() })
+        Ok(Self { ctx, path: path.to_path_buf(), container, streams: Vec::new(), started: false, chapters: Vec::new() })
     }
 
-    /// Sets the chapters, as start ms, end ms and title, that are written just before the trailer; an empty list adds none.
+    /// The time base the container's streams are created with.
+    fn stream_time_base(&self) -> Rational {
+        match self.container {
+            Container::Mkv => MKV_TIME_BASE,
+            Container::Mp4 | Container::Mov => MOV_TIME_BASE,
+        }
+    }
+
+    /// Sets the chapters, as start ms, end ms and title, that are written just before the trailer; MP4 and MOV ignore them.
     pub fn set_chapters(&mut self, chapters: Vec<(u64, u64, String)>) {
-        self.chapters = chapters;
+        if self.container == Container::Mkv {
+            self.chapters = chapters;
+        }
     }
 
     /// Adds one video stream that copies the encoder's codec parameters,
@@ -67,9 +82,10 @@ impl Muxer {
         let encoder_time_base = Rational::new(encoder_time_base.0, encoder_time_base.1);
         let frame_step = Rational::new(fps.1, fps.0);
         let codec_id = params.id();
+        let time_base = self.stream_time_base();
         let index = {
             let mut stream = self.ctx.add_stream(codec_id)?;
-            stream.set_time_base(MKV_TIME_BASE);
+            stream.set_time_base(time_base);
             stream.set_rate(Rational::new(fps.0, fps.1));
             stream.set_avg_frame_rate(Rational::new(fps.0, fps.1));
             stream.set_parameters(params);
@@ -84,9 +100,10 @@ impl Muxer {
     pub fn add_audio(&mut self, params: Parameters, encoder_time_base: (i32, i32), title: &str, default: bool) -> Result<usize, MediaError> {
         let encoder_time_base = Rational::new(encoder_time_base.0, encoder_time_base.1);
         let codec_id = params.id();
+        let time_base = self.stream_time_base();
         let index = {
             let mut stream = self.ctx.add_stream(codec_id)?;
-            stream.set_time_base(MKV_TIME_BASE);
+            stream.set_time_base(time_base);
             stream.set_parameters(params);
             let mut metadata = Dictionary::new();
             metadata.set("title", title);
@@ -110,7 +127,16 @@ impl Muxer {
         unsafe {
             (*self.ctx.as_mut_ptr()).avoid_negative_ts = ffi::AVFMT_AVOID_NEG_TS_MAKE_ZERO as _;
         }
-        self.ctx.write_header()?;
+        match self.container {
+            Container::Mkv => {
+                self.ctx.write_header()?;
+            }
+            Container::Mp4 | Container::Mov => {
+                let mut options = Dictionary::new();
+                options.set("movflags", FRAGMENT_FLAGS);
+                self.ctx.write_header_with(options)?;
+            }
+        }
         self.started = true;
         Ok(())
     }
@@ -374,12 +400,15 @@ mod tests {
 
     /// Writes three tiny key frames straight into the output so the file has something to probe.
     fn write_frames(muxer: &mut Muxer) -> Result<(), ffmpeg_next::Error> {
-        for pts in [0i64, 33, 66] {
+        // One frame at 30 fps, in the time base the muxer settled on for the stream.
+        let time_base = muxer.ctx.stream(0).map(|stream| stream.time_base()).ok_or(ffmpeg_next::Error::StreamNotFound)?;
+        let step = i64::from(time_base.denominator()) / i64::from(time_base.numerator()) / 30;
+        for pts in [0, step, 2 * step] {
             let mut packet = Packet::copy(&[0xFF, 0xD8, 0xFF, 0xD9]);
             packet.set_stream(0);
             packet.set_pts(Some(pts));
             packet.set_dts(Some(pts));
-            packet.set_duration(33);
+            packet.set_duration(step);
             packet.set_flags(Flags::KEY);
             packet.write_interleaved(&mut muxer.ctx)?;
         }
@@ -409,6 +438,28 @@ mod tests {
             .collect();
         let _ = std::fs::remove_file(&path);
         assert_eq!(found, vec![(0, 1500, Some("Note".to_owned())), (1500, 4000, Some("Highlight: intro".to_owned()))]);
+        Ok(())
+    }
+
+    #[test]
+    fn fragmented_mp4_and_mov_reopen_with_one_stream_and_no_chapters() -> Result<(), Box<dyn std::error::Error>> {
+        crate::init()?;
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+        for container in [Container::Mp4, Container::Mov] {
+            let path = std::env::temp_dir().join(format!("cutmark_mux_frag_{}_{nanos}.{}", std::process::id(), container.extension()));
+            let mut muxer = Muxer::create(&path, container)?;
+            muxer.add_video(mjpeg_params(), (1, 90_000), (30, 1))?;
+            muxer.start()?;
+            write_frames(&mut muxer)?;
+            muxer.set_chapters(vec![(0, 1500, "Note".to_owned())]);
+            muxer.finish()?;
+            let input = ffmpeg_next::format::input(&path)?;
+            let (streams, chapters) = (input.streams().count(), input.chapters().count());
+            drop(input);
+            let _ = std::fs::remove_file(&path);
+            assert_eq!(streams, 1, "{container:?}");
+            assert_eq!(chapters, 0, "{container:?}");
+        }
         Ok(())
     }
 

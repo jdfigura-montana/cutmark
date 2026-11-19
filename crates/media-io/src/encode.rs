@@ -8,6 +8,7 @@ pub use crate::amf::{CodecSupport, NumericOption, OptionRanges, amf_options, pro
 
 use crate::HwFrame;
 use crate::MediaError;
+use crate::audio::AudioCodec;
 
 /// The largest bitrate any rate control mode accepts, in megabits per second.
 pub const MAX_MBPS: f32 = 500.0;
@@ -21,6 +22,61 @@ pub enum Codec {
     Hevc,
     /// H.264, also known as AVC.
     H264,
+}
+
+/// The file container to write.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Container {
+    /// Matroska, via FFmpeg's matroska muxer.
+    #[default]
+    Mkv,
+    /// MP4, written fragmented so a crash leaves a playable file.
+    Mp4,
+    /// QuickTime MOV, written fragmented.
+    Mov,
+}
+
+impl Container {
+    /// The file extension for this container, without the dot.
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Mkv => "mkv",
+            Self::Mp4 => "mp4",
+            Self::Mov => "mov",
+        }
+    }
+}
+
+/// Why a container, codec and audio codec cannot be combined.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ComboError {
+    /// MOV was asked to hold a codec it does not take.
+    #[error("MOV takes HEVC and H.264 only. Use MKV for AV1, or pick HEVC or H.264")]
+    MovCodec,
+    /// AV1 in MP4 needs a height that is a multiple of 16.
+    #[error("AV1 at {height}p needs MKV. Use MKV, or HEVC for MP4")]
+    Av1Mp4Height {
+        /// The output height in pixels.
+        height: u32,
+    },
+    /// PCM audio was asked for in a container that cannot hold it.
+    #[error("PCM audio needs MKV or MOV. Use AAC for MP4")]
+    PcmContainer,
+}
+
+/// Checks that the container can hold the video and audio codecs at this height.
+pub fn check_combo(container: Container, codec: Codec, height: u32, audio_codec: AudioCodec) -> Result<(), ComboError> {
+    if container == Container::Mov && codec == Codec::Av1 {
+        return Err(ComboError::MovCodec);
+    }
+    if container == Container::Mp4 && codec == Codec::Av1 && !height.is_multiple_of(16) {
+        return Err(ComboError::Av1Mp4Height { height });
+    }
+    if container == Container::Mp4 && audio_codec == AudioCodec::Pcm24 {
+        return Err(ComboError::PcmContainer);
+    }
+    Ok(())
 }
 
 /// The speed and quality balance preset.
@@ -303,5 +359,48 @@ mod tests {
     fn size_and_frame_rate_must_be_nonzero() {
         assert!(EncoderConfig { width: 0, ..EncoderConfig::default() }.validate().is_err());
         assert!(EncoderConfig { fps_den: 0, ..EncoderConfig::default() }.validate().is_err());
+    }
+
+    /// AAC at the suite's usual bitrate.
+    const AAC: AudioCodec = AudioCodec::Aac { kbps: 320 };
+
+    #[test]
+    fn the_container_defaults_to_mkv_and_names_its_extension() {
+        assert_eq!(Container::default(), Container::Mkv);
+        assert_eq!(Container::Mkv.extension(), "mkv");
+        assert_eq!(Container::Mp4.extension(), "mp4");
+        assert_eq!(Container::Mov.extension(), "mov");
+    }
+
+    #[test]
+    fn mov_takes_hevc_and_h264_only() {
+        assert_eq!(check_combo(Container::Mov, Codec::Hevc, 1080, AAC), Ok(()));
+        assert_eq!(check_combo(Container::Mov, Codec::H264, 1080, AAC), Ok(()));
+        assert_eq!(check_combo(Container::Mov, Codec::Av1, 1088, AAC), Err(ComboError::MovCodec));
+    }
+
+    #[test]
+    fn av1_in_mp4_needs_a_height_that_is_a_multiple_of_16() {
+        assert_eq!(check_combo(Container::Mp4, Codec::Av1, 1440, AAC), Ok(()));
+        assert_eq!(check_combo(Container::Mp4, Codec::Av1, 1088, AAC), Ok(()));
+        let err = check_combo(Container::Mp4, Codec::Av1, 1080, AAC);
+        assert_eq!(err, Err(ComboError::Av1Mp4Height { height: 1080 }));
+        assert_eq!(err.map_err(|e| e.to_string()), Err("AV1 at 1080p needs MKV. Use MKV, or HEVC for MP4".to_owned()));
+        assert_eq!(check_combo(Container::Mp4, Codec::Hevc, 1080, AAC), Ok(()));
+    }
+
+    #[test]
+    fn mkv_takes_every_video_codec_at_any_height() {
+        for codec in [Codec::Av1, Codec::Hevc, Codec::H264] {
+            assert_eq!(check_combo(Container::Mkv, codec, 1080, AAC), Ok(()));
+        }
+    }
+
+    #[test]
+    fn pcm_audio_is_allowed_in_mkv_and_mov_only() {
+        assert_eq!(check_combo(Container::Mkv, Codec::Hevc, 1080, AudioCodec::Pcm24), Ok(()));
+        assert_eq!(check_combo(Container::Mov, Codec::Hevc, 1080, AudioCodec::Pcm24), Ok(()));
+        assert_eq!(check_combo(Container::Mp4, Codec::Hevc, 1080, AudioCodec::Pcm24), Err(ComboError::PcmContainer));
+        assert_eq!(check_combo(Container::Mp4, Codec::Hevc, 1080, AAC), Ok(()));
     }
 }

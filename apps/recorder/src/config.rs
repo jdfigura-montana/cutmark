@@ -277,17 +277,8 @@ pub enum RateControl {
     },
 }
 
-/// The file container of a profile.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Container {
-    /// Matroska.
-    Mkv,
-    /// MP4.
-    Mp4,
-    /// QuickTime.
-    Mov,
-}
+/// The file container of a profile, shared with the media-io muxer.
+pub use media_io::encode::Container;
 
 /// One capture and encode profile, stored as profiles\{name}.json.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -304,7 +295,8 @@ pub struct Profile {
     pub height: u32,
     /// Output frames per second.
     pub fps: u32,
-    /// File container.
+    /// File container; profile files without one are MKV.
+    #[serde(default)]
     pub container: Container,
     /// Write each audio track as its own AAC track.
     pub aac_tracks: bool,
@@ -538,6 +530,15 @@ mod tests {
         assert_eq!(settings.api, ApiSettings { enabled: true, port: 5000 });
         assert_eq!(settings.naming_template, "{date}_{time}_take{take}");
         fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_profile_file_without_a_container_loads_as_mkv() -> Result<(), Box<dyn Error>> {
+        let mut value = serde_json::to_value(Profile::premiere_hevc_1080p60())?;
+        value.as_object_mut().ok_or("a profile is a JSON object")?.remove("container");
+        let profile: Profile = serde_json::from_value(value)?;
+        assert_eq!(profile.container, Container::Mkv);
         Ok(())
     }
 

@@ -329,8 +329,8 @@ impl Worker {
     /// Picks the take folder, builds the session config from the active profile and starts the session.
     fn start_take_inner(&mut self) -> Result<(), StartError> {
         let root = takes_root(&self.settings);
-        let take = takes::next_take(&root, chrono::Local::now()).map_err(|err| StartError::Take(err.to_string()))?;
         let profile = Profile::shipped().into_iter().find(|profile| profile.name == self.settings.active_profile).unwrap_or_else(Profile::tutorial_av1_1440p60);
+        let take = takes::next_take(&root, chrono::Local::now(), profile.container).map_err(|err| StartError::Take(err.to_string()))?;
         let fps = profile.fps;
         let (tracks, missing) = track_specs(&self.settings);
         if !missing.is_empty() {

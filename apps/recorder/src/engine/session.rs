@@ -12,8 +12,8 @@ use capture::{AudioDevice, CaptureError, qpc_frequency, qpc_now};
 use media_io::AudioCodec;
 use media_io::MediaError;
 use media_io::encode::RateControl as EncoderRateControl;
-use media_io::encode::{Codec as EncoderCodec, EncoderConfig, Preset};
-use media_io::mux::{Container as MuxContainer, MuxSender, MuxThread, Muxer, SendParameters};
+use media_io::encode::{Codec as EncoderCodec, ComboError, EncoderConfig, Preset, check_combo};
+use media_io::mux::{MuxSender, MuxThread, Muxer, SendParameters};
 
 use super::audio::{self, AudioMessage, AudioStart};
 use super::clock::MediaClock;
@@ -33,6 +33,9 @@ pub enum EngineError {
     /// The encoder rejected its configuration or could not be opened.
     #[error(transparent)]
     Encoder(#[from] media_io::encode::EncoderError),
+    /// The profile's container cannot hold its codecs.
+    #[error(transparent)]
+    Combo(#[from] ComboError),
     /// The requested monitor index does not exist.
     #[error("no monitor with index {0}")]
     MonitorIndex(usize),
@@ -376,9 +379,8 @@ impl RecordingSession {
     /// builds the muxer around their streams, then every stream starts from
     /// one instant.
     pub fn start(cfg: SessionConfig) -> Result<Self, EngineError> {
-        if cfg.profile.container != Container::Mkv {
-            return Err(EngineError::NotYet("MP4 and MOV arrive in phase 4"));
-        }
+        let container = cfg.profile.container;
+        check_combo(container, encoder_config(&cfg.profile).codec, cfg.profile.height, cfg.audio_codec)?;
         media_io::init()?;
         let output_file = cfg.output_file.clone();
         let (take_folder, base_name) = (cfg.take_folder.clone(), cfg.base_name.clone());
@@ -444,7 +446,7 @@ impl RecordingSession {
                 return Err(EngineError::Failed("the audio thread ended before reporting setup".into()));
             }
         };
-        let mux = match build_muxer(&output_file, fps, setup, audio_setup.streams) {
+        let mux = match build_muxer(&output_file, container, fps, setup, audio_setup.streams) {
             Ok((mux, streams)) => (mux, streams),
             Err(err) => {
                 drop(start_tx);
@@ -592,8 +594,14 @@ impl RecordingSession {
 
 /// Creates the muxer, adds the video stream then the audio streams, starts it,
 /// and returns the mux thread plus the stream index per audio stream.
-fn build_muxer(output_file: &Path, fps: u32, setup: VideoSetup, audio: Vec<AudioStreamSpec>) -> Result<(MuxThread, Vec<usize>), EngineError> {
-    let mut muxer = Muxer::create(output_file, MuxContainer::Mkv)?;
+fn build_muxer(
+    output_file: &Path,
+    container: Container,
+    fps: u32,
+    setup: VideoSetup,
+    audio: Vec<AudioStreamSpec>,
+) -> Result<(MuxThread, Vec<usize>), EngineError> {
+    let mut muxer = Muxer::create(output_file, container)?;
     // The video stream is stream 0; the mixdown and per-track streams follow.
     muxer.add_video(setup.params.0, setup.time_base, (fps as i32, 1))?;
     let mut indexes = Vec::with_capacity(audio.len());

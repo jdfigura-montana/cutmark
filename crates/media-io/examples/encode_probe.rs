@@ -1,9 +1,10 @@
 //! Probes the AMF encoder path. With --probe it only prints which AMF codecs open and the
 //! option ranges they report. Otherwise it prints the AMF encoders' private options, then
-//! encodes the primary monitor to probe_<codec>_<rc>.mkv.
+//! encodes the primary monitor to probe_<codec>_<rc>.<ext>.
 //!
-//! Usage: encode_probe [--probe] [--codec av1|hevc|h264] [--rc cq|cqp|cbr|vbr] [--quality N] [--seconds N] [--source screen|noise|motion]
-//! The cq output is named probe_<codec>_cq<N>.mkv; --quality (1 to 100) only applies to --rc cq.
+//! Usage: encode_probe [--probe] [--codec av1|hevc|h264] [--rc cq|cqp|cbr|vbr] [--quality N] [--seconds N] [--source screen|noise|motion] [--container mkv|mp4|mov]
+//! The cq output is named probe_<codec>_cq<N>.<ext>; --quality (1 to 100) only applies to --rc cq.
+//! The container defaults to mkv; a combination it cannot hold is refused before any encoding.
 //! The default source is the primary monitor. The noise source fills every frame with fresh
 //! seeded pseudo-random 16x16 blocks, which compress badly, and takes the same upload and
 //! NV12 path. The motion source is a diagonal gradient scrolling 4 px per frame, a bouncing
@@ -16,7 +17,8 @@ use std::time::{Duration, Instant};
 
 use capture::{Gpu, LatestFrame, MonitorCapture, Nv12Converter, list_monitors};
 use ffmpeg_next::ffi;
-use media_io::encode::{Codec, CodecSupport, Encoder, Preset, RateControl, probe_amf};
+use media_io::AudioCodec;
+use media_io::encode::{Codec, CodecSupport, Encoder, Preset, RateControl, check_combo, probe_amf};
 use media_io::{AmfEncoder, Container, D3d11Device, D3d11FramePool, EncodedPacket, EncoderConfig, HwFrame, Muxer};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_WRITE, D3D11_MAP_WRITE, D3D11_MAPPED_SUBRESOURCE, D3D11_TEXTURE2D_DESC,
@@ -62,6 +64,7 @@ struct Args {
     rc_name: String,
     rate_control: RateControl,
     seconds: u64,
+    container: Container,
 }
 
 /// Parses the command line, with the documented defaults.
@@ -72,6 +75,7 @@ fn parse_args() -> Result<Args, String> {
     let mut rc = ("cq", RateControl::ConstantQuality { quality: 70, max_mbps: 40.0 });
     let mut seconds = 10u64;
     let mut quality: Option<u8> = None;
+    let mut container = Container::Mkv;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -109,6 +113,14 @@ fn parse_args() -> Result<Args, String> {
                     other => return Err(format!("--source wants screen, noise or motion, got {other:?}")),
                 };
             }
+            "--container" => {
+                container = match args.next().as_deref() {
+                    Some("mkv") => Container::Mkv,
+                    Some("mp4") => Container::Mp4,
+                    Some("mov") => Container::Mov,
+                    other => return Err(format!("--container wants mkv, mp4 or mov, got {other:?}")),
+                };
+            }
             "--seconds" => {
                 seconds = args.next().and_then(|value| value.parse().ok()).filter(|&n| n > 0).ok_or("--seconds wants a whole number above 0")?;
             }
@@ -127,7 +139,7 @@ fn parse_args() -> Result<Args, String> {
     } else if let RateControl::ConstantQuality { quality, .. } = rc.1 {
         rc_name = format!("cq{quality}");
     }
-    Ok(Args { probe_only, source, codec: codec.0, codec_name: codec.1, rc_name, rate_control: rc.1, seconds })
+    Ok(Args { probe_only, source, codec: codec.0, codec_name: codec.1, rc_name, rate_control: rc.1, seconds, container })
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -136,6 +148,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.probe_only {
         print_probe_table(&probe_amf(1920, 1080, 60));
         return Ok(());
+    }
+    // The probe encodes 1080p with AAC, so those are the facts the combination check sees.
+    if let Err(err) = check_combo(args.container, args.codec, 1080, AudioCodec::Aac { kbps: 320 }) {
+        eprintln!("{err}");
+        std::process::exit(1);
     }
     print_amf_options("av1_amf");
     print_amf_options("hevc_amf");
@@ -176,8 +193,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     print_read_back(&encoder);
     println!("encoder time base: {:?}", encoder.time_base());
 
-    let path_text = format!("probe_{}_{}.mkv", args.codec_name, args.rc_name);
-    let mut muxer = Muxer::create(Path::new(&path_text), Container::Mkv)?;
+    let path_text = format!("probe_{}_{}.{}", args.codec_name, args.rc_name, args.container.extension());
+    let mut muxer = Muxer::create(Path::new(&path_text), args.container)?;
     let stream = muxer.add_video(encoder.parameters(), encoder.time_base(), (60, 1))?;
     muxer.start()?;
     let mut sink = Sink { muxer, stream, stats: Stats::default(), error: None };

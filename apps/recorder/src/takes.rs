@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Datelike, Local, Timelike};
 
+use crate::config::Container;
+
 /// The paths of one take: its folder, its base name and its video file.
 pub struct TakePaths {
     /// The folder that holds every file of the take.
@@ -19,9 +21,9 @@ pub struct TakePaths {
 /// Picks the next take folder under `root` for `now`, creates it and returns its paths.
 ///
 /// The folder is `{root}/{YYYY-MM-DD}_{HH-MM-SS}_take{nn}`, where `nn` is at two digits and counts the
-/// take folders already under `root` for that date, plus 1. The video file is `{same name}.mkv` inside
-/// it. The full naming template arrives in phase 4.
-pub fn next_take(root: &Path, now: DateTime<Local>) -> Result<TakePaths, io::Error> {
+/// take folders already under `root` for that date, plus 1. The video file is `{same name}.{ext}` inside
+/// it, with the extension of `container`. The full naming template arrives in phase 4.
+pub fn next_take(root: &Path, now: DateTime<Local>, container: Container) -> Result<TakePaths, io::Error> {
     fs::create_dir_all(root).map_err(|source| io::Error::new(source.kind(), format!("{}: {source}", root.display())))?;
     let date = format!("{:04}-{:02}-{:02}", now.year(), now.month(), now.day());
     let time = format!("{:02}-{:02}-{:02}", now.hour(), now.minute(), now.second());
@@ -29,7 +31,7 @@ pub fn next_take(root: &Path, now: DateTime<Local>) -> Result<TakePaths, io::Err
     let base_name = format!("{date}_{time}_take{:02}", count + 1);
     let folder = root.join(&base_name);
     fs::create_dir_all(&folder).map_err(|source| io::Error::new(source.kind(), format!("{}: {source}", folder.display())))?;
-    let video_file = folder.join(format!("{base_name}.mkv"));
+    let video_file = folder.join(format!("{base_name}.{}", container.extension()));
     Ok(TakePaths { folder, base_name, video_file })
 }
 
@@ -88,7 +90,7 @@ mod tests {
     fn first_take_is_take01_and_creates_the_folder() -> Result<(), Box<dyn Error>> {
         let root = fresh_dir("first-take")?;
         let now = at(2026, 11, 17, 14, 30, 5)?;
-        let take = next_take(&root, now)?;
+        let take = next_take(&root, now, Container::Mkv)?;
         assert_eq!(take.base_name, "2026-11-17_14-30-05_take01");
         assert_eq!(take.folder, root.join("2026-11-17_14-30-05_take01"));
         assert_eq!(take.video_file, take.folder.join("2026-11-17_14-30-05_take01.mkv"));
@@ -101,8 +103,8 @@ mod tests {
     fn the_next_take_the_same_day_is_take02() -> Result<(), Box<dyn Error>> {
         let root = fresh_dir("second-take")?;
         let now = at(2026, 11, 17, 14, 30, 5)?;
-        next_take(&root, now)?;
-        let second = next_take(&root, now)?;
+        next_take(&root, now, Container::Mkv)?;
+        let second = next_take(&root, now, Container::Mkv)?;
         assert_eq!(second.base_name, "2026-11-17_14-30-05_take02");
         assert!(second.folder.is_dir());
         fs::remove_dir_all(&root)?;
@@ -114,7 +116,7 @@ mod tests {
         let root = fresh_dir("missing-root")?;
         fs::remove_dir_all(&root)?;
         let now = at(2026, 11, 17, 14, 30, 5)?;
-        let take = next_take(&root, now)?;
+        let take = next_take(&root, now, Container::Mkv)?;
         assert!(root.is_dir());
         assert_eq!(take.base_name, "2026-11-17_14-30-05_take01");
         assert!(take.folder.is_dir());
@@ -126,9 +128,9 @@ mod tests {
     fn a_new_day_starts_again_at_take01() -> Result<(), Box<dyn Error>> {
         let root = fresh_dir("new-day")?;
         let now = at(2026, 11, 17, 23, 59, 0)?;
-        next_take(&root, now)?;
+        next_take(&root, now, Container::Mkv)?;
         let next_day = at(2026, 11, 18, 0, 0, 30)?;
-        let take = next_take(&root, next_day)?;
+        let take = next_take(&root, next_day, Container::Mkv)?;
         assert_eq!(take.base_name, "2026-11-18_00-00-30_take01");
         fs::remove_dir_all(&root)?;
         Ok(())
