@@ -19,6 +19,7 @@ pub struct RecoveryReport {
 ///
 /// `is_recording` is asked for each journal with its folder and base name; a journal it accepts belongs to the running take and is left alone.
 pub fn scan(root: &Path, is_recording: &dyn Fn(&Path, &str) -> bool) -> RecoveryReport {
+    log::info!("marks recovery: scanning {}", root.display());
     let mut report = RecoveryReport::default();
     let mut folders = vec![root.to_path_buf()];
     match fs::read_dir(root) {
@@ -27,11 +28,14 @@ pub fn scan(root: &Path, is_recording: &dyn Fn(&Path, &str) -> bool) -> Recovery
             // A takes folder that does not exist yet has nothing to recover.
             if root.exists() {
                 report.errors.push(format!("could not list {}: {err}", root.display()));
+            } else {
+                log::info!("marks recovery: {} does not exist, nothing to recover", root.display());
             }
             return report;
         }
     }
     for folder in folders {
+        log::info!("marks recovery: checking {}", folder.display());
         let journals = match ::marks::write::find_journals(&folder) {
             Ok(journals) => journals,
             Err(err) => {
@@ -40,13 +44,21 @@ pub fn scan(root: &Path, is_recording: &dyn Fn(&Path, &str) -> bool) -> Recovery
             }
         };
         for base_name in journals {
+            log::info!("marks recovery: found journal {base_name}.marks.journal in {}", folder.display());
             if is_recording(&folder, &base_name) {
+                log::info!("marks recovery: skipped {base_name}, it belongs to the take being recorded");
                 continue;
             }
             match recover_take(&folder, &base_name, &mut report.errors) {
-                Ok(true) => report.recovered.push(base_name),
-                Ok(false) => {}
-                Err(err) => report.errors.push(format!("could not recover the marks of {base_name}: {err}")),
+                Ok(true) => {
+                    log::info!("marks recovery: recovered {base_name}");
+                    report.recovered.push(base_name);
+                }
+                Ok(false) => log::info!("marks recovery: skipped {base_name}, the journal was gone"),
+                Err(err) => {
+                    log::info!("marks recovery: skipped {base_name}, recovery failed: {err}");
+                    report.errors.push(format!("could not recover the marks of {base_name}: {err}"));
+                }
             }
         }
     }
@@ -122,6 +134,22 @@ mod tests {
         assert!(csv.contains("before the crash"), "{csv}");
         // A second scan finds nothing left to do.
         assert_eq!(scan(&root, &|_, _| false), RecoveryReport::default());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_journal_in_a_take_folder_under_the_root_is_recovered() {
+        let root = scratch("take_folder");
+        let base = "2026-11-19_04-20-23_take11";
+        let take_folder = root.join(base);
+        fs::create_dir_all(&take_folder).expect("take folder");
+        crashed_take(&take_folder, base);
+        assert!(take_folder.join(format!("{base}.marks.journal")).exists());
+        let report = scan(&root, &|_, _| false);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(report.recovered, vec![base.to_owned()]);
+        assert!(take_folder.join(format!("{base}_marks.md")).exists());
+        assert!(take_folder.join(format!("{base}.marks.json")).exists());
         let _ = fs::remove_dir_all(&root);
     }
 

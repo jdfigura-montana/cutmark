@@ -422,9 +422,9 @@ fn tray_state(phase: Phase) -> TrayState {
 
 /// Starts the marks recovery scan of the takes folder on a background thread and returns where its report arrives.
 ///
-/// Returns None when no takes folder is set or the thread could not start.
+/// Returns None when the thread could not start.
 fn start_recovery(settings: &Settings, controller: &Controller, ctx: &egui::Context) -> Option<std::sync::mpsc::Receiver<RecoveryReport>> {
-    let root = settings.root_folder.clone()?;
+    let roots = recovery_roots(settings);
     let shared = controller.shared();
     let ctx = ctx.clone();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -433,7 +433,12 @@ fn start_recovery(settings: &Settings, controller: &Controller, ctx: &egui::Cont
             let state = lock(&shared);
             state.phase != Phase::Idle && state.take.as_ref().is_some_and(|take| take.folder == folder && take.base_name == base_name)
         };
-        let report = recovery::scan(&root, &is_recording);
+        let mut report = RecoveryReport::default();
+        for root in &roots {
+            let found = recovery::scan(root, &is_recording);
+            report.recovered.extend(found.recovered);
+            report.errors.extend(found.errors);
+        }
         // The window may be gone by now; then nobody needs the report.
         let _ = tx.send(report);
         ctx.request_repaint();
@@ -445,6 +450,25 @@ fn start_recovery(settings: &Settings, controller: &Controller, ctx: &egui::Cont
             None
         }
     }
+}
+
+/// The folders the recovery scan looks in: the takes folder from the settings, or, while none is picked, the default
+/// Videos\Cutmark folder that recordings go into.
+fn recovery_roots(settings: &Settings) -> Vec<std::path::PathBuf> {
+    if let Some(root) = &settings.root_folder {
+        return vec![root.clone()];
+    }
+    let mut roots = Vec::new();
+    if let Some(dirs) = directories::UserDirs::new() {
+        if let Some(videos) = dirs.video_dir() {
+            roots.push(videos.join("Cutmark"));
+        }
+        let plain = dirs.home_dir().join("videos").join("cutmark");
+        if !roots.iter().any(|known| known.to_string_lossy().eq_ignore_ascii_case(&plain.to_string_lossy())) {
+            roots.push(plain);
+        }
+    }
+    roots
 }
 
 /// Lists the audio devices that are present; on failure logs a warning and lists none.
