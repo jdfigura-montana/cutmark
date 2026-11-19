@@ -1,0 +1,526 @@
+//! The engine controller: one thread that handles every command and owns the recording session.
+//!
+//! The window only draws [`ControllerState`] and sends commands, so hotkeys and tray clicks work
+//! while the window is hidden and no frames run.
+
+use std::collections::VecDeque;
+use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+use thiserror::Error;
+
+use super::bus::{Bus, BusSender, Command, CommandKind};
+use super::clock::MediaClock;
+use super::session::{RecordingSession, SessionConfig, StatsSnapshot, Summary, TrackSpec};
+use crate::config::{AudioCodecChoice, Profile, Settings, TrackKind};
+use crate::takes::{self, TakePaths};
+
+/// How many recent commands the state keeps.
+const RECENT_LIMIT: usize = 20;
+
+/// How often a running take's counters are sampled.
+const ACTIVE_POLL: Duration = Duration::from_millis(33);
+
+/// How long the thread waits for a command while idle.
+const IDLE_POLL: Duration = Duration::from_millis(100);
+
+/// How long the bitrate is averaged over while recording.
+const BITRATE_WINDOW: Duration = Duration::from_millis(250);
+
+/// The name of the track the mute hotkey prefers.
+const MIC_TRACK_NAME: &str = "Mic";
+
+/// What the Recorder is doing right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Phase {
+    /// No take is running.
+    #[default]
+    Idle,
+    /// A take is running.
+    Recording,
+    /// A take is running but paused.
+    Paused,
+}
+
+/// Everything the window draws, published by the controller thread.
+#[derive(Default)]
+pub struct ControllerState {
+    /// Idle, recording or paused.
+    pub phase: Phase,
+    /// The paths of the running take.
+    pub take: Option<TakePaths>,
+    /// Frames per second of the running take, for the elapsed clock.
+    pub fps: u32,
+    /// The summary of the last finished take, kept until the next one starts.
+    pub summary: Option<Summary>,
+    /// The latest counters of the running take.
+    pub stats: Option<StatsSnapshot>,
+    /// Counts the stats samples published, so the window can tell a new one.
+    pub stats_seq: u64,
+    /// The `stats_seq` the window last used; the window sets it, so unread level peaks are kept.
+    pub ui_seen_seq: u64,
+    /// The bitrate of the running take over the last sample window, in megabits per second.
+    pub mbps: f64,
+    /// The text of the last start or stop error, for a red banner until the next take.
+    pub error: Option<String>,
+    /// The text of the yellow banner naming audio devices that were missing when the take started.
+    pub audio_notice: Option<String>,
+    /// The active profile name.
+    pub active_profile: String,
+    /// Whether each track in the settings is muted, in settings order.
+    pub track_muted: Vec<bool>,
+    /// Counts the changes the controller made to the settings, so the window can copy them.
+    pub settings_rev: u64,
+    /// The commands handled most recently, oldest first.
+    pub recent: VecDeque<Command>,
+}
+
+/// A message to the controller thread other than a command.
+enum Control {
+    /// The UI's current settings.
+    Settings(Box<Settings>),
+    /// Finish any running take and end the thread.
+    Stop,
+}
+
+/// A cloneable handle that sends settings and the stop request to the controller thread.
+#[derive(Clone)]
+pub struct ControlSender {
+    tx: Sender<Control>,
+}
+
+impl ControlSender {
+    /// Gives the controller the settings as the window has them now.
+    pub fn set_settings(&self, settings: Settings) {
+        if self.tx.send(Control::Settings(Box::new(settings))).is_err() {
+            log::warn!("settings were not sent because the controller has ended");
+        }
+    }
+
+    /// Asks the controller to finish any running take and end; it does not wait.
+    pub fn stop(&self) {
+        // A controller that has already ended has nothing left to stop.
+        let _ = self.tx.send(Control::Stop);
+    }
+}
+
+/// The handle the app keeps: starts the controller thread and stops it on exit.
+pub struct Controller {
+    bus: BusSender,
+    control: ControlSender,
+    shared: Arc<Mutex<ControllerState>>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl Controller {
+    /// Starts the "controller" thread with a settings snapshot and a callback that asks the window to repaint.
+    pub fn start(settings: Settings, repaint: Box<dyn Fn() + Send>) -> Self {
+        let bus = Bus::default();
+        let bus_sender = bus.sender();
+        let (control_tx, control_rx) = mpsc::channel();
+        let shared = Arc::new(Mutex::new(ControllerState {
+            fps: 60,
+            active_profile: settings.active_profile.clone(),
+            track_muted: settings.audio.tracks.iter().map(|track| track.muted).collect(),
+            ..ControllerState::default()
+        }));
+        let worker = Worker { bus, control: control_rx, shared: Arc::clone(&shared), repaint, settings, active: None };
+        let handle = match std::thread::Builder::new().name("controller".to_owned()).spawn(move || worker.run()) {
+            Ok(handle) => Some(handle),
+            Err(err) => {
+                log::error!("the controller thread could not be started: {err}");
+                lock(&shared).error = Some(format!("the recording engine could not start: {err}"));
+                None
+            }
+        };
+        Self { bus: bus_sender, control: ControlSender { tx: control_tx }, shared, handle }
+    }
+
+    /// A handle that hotkeys, the tray and buttons send commands through.
+    pub fn sender(&self) -> BusSender {
+        self.bus.clone()
+    }
+
+    /// A handle that sends settings and the stop request.
+    pub fn control_sender(&self) -> ControlSender {
+        self.control.clone()
+    }
+
+    /// The state the window draws.
+    pub fn shared(&self) -> Arc<Mutex<ControllerState>> {
+        Arc::clone(&self.shared)
+    }
+
+    /// Gives the controller the settings as the window has them now.
+    pub fn set_settings(&self, settings: Settings) {
+        self.control.set_settings(settings);
+    }
+
+    /// Stops a running take and finishes its file, ends the thread and waits for it.
+    pub fn stop(&mut self) {
+        self.control.stop();
+        if let Some(handle) = self.handle.take()
+            && handle.join().is_err()
+        {
+            log::error!("the controller thread panicked");
+        }
+    }
+}
+
+impl Drop for Controller {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// Locks the shared state, carrying on with the data if a thread panicked while holding it.
+pub fn lock(shared: &Mutex<ControllerState>) -> MutexGuard<'_, ControllerState> {
+    shared.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A take that is running or paused.
+struct ActiveTake {
+    session: RecordingSession,
+    clock: MediaClock,
+    paused: bool,
+    /// The time and byte count of the last bitrate sample.
+    last_poll: Option<(Instant, u64)>,
+    /// The bitrate of the last sample, in megabits per second.
+    last_mbps: f64,
+}
+
+/// Why a take could not start.
+#[derive(Debug, Error)]
+enum StartError {
+    /// The folder takes go into could not be found.
+    #[error("{0}")]
+    Folder(&'static str),
+    /// The take folder could not be chosen.
+    #[error("{0}")]
+    Take(String),
+    /// The recording session refused to start.
+    #[error("could not start recording into {file}: {reason}")]
+    Session {
+        /// The file the take would have written.
+        file: String,
+        /// Why the session failed.
+        reason: String,
+    },
+}
+
+/// The state of the controller thread.
+struct Worker {
+    bus: Bus,
+    control: Receiver<Control>,
+    shared: Arc<Mutex<ControllerState>>,
+    repaint: Box<dyn Fn() + Send>,
+    settings: Settings,
+    active: Option<ActiveTake>,
+}
+
+impl Worker {
+    /// Handles settings, commands and stats samples until told to stop, then finishes any running take.
+    fn run(mut self) {
+        while self.drain_control() {
+            let wait = if self.active.is_some() { ACTIVE_POLL } else { IDLE_POLL };
+            if let Some(command) = self.bus.recv_timeout(wait) {
+                self.handle(command);
+            }
+            self.poll_stats();
+        }
+        self.stop_take();
+    }
+
+    /// Applies the queued settings; false once the stop request came or the app dropped its handles.
+    fn drain_control(&mut self) -> bool {
+        loop {
+            match self.control.try_recv() {
+                Ok(Control::Settings(settings)) => {
+                    self.settings = *settings;
+                    self.forward_live_controls();
+                }
+                Ok(Control::Stop) | Err(TryRecvError::Disconnected) => return false,
+                Err(TryRecvError::Empty) => return true,
+            }
+        }
+    }
+
+    /// Changes the shared state and asks the window to repaint.
+    fn update(&self, change: impl FnOnce(&mut ControllerState)) {
+        change(&mut lock(&self.shared));
+        (self.repaint)();
+    }
+
+    /// Changes the shared state without a repaint; the window repaints itself while it shows a take.
+    fn update_quietly(&self, change: impl FnOnce(&mut ControllerState)) {
+        change(&mut lock(&self.shared));
+    }
+
+    /// Acts on one command.
+    fn handle(&mut self, command: Command) {
+        log::info!("command: {command:?}");
+        let press = command.press_qpc;
+        match &command.kind {
+            CommandKind::StartStop => {
+                if self.active.is_some() {
+                    self.stop_take();
+                } else {
+                    self.start_take();
+                }
+            }
+            CommandKind::Pause => self.pause(press),
+            CommandKind::Resume => self.resume(press),
+            CommandKind::PauseResume => {
+                if self.active.as_ref().is_some_and(|active| active.paused) {
+                    self.resume(press);
+                } else {
+                    self.pause(press);
+                }
+            }
+            CommandKind::Mute { .. } => self.toggle_mic_mute(),
+            CommandKind::SetProfile(name) => self.set_profile(name),
+            CommandKind::Mark(kind) => match &self.active {
+                Some(active) => log::info!("mark {kind:?} at {} ms of media time (marks are recorded in a later phase)", active.clock.media_ms(press)),
+                None => log::info!("mark {kind:?} ignored: no take is running"),
+            },
+            CommandKind::GetStatus => log::info!("status requested (the control API answers it in a later phase)"),
+        }
+        self.update(|state| {
+            if state.recent.len() == RECENT_LIMIT {
+                state.recent.pop_front();
+            }
+            state.recent.push_back(command);
+        });
+    }
+
+    /// Starts a new take; on failure shows a red banner and stays idle.
+    fn start_take(&mut self) {
+        self.update(|state| {
+            state.error = None;
+            state.audio_notice = None;
+            state.summary = None;
+        });
+        if let Err(err) = self.start_take_inner() {
+            log::error!("could not start the recording: {err}");
+            self.update(|state| state.error = Some(err.to_string()));
+        }
+    }
+
+    /// Picks the take folder, builds the session config from the active profile and starts the session.
+    fn start_take_inner(&mut self) -> Result<(), StartError> {
+        let root = take_root(&self.settings)?;
+        let take = takes::next_take(&root, chrono::Local::now()).map_err(|err| StartError::Take(err.to_string()))?;
+        let profile = Profile::shipped().into_iter().find(|profile| profile.name == self.settings.active_profile).unwrap_or_else(Profile::tutorial_av1_1440p60);
+        let fps = profile.fps;
+        let (tracks, missing) = track_specs(&self.settings);
+        if !missing.is_empty() {
+            log::warn!("recording without these audio devices: {}", missing.join(", "));
+            let notice = format!("Audio device not found for {}. Recording anyway; those tracks stay silent until the device returns.", missing.join(", "));
+            self.update(|state| state.audio_notice = Some(notice));
+        }
+        let (mixdown, track_streams) = (profile.mixdown, profile.aac_tracks);
+        let cfg = SessionConfig {
+            adapter: 0,
+            monitor: 0,
+            cursor: true,
+            profile,
+            output_file: take.video_file.clone(),
+            tracks,
+            audio_codec: audio_codec(self.settings.audio.codec),
+            mixdown,
+            track_streams,
+            wav_sidecars: self.settings.audio.wav_sidecars,
+            take_folder: take.video_file.parent().map(std::path::Path::to_path_buf).unwrap_or_default(),
+            base_name: take.video_file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+        };
+        let session =
+            RecordingSession::start(cfg).map_err(|err| StartError::Session { file: take.video_file.display().to_string(), reason: err.to_string() })?;
+        let start_qpc = session.stats().started_qpc as i64;
+        let clock = MediaClock::new(start_qpc, capture::qpc_frequency());
+        self.active = Some(ActiveTake { session, clock, paused: false, last_poll: None, last_mbps: 0.0 });
+        self.update(|state| {
+            state.phase = Phase::Recording;
+            state.take = Some(take);
+            state.fps = fps;
+            state.stats = None;
+            state.mbps = 0.0;
+        });
+        Ok(())
+    }
+
+    /// Stops the running take, keeps its summary for the window and returns to idle.
+    fn stop_take(&mut self) {
+        let Some(active) = self.active.take() else { return };
+        self.update(|state| {
+            state.phase = Phase::Idle;
+            state.take = None;
+            state.stats = None;
+            state.mbps = 0.0;
+        });
+        match active.session.stop() {
+            Ok(summary) => {
+                log::info!("take finished: {} frames, {} bytes", summary.frames, summary.bytes_written);
+                self.update(|state| state.summary = Some(summary));
+            }
+            Err(err) => {
+                log::error!("the recording failed on stop: {err}");
+                self.update(|state| state.error = Some(format!("the recording failed on stop: {err}")));
+            }
+        }
+    }
+
+    /// Pauses the running take at the moment of the press.
+    fn pause(&mut self, press_qpc: i64) {
+        let Some(active) = &mut self.active else { return };
+        if active.paused {
+            return;
+        }
+        active.session.pause();
+        active.clock.pause(press_qpc);
+        active.paused = true;
+        self.update(|state| state.phase = Phase::Paused);
+    }
+
+    /// Resumes a paused take at the moment of the press.
+    fn resume(&mut self, press_qpc: i64) {
+        let Some(active) = &mut self.active else { return };
+        if !active.paused {
+            return;
+        }
+        active.session.resume();
+        active.clock.resume(press_qpc);
+        active.paused = false;
+        self.update(|state| state.phase = Phase::Recording);
+    }
+
+    /// Toggles mute on the track named Mic, or else on the first Input track, in the settings and in the running take.
+    fn toggle_mic_mute(&mut self) {
+        let tracks = &mut self.settings.audio.tracks;
+        let position = tracks
+            .iter()
+            .position(|track| track.name.eq_ignore_ascii_case(MIC_TRACK_NAME))
+            .or_else(|| tracks.iter().position(|track| track.kind == TrackKind::Input));
+        let Some(track) = position.and_then(|index| tracks.get_mut(index)) else {
+            log::warn!("mute hotkey: there is no Mic or Input track to mute");
+            return;
+        };
+        track.muted = !track.muted;
+        log::info!("track {} is now {}", track.name, if track.muted { "muted" } else { "unmuted" });
+        self.forward_live_controls();
+        self.publish_settings();
+    }
+
+    /// Switches the active profile, only while idle and only to a profile that exists.
+    fn set_profile(&mut self, name: &str) {
+        if self.active.is_some() {
+            log::warn!("the profile cannot change while a take is running");
+            return;
+        }
+        if !Profile::shipped().iter().any(|profile| profile.name == name) {
+            log::warn!("there is no profile named {name}");
+            return;
+        }
+        self.settings.active_profile = name.to_owned();
+        self.publish_settings();
+    }
+
+    /// Shows the window the changes the controller made to the settings.
+    fn publish_settings(&self) {
+        let profile = self.settings.active_profile.clone();
+        let muted: Vec<bool> = self.settings.audio.tracks.iter().map(|track| track.muted).collect();
+        self.update(|state| {
+            state.active_profile = profile;
+            state.track_muted = muted;
+            state.settings_rev += 1;
+        });
+    }
+
+    /// Sends every track's gain and mute from the settings to the running take.
+    fn forward_live_controls(&self) {
+        let Some(active) = &self.active else { return };
+        // A take only has the enabled tracks, in settings order.
+        for (index, track) in self.settings.audio.tracks.iter().filter(|track| track.enabled).enumerate() {
+            active.session.set_track_gain_db(index, track.gain_db);
+            active.session.set_track_muted(index, track.muted);
+        }
+    }
+
+    /// Samples the running take's counters, works out the bitrate, and publishes both.
+    fn poll_stats(&mut self) {
+        let Some(active) = &mut self.active else { return };
+        let mut stats = active.session.stats();
+        let now = Instant::now();
+        match active.last_poll {
+            Some((then, bytes_then)) => {
+                let seconds = now.duration_since(then).as_secs_f64();
+                // Sampled faster than the bitrate should be, so the last value stays in between.
+                if seconds >= BITRATE_WINDOW.as_secs_f64() {
+                    active.last_mbps = stats.bytes_written.saturating_sub(bytes_then) as f64 * 8.0 / 1_000_000.0 / seconds;
+                    active.last_poll = Some((now, stats.bytes_written));
+                }
+            }
+            None => {
+                active.last_mbps = 0.0;
+                active.last_poll = Some((now, stats.bytes_written));
+            }
+        }
+        let mbps = active.last_mbps;
+        self.update_quietly(|state| {
+            // Reading the counters resets the level peaks, so keep the ones the window has not seen yet.
+            if state.stats_seq != state.ui_seen_seq
+                && let Some(unseen) = &state.stats
+            {
+                for (new, old) in stats.tracks.iter_mut().zip(&unseen.tracks) {
+                    new.peak_dbfs = new.peak_dbfs.max(old.peak_dbfs);
+                    new.clipped |= old.clipped;
+                }
+            }
+            state.stats = Some(stats);
+            state.stats_seq += 1;
+            state.mbps = mbps;
+        });
+    }
+}
+
+/// The folder takes go into: the settings root folder, or else the user's Videos folder joined with Cutmark.
+fn take_root(settings: &Settings) -> Result<PathBuf, StartError> {
+    if let Some(root) = &settings.root_folder {
+        return Ok(root.clone());
+    }
+    let dirs = directories::UserDirs::new().ok_or(StartError::Folder("the user's profile folders could not be found"))?;
+    dirs.video_dir().map(|videos| videos.join("Cutmark")).ok_or(StartError::Folder("the user's Videos folder could not be found"))
+}
+
+/// Builds a spec for every enabled track in the settings, resolving each device, and names the tracks whose device is missing.
+fn track_specs(settings: &Settings) -> (Vec<TrackSpec>, Vec<String>) {
+    let mut specs = Vec::new();
+    let mut missing = Vec::new();
+    for track in settings.audio.tracks.iter().filter(|track| track.enabled) {
+        let device = capture::find_device(&track.device_id, &track.device_name);
+        if device.is_none() {
+            missing.push(if track.device_name.is_empty() { track.name.clone() } else { format!("{} ({})", track.name, track.device_name) });
+        }
+        specs.push(TrackSpec {
+            name: track.name.clone(),
+            device,
+            device_id: track.device_id.clone(),
+            device_name: track.device_name.clone(),
+            gain_db: track.gain_db,
+            muted: track.muted,
+            offset_ms: track.offset_ms,
+            in_mixdown: track.in_mixdown,
+        });
+    }
+    (specs, missing)
+}
+
+/// The audio codec the settings ask for, as the encoder takes it.
+fn audio_codec(choice: AudioCodecChoice) -> media_io::AudioCodec {
+    match choice {
+        AudioCodecChoice::Aac320 => media_io::AudioCodec::Aac { kbps: 320 },
+        AudioCodecChoice::Pcm24 => media_io::AudioCodec::Pcm24,
+    }
+}

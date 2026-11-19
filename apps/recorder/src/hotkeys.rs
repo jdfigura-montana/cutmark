@@ -1,12 +1,12 @@
 //! The Recorder's global hotkeys: defaults, registration, and turning key presses into commands.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver};
 
 use cutmark_hotkeys::{HotkeyMap, Registrar, altgr_conflict};
 use global_hotkey::{GlobalHotKeyEvent, HotKeyState};
 
-use crate::engine::bus::{BusSender, Command, MarkKind};
+use crate::engine::bus::{BusSender, Command, CommandKind, MarkKind};
 
 /// The owner name the Recorder's bindings carry in the suite hotkey map.
 const OWNER: &str = "recorder";
@@ -55,7 +55,7 @@ pub struct AltGrConflict {
     pub typed: char,
 }
 
-/// The registered hotkeys, the lists the UI shows about them, and the link from key presses to the command bus.
+/// The registered hotkeys and the lists the UI shows about them. Key presses go straight to the controller's command bus.
 pub struct Hotkeys {
     /// Hotkeys that are registered.
     pub registered: Vec<RegisteredHotkey>,
@@ -65,12 +65,6 @@ pub struct Hotkeys {
     pub altgr: Vec<AltGrConflict>,
     /// Problems to show in a banner, such as an unreadable hotkey file.
     pub problems: Vec<String>,
-    /// Keeps the registrations alive, and maps hotkey ids back to actions.
-    registrar: Option<Registrar>,
-    /// Ids of hotkeys pressed, sent by the global hotkey event handler.
-    presses: Receiver<u32>,
-    /// Where commands for pressed hotkeys go.
-    bus: BusSender,
 }
 
 impl Hotkeys {
@@ -78,7 +72,7 @@ impl Hotkeys {
     ///
     /// Call it on the main thread, which runs the message loop that delivers hotkey events.
     /// A hotkey file that cannot be read is reported in `problems`, the defaults are used in memory and the file is not overwritten.
-    pub fn start(ctx: &egui::Context, bus: BusSender) -> Self {
+    pub fn start(bus: BusSender) -> Self {
         let mut problems = Vec::new();
         let (map, save_path) = load_map(&mut problems);
         let bindings = map.bindings_for(OWNER);
@@ -114,39 +108,36 @@ impl Hotkeys {
             problems.push(format!("The hotkey file could not be saved: {err}"));
         }
 
-        // The handler runs on the thread that pumps messages, so it only forwards the id and wakes the UI.
-        // The registrar lives on the UI side and turns the id into a command, so hotkeys work while the window is idle or unfocused.
-        let (press_tx, presses) = mpsc::channel();
-        let repaint = ctx.clone();
+        // The handler runs on the thread that pumps messages. It stamps the press with QPC right there and
+        // sends the command straight to the controller, so hotkeys work while the window is hidden.
+        // The registrar cannot move to another thread, and Windows delivers hotkey events on the thread that
+        // registered them, so the handler reads it from a thread-local set on this thread.
+        REGISTRAR.with(|slot| *slot.borrow_mut() = registrar);
         GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
-            if event.state == HotKeyState::Pressed {
-                let _ = press_tx.send(event.id);
-                repaint.request_repaint();
+            if event.state != HotKeyState::Pressed {
+                return;
+            }
+            let press_qpc = capture::qpc_now();
+            let Some(action) = REGISTRAR.with(|slot| slot.borrow().as_ref().and_then(|registrar| registrar.action_for(event.id).map(str::to_owned))) else {
+                return;
+            };
+            let Some(kind) = command_for(&action) else {
+                log::warn!("hotkey action {action} has no command");
+                return;
+            };
+            log::info!("hotkey: {action}");
+            if bus.send(Command::new(kind, press_qpc)).is_err() {
+                log::error!("the command bus is closed, dropping hotkey {action}");
             }
         }));
 
-        Self { registered, refused, altgr, problems, registrar, presses, bus }
+        Self { registered, refused, altgr, problems }
     }
+}
 
-    /// Turns the hotkey presses seen since the last call into commands on the bus, logging each action.
-    pub fn pump(&self) {
-        let Some(registrar) = &self.registrar else {
-            return;
-        };
-        for id in self.presses.try_iter() {
-            let Some(action) = registrar.action_for(id) else {
-                continue;
-            };
-            let Some(command) = command_for(action) else {
-                log::warn!("hotkey action {action} has no command");
-                continue;
-            };
-            log::info!("hotkey: {action}");
-            if self.bus.send(command).is_err() {
-                log::error!("the command bus is closed, dropping hotkey {action}");
-            }
-        }
-    }
+thread_local! {
+    /// The registrations, kept alive on the thread that made them; the event handler looks hotkey ids up here.
+    static REGISTRAR: RefCell<Option<Registrar>> = const { RefCell::new(None) };
 }
 
 /// Reads the suite hotkey map and adds the Recorder's defaults.
@@ -175,15 +166,15 @@ fn load_map(problems: &mut Vec<String>) -> (HotkeyMap, Option<PathBuf>) {
     (map, save_path)
 }
 
-/// The command a hotkey action stands for, if the Recorder knows the action.
-fn command_for(action: &str) -> Option<Command> {
+/// The command kind a hotkey action stands for, if the Recorder knows the action.
+fn command_for(action: &str) -> Option<CommandKind> {
     Some(match action {
-        "start_stop" => Command::StartStop,
-        "pause_resume" => Command::PauseResume,
-        "mark" => Command::Mark(MarkKind::Silent),
-        "mark_label" => Command::Mark(MarkKind::WithLabel),
-        "highlight_last" => Command::Mark(MarkKind::HighlightLast),
-        "mute_mic" => Command::Mute { track: MIC_TRACK },
+        "start_stop" => CommandKind::StartStop,
+        "pause_resume" => CommandKind::PauseResume,
+        "mark" => CommandKind::Mark(MarkKind::Silent),
+        "mark_label" => CommandKind::Mark(MarkKind::WithLabel),
+        "highlight_last" => CommandKind::Mark(MarkKind::HighlightLast),
+        "mute_mic" => CommandKind::Mute { track: MIC_TRACK },
         _ => return None,
     })
 }

@@ -13,6 +13,13 @@ pub mod audio_track;
 #[allow(dead_code)]
 pub mod audio;
 
+/// The media clock: QPC times to recording time with paused time removed.
+pub mod clock;
+
+/// The controller thread: handles every command and owns the recording session,
+/// so hotkeys work while the window is hidden.
+pub mod controller;
+
 /// The constant frame rate pacer: QPC time to exact frame indexes, pure logic.
 pub mod pacer;
 

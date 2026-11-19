@@ -3,7 +3,8 @@
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
-use crate::engine::bus::{BusSender, Command};
+use crate::engine::bus::{BusSender, Command, CommandKind};
+use crate::engine::controller::ControlSender;
 use crate::platform;
 
 /// Width and height of the tray icon in pixels.
@@ -17,7 +18,7 @@ const TOOLTIP_IDLE: &str = "Cutmark Recorder";
 /// Tooltip text while recording.
 const TOOLTIP_RECORDING: &str = "Cutmark Recorder - recording";
 
-/// The tray icon: it handles its own menu clicks for the window and sends recording commands to the bus.
+/// The tray icon: it handles its own menu clicks for the window and sends recording commands to the controller.
 pub struct Tray {
     icon: TrayIcon,
     idle_icon: Icon,
@@ -26,8 +27,9 @@ pub struct Tray {
 
 impl Tray {
     /// Builds the tray icon and menu. Call it on the main thread. Show and Quit run here directly, so they
-    /// work while the window is hidden; start or stop goes to the bus.
-    pub fn new(ctx: &egui::Context, hwnd: Option<isize>, bus: BusSender) -> Result<Self, String> {
+    /// work while the window is hidden; start or stop goes to the controller stamped with QPC at the click,
+    /// and Quit tells the controller to stop before it closes the window.
+    pub fn new(ctx: &egui::Context, hwnd: Option<isize>, bus: BusSender, control: ControlSender) -> Result<Self, String> {
         let idle_icon = circle_icon(IDLE_RGB)?;
         let recording_icon = circle_icon(RECORDING_RGB)?;
 
@@ -47,10 +49,12 @@ impl Tray {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                 ctx.request_repaint();
             } else if event.id == start_stop_id {
-                if bus.send(Command::StartStop).is_err() {
+                let press_qpc = capture::qpc_now();
+                if bus.send(Command::new(CommandKind::StartStop, press_qpc)).is_err() {
                     log::warn!("a tray menu click was dropped because the app is gone");
                 }
             } else if event.id == quit_id {
+                control.stop();
                 if let Some(hwnd) = hwnd {
                     platform::show_and_focus(hwnd);
                 }
