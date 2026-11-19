@@ -43,6 +43,8 @@ pub struct Muxer {
     path: PathBuf,
     streams: Vec<StreamInfo>,
     started: bool,
+    /// The chapters added just before the trailer, as start ms, end ms and title.
+    chapters: Vec<(u64, u64, String)>,
 }
 
 impl Muxer {
@@ -51,7 +53,12 @@ impl Muxer {
         let ctx = match container {
             Container::Mkv => ffmpeg_next::format::output_as(path, "matroska")?,
         };
-        Ok(Self { ctx, path: path.to_path_buf(), streams: Vec::new(), started: false })
+        Ok(Self { ctx, path: path.to_path_buf(), streams: Vec::new(), started: false, chapters: Vec::new() })
+    }
+
+    /// Sets the chapters, as start ms, end ms and title, that are written just before the trailer; an empty list adds none.
+    pub fn set_chapters(&mut self, chapters: Vec<(u64, u64, String)>) {
+        self.chapters = chapters;
     }
 
     /// Adds one video stream that copies the encoder's codec parameters,
@@ -147,8 +154,14 @@ impl Muxer {
         Ok(())
     }
 
-    /// Writes the Matroska trailer.
+    /// Adds the chapters, then writes the Matroska trailer.
     fn write_trailer(&mut self) -> Result<(), MediaError> {
+        for (index, (start_ms, end_ms, title)) in std::mem::take(&mut self.chapters).into_iter().enumerate() {
+            let id = i64::try_from(index + 1).unwrap_or(i64::MAX);
+            let start = i64::try_from(start_ms).unwrap_or(i64::MAX);
+            let end = i64::try_from(end_ms).unwrap_or(i64::MAX).max(start);
+            self.ctx.add_chapter(id, MKV_TIME_BASE, start, end, &title)?;
+        }
         self.ctx.write_trailer()?;
         Ok(())
     }
@@ -237,10 +250,15 @@ impl MuxSender {
     }
 }
 
+/// The chapters the mux thread adds before its trailer.
+type SharedChapters = Arc<Mutex<Vec<(u64, u64, String)>>>;
+
 /// A background thread that owns the muxer and writes queued packets.
 pub struct MuxThread {
     /// The queue handle the owner and the stream threads share.
     sender: MuxSender,
+    /// The chapters handed over by `set_chapters`, read by the thread before the trailer.
+    chapters: SharedChapters,
     /// The mux thread's join handle, which returns its summary.
     join: JoinHandle<Result<MuxSummary, MediaError>>,
 }
@@ -253,11 +271,20 @@ impl MuxThread {
         let queue_full = Arc::new(AtomicU64::new(0));
         let failure: SharedFailure = Arc::new(Mutex::new(None));
         let thread_failure = failure.clone();
+        let chapters: SharedChapters = Arc::new(Mutex::new(Vec::new()));
+        let thread_chapters = chapters.clone();
         let join = std::thread::Builder::new()
             .name("mux".to_string())
-            .spawn(move || mux_loop(muxer, receiver, thread_failure))
+            .spawn(move || mux_loop(muxer, receiver, thread_failure, thread_chapters))
             .map_err(|_| MediaError::Null("mux thread spawn"))?;
-        Ok(Self { sender: MuxSender { sender, queue_full, failure }, join })
+        Ok(Self { sender: MuxSender { sender, queue_full, failure }, chapters, join })
+    }
+
+    /// Sets the chapters, as start ms, end ms and title, that the thread adds just before the trailer; call before `finish`.
+    pub fn set_chapters(&self, chapters: Vec<(u64, u64, String)>) {
+        if let Ok(mut slot) = self.chapters.lock() {
+            *slot = chapters;
+        }
     }
 
     /// A handle to the queue; every stream thread sends through one.
@@ -281,7 +308,7 @@ impl MuxThread {
 }
 
 /// Writes queued packets until the queue closes, then the trailer.
-fn mux_loop(mut muxer: Muxer, receiver: Receiver<(usize, EncodedPacket)>, failure: SharedFailure) -> Result<MuxSummary, MediaError> {
+fn mux_loop(mut muxer: Muxer, receiver: Receiver<(usize, EncodedPacket)>, failure: SharedFailure, chapters: SharedChapters) -> Result<MuxSummary, MediaError> {
     let mut packets = vec![0u64; muxer.stream_count()];
     while let Ok((stream, packet)) = receiver.recv() {
         let outcome = match packets.get_mut(stream) {
@@ -291,6 +318,9 @@ fn mux_loop(mut muxer: Muxer, receiver: Receiver<(usize, EncodedPacket)>, failur
         if let Err(err) = outcome {
             return Err(store_failure(&failure, stream, &packet, err));
         }
+    }
+    if let Ok(mut slot) = chapters.lock() {
+        muxer.set_chapters(std::mem::take(&mut slot));
     }
     muxer.write_trailer()?;
     let bytes_written = muxer.file_size();
@@ -320,5 +350,83 @@ fn flush_output(ctx: &mut ffmpeg_next::format::context::Output) {
     unsafe {
         let ptr = ctx.as_mut_ptr();
         ffmpeg_next::ffi::avio_flush((*ptr).pb);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Codec parameters for a tiny MJPEG video stream, which needs no encoder to describe.
+    fn mjpeg_params() -> Parameters {
+        let mut params = Parameters::new();
+        // SAFETY: params owns a fresh AVCodecParameters, so writing its plain fields is sound.
+        #[allow(unsafe_code)]
+        unsafe {
+            let raw = params.as_mut_ptr();
+            (*raw).codec_type = ffi::AVMediaType::AVMEDIA_TYPE_VIDEO;
+            (*raw).codec_id = ffi::AVCodecID::AV_CODEC_ID_MJPEG;
+            (*raw).width = 16;
+            (*raw).height = 16;
+        }
+        params
+    }
+
+    /// Writes three tiny key frames straight into the output so the file has something to probe.
+    fn write_frames(muxer: &mut Muxer) -> Result<(), ffmpeg_next::Error> {
+        for pts in [0i64, 33, 66] {
+            let mut packet = Packet::copy(&[0xFF, 0xD8, 0xFF, 0xD9]);
+            packet.set_stream(0);
+            packet.set_pts(Some(pts));
+            packet.set_dts(Some(pts));
+            packet.set_duration(33);
+            packet.set_flags(Flags::KEY);
+            packet.write_interleaved(&mut muxer.ctx)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn chapters_are_written_and_read_back() -> Result<(), Box<dyn std::error::Error>> {
+        crate::init()?;
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+        let path = std::env::temp_dir().join(format!("cutmark_mux_chapters_{}_{nanos}.mkv", std::process::id()));
+        let mut muxer = Muxer::create(&path, Container::Mkv)?;
+        muxer.add_video(mjpeg_params(), (1, 1000), (30, 1))?;
+        muxer.start()?;
+        write_frames(&mut muxer)?;
+        muxer.set_chapters(vec![(0, 1500, "Note".to_owned()), (1500, 4000, "Highlight: intro".to_owned())]);
+        muxer.finish()?;
+
+        let input = ffmpeg_next::format::input(&path)?;
+        let found: Vec<(i64, i64, Option<String>)> = input
+            .chapters()
+            .map(|chapter| {
+                // The demuxer reports chapters in its own time base, so bring them back to milliseconds.
+                let (start, end) = (chapter.start().rescale(chapter.time_base(), MKV_TIME_BASE), chapter.end().rescale(chapter.time_base(), MKV_TIME_BASE));
+                (start, end, chapter.metadata().get("title").map(str::to_owned))
+            })
+            .collect();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(found, vec![(0, 1500, Some("Note".to_owned())), (1500, 4000, Some("Highlight: intro".to_owned()))]);
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_chapter_list_adds_none() -> Result<(), Box<dyn std::error::Error>> {
+        crate::init()?;
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+        let path = std::env::temp_dir().join(format!("cutmark_mux_nochapters_{}_{nanos}.mkv", std::process::id()));
+        let mut muxer = Muxer::create(&path, Container::Mkv)?;
+        muxer.add_video(mjpeg_params(), (1, 1000), (30, 1))?;
+        muxer.start()?;
+        write_frames(&mut muxer)?;
+        muxer.set_chapters(Vec::new());
+        muxer.finish()?;
+        let input = ffmpeg_next::format::input(&path)?;
+        let count = input.chapters().count();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(count, 0);
+        Ok(())
     }
 }

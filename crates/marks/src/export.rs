@@ -41,8 +41,20 @@ pub fn chapters(s: &Sidecar, media: usize) -> Vec<Chapter> {
         .collect()
 }
 
+/// Choices for the Markdown marks log; the default keeps the plain log.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExportOptions {
+    /// List System marks (pause, resume and the like) in the marks table.
+    pub include_system: bool,
+}
+
 /// The Markdown marks log, for people. LF line endings, no byte order mark.
 pub fn markdown(s: &Sidecar) -> String {
+    markdown_with(s, &ExportOptions::default())
+}
+
+/// The Markdown marks log with the given options.
+pub fn markdown_with(s: &Sidecar, options: &ExportOptions) -> String {
     let base = base_name(s);
     let title = s.context.as_ref().and_then(|context| context.title.as_deref()).unwrap_or(&base);
     let total_ms = s.media.iter().fold(0u64, |sum, entry| sum.saturating_add(entry.duration_ms));
@@ -74,7 +86,7 @@ pub fn markdown(s: &Sidecar) -> String {
     lines.push(table_row(header.iter().map(|cell| (*cell).to_owned())));
     lines.push(table_row(header.iter().map(|_| "---".to_owned())));
 
-    let shown = s.marks.iter().filter(|m| m.mark_type != MarkType::System);
+    let shown = s.marks.iter().filter(|m| options.include_system || m.mark_type != MarkType::System);
     for (position, m) in shown.enumerate() {
         let start = format_tc(session_ms(s, m));
         let time = match end_session_ms(s, m) {

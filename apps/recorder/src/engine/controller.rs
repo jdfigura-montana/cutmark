@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
-use super::bus::{Bus, BusSender, Command, CommandKind};
-use super::clock::MediaClock;
+use super::bus::{Bus, BusSender, Command, CommandKind, MarkKind};
+use super::marks::{MarksWarning, RecentMark, TakeMarks};
 use super::session::{RecordingSession, SessionConfig, StatsSnapshot, Summary, TrackSpec};
 use crate::config::{AudioCodecChoice, Profile, Settings, TrackKind};
 use crate::takes::{self, TakePaths};
@@ -76,6 +76,12 @@ pub struct ControllerState {
     pub settings_rev: u64,
     /// The commands handled most recently, oldest first.
     pub recent: VecDeque<Command>,
+    /// How many marks the running or last take has.
+    pub marks_count: usize,
+    /// The last 10 marks of the running or last take, oldest first, as timecode, category and label.
+    pub recent_marks: VecDeque<RecentMark>,
+    /// The text of the warning banner for a marks problem; the recording carries on.
+    pub marks_warning: Option<String>,
 }
 
 /// A message to the controller thread other than a command.
@@ -185,7 +191,8 @@ pub fn lock(shared: &Mutex<ControllerState>) -> MutexGuard<'_, ControllerState> 
 /// A take that is running or paused.
 struct ActiveTake {
     session: RecordingSession,
-    clock: MediaClock,
+    /// The take's last marks error, read after every mark and at stop.
+    marks_warning: MarksWarning,
     paused: bool,
     /// The time and byte count of the last bitrate sample.
     last_poll: Option<(Instant, u64)>,
@@ -288,10 +295,7 @@ impl Worker {
             }
             CommandKind::Mute { .. } => self.toggle_mic_mute(),
             CommandKind::SetProfile(name) => self.set_profile(name),
-            CommandKind::Mark(kind) => match &self.active {
-                Some(active) => log::info!("mark {kind:?} at {} ms of media time (marks are recorded in a later phase)", active.clock.media_ms(press)),
-                None => log::info!("mark {kind:?} ignored: no take is running"),
-            },
+            CommandKind::Mark(kind) => self.add_mark(*kind, press),
             CommandKind::GetStatus => log::info!("status requested (the control API answers it in a later phase)"),
         }
         self.update(|state| {
@@ -308,6 +312,9 @@ impl Worker {
             state.error = None;
             state.audio_notice = None;
             state.summary = None;
+            state.marks_count = 0;
+            state.recent_marks.clear();
+            state.marks_warning = None;
         });
         if let Err(err) = self.start_take_inner() {
             log::error!("could not start the recording: {err}");
@@ -344,9 +351,8 @@ impl Worker {
         };
         let session =
             RecordingSession::start(cfg).map_err(|err| StartError::Session { file: take.video_file.display().to_string(), reason: err.to_string() })?;
-        let start_qpc = session.stats().started_qpc as i64;
-        let clock = MediaClock::new(start_qpc, capture::qpc_frequency());
-        self.active = Some(ActiveTake { session, clock, paused: false, last_poll: None, last_mbps: 0.0 });
+        let marks_warning = session.marks_warning();
+        self.active = Some(ActiveTake { session, marks_warning, paused: false, last_poll: None, last_mbps: 0.0 });
         self.update(|state| {
             state.phase = Phase::Recording;
             state.take = Some(take);
@@ -354,19 +360,27 @@ impl Worker {
             state.stats = None;
             state.mbps = 0.0;
         });
+        // A sidecar that could not be started leaves its reason for the banner.
+        self.with_marks(|_| {});
         Ok(())
     }
 
     /// Stops the running take, keeps its summary for the window and returns to idle.
     fn stop_take(&mut self) {
         let Some(active) = self.active.take() else { return };
+        let marks_warning = active.marks_warning.clone();
         self.update(|state| {
             state.phase = Phase::Idle;
             state.take = None;
             state.stats = None;
             state.mbps = 0.0;
         });
-        match active.session.stop() {
+        let stopped = active.session.stop();
+        // Finishing the marks happens inside stop and may leave a warning.
+        if let Some(text) = marks_warning.take() {
+            self.update(|state| state.marks_warning = Some(text));
+        }
+        match stopped {
             Ok(summary) => {
                 log::info!("take finished: {} frames, {} bytes", summary.frames, summary.bytes_written);
                 self.update(|state| state.summary = Some(summary));
@@ -385,8 +399,8 @@ impl Worker {
             return;
         }
         active.session.pause();
-        active.clock.pause(press_qpc);
         active.paused = true;
+        self.with_marks(|marks| marks.pause(press_qpc));
         self.update(|state| state.phase = Phase::Paused);
     }
 
@@ -397,9 +411,42 @@ impl Worker {
             return;
         }
         active.session.resume();
-        active.clock.resume(press_qpc);
         active.paused = false;
+        self.with_marks(|marks| marks.resume(press_qpc));
         self.update(|state| state.phase = Phase::Recording);
+    }
+
+    /// Adds a mark of the given kind to the running take; with no take it is ignored.
+    fn add_mark(&mut self, kind: MarkKind, press_qpc: i64) {
+        if self.active.is_none() {
+            log::info!("mark {kind:?} ignored: no take is running");
+            return;
+        }
+        self.with_marks(|marks| match kind {
+            // The label popup arrives in a later phase; until then a labelled mark is a plain note.
+            MarkKind::Silent | MarkKind::WithLabel => marks.note(press_qpc),
+            MarkKind::HighlightLast => marks.highlight_last(press_qpc),
+        });
+    }
+
+    /// Changes the running take's marks, then publishes their count, list and any warning.
+    fn with_marks(&mut self, change: impl FnOnce(&mut TakeMarks)) {
+        let Some(active) = &mut self.active else { return };
+        if let Some(marks) = active.session.marks_mut() {
+            change(marks);
+        }
+        let warning = active.marks_warning.take();
+        let (count, recent) = match active.session.marks_mut() {
+            Some(marks) => (marks.count(), marks.recent().clone()),
+            None => (0, VecDeque::new()),
+        };
+        self.update(|state| {
+            state.marks_count = count;
+            state.recent_marks = recent;
+            if warning.is_some() {
+                state.marks_warning = warning;
+            }
+        });
     }
 
     /// Toggles mute on the track named Mic, or else on the first Input track, in the settings and in the running take.

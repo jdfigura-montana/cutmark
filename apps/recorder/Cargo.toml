@@ -34,6 +34,7 @@ env_logger = "0.11.11"
 global-hotkey = "0.10.0"
 hound = { workspace = true }
 log.workspace = true
+marks = { version = "0.1.0", path = "../../crates/marks" }
 media-io = { version = "0.1.0", path = "../../crates/media-io" }
 raw-window-handle = "0.6"
 rubato = { workspace = true }

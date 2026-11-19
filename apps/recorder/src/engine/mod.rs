@@ -20,6 +20,9 @@ pub mod clock;
 /// so hotkeys work while the window is hidden.
 pub mod controller;
 
+/// The marks of one take: the sidecar writer, the Markdown and CSV logs and the MKV chapters.
+pub mod marks;
+
 /// The constant frame rate pacer: QPC time to exact frame indexes, pure logic.
 pub mod pacer;
 

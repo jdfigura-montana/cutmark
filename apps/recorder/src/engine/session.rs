@@ -16,6 +16,8 @@ use media_io::encode::{Codec as EncoderCodec, EncoderConfig, Preset};
 use media_io::mux::{Container as MuxContainer, MuxSender, MuxThread, Muxer, SendParameters};
 
 use super::audio::{self, AudioMessage, AudioStart};
+use super::clock::MediaClock;
+use super::marks::{MarksWarning, TakeMarks, wav_length_ms};
 use super::video;
 use crate::config::{Codec, Container, Profile, RateControl};
 
@@ -358,6 +360,12 @@ pub struct RecordingSession {
     audio_rx: Receiver<AudioMessage>,
     audio_handle: Option<std::thread::JoinHandle<()>>,
     mux: Option<MuxThread>,
+    /// The marks of the take, until stop() finishes them.
+    marks: Option<TakeMarks>,
+    /// The last marks error, which never stops the recording.
+    marks_warning: MarksWarning,
+    /// Frames per second of the video, for the video's length at stop.
+    fps: u32,
 }
 
 impl RecordingSession {
@@ -370,6 +378,7 @@ impl RecordingSession {
         }
         media_io::init()?;
         let output_file = cfg.output_file.clone();
+        let (take_folder, base_name) = (cfg.take_folder.clone(), cfg.base_name.clone());
         let fps = cfg.profile.fps;
         let stats = Arc::new(Stats::new(&cfg.tracks));
         let stop_flag = Arc::new(AtomicBool::new(false));
@@ -464,7 +473,30 @@ impl RecordingSession {
             let _ = mux.0.finish();
             return Err(EngineError::Failed("the audio thread ended before recording started".into()));
         }
-        Ok(Self { stats, stop_flag, rx, handle: Some(handle), audio_rx, audio_handle: Some(audio_handle), mux: Some(mux.0) })
+        let marks_warning = MarksWarning::default();
+        let marks = TakeMarks::begin(&take_folder, &base_name, &output_file, fps, MediaClock::new(start_qpc, qpc_freq), marks_warning.clone());
+        Ok(Self {
+            stats,
+            stop_flag,
+            rx,
+            handle: Some(handle),
+            audio_rx,
+            audio_handle: Some(audio_handle),
+            mux: Some(mux.0),
+            marks: Some(marks),
+            marks_warning,
+            fps,
+        })
+    }
+
+    /// The take's marks, until the take is stopped.
+    pub fn marks_mut(&mut self) -> Option<&mut TakeMarks> {
+        self.marks.as_mut()
+    }
+
+    /// A handle to the take's last marks error, which stays readable after the take is stopped.
+    pub fn marks_warning(&self) -> MarksWarning {
+        self.marks_warning.clone()
     }
 
     /// Stops feeding the pacer; recording continues from the same frame on resume.
@@ -522,6 +554,14 @@ impl RecordingSession {
         if outcome.is_ok()
             && let Some(mux) = self.mux.take()
         {
+            // The marks are finished before the trailer, so the chapters go into the file.
+            if let (Some(marks), Ok(summary)) = (self.marks.take(), &outcome) {
+                let wav_files = audio.as_ref().map(|finished| finished.wav_files.clone()).unwrap_or_default();
+                let video_ms = u64::try_from(u128::from(summary.frames) * 1000 / u128::from(self.fps.max(1))).unwrap_or(u64::MAX);
+                let mut durations_ms = vec![video_ms];
+                durations_ms.extend(wav_files.iter().map(|wav| wav_length_ms(wav).unwrap_or(video_ms)));
+                mux.set_chapters(marks.finish(&wav_files, &durations_ms));
+            }
             outcome = match mux.finish() {
                 Ok(mux_summary) => outcome.map(|mut summary| {
                     let seconds = summary.duration_ms as f64 / 1000.0;

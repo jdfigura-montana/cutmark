@@ -1471,6 +1471,7 @@ dependencies = [
  "global-hotkey",
  "hound",
  "log",
+ "marks",
  "media-io",
  "raw-window-handle",
  "rubato",
