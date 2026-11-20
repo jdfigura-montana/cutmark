@@ -202,10 +202,11 @@ pub struct Settings {
     pub project: String,
     /// Template of the take folder name and the file base name, with the tokens {project}, {date}, {time}, {take} and {profile}.
     pub naming_template: String,
-    /// Countdown before recording starts: 0, 3 or 5 seconds.
+    /// Countdown before recording starts: 0 (off), 3 or 5 seconds.
     pub countdown_secs: u8,
-    /// Hide the Recorder's countdown while a prompter shows its own.
-    pub hide_countdown_when_prompter_linked: bool,
+    /// Hide the Recorder's countdown while a prompter is linked and shows its own.
+    #[serde(alias = "hide_countdown_when_prompter_linked")]
+    pub hide_countdown_when_linked: bool,
     /// The local control API.
     pub api: ApiSettings,
     /// The audio tracks, the WAV sidecar switch and the audio codec.
@@ -238,8 +239,8 @@ impl Default for Settings {
             active_profile: DEFAULT_PROFILE.to_owned(),
             project: DEFAULT_PROJECT.to_owned(),
             naming_template: DEFAULT_NAMING_TEMPLATE.to_owned(),
-            countdown_secs: 3,
-            hide_countdown_when_prompter_linked: true,
+            countdown_secs: 0,
+            hide_countdown_when_linked: true,
             api: ApiSettings::default(),
             audio: AudioSettings::default(),
             hide_from_capture: true,
@@ -521,6 +522,8 @@ mod tests {
         fs::write(dir.join("settings.json"), r#"{ "countdown_secs": 5, "api": { "port": 5000 } }"#)?;
         let settings = load_or_init_in(&dir, no_devices)?;
         assert_eq!(settings.countdown_secs, 5);
+        assert!(settings.hide_countdown_when_linked);
+        assert_eq!(Settings::default().countdown_secs, 0);
         assert_eq!(settings.api, ApiSettings { enabled: true, port: 5000 });
         assert_eq!(settings.naming_template, "{date}_{time}_take{take}");
         assert_eq!(settings.project, "Cutmark");

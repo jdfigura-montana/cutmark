@@ -25,6 +25,8 @@ pub enum Op {
     Auth {
         /// The token the client holds.
         token: String,
+        /// What kind of client this is, such as `prompter`; none when the client did not say.
+        client: Option<String>,
     },
     /// Start a take.
     Start,
@@ -193,7 +195,7 @@ fn parse_op(object: &Map<String, Value>) -> Result<Op, ParseError> {
     };
     let args = Args::new(object)?;
     match op {
-        "auth" => Ok(Op::Auth { token: args.required(&["token"])? }),
+        "auth" => Ok(Op::Auth { token: args.required(&["token"])?, client: args.string(&["client"])?.map(|client| client.trim().to_owned()) }),
         "start" => Ok(Op::Start),
         "stop" => Ok(Op::Stop),
         "pause" => Ok(Op::Pause),
@@ -255,6 +257,10 @@ fn clip_label(label: &str) -> String {
 /// The events the server announces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventKind {
+    /// The countdown before a take began.
+    CountdownStarted,
+    /// The countdown was cancelled, so no take starts.
+    CountdownCancelled,
     /// A take started.
     RecordingStarted,
     /// A take ended.
@@ -275,6 +281,8 @@ impl EventKind {
     /// The name the event has on the wire.
     pub fn name(self) -> &'static str {
         match self {
+            Self::CountdownStarted => "countdownStarted",
+            Self::CountdownCancelled => "countdownCancelled",
             Self::RecordingStarted => "recordingStarted",
             Self::RecordingStopped => "recordingStopped",
             Self::Paused => "paused",
@@ -314,7 +322,6 @@ pub fn event(kind: EventKind, data: Value) -> String {
 /// The `warning` events for the warnings raised after number `after`, oldest first, each with its number.
 ///
 /// A client that has sent everything up to number N calls this with N after every state change.
-#[allow(dead_code)]
 pub fn warning_events(state: &ControllerState, after: u64) -> Vec<(u64, String)> {
     state
         .warnings
@@ -328,7 +335,7 @@ pub fn warning_events(state: &ControllerState, after: u64) -> Vec<(u64, String)>
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatusData {
-    /// `idle`, `recording` or `paused`.
+    /// `idle`, `countdown`, `recording` or `paused`.
     pub state: &'static str,
     /// How much of the take has been recorded, in milliseconds; 0 when idle.
     pub elapsed_ms: u64,
@@ -361,6 +368,7 @@ impl StatusData {
         Self {
             state: match state.phase {
                 Phase::Idle => "idle",
+                Phase::Countdown(_) => "countdown",
                 Phase::Recording => "recording",
                 Phase::Paused => "paused",
             },
@@ -391,7 +399,7 @@ mod tests {
     use super::*;
 
     fn parsed(text: &str) -> Request {
-        parse(text).unwrap_or_else(|rejected| Request { id: rejected.id, op: Op::Auth { token: format!("rejected: {}", rejected.error) } })
+        parse(text).unwrap_or_else(|rejected| Request { id: rejected.id, op: Op::Auth { token: format!("rejected: {}", rejected.error), client: None } })
     }
 
     fn rejected(text: &str) -> Rejected {
@@ -418,7 +426,9 @@ mod tests {
 
     #[test]
     fn auth_needs_a_token() {
-        assert_eq!(parsed(r#"{"op":"auth","token":"abc"}"#).op, Op::Auth { token: "abc".to_owned() });
+        assert_eq!(parsed(r#"{"op":"auth","token":"abc"}"#).op, Op::Auth { token: "abc".to_owned(), client: None });
+        assert_eq!(parsed(r#"{"op":"auth","token":"abc","client":"prompter"}"#).op, Op::Auth { token: "abc".to_owned(), client: Some("prompter".to_owned()) });
+        assert!(matches!(rejected(r#"{"op":"auth","token":"abc","client":3}"#).error, ParseError::BadArgument(_)));
         assert!(matches!(rejected(r#"{"op":"auth"}"#).error, ParseError::BadArgument(_)));
         assert!(matches!(rejected(r#"{"op":"auth","token":5}"#).error, ParseError::BadArgument(_)));
         assert!(matches!(rejected(r#"{"op":"auth","token":"  "}"#).error, ParseError::BadArgument(_)));

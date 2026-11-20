@@ -395,7 +395,7 @@ impl RecorderApp {
             }
             self.settings_dirty = true;
         }
-        let active = state.phase != Phase::Idle;
+        let active = state.phase.has_take();
         if active != self.was_active {
             self.live_tracks.clear();
             self.was_active = active;
@@ -524,6 +524,17 @@ impl RecorderApp {
         ui.add_space(8.0);
     }
 
+    /// Draws the countdown settings: how long it counts, and whether a linked Prompter's own countdown replaces it.
+    fn countdown_section(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Countdown");
+        egui::ComboBox::from_label("Countdown before recording").selected_text(countdown_label(self.settings.countdown_secs)).show_ui(ui, |ui| {
+            for secs in COUNTDOWN_CHOICES {
+                ui.selectable_value(&mut self.settings.countdown_secs, secs, countdown_label(secs));
+            }
+        });
+        ui.checkbox(&mut self.settings.hide_countdown_when_linked, "Hide my countdown when a prompter is linked");
+    }
+
     /// Draws the hotkey list with each chord's status.
     fn hotkey_grid(&self, ui: &mut egui::Ui) {
         let warn = ui.visuals().warn_fg_color;
@@ -564,10 +575,18 @@ fn apply_capture_exclusion(hwnd: Option<isize>, exclude: bool) -> bool {
     }
 }
 
+/// The countdown lengths the settings offer, in seconds; 0 is off.
+const COUNTDOWN_CHOICES: [u8; 3] = [0, 3, 5];
+
+/// The text for a countdown length in the settings.
+fn countdown_label(secs: u8) -> String {
+    if secs == 0 { "Off".to_owned() } else { format!("{secs} seconds") }
+}
+
 /// The tray icon state that matches a controller phase.
 fn tray_state(phase: Phase) -> TrayState {
     match phase {
-        Phase::Idle => TrayState::Idle,
+        Phase::Idle | Phase::Countdown(_) => TrayState::Idle,
         Phase::Recording => TrayState::Recording,
         Phase::Paused => TrayState::Paused,
     }
@@ -674,7 +693,7 @@ impl eframe::App for RecorderApp {
             // Do not depend on the scan thread's wake-up alone: look again soon until the report has arrived.
             ctx.request_repaint_after(RECOVERY_POLL);
         }
-        let active = state.phase != Phase::Idle;
+        let active = state.phase.has_take();
         self.hide_to_tray_when_minimized(&ctx, active);
         self.sync_preview(&ctx);
         self.update_preview_activity(&ctx);
@@ -726,6 +745,8 @@ impl eframe::App for RecorderApp {
                 if active {
                     self.recording_panel(ui, &state);
                     ctx.request_repaint_after(METER_REFRESH);
+                } else if let Phase::Countdown(left) = state.phase {
+                    ui.heading(format!("Starting in {left}"));
                 } else {
                     if self.profile_section.blocked() {
                         ui.colored_label(error, "Idle. Starting is blocked until the profile errors below are fixed");
@@ -744,6 +765,9 @@ impl eframe::App for RecorderApp {
                     self.controller.set_settings(self.settings.clone());
                     self.save_settings();
                 }
+                ui.add_space(8.0);
+
+                self.countdown_section(ui);
                 ui.add_space(8.0);
 
                 self.api_section(ui);

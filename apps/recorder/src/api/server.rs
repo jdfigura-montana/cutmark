@@ -16,7 +16,7 @@ use thiserror::Error;
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{Error as WsError, Message};
 
-use super::protocol::{EventKind, Op, Request, StatusData, auth_ok, error_message, event, parse, result_error, result_ok};
+use super::protocol::{EventKind, Op, Request, StatusData, auth_ok, error_message, event, parse, result_error, result_ok, warning_events};
 use super::token;
 use crate::engine::bus::CommandKind;
 use crate::engine::controller::{ApiIntent, ApiLink, ControllerState, LastTake, Phase};
@@ -49,6 +49,9 @@ const STATUS_INTERVAL: Duration = Duration::from_secs(1);
 
 /// How many events may wait for one slow client before more are dropped for it.
 const EVENT_QUEUE: usize = 256;
+
+/// The `client` a connection names in `auth` to count as a linked Prompter.
+const PROMPTER_CLIENT: &str = "prompter";
 
 /// Asks the window to repaint, so it shows a changed client count.
 pub type Repaint = Arc<dyn Fn() + Send + Sync>;
@@ -97,12 +100,17 @@ impl Hub {
     }
 
     /// Adds a client; it gets every event broadcast from now on.
-    fn subscribe(self: &Arc<Self>) -> Subscription {
+    ///
+    /// A client that signed in as the Prompter passes the link that counts it as linked until its subscription ends.
+    fn subscribe(self: &Arc<Self>, prompter: Option<ApiLink>) -> Subscription {
         let (tx, rx) = sync_channel(EVENT_QUEUE);
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.clients().push(Subscriber { id, tx });
+        if let Some(link) = &prompter {
+            link.prompter_joined();
+        }
         (self.repaint)();
-        Subscription { id, rx, hub: Arc::clone(self) }
+        Subscription { id, rx, hub: Arc::clone(self), prompter }
     }
 
     /// Removes a client.
@@ -131,10 +139,15 @@ struct Subscription {
     id: u64,
     rx: Receiver<String>,
     hub: Arc<Hub>,
+    /// Set for a client that signed in as the Prompter; it is counted as linked until this ends.
+    prompter: Option<ApiLink>,
 }
 
 impl Drop for Subscription {
     fn drop(&mut self) {
+        if let Some(link) = &self.prompter {
+            link.prompter_left();
+        }
         self.hub.unsubscribe(self.id);
     }
 }
@@ -148,6 +161,10 @@ struct EventTracker {
     error: Option<String>,
     audio_notice: Option<String>,
     marks_warning: Option<String>,
+    /// The number of the newest `warning` event already sent.
+    warning_seq: u64,
+    /// How many cancelled countdowns were already announced.
+    countdown_cancels: u64,
 }
 
 impl EventTracker {
@@ -160,6 +177,8 @@ impl EventTracker {
             error: state.error.clone(),
             audio_notice: state.audio_notice.clone(),
             marks_warning: state.marks_warning.clone(),
+            warning_seq: state.warning_seq,
+            countdown_cancels: state.countdown_cancels,
         }
     }
 
@@ -173,8 +192,11 @@ impl EventTracker {
         if let (Phase::Idle, Some(last)) = (state.phase, &state.last_take) {
             apply_last_take(&mut status, last);
         }
+        if let (false, Phase::Countdown(seconds)) = (matches!(self.phase, Phase::Countdown(_)), state.phase) {
+            events.push(event(EventKind::CountdownStarted, json!({ "seconds": seconds })));
+        }
         let phase_event = match (self.phase, state.phase) {
-            (Phase::Idle, Phase::Recording) => Some(EventKind::RecordingStarted),
+            (Phase::Idle | Phase::Countdown(_), Phase::Recording) => Some(EventKind::RecordingStarted),
             (Phase::Recording, Phase::Paused) => Some(EventKind::Paused),
             (Phase::Paused, Phase::Recording) => Some(EventKind::Resumed),
             (Phase::Recording | Phase::Paused, Phase::Idle) => Some(EventKind::RecordingStopped),
@@ -187,10 +209,18 @@ impl EventTracker {
             }
             events.push(event(kind, status.to_value()));
         }
+        if state.countdown_cancels > self.countdown_cancels {
+            events.push(event(EventKind::CountdownCancelled, json!({})));
+        }
+        self.countdown_cancels = state.countdown_cancels;
         self.observe_marks(state, &mut events);
         warn_on_change(&mut self.error, &state.error, "recording", &mut events);
         warn_on_change(&mut self.audio_notice, &state.audio_notice, "audio", &mut events);
         warn_on_change(&mut self.marks_warning, &state.marks_warning, "marks", &mut events);
+        for (seq, message) in warning_events(state, self.warning_seq) {
+            events.push(message);
+            self.warning_seq = self.warning_seq.max(seq);
+        }
         events
     }
 
@@ -348,7 +378,7 @@ fn status_loop(link: &ApiLink, hub: &Hub, stop: &AtomicBool) {
             continue;
         }
         last = Instant::now();
-        let status = link.read_state(|state| (state.phase != Phase::Idle).then(|| StatusData::from_state(state)));
+        let status = link.read_state(|state| state.phase.has_take().then(|| StatusData::from_state(state)));
         if let Some(status) = status {
             hub.broadcast(&event(EventKind::Status, status.to_value()));
         }
@@ -496,8 +526,9 @@ fn respond(text: &str, press_qpc: i64, ctx: &ClientCtx, subscription: &mut Optio
     let request = parse(text);
     if subscription.is_none() {
         return match request {
-            Ok(Request { op: Op::Auth { token: given }, .. }) if token::matches(&ctx.token, &given) => {
-                *subscription = Some(ctx.hub.subscribe());
+            Ok(Request { op: Op::Auth { token: given, client }, .. }) if token::matches(&ctx.token, &given) => {
+                let prompter = client.is_some_and(|client| client.eq_ignore_ascii_case(PROMPTER_CLIENT)).then(|| ctx.link.clone());
+                *subscription = Some(ctx.hub.subscribe(prompter));
                 (vec![auth_ok()], false)
             }
             _ => (vec![error_message("unauthorized")], true),
@@ -549,8 +580,10 @@ fn execute(link: &ApiLink, op: Op, press_qpc: i64, limiter: &mut PositionLimiter
             Ok(json!({}))
         }
         Op::Start => {
-            if phase != Phase::Idle {
-                return Err("a take is already running".to_owned());
+            match phase {
+                Phase::Idle => {}
+                Phase::Countdown(_) => return Err("the countdown is already running".to_owned()),
+                Phase::Recording | Phase::Paused => return Err("a take is already running".to_owned()),
             }
             link.send(CommandKind::StartStop, Some(ApiIntent::Start), press_qpc)?;
             Ok(json!({}))
@@ -564,7 +597,7 @@ fn execute(link: &ApiLink, op: Op, press_qpc: i64, limiter: &mut PositionLimiter
         }
         Op::Pause => {
             match phase {
-                Phase::Idle => return Err("no take is running".to_owned()),
+                Phase::Idle | Phase::Countdown(_) => return Err("no take is running".to_owned()),
                 Phase::Paused => return Err("the take is already paused".to_owned()),
                 Phase::Recording => {}
             }
@@ -573,7 +606,7 @@ fn execute(link: &ApiLink, op: Op, press_qpc: i64, limiter: &mut PositionLimiter
         }
         Op::Resume => {
             match phase {
-                Phase::Idle => return Err("no take is running".to_owned()),
+                Phase::Idle | Phase::Countdown(_) => return Err("no take is running".to_owned()),
                 Phase::Recording => return Err("the take is not paused".to_owned()),
                 Phase::Paused => {}
             }
@@ -581,7 +614,7 @@ fn execute(link: &ApiLink, op: Op, press_qpc: i64, limiter: &mut PositionLimiter
             Ok(json!({}))
         }
         Op::Mark { category, label } => {
-            if phase == Phase::Idle {
+            if !phase.has_take() {
                 return Err("no take is running".to_owned());
             }
             link.send(CommandKind::LabeledMark { category, label }, Some(ApiIntent::Mark), press_qpc)?;
@@ -628,6 +661,7 @@ mod tests {
     use tungstenite::{Message, WebSocket};
 
     use super::*;
+    use crate::engine::controller::WarningNote;
 
     type Client = WebSocket<MaybeTlsStream<TcpStream>>;
 
@@ -897,6 +931,94 @@ mod tests {
         // Positions 10 ms apart are limited, but the newest still arrives once the spacing has passed.
         let third = script.recv_timeout(WAIT)?;
         assert!(matches!(&third, ScriptMsg::Position(position) if position.line == 4));
+        Ok(())
+    }
+
+    #[test]
+    fn a_countdown_announces_its_start_and_its_cancel_but_not_each_tick() {
+        let mut tracker = EventTracker::default();
+        let mut state = ControllerState { phase: Phase::Countdown(3), ..ControllerState::default() };
+        let events = tracker.observe(&state);
+        assert_eq!(names(&events), ["countdownStarted"]);
+        let started: Value = serde_json::from_str(&events[0]).unwrap_or(Value::Null);
+        assert_eq!(started["data"], json!({ "seconds": 3 }));
+        state.phase = Phase::Countdown(2);
+        assert!(tracker.observe(&state).is_empty());
+        state.phase = Phase::Idle;
+        state.countdown_cancels = 1;
+        assert_eq!(names(&tracker.observe(&state)), ["countdownCancelled"]);
+        assert!(tracker.observe(&state).is_empty());
+    }
+
+    #[test]
+    fn a_countdown_that_ends_starts_the_take_and_a_failed_start_is_no_cancel() {
+        let mut tracker = EventTracker::default();
+        let mut state = ControllerState { phase: Phase::Countdown(5), ..ControllerState::default() };
+        assert_eq!(names(&tracker.observe(&state)), ["countdownStarted"]);
+        state.phase = Phase::Recording;
+        assert_eq!(names(&tracker.observe(&state)), ["recordingStarted"]);
+
+        let mut failed = ControllerState { phase: Phase::Countdown(3), ..ControllerState::default() };
+        let mut tracker = EventTracker::baseline(&failed);
+        failed.phase = Phase::Idle;
+        failed.error = Some("disk".to_owned());
+        assert_eq!(names(&tracker.observe(&failed)), ["warning"]);
+    }
+
+    #[test]
+    fn each_raised_warning_is_sent_once() {
+        let mut tracker = EventTracker::default();
+        let mut state = ControllerState::default();
+        state.warnings.push_back(WarningNote { seq: 1, code: "disk_low".to_owned(), message: "Low disk space".to_owned() });
+        state.warning_seq = 1;
+        let events = tracker.observe(&state);
+        assert_eq!(names(&events), ["warning"]);
+        let warning: Value = serde_json::from_str(&events[0]).unwrap_or(Value::Null);
+        assert_eq!(warning["data"], json!({ "code": "disk_low", "message": "Low disk space" }));
+        assert!(tracker.observe(&state).is_empty());
+        state.warnings.push_back(WarningNote { seq: 2, code: "device_lost".to_owned(), message: "Track Mic lost".to_owned() });
+        state.warning_seq = 2;
+        assert_eq!(names(&tracker.observe(&state)), ["warning"]);
+        // A server started later does not replay what was raised before it.
+        assert!(EventTracker::baseline(&state).observe(&state).is_empty());
+    }
+
+    #[test]
+    fn a_client_that_signs_in_as_prompter_counts_as_linked_while_it_is_open() -> Result<(), Box<dyn Error>> {
+        let (link, _bus) = ApiLink::detached(ControllerState::default());
+        let server = ApiServer::start(0, "right".to_owned(), link.clone(), no_repaint())?;
+        let _plain = signed_in(server.port(), "right")?;
+        assert_eq!(link.read_state(|state| state.prompters), 0);
+
+        let mut prompter = connect(server.port())?;
+        say(&mut prompter, &json!({ "op": "auth", "token": "right", "client": "prompter" }))?;
+        assert_eq!(hear(&mut prompter)?, json!({ "op": "auth", "ok": true }));
+        assert_eq!(link.read_state(|state| state.prompters), 1);
+
+        prompter.close(None)?;
+        drop(prompter);
+        let deadline = Instant::now() + WAIT;
+        while link.read_state(|state| state.prompters) != 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(link.read_state(|state| state.prompters), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn a_stop_during_the_countdown_is_queued_but_a_start_or_pause_is_refused() -> Result<(), Box<dyn Error>> {
+        let (link, bus) = ApiLink::detached(ControllerState { phase: Phase::Countdown(3), ..ControllerState::default() });
+        let server = ApiServer::start(0, "right".to_owned(), link, no_repaint())?;
+        let mut client = signed_in(server.port(), "right")?;
+        for op in ["start", "pause", "resume", "mark"] {
+            say(&mut client, &json!({ "op": op, "id": op }))?;
+            assert_eq!(hear(&mut client)?["ok"], json!(false), "{op}");
+        }
+        assert!(bus.recv_timeout(Duration::from_millis(100)).is_none());
+        say(&mut client, &json!({ "op": "stop", "id": "s" }))?;
+        assert_eq!(hear(&mut client)?["ok"], json!(true));
+        let command = bus.recv_timeout(WAIT).ok_or("the stop command did not reach the bus")?;
+        assert_eq!(command.kind, CommandKind::StartStop);
         Ok(())
     }
 

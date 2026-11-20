@@ -18,6 +18,7 @@ use super::script::{PositionMsg, ScriptMsg, ScriptSnapshot, TakeScript};
 use super::session::{RecordingSession, SessionConfig, StatsSnapshot, Summary, TrackSpec};
 use super::stats::{self, GIB, StatsTracker, TakeStats};
 use crate::config::{AudioCodecChoice, Profile, Settings, TrackKind};
+use crate::countdown::CountdownHandle;
 use crate::label_popup::PopupHandle;
 use crate::profiles;
 use crate::takes::{self, TakePaths};
@@ -67,16 +68,28 @@ const BANNER_LIMIT: usize = 6;
 /// How many raised warnings the state keeps for the API.
 const WARNING_LOG_LIMIT: usize = 32;
 
+/// The time between two numbers of the countdown.
+const COUNTDOWN_STEP: Duration = Duration::from_secs(1);
+
 /// What the Recorder is doing right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Phase {
     /// No take is running.
     #[default]
     Idle,
+    /// The countdown before a take is running; the number is the seconds left.
+    Countdown(u8),
     /// A take is running.
     Recording,
     /// A take is running but paused.
     Paused,
+}
+
+impl Phase {
+    /// Whether a take is running or paused, which is neither idle nor counting down.
+    pub fn has_take(self) -> bool {
+        matches!(self, Self::Recording | Self::Paused)
+    }
 }
 
 /// The numbers of a take that has just ended, kept for the `recordingStopped` event.
@@ -106,7 +119,7 @@ pub struct WarningNote {
 /// Everything the window draws, published by the controller thread.
 #[derive(Default)]
 pub struct ControllerState {
-    /// Idle, recording or paused.
+    /// Idle, counting down, recording or paused.
     pub phase: Phase,
     /// The paths of the running take.
     pub take: Option<TakePaths>,
@@ -154,6 +167,10 @@ pub struct ControllerState {
     pub warnings: VecDeque<WarningNote>,
     /// How many warnings were raised so far; the newest note carries this number.
     pub warning_seq: u64,
+    /// How many countdowns were cancelled so far, so the API can announce each one.
+    pub countdown_cancels: u64,
+    /// How many open API connections signed in as the Prompter.
+    pub prompters: usize,
 }
 
 /// A function the controller calls with the state after every change, while it holds the state lock.
@@ -200,6 +217,8 @@ pub enum ApiIntent {
     Mark,
     /// Toggle mute on the named track, or on the mic track when none is named.
     Mute(Option<String>),
+    /// Esc was pressed: cancel a running countdown, and do nothing otherwise.
+    Escape,
 }
 
 /// The intents of API commands that are queued on the bus, found again by their press time.
@@ -263,6 +282,17 @@ impl ApiLink {
         let (script, script_rx) = mpsc::channel();
         let link = Self { bus: bus.sender(), tags: ApiTags::default(), shared: Arc::new(Mutex::new(state)), listeners: Arc::new(Listeners::default()), script };
         (link, bus, script_rx)
+    }
+
+    /// Counts a connection that signed in as the Prompter, until [`ApiLink::prompter_left`].
+    pub fn prompter_joined(&self) {
+        lock(&self.shared).prompters += 1;
+    }
+
+    /// Stops counting a Prompter connection that has closed.
+    pub fn prompter_left(&self) {
+        let mut state = lock(&self.shared);
+        state.prompters = state.prompters.saturating_sub(1);
     }
 
     /// Reads the controller state through `read` while holding its lock; keep `read` short.
@@ -341,6 +371,7 @@ impl Controller {
         let listeners = Arc::new(Listeners::default());
         listeners.add(listener);
         let tags = ApiTags::default();
+        let overlay = CountdownHandle::start(escape_callback(bus_sender.clone(), tags.clone()));
         let (script_tx, script_rx) = mpsc::channel();
         let worker = Worker {
             bus,
@@ -356,6 +387,8 @@ impl Controller {
             popup,
             deferred: VecDeque::new(),
             last_idle_check: None,
+            countdown: None,
+            overlay,
         };
         let handle = match std::thread::Builder::new().name("controller".to_owned()).spawn(move || worker.run()) {
             Ok(handle) => Some(handle),
@@ -478,6 +511,96 @@ struct Worker {
     deferred: VecDeque<Command>,
     /// When the free space was last read while idle.
     last_idle_check: Option<Instant>,
+    /// The countdown that runs before the take, if one does.
+    countdown: Option<CountdownRun>,
+    /// The overlay that shows the countdown, and the Esc hotkey that cancels it.
+    overlay: CountdownHandle,
+}
+
+/// The callback the countdown overlay calls on Esc: it queues a start/stop command that carries the Escape intent.
+fn escape_callback(bus: BusSender, tags: ApiTags) -> Box<dyn Fn() + Send + Sync> {
+    Box::new(move || {
+        let press_qpc = capture::qpc_now();
+        tags.insert(press_qpc, ApiIntent::Escape);
+        if bus.send(Command::new(CommandKind::StartStop, press_qpc)).is_err() {
+            tags.remove(press_qpc);
+        }
+    })
+}
+
+/// A countdown that is running: the seconds left, and when the next one is due.
+#[derive(Debug, Clone, Copy)]
+struct CountdownRun {
+    remaining: u8,
+    next_tick: Instant,
+    /// Whether the overlay shows the numbers.
+    visible: bool,
+}
+
+/// What one second of countdown did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tick {
+    /// The countdown goes on with this many seconds left.
+    Running(u8),
+    /// The countdown reached zero, so the take starts.
+    Done,
+}
+
+impl CountdownRun {
+    /// A countdown of `secs` seconds that begins at `now`.
+    fn new(secs: u8, now: Instant, visible: bool) -> Self {
+        Self { remaining: secs, next_tick: now + COUNTDOWN_STEP, visible }
+    }
+
+    /// Moves on by one second when it is due at `now`; `None` while the current second is still running.
+    fn tick(&mut self, now: Instant) -> Option<Tick> {
+        if now < self.next_tick {
+            return None;
+        }
+        self.next_tick += COUNTDOWN_STEP;
+        self.remaining = self.remaining.saturating_sub(1);
+        Some(if self.remaining == 0 { Tick::Done } else { Tick::Running(self.remaining) })
+    }
+}
+
+/// The length of the countdown the settings ask for, or none when it is off.
+fn countdown_length(secs: u8) -> Option<u8> {
+    (secs > 0).then_some(secs)
+}
+
+/// What a command does when it reaches the controller, given whether a countdown is running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    /// Cancel the countdown; no take starts.
+    Cancel,
+    /// Do nothing with the command.
+    Ignore,
+    /// Handle the command as usual.
+    Pass,
+}
+
+/// Decides what a command does while a countdown may be running.
+///
+/// Esc or a second start/stop cancels it; pause, marks and profile changes are ignored until it is over.
+fn countdown_verdict(counting: bool, kind: &CommandKind, intent: Option<&ApiIntent>) -> Verdict {
+    if intent == Some(&ApiIntent::Escape) {
+        return if counting { Verdict::Cancel } else { Verdict::Ignore };
+    }
+    if !counting {
+        return Verdict::Pass;
+    }
+    match kind {
+        // An API start is "make sure a take runs", which the countdown already does.
+        CommandKind::StartStop if intent == Some(&ApiIntent::Start) => Verdict::Ignore,
+        CommandKind::StartStop => Verdict::Cancel,
+        CommandKind::Pause
+        | CommandKind::Resume
+        | CommandKind::PauseResume
+        | CommandKind::Mark(_)
+        | CommandKind::LabeledMark { .. }
+        | CommandKind::SetProfile(_) => Verdict::Ignore,
+        CommandKind::Mute { .. } | CommandKind::GetStatus => Verdict::Pass,
+    }
 }
 
 impl Worker {
@@ -485,13 +608,15 @@ impl Worker {
     fn run(mut self) {
         while self.drain_control() {
             self.drain_script();
-            let wait = if self.active.is_some() { ACTIVE_POLL } else { IDLE_POLL };
+            let wait = if self.active.is_some() || self.countdown.is_some() { ACTIVE_POLL } else { IDLE_POLL };
             if let Some(command) = self.deferred.pop_front().or_else(|| self.bus.recv_timeout(wait)) {
                 self.handle(command);
             }
+            self.poll_countdown();
             self.poll_stats();
             self.poll_idle_disk();
         }
+        self.cancel_countdown();
         self.stop_take();
     }
 
@@ -563,12 +688,27 @@ impl Worker {
             CommandKind::StartStop | CommandKind::LabeledMark { .. } | CommandKind::Mute { .. } => self.tags.remove(press),
             _ => None,
         };
-        match &command.kind {
+        match countdown_verdict(self.countdown.is_some(), &command.kind, intent.as_ref()) {
+            Verdict::Cancel => self.cancel_countdown(),
+            Verdict::Ignore => log::info!("command ignored: {:?} does nothing now", command.kind),
+            Verdict::Pass => self.run_command(&command.kind, intent, press),
+        }
+        self.update(|state| {
+            if state.recent.len() == RECENT_LIMIT {
+                state.recent.pop_front();
+            }
+            state.recent.push_back(command);
+        });
+    }
+
+    /// Carries out a command that the countdown let through.
+    fn run_command(&mut self, kind: &CommandKind, intent: Option<ApiIntent>, press: i64) {
+        match kind {
             CommandKind::StartStop => match (self.active.is_some(), &intent) {
                 (true, Some(ApiIntent::Start)) => log::info!("start ignored: a take is already running"),
                 (false, Some(ApiIntent::Stop)) => log::info!("stop ignored: no take is running"),
                 (true, _) => self.stop_take(),
-                (false, _) => self.start_take(),
+                (false, _) => self.begin_take(),
             },
             CommandKind::Pause => self.pause(press),
             CommandKind::Resume => self.resume(press),
@@ -591,11 +731,58 @@ impl Worker {
             }
             CommandKind::GetStatus => log::info!("status requested (the control API reads it from the shared state)"),
         }
-        self.update(|state| {
-            if state.recent.len() == RECENT_LIMIT {
-                state.recent.pop_front();
+    }
+
+    /// Starts the countdown when the settings ask for one, or else the take at once.
+    fn begin_take(&mut self) {
+        match countdown_length(self.settings.countdown_secs) {
+            Some(secs) => self.start_countdown(secs),
+            None => self.start_take(),
+        }
+    }
+
+    /// Enters the countdown: arms Esc, shows the overlay unless a linked Prompter shows its own, and publishes the phase.
+    fn start_countdown(&mut self, secs: u8) {
+        let linked = lock(&self.shared).prompters > 0;
+        let visible = !(self.settings.hide_countdown_when_linked && linked);
+        self.countdown = Some(CountdownRun::new(secs, Instant::now(), visible));
+        self.overlay.arm();
+        if visible {
+            self.overlay.show(secs);
+        }
+        self.update(|state| state.phase = Phase::Countdown(secs));
+    }
+
+    /// Moves the countdown on by a second when one is due, and starts the take when it reaches zero.
+    fn poll_countdown(&mut self) {
+        let Some(run) = &mut self.countdown else { return };
+        let tick = run.tick(Instant::now());
+        let visible = run.visible;
+        match tick {
+            None => {}
+            Some(Tick::Running(left)) => {
+                if visible {
+                    self.overlay.show(left);
+                }
+                self.update(|state| state.phase = Phase::Countdown(left));
             }
-            state.recent.push_back(command);
+            Some(Tick::Done) => {
+                self.countdown = None;
+                self.overlay.hide();
+                self.start_take();
+            }
+        }
+    }
+
+    /// Ends a running countdown without a take: hides the overlay, releases Esc and announces the cancel.
+    fn cancel_countdown(&mut self) {
+        if self.countdown.take().is_none() {
+            return;
+        }
+        self.overlay.hide();
+        self.update(|state| {
+            state.phase = Phase::Idle;
+            state.countdown_cancels += 1;
         });
     }
 
@@ -614,7 +801,11 @@ impl Worker {
         });
         if let Err(err) = self.start_take_inner() {
             log::error!("could not start the recording: {err}");
-            self.update(|state| state.error = Some(err.to_string()));
+            self.update(|state| {
+                state.error = Some(err.to_string());
+                // A countdown that just ran out leaves its last number behind otherwise.
+                state.phase = Phase::Idle;
+            });
         }
     }
 
@@ -1067,7 +1258,7 @@ impl Monitor {
                     alerts.push(Alert {
                         code: "device_lost",
                         message: format!("The audio device of track {name} was lost. It records silence until the device returns."),
-                        banner: false,
+                        banner: true,
                         sound: false,
                         mark: Some(("recorder.device_lost", (*name).to_owned())),
                         stop: false,
@@ -1249,7 +1440,64 @@ mod tests {
         let lost = monitor.check(secs(1.0), &fine, &[("Mic", true)], false);
         assert_eq!(lost.len(), 1);
         assert_eq!(lost[0].mark, Some(("recorder.device_lost", "Mic".to_owned())));
+        assert!(lost[0].banner && lost[0].message.contains("track Mic"));
         assert!(monitor.check(secs(1.5), &fine, &[("Mic", true)], true).is_empty());
+    }
+
+    #[test]
+    fn a_countdown_is_only_for_a_length_above_zero() {
+        assert_eq!(countdown_length(0), None);
+        assert_eq!(countdown_length(3), Some(3));
+        assert_eq!(countdown_length(5), Some(5));
+    }
+
+    #[test]
+    fn a_countdown_ticks_once_a_second_and_ends_at_zero() {
+        let start = Instant::now();
+        let mut run = CountdownRun::new(3, start, true);
+        assert_eq!(run.remaining, 3);
+        assert_eq!(run.tick(start), None);
+        assert_eq!(run.tick(start + Duration::from_millis(999)), None);
+        assert_eq!(run.tick(start + Duration::from_secs(1)), Some(Tick::Running(2)));
+        // The same second is not counted twice.
+        assert_eq!(run.tick(start + Duration::from_millis(1500)), None);
+        assert_eq!(run.tick(start + Duration::from_secs(2)), Some(Tick::Running(1)));
+        assert_eq!(run.tick(start + Duration::from_secs(3)), Some(Tick::Done));
+    }
+
+    #[test]
+    fn esc_cancels_a_countdown_and_does_nothing_without_one() {
+        let escape = Some(ApiIntent::Escape);
+        assert_eq!(countdown_verdict(true, &CommandKind::StartStop, escape.as_ref()), Verdict::Cancel);
+        // Esc pressed just as the take began must not stop that take.
+        assert_eq!(countdown_verdict(false, &CommandKind::StartStop, escape.as_ref()), Verdict::Ignore);
+    }
+
+    #[test]
+    fn a_second_start_or_stop_cancels_a_countdown() {
+        assert_eq!(countdown_verdict(true, &CommandKind::StartStop, None), Verdict::Cancel);
+        assert_eq!(countdown_verdict(true, &CommandKind::StartStop, Some(&ApiIntent::Stop)), Verdict::Cancel);
+        assert_eq!(countdown_verdict(true, &CommandKind::StartStop, Some(&ApiIntent::Start)), Verdict::Ignore);
+        // With no countdown a start/stop is handled as usual.
+        assert_eq!(countdown_verdict(false, &CommandKind::StartStop, None), Verdict::Pass);
+    }
+
+    #[test]
+    fn pause_marks_and_profile_changes_are_ignored_during_a_countdown() {
+        let ignored = [
+            CommandKind::Pause,
+            CommandKind::Resume,
+            CommandKind::PauseResume,
+            CommandKind::Mark(MarkKind::Silent),
+            CommandKind::LabeledMark { category: ::marks::MarkType::Note, label: None },
+            CommandKind::SetProfile("Any".to_owned()),
+        ];
+        for kind in &ignored {
+            assert_eq!(countdown_verdict(true, kind, None), Verdict::Ignore, "{kind:?}");
+            assert_eq!(countdown_verdict(false, kind, None), Verdict::Pass, "{kind:?}");
+        }
+        assert_eq!(countdown_verdict(true, &CommandKind::GetStatus, None), Verdict::Pass);
+        assert_eq!(countdown_verdict(true, &CommandKind::Mute { track: 0 }, None), Verdict::Pass);
     }
 
     #[test]

@@ -14,11 +14,20 @@ The API token, shown in the Recorder's Control API section.
 The API port. Defaults to 4466.
 
 .PARAMETER Prompter
-Runs a fake Prompter instead of the basic run: sends a 20-line script snapshot, starts a take, sends a scriptPosition
-every 500 ms for lines 1 to 20, marks a Retake at line 8, then stops. The take folder gets _script.md and _script.csv.
+Runs a fake Prompter instead of the basic run: authenticates with client "prompter", sends a 20-line script snapshot,
+starts a take, prints the countdown events, waits for the take to begin, sends a scriptPosition every 500 ms for
+lines 1 to 20, marks a Retake at line 8, then stops. The take folder gets _script.md and _script.csv.
+With the Recorder's countdown on, the Recorder's own overlay stays hidden while this fake Prompter is connected.
+
+.PARAMETER Countdown
+Adds a countdown check to the basic run: sends start, waits 1 s, then sends stop during the countdown, and prints
+countdownCancelled. Set the Recorder's countdown to 3 or 5 seconds first.
 
 .EXAMPLE
 .\scripts\recorder-api-test.ps1 -Token 0123abcd...
+
+.EXAMPLE
+.\scripts\recorder-api-test.ps1 -Token 0123abcd... -Countdown
 
 .EXAMPLE
 .\scripts\recorder-api-test.ps1 -Token 0123abcd... -Prompter
@@ -29,7 +38,9 @@ param(
 
     [int]$Port = 4466,
 
-    [switch]$Prompter
+    [switch]$Prompter,
+
+    [switch]$Countdown
 )
 
 $ErrorActionPreference = 'Stop'
@@ -50,6 +61,7 @@ function Connect-Recorder {
         Text    = New-Object System.Text.StringBuilder
         Pending = $null
         Closed  = $false
+        Seen    = @{}
     }
 }
 
@@ -63,6 +75,7 @@ function Send-Message {
 }
 
 # Prints every message that arrives within the given time, and returns them as parsed objects.
+# Countdown events get an extra line, and every event name is remembered in $Connection.Seen.
 function Receive-For {
     param($Connection, [int]$Milliseconds)
     $deadline = [DateTime]::UtcNow.AddMilliseconds($Milliseconds)
@@ -97,10 +110,26 @@ function Receive-For {
             $message = $text | ConvertFrom-Json
             $tag = if ($message.op -eq 'event') { 'event' } else { 'reply' }
             Write-Stamped $tag $text
+            if ($message.op -eq 'event') {
+                $Connection.Seen[[string]$message.event] = $true
+                if ($message.event -like 'countdown*') {
+                    Write-Stamped 'count' "$($message.event) $($message.data | ConvertTo-Json -Compress)"
+                }
+            }
             $received += $message
         }
     }
     return , $received
+}
+
+# Waits up to the given time for an event with this name, which may already have arrived; true when it did.
+function Wait-ForEvent {
+    param($Connection, [string]$Name, [int]$Milliseconds)
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($Milliseconds)
+    while (-not $Connection.Closed -and -not $Connection.Seen[$Name] -and [DateTime]::UtcNow -lt $deadline) {
+        [void](Receive-For $Connection 250)
+    }
+    return [bool]$Connection.Seen[$Name]
 }
 
 # Sends a command and waits up to five seconds for the result that carries its id, printing events on the way.
@@ -137,12 +166,17 @@ function Invoke-FakePrompter {
 
     Write-Host "== Fake Prompter, port $Port =="
     $connection = Connect-Recorder $Port
-    Send-Message $connection @{ op = 'auth'; token = $Token }
+    Send-Message $connection @{ op = 'auth'; token = $Token; client = 'prompter' }
     [void](Receive-For $connection 1000)
 
     [void](Invoke-Command-Api $connection @{ op = 'scriptSnapshot'; id = 1; scriptId = 'fake-1'; title = 'Fake script'; markdown = $markdown })
+    $connection.Seen.Remove('recordingStarted')
     [void](Invoke-Command-Api $connection @{ op = 'start'; id = 2 })
-    [void](Receive-For $connection 2000)
+    # With a countdown on, the take begins only after it, and positions sent before that are ignored.
+    if (-not (Wait-ForEvent $connection 'recordingStarted' 10000)) {
+        Write-Stamped 'warn' 'no recordingStarted event arrived'
+    }
+    [void](Receive-For $connection 1500)
 
     for ($number = 1; $number -le 20; $number++) {
         $text = $lines[$number - 1]
@@ -171,6 +205,23 @@ Send-Message $connection @{ op = 'auth'; token = $Token }
 [void](Receive-For $connection 1000)
 
 [void](Invoke-Command-Api $connection @{ op = 'getStatus'; id = 1 })
+
+if ($Countdown) {
+    Write-Host '== Countdown: start, then stop during the countdown =='
+    $connection.Seen.Remove('countdownCancelled')
+    [void](Invoke-Command-Api $connection @{ op = 'start'; id = 10 })
+    [void](Receive-For $connection 1000)
+    [void](Invoke-Command-Api $connection @{ op = 'stop'; id = 11 })
+    [void](Receive-For $connection 1500)
+    if ($connection.Seen['countdownCancelled']) {
+        Write-Stamped 'ok' 'countdownCancelled arrived'
+    }
+    else {
+        Write-Stamped 'warn' 'no countdownCancelled event arrived; is the Recorder countdown set to 3 or 5 seconds?'
+    }
+    Write-Host '== Basic run =='
+}
+
 [void](Invoke-Command-Api $connection @{ op = 'start'; id = 2 })
 [void](Receive-For $connection 5000)
 [void](Invoke-Command-Api $connection @{ op = 'mark'; id = 3; type = 'Note'; label = 'api test' })

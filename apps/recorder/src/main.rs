@@ -5,6 +5,7 @@
 mod api;
 mod app;
 mod config;
+mod countdown;
 mod engine;
 mod hotkeys;
 mod label_popup;
