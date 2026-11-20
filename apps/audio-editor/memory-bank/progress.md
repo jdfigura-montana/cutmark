@@ -1,3 +1,6 @@
+## Task S1 phase 1 (2026-11-19)
+UI inventory DONE, docs only: docs/audio-editor/ui-inventory.md (versions, glow, every ui/ file, theme values, hard-coded style outside theme.rs, custom widgets, all shortcuts, dialogs and screens, ui-kit pub items and its users, gaps vs the S1 spec's "Audio editor mapping" table). Surprises: the app is already on eframe wgpu (no glow anywhere, stale glow notes in S0-Workspace.md and check.ps1); the audio editor uses no ui_kit; ui-kit palette has 21 color constants, the S1 spec says 25. check.ps1 green. Details in activeContext.md.
+
 ## Task 12.3b (2026-11-14)
 Ctrl+S now saves while a take is recording (the take keeps going; Ctrl+N/O/Shift+S/R and all other shortcuts stay ignored). The messages dialog is titled per message: Recording (arm, too short, dropped audio, device lost, failed take, input not found), Media (import, relink, missing media, bin/timeline messages), Project (autosave, cleanup); a batch with mixed titles is shown as "Messages". Version 1.1.0 (Cargo.toml, README with a Recording line and Ctrl+R, memory-bank); phases 11 and 12 complete. Installer dist\CutMark-Setup-1.1.0.exe (7.23 MB), exe File/Product version 1.1.0. fmt/clippy -D warnings clean; cargo test 656 passed (+5); release exe 10:21:13. Details in activeContext.md.
 
