@@ -36,11 +36,11 @@
     --color-text-tertiary: #8E8E93;
     /* accent */
     --accent-accent: #5B9DFF;
-    --accent-content: #C7D9F5;
+    --accent-content: #C1D9FD;
     --accent-hover: #7DB1FF;
     --accent-on: #0A0A0B;
-    --accent-pressed: #4A86E0;
-    --accent-tint: #1F2A3D;
+    --accent-pressed: #4687E7;
+    --accent-tint: #1A273A;
     --accent-preset-blue: #5B9DFF;
     --accent-preset-orange: #FF9F0A;
     --accent-preset-teal: #45D3C7;
