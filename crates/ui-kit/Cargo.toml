@@ -7,9 +7,12 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
-# Strict lint set (S0 spec, Lints). Same as crates/cutmark-hotkeys except unsafe_code is "forbid": this crate has no unsafe code and no Win32 calls.
+# Strict lint set (S0 spec, Lints). Same as crates/cutmark-hotkeys, except unsafe_code is "deny":
+# the appearance tests set CUTMARK_APPEARANCE_PATH (edition 2024 makes env::set_var unsafe) and the
+# Win32 chrome in phase 7 needs it too. Each unsafe block carries #[allow(unsafe_code)] and a
+# safety comment.
 [lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 
 [lints.clippy]
 dbg_macro = "warn"
@@ -22,6 +25,8 @@ panic = "deny"
 eframe.workspace = true
 egui.workspace = true
 egui-phosphor.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [build-dependencies]
 serde_json.workspace = true

@@ -13,12 +13,15 @@
 //! sit in `assets/fonts` and must ship with any installer that uses ui-kit.
 
 pub mod accent;
+pub mod appearance;
 pub mod fonts;
 pub mod meter;
 pub mod palette;
+pub mod theme;
 pub mod tokens;
 
 pub use meter::level_meter;
+pub use theme::Theme;
 
 use palette::{
     ACCENT, BORDER, CONTROL_BORDER, CONTROL_FILL, CONTROL_HOVER, CONTROL_ROUNDING, FAINT_BG, PANEL_BG, RECESSED, TEXT_MUTED, TEXT_NORMAL, TEXT_PRIMARY,
@@ -98,6 +101,10 @@ pub fn apply(ctx: &egui::Context) {
     });
 
     ctx.set_visuals(v);
+
+    // The runtime theme rides along in the context; the Visuals above keep the
+    // static palette until phase 6 makes them read from the Theme.
+    Theme::set(ctx, appearance::load());
 }
 
 #[cfg(test)]
