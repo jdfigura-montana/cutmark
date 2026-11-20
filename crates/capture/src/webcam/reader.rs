@@ -3,7 +3,7 @@
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, Once, PoisonError, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -12,8 +12,9 @@ use super::{CameraControls, ComGuard, MfGuard, RunningStats, hns_to_qpc, qpc_tic
 use crate::{CaptureError, Gpu, qpc_frequency, qpc_now, with_context};
 use windows::Win32::Graphics::Direct3D10::ID3D10Multithread;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_BIND_SHADER_RESOURCE, D3D11_BOX, D3D11_CPU_ACCESS_WRITE, D3D11_MAP_WRITE, D3D11_MAPPED_SUBRESOURCE, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
-    D3D11_USAGE_STAGING, ID3D11Texture2D,
+    D3D11_BIND_DECODER, D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_BOX, D3D11_CPU_ACCESS_WRITE, D3D11_FORMAT_SUPPORT,
+    D3D11_FORMAT_SUPPORT_DECODER_OUTPUT, D3D11_FORMAT_SUPPORT_RENDER_TARGET, D3D11_FORMAT_SUPPORT_SHADER_SAMPLE, D3D11_FORMAT_SUPPORT_VIDEO_PROCESSOR_INPUT,
+    D3D11_MAP_WRITE, D3D11_MAPPED_SUBRESOURCE, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_NV12, DXGI_SAMPLE_DESC};
 use windows::Win32::Media::MediaFoundation::{
@@ -282,10 +283,9 @@ impl Session {
     fn open(gpu: &Gpu, camera_id: &str, format: &CameraFormat) -> Result<Self, CaptureError> {
         enable_multithread_protection(gpu);
         let mut ring = Vec::with_capacity(RING_LEN);
+        let candidates = ring_bind_candidates(gpu);
         for _ in 0..RING_LEN {
-            let texture = create_nv12_texture(gpu, format.width, format.height, D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE.0 as u32, 0)
-                .or_else(|_| create_nv12_texture(gpu, format.width, format.height, D3D11_USAGE_DEFAULT, 0, 0))?;
-            ring.push(texture);
+            ring.push(create_ring_texture(gpu, format.width, format.height, &candidates)?);
         }
         let mut manager = create_device_manager(gpu);
         let mut built = None;
@@ -549,6 +549,46 @@ fn create_device_manager(gpu: &Gpu) -> Option<IMFDXGIDeviceManager> {
         return None;
     }
     Some(manager)
+}
+
+/// The bind flags to try for the NV12 ring textures, the combination the device reports support for first.
+///
+/// A video processor input view needs a texture with a bind flag it accepts, so there is no zero fallback.
+/// The format support of the device is logged once.
+fn ring_bind_candidates(gpu: &Gpu) -> Vec<u32> {
+    static LOGGED: Once = Once::new();
+    // SAFETY: the device is live and the call only reads the format support bits.
+    let support = unsafe { gpu.device().CheckFormatSupport(DXGI_FORMAT_NV12) }.unwrap_or_else(|error| {
+        log::warn!("webcam: could not query the NV12 format support: {error}");
+        0
+    });
+    let has = |bit: D3D11_FORMAT_SUPPORT| support & bit.0 as u32 != 0;
+    let decoder_ok = has(D3D11_FORMAT_SUPPORT_DECODER_OUTPUT);
+    let target_ok = has(D3D11_FORMAT_SUPPORT_RENDER_TARGET) && has(D3D11_FORMAT_SUPPORT_SHADER_SAMPLE);
+    LOGGED.call_once(|| {
+        log::info!(
+            "webcam: NV12 format support 0x{support:x}: decoder output {decoder_ok}, render target and shader sample {target_ok}, video processor input {}",
+            has(D3D11_FORMAT_SUPPORT_VIDEO_PROCESSOR_INPUT)
+        );
+    });
+    let decoder = D3D11_BIND_DECODER.0 as u32;
+    let target = (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32;
+    if target_ok && !decoder_ok { vec![target, decoder] } else { vec![decoder, target] }
+}
+
+/// Creates one NV12 ring texture with the first bind flags that the device accepts.
+fn create_ring_texture(gpu: &Gpu, width: u32, height: u32, candidates: &[u32]) -> Result<ID3D11Texture2D, CaptureError> {
+    let mut last = CaptureError::Missing("no bind flags to try for the webcam texture");
+    for &bind_flags in candidates {
+        match create_nv12_texture(gpu, width, height, D3D11_USAGE_DEFAULT, bind_flags, 0) {
+            Ok(texture) => return Ok(texture),
+            Err(error) => {
+                log::warn!("webcam: NV12 texture with bind flags 0x{bind_flags:x} failed: {error}");
+                last = error;
+            }
+        }
+    }
+    Err(last)
 }
 
 /// Creates an NV12 texture on the shared device.

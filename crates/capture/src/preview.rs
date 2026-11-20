@@ -16,13 +16,13 @@ use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_CPU_ACCESS_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV,
     D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, D3D11_VIDEO_COLOR, D3D11_VIDEO_COLOR_0, D3D11_VIDEO_COLOR_RGBA,
-    D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_COLOR_SPACE, D3D11_VIDEO_PROCESSOR_CONTENT_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC,
-    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255, D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235,
-    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_STREAM, D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
-    D3D11_VPIV_DIMENSION_TEXTURE2D, D3D11_VPOV_DIMENSION_TEXTURE2D, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, ID3D11VideoContext, ID3D11VideoDevice,
-    ID3D11VideoProcessor, ID3D11VideoProcessorEnumerator, ID3D11VideoProcessorInputView, ID3D11VideoProcessorOutputView,
+    D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_COLOR_SPACE, D3D11_VIDEO_PROCESSOR_CONTENT_DESC, D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT,
+    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255,
+    D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_STREAM,
+    D3D11_VIDEO_USAGE_PLAYBACK_NORMAL, D3D11_VPIV_DIMENSION_TEXTURE2D, D3D11_VPOV_DIMENSION_TEXTURE2D, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
+    ID3D11VideoContext, ID3D11VideoDevice, ID3D11VideoProcessor, ID3D11VideoProcessorEnumerator, ID3D11VideoProcessorInputView, ID3D11VideoProcessorOutputView,
 };
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_RATIONAL, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_NV12, DXGI_RATIONAL, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::DXGI_ERROR_WAS_STILL_DRAWING;
 use windows::core::{BOOL, Interface};
 
@@ -128,6 +128,8 @@ struct Input {
     seq: u64,
     /// True for an NV12 camera frame, false for a BGRA screen frame.
     nv12: bool,
+    /// The frame rate of the source as numerator and denominator.
+    fps: (u32, u32),
 }
 
 /// A running preview of one monitor or one webcam.
@@ -399,10 +401,18 @@ impl Worker {
                 height: u32::try_from(frame.height).unwrap_or(0),
                 seq: frame.seq,
                 nv12: false,
+                fps: (60, 1),
             }),
             Source::Webcam(webcam) => {
                 let format = webcam.format();
-                webcam.latest().map(|frame| Input { texture: frame.texture, width: format.width, height: format.height, seq: frame.seq, nv12: true })
+                webcam.latest().map(|frame| Input {
+                    texture: frame.texture,
+                    width: format.width,
+                    height: format.height,
+                    seq: frame.seq,
+                    nv12: true,
+                    fps: (format.fps_num, format.fps_den),
+                })
             }
         }
     }
@@ -434,7 +444,7 @@ impl Worker {
         let current = self.pipeline.as_ref().is_some_and(|pipeline| pipeline.matches(in_size, target, frame.nv12));
         if !current {
             self.pipeline = None;
-            self.pipeline = Some(Pipeline::new(&self.gpu, in_size, target, frame.nv12)?);
+            self.pipeline = Some(Pipeline::new(&self.gpu, in_size, target, frame.nv12, frame.fps)?);
         }
         // Count the frame as taken even when the scaling fails, so an error does not repeat at once.
         self.last_seq = frame.seq;
@@ -490,7 +500,7 @@ struct Pipeline {
 
 impl Pipeline {
     /// Creates the processor, the output texture and the staging ring for one input and output size.
-    fn new(gpu: &Gpu, (in_w, in_h): (u32, u32), (out_w, out_h): (u32, u32), nv12: bool) -> Result<Self, CaptureError> {
+    fn new(gpu: &Gpu, (in_w, in_h): (u32, u32), (out_w, out_h): (u32, u32), nv12: bool, fps: (u32, u32)) -> Result<Self, CaptureError> {
         if in_w == 0 || in_h == 0 || out_w == 0 || out_h == 0 {
             return Err(CaptureError::Missing("the preview sizes must be greater than zero"));
         }
@@ -498,7 +508,7 @@ impl Pipeline {
         let context = gpu.context().clone();
         let video_device: ID3D11VideoDevice = with_context("failed to query ID3D11VideoDevice", device.cast())?;
         let video_context: ID3D11VideoContext = with_context("failed to query ID3D11VideoContext", context.cast())?;
-        let (enumerator, processor) = create_processor(&video_device, in_w, in_h, out_w, out_h)?;
+        let (enumerator, processor) = create_processor(&video_device, (in_w, in_h), (out_w, out_h), nv12, fps)?;
         configure(&video_context, &processor, (in_w, in_h), (out_w, out_h), nv12);
         let output = create_texture(device, out_w, out_h, false)?;
         let output_view = create_output_view(&video_device, &enumerator, &output)?;
@@ -634,27 +644,40 @@ fn configure(video_context: &ID3D11VideoContext, processor: &ID3D11VideoProcesso
     }
 }
 
-/// Creates the video processor enumerator and processor for the given sizes.
+/// Creates a new video processor enumerator and processor for the given sizes and frame rate.
+///
+/// Every pipeline makes its own enumerator, so a camera never shares one with a monitor preview.
+/// For an NV12 input the enumerator must report that the format can be an input.
 #[allow(unsafe_code)]
 fn create_processor(
     video_device: &ID3D11VideoDevice,
-    in_w: u32,
-    in_h: u32,
-    out_w: u32,
-    out_h: u32,
+    (in_w, in_h): (u32, u32),
+    (out_w, out_h): (u32, u32),
+    nv12: bool,
+    (fps_num, fps_den): (u32, u32),
 ) -> Result<(ID3D11VideoProcessorEnumerator, ID3D11VideoProcessor), CaptureError> {
+    let rate =
+        if fps_num == 0 || fps_den == 0 { DXGI_RATIONAL { Numerator: 60, Denominator: 1 } } else { DXGI_RATIONAL { Numerator: fps_num, Denominator: fps_den } };
     let desc = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
         InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
-        InputFrameRate: DXGI_RATIONAL { Numerator: 60, Denominator: 1 },
+        InputFrameRate: rate,
         InputWidth: in_w,
         InputHeight: in_h,
-        OutputFrameRate: DXGI_RATIONAL { Numerator: 60, Denominator: 1 },
+        OutputFrameRate: rate,
         OutputWidth: out_w,
         OutputHeight: out_h,
         Usage: D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
     };
     // SAFETY: desc is a plain value; the call returns an owned enumerator reference.
     let enumerator = with_context("failed to create the preview video processor enumerator", unsafe { video_device.CreateVideoProcessorEnumerator(&desc) })?;
+    if nv12 {
+        // SAFETY: enumerator is a live COM object and the call only reads the format support bits.
+        let support = with_context("failed to check the NV12 video processor support", unsafe { enumerator.CheckVideoProcessorFormat(DXGI_FORMAT_NV12) })?;
+        log::info!("preview: NV12 video processor support 0x{support:x}");
+        if support & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT.0 as u32 == 0 {
+            return Err(CaptureError::Missing("the video processor does not accept NV12 input"));
+        }
+    }
     // SAFETY: enumerator is a live COM object; rate conversion 0 is the plain path.
     let processor = with_context("failed to create the preview video processor", unsafe { video_device.CreateVideoProcessor(&enumerator, 0) })?;
     Ok((enumerator, processor))
