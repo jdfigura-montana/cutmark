@@ -71,6 +71,8 @@ pub struct TrackPipeline {
     peak: f32,
     /// Whether output has clipped since the last read of the meter.
     clip: bool,
+    /// The highest output peak since the pipeline was created; reading the meter does not reset it.
+    peak_hold: f32,
 }
 
 #[allow(dead_code)]
@@ -96,6 +98,7 @@ impl TrackPipeline {
             out_data: Vec::new(),
             peak: 0.0,
             clip: false,
+            peak_hold: 0.0,
         }
     }
 
@@ -181,6 +184,9 @@ impl TrackPipeline {
             if magnitude > self.peak {
                 self.peak = magnitude;
             }
+            if magnitude > self.peak_hold {
+                self.peak_hold = magnitude;
+            }
             if sample >= 1.0 || sample <= -1.0 {
                 self.clip = true;
             }
@@ -199,6 +205,11 @@ impl TrackPipeline {
         let peak = self.peak;
         self.peak = 0.0;
         peak
+    }
+
+    /// The highest output peak since the pipeline was created, in dBFS; -100.0 for silence.
+    pub fn peak_hold_dbfs(&self) -> f32 {
+        if self.peak_hold > 0.0 { 20.0 * self.peak_hold.log10() } else { -100.0 }
     }
 
     /// True if any output sample reached 1.0 or more since the last call, which resets it.
@@ -449,6 +460,24 @@ mod tests {
         hot.push(&sine_packet(0, 48_000, 2, 440.0, 1.2, 0.0));
         drain_all(&mut hot);
         assert!(hot.clipped(), "a 1.2 amplitude sine must report clipping");
+    }
+
+    #[test]
+    fn the_peak_hold_keeps_the_loudest_output_across_meter_reads() {
+        let mut pipe = TrackPipeline::new(0, OUT_RATE);
+        assert_eq!(pipe.peak_hold_dbfs(), -100.0);
+        for n in 0..50 {
+            pipe.push(&sine_packet(i64::from(n) * PACKET_100NS, 48_000, 2, 440.0, 0.5, core::f64::consts::FRAC_PI_2));
+        }
+        drain_all(&mut pipe);
+        assert!(pipe.peak_since_last_read() > 0.0);
+        // A later quiet stretch and a meter read do not lower the hold.
+        pipe.fill_silence_to(pipe.produced_frames() + 4_800);
+        drain_all(&mut pipe);
+        assert_eq!(pipe.peak_since_last_read(), 0.0);
+        let hold = pipe.peak_hold_dbfs();
+        // A 0.5 amplitude sine is -6 dBFS; the resampler's interpolation overshoots it a little.
+        assert!((-7.0..=-4.5).contains(&hold), "peak hold was {hold} dBFS");
     }
 
     #[test]

@@ -14,6 +14,7 @@ use crate::hotkeys::Hotkeys;
 use crate::label_popup::PopupHandle;
 use crate::marks_ui;
 use crate::platform;
+use crate::preflight_ui::PreflightSection;
 use crate::preview_ui::PreviewView;
 use crate::profile_ui::{ProfileOutcome, ProfileSection};
 use crate::recovery::{self, RecoveryReport};
@@ -95,6 +96,8 @@ pub struct RecorderApp {
     api_port_edit: u16,
     /// Set once the window is closing, so the API is not started again.
     shutting_down: bool,
+    /// The Pre-flight section: its button and the Keep files choice.
+    preflight_section: PreflightSection,
 }
 
 impl RecorderApp {
@@ -187,6 +190,7 @@ impl RecorderApp {
             api_regenerate: false,
             api_port_edit,
             shutting_down: false,
+            preflight_section: PreflightSection::default(),
         };
         app.sync_preview(&cc.egui_ctx);
         app.sync_api(&cc.egui_ctx);
@@ -768,6 +772,9 @@ impl eframe::App for RecorderApp {
                 ui.add_space(8.0);
 
                 self.countdown_section(ui);
+                ui.add_space(8.0);
+
+                self.preflight_section.show(ui, &state, &self.controller.sender());
                 ui.add_space(8.0);
 
                 self.api_section(ui);

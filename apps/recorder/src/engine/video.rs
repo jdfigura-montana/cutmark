@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use capture::{Gpu, LatestFrame, MonitorCapture, Nv12Converter, list_monitors, qpc_frequency, qpc_now};
 use media_io::mux::{MuxSender, SendParameters};
@@ -21,6 +21,65 @@ const MAX_CONSECUTIVE_FAILURES: u32 = 30;
 
 /// The muxer stream index of the video stream, which the session adds first.
 const VIDEO_STREAM: usize = 0;
+
+/// The width of one bucket of the encode-time histogram, in milliseconds.
+const TIME_BUCKET_MS: f64 = 0.1;
+
+/// How many buckets the encode-time histogram has, so it covers 0 to 100 ms; slower frames count in the average and the maximum only.
+const TIME_BUCKETS: usize = 1000;
+
+/// How long each frame took to convert, send and drain, kept as a histogram so a long take uses no more memory than a short one.
+struct EncodeTimes {
+    /// How many frames fell into each 0.1 ms bucket.
+    buckets: Vec<u64>,
+    /// How many frames were timed, slow ones included.
+    count: u64,
+    /// The sum of all frame times, in milliseconds.
+    sum_ms: f64,
+    /// The slowest frame, in milliseconds.
+    max_ms: f64,
+}
+
+impl EncodeTimes {
+    /// An empty histogram.
+    fn new() -> Self {
+        Self { buckets: vec![0; TIME_BUCKETS], count: 0, sum_ms: 0.0, max_ms: 0.0 }
+    }
+
+    /// Adds one frame's time.
+    fn add(&mut self, elapsed: Duration) {
+        let ms = elapsed.as_secs_f64() * 1000.0;
+        self.count += 1;
+        self.sum_ms += ms;
+        self.max_ms = self.max_ms.max(ms);
+        if let Some(bucket) = self.buckets.get_mut((ms / TIME_BUCKET_MS) as usize) {
+            *bucket += 1;
+        }
+    }
+
+    /// The average frame time in milliseconds; 0 with no frames.
+    fn average_ms(&self) -> f64 {
+        if self.count == 0 { 0.0 } else { self.sum_ms / self.count as f64 }
+    }
+
+    /// The 95th percentile of the frame times in milliseconds, to the bucket width; 0 with no frames.
+    fn p95_ms(&self) -> f64 {
+        if self.count == 0 {
+            return 0.0;
+        }
+        // The rank of the frame the 95th percentile falls on, counting from 1.
+        let rank = (self.count * 95).div_ceil(100);
+        let mut seen = 0;
+        for (index, frames) in self.buckets.iter().enumerate() {
+            seen += frames;
+            if seen >= rank {
+                return ((index + 1) as f64 * TIME_BUCKET_MS).min(self.max_ms);
+            }
+        }
+        // The rank lies among the frames slower than the last bucket.
+        self.max_ms
+    }
+}
 
 /// Everything the per-frame path needs, set up once at session start.
 struct Pipeline {
@@ -87,6 +146,7 @@ fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, mut pipeline: P
     let mut paused_at: Option<i64> = None;
     let mut consecutive_failures = 0u32;
     let mut frame_error: Option<EngineError> = None;
+    let mut times = EncodeTimes::new();
 
     'record: loop {
         if stop.load(Ordering::Relaxed) {
@@ -119,7 +179,10 @@ fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, mut pipeline: P
                 continue;
             };
             let pts = pacer.pts_for(n);
-            match encode_one_frame(&mut pipeline, &mux, stats, &frame, pts) {
+            let timer = Instant::now();
+            let encoded = encode_one_frame(&mut pipeline, &mux, stats, &frame, pts);
+            times.add(timer.elapsed());
+            match encoded {
                 Ok(()) => {
                     consecutive_failures = 0;
                     pacer.record(n, frame.seq, true);
@@ -147,7 +210,7 @@ fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, mut pipeline: P
             let _ = finish_file(encoder, &mux, stats);
             Err(err)
         }
-        None => finish_file(encoder, &mux, stats).and_then(|()| build_summary(&cfg.output_file, &pacer, profile.fps)),
+        None => finish_file(encoder, &mux, stats).and_then(|()| build_summary(&cfg.output_file, &pacer, profile.fps, &times)),
     }
 }
 
@@ -188,9 +251,9 @@ fn finish_file(mut encoder: AmfEncoder, mux: &MuxSender, stats: &Stats) -> Resul
     Ok(())
 }
 
-/// Builds the end-of-recording summary from the pacer; stop() fills in the
-/// muxed bytes and the per-stream packet counts.
-fn build_summary(file: &Path, pacer: &Pacer, fps: u32) -> Result<Summary, EngineError> {
+/// Builds the end-of-recording summary from the pacer and the frame times; stop() fills in the
+/// muxed bytes, the per-stream packet counts and the audio peaks.
+fn build_summary(file: &Path, pacer: &Pacer, fps: u32, times: &EncodeTimes) -> Result<Summary, EngineError> {
     let frames = pacer.frames();
     let duration_ms = if fps == 0 { 0 } else { frames * 1000 / u64::from(fps) };
     Ok(Summary {
@@ -203,6 +266,9 @@ fn build_summary(file: &Path, pacer: &Pacer, fps: u32) -> Result<Summary, Engine
         packets: Vec::new(),
         duration_ms,
         average_mbps: 0.0,
+        encode_avg_ms: times.average_ms(),
+        encode_p95_ms: times.p95_ms(),
+        track_peaks: Vec::new(),
     })
 }
 
@@ -248,4 +314,53 @@ fn wait_for_next_tick(qpc_freq: i64, fps: u32, clock_start: i64, next_index: u64
 fn tick_time(clock_start: i64, n: u64, qpc_freq: i64, fps: u32) -> i64 {
     let offset = i128::from(n) * i128::from(qpc_freq) / i128::from(fps);
     (i128::from(clock_start) + offset) as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A histogram filled with `fast` frames of 1 ms and `slow` frames of 10 ms.
+    fn times(fast: u32, slow: u32) -> EncodeTimes {
+        let mut times = EncodeTimes::new();
+        for _ in 0..fast {
+            times.add(Duration::from_micros(1000));
+        }
+        for _ in 0..slow {
+            times.add(Duration::from_micros(10_000));
+        }
+        times
+    }
+
+    #[test]
+    fn no_frames_give_zero() {
+        let empty = EncodeTimes::new();
+        assert_eq!(empty.average_ms(), 0.0);
+        assert_eq!(empty.p95_ms(), 0.0);
+    }
+
+    #[test]
+    fn the_average_is_the_mean_frame_time() {
+        let mixed = times(90, 10);
+        assert!((mixed.average_ms() - 1.9).abs() < 1e-6, "average was {}", mixed.average_ms());
+    }
+
+    #[test]
+    fn the_95th_percentile_is_the_time_frame_95_of_100_took() {
+        // 95 fast frames: the 95th is still fast. 94 fast frames: the 95th is a slow one.
+        let fast = times(95, 5).p95_ms();
+        assert!((fast - 1.0).abs() <= 0.11, "p95 was {fast}");
+        let slow = times(94, 6).p95_ms();
+        assert!((slow - 10.0).abs() <= 0.11, "p95 was {slow}");
+    }
+
+    #[test]
+    fn frames_slower_than_the_histogram_still_count() {
+        let mut times = EncodeTimes::new();
+        for _ in 0..10 {
+            times.add(Duration::from_millis(250));
+        }
+        assert!((times.p95_ms() - 250.0).abs() < 1e-6);
+        assert!((times.average_ms() - 250.0).abs() < 1e-6);
+    }
 }

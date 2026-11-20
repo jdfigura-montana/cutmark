@@ -44,6 +44,11 @@ pub enum CommandKind {
     SetProfile(String),
     /// Ask for the current status.
     GetStatus,
+    /// Record 5 seconds with the active profile into a temp folder and judge the result, only while idle.
+    Preflight {
+        /// Whether the temp files are kept after the report is built.
+        keep_files: bool,
+    },
 }
 
 /// One command and the QPC time it was issued, taken when the hotkey, tray item or button fired.

@@ -26,6 +26,9 @@ pub mod marks;
 /// The constant frame rate pacer: QPC time to exact frame indexes, pure logic.
 pub mod pacer;
 
+/// The pre-flight verdict: pass, warn or fail with one line per check.
+pub mod preflight;
+
 /// The Prompter link's files for one take: the script snapshot and the script position log.
 pub mod script;
 

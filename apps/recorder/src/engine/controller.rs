@@ -4,6 +4,7 @@
 //! while the window is hidden and no frames run.
 
 use std::collections::{HashMap, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -14,6 +15,7 @@ use thiserror::Error;
 
 use super::bus::{Bus, BusSender, Command, CommandKind, MarkKind};
 use super::marks::{MarksWarning, RecentMark, TakeMarks};
+use super::preflight::{self, PreflightReport};
 use super::script::{PositionMsg, ScriptMsg, ScriptSnapshot, TakeScript};
 use super::session::{RecordingSession, SessionConfig, StatsSnapshot, Summary, TrackSpec};
 use super::stats::{self, GIB, StatsTracker, TakeStats};
@@ -70,6 +72,30 @@ const WARNING_LOG_LIMIT: usize = 32;
 
 /// The time between two numbers of the countdown.
 const COUNTDOWN_STEP: Duration = Duration::from_secs(1);
+
+/// How much media a pre-flight records before it stops itself, in milliseconds.
+const PREFLIGHT_MEDIA_MS: u64 = 5000;
+
+/// The longest a pre-flight may run on the wall clock before it is stopped anyway, in case no frames arrive.
+const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How far a running pre-flight has got.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PreflightProgress {
+    /// What the window shows next to the progress bar.
+    pub status: &'static str,
+    /// The share of the 5 seconds recorded so far, from 0 to 1.
+    pub progress: f32,
+}
+
+/// A finished pre-flight: its report, and where its files are when they were kept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreflightResult {
+    /// The verdict on the test take.
+    pub report: PreflightReport,
+    /// The temp folder holding the test take's files, or none when they were deleted.
+    pub kept_folder: Option<PathBuf>,
+}
 
 /// What the Recorder is doing right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -171,6 +197,10 @@ pub struct ControllerState {
     pub countdown_cancels: u64,
     /// How many open API connections signed in as the Prompter.
     pub prompters: usize,
+    /// How far the running pre-flight has got, or none while no pre-flight runs; the phase stays idle.
+    pub preflight: Option<PreflightProgress>,
+    /// The result of the last finished pre-flight, kept until the next one starts.
+    pub preflight_result: Option<PreflightResult>,
 }
 
 /// A function the controller calls with the state after every change, while it holds the state lock.
@@ -474,6 +504,16 @@ struct ActiveTake {
     tracker: StatsTracker,
     /// Watches the live numbers for the conditions that raise warnings.
     monitor: Monitor,
+    /// Set when this take is a pre-flight test, which has its own folder, progress and verdict.
+    preflight: Option<PreflightRun>,
+}
+
+/// What a running pre-flight needs to finish: its temp folder and whether to keep it.
+struct PreflightRun {
+    folder: PathBuf,
+    keep_files: bool,
+    /// When the session had started, for the wall-clock limit.
+    began: Instant,
 }
 
 /// Why a take could not start.
@@ -598,7 +638,8 @@ fn countdown_verdict(counting: bool, kind: &CommandKind, intent: Option<&ApiInte
         | CommandKind::PauseResume
         | CommandKind::Mark(_)
         | CommandKind::LabeledMark { .. }
-        | CommandKind::SetProfile(_) => Verdict::Ignore,
+        | CommandKind::SetProfile(_)
+        | CommandKind::Preflight { .. } => Verdict::Ignore,
         CommandKind::Mute { .. } | CommandKind::GetStatus => Verdict::Pass,
     }
 }
@@ -613,7 +654,11 @@ impl Worker {
                 self.handle(command);
             }
             self.poll_countdown();
-            self.poll_stats();
+            if self.is_preflight() {
+                self.poll_preflight();
+            } else {
+                self.poll_stats();
+            }
             self.poll_idle_disk();
         }
         self.cancel_countdown();
@@ -651,6 +696,9 @@ impl Worker {
     /// A file error becomes a warning banner and the recording carries on.
     fn script_position(&mut self, position: &PositionMsg) {
         let Some(active) = &mut self.active else { return };
+        if active.preflight.is_some() {
+            return;
+        }
         let ms = active.session.marks_mut().map_or(0, |marks| marks.clock_ms(position.qpc));
         let result = active.script.position(self.snapshots.get(&position.script_id), position, ms);
         if let (Some((line, label)), Some(marks)) = (active.script.current(), active.session.marks_mut()) {
@@ -703,7 +751,13 @@ impl Worker {
 
     /// Carries out a command that the countdown let through.
     fn run_command(&mut self, kind: &CommandKind, intent: Option<ApiIntent>, press: i64) {
+        // A pre-flight only listens to start/stop, which cancels it, and to the commands that change nothing in it.
+        if self.is_preflight() && !matches!(kind, CommandKind::StartStop | CommandKind::Mute { .. } | CommandKind::GetStatus) {
+            log::info!("command ignored: {kind:?} does nothing during a pre-flight");
+            return;
+        }
         match kind {
+            CommandKind::StartStop if self.is_preflight() => self.cancel_preflight(),
             CommandKind::StartStop => match (self.active.is_some(), &intent) {
                 (true, Some(ApiIntent::Start)) => log::info!("start ignored: a take is already running"),
                 (false, Some(ApiIntent::Stop)) => log::info!("stop ignored: no take is running"),
@@ -724,6 +778,7 @@ impl Worker {
                 _ => self.toggle_mute(None),
             },
             CommandKind::SetProfile(name) => self.set_profile(name),
+            CommandKind::Preflight { keep_files } => self.start_preflight(*keep_files),
             CommandKind::Mark(kind) => self.add_mark(*kind, press),
             CommandKind::LabeledMark { category, label } => {
                 let source = if intent == Some(ApiIntent::Mark) { ::marks::Source::Api } else { ::marks::Source::Hotkey };
@@ -820,26 +875,12 @@ impl Worker {
             let notice = format!("Audio device not found for {}. Recording anyway; those tracks stay silent until the device returns.", missing.join(", "));
             self.update(|state| state.audio_notice = Some(notice));
         }
-        let (mixdown, track_streams) = (profile.mixdown, profile.aac_tracks);
         let take_folder = take.video_file.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
         let base_name = take.video_file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let script = TakeScript::new(&take_folder, &base_name, chrono::Local::now());
         let started = Instant::now();
         let tracker = StatsTracker::new(take_folder.clone(), started);
-        let cfg = SessionConfig {
-            adapter: 0,
-            monitor: 0,
-            cursor: true,
-            profile,
-            output_file: take.video_file.clone(),
-            tracks,
-            audio_codec: audio_codec(self.settings.audio.codec),
-            mixdown,
-            track_streams,
-            wav_sidecars: self.settings.audio.wav_sidecars,
-            take_folder,
-            base_name,
-        };
+        let cfg = self.session_config(profile, take.video_file.clone(), take_folder, base_name, tracks);
         let session =
             RecordingSession::start(cfg).map_err(|err| StartError::Session { file: take.video_file.display().to_string(), reason: err.to_string() })?;
         let marks_warning = session.marks_warning();
@@ -854,6 +895,7 @@ impl Worker {
             fps,
             tracker,
             monitor: Monitor::default(),
+            preflight: None,
         });
         self.update(|state| {
             state.phase = Phase::Recording;
@@ -867,8 +909,161 @@ impl Worker {
         Ok(())
     }
 
+    /// Builds the session config for a take or a pre-flight from the settings and the profile.
+    fn session_config(&self, profile: Profile, output_file: PathBuf, take_folder: PathBuf, base_name: String, tracks: Vec<TrackSpec>) -> SessionConfig {
+        let (mixdown, track_streams) = (profile.mixdown, profile.aac_tracks);
+        SessionConfig {
+            adapter: 0,
+            monitor: 0,
+            cursor: true,
+            profile,
+            output_file,
+            tracks,
+            audio_codec: audio_codec(self.settings.audio.codec),
+            mixdown,
+            track_streams,
+            wav_sidecars: self.settings.audio.wav_sidecars,
+            take_folder,
+            base_name,
+        }
+    }
+
+    /// Whether the running take is a pre-flight test.
+    fn is_preflight(&self) -> bool {
+        self.active.as_ref().is_some_and(|active| active.preflight.is_some())
+    }
+
+    /// Starts a pre-flight, only while idle; on failure shows a red banner and stays idle.
+    fn start_preflight(&mut self, keep_files: bool) {
+        if self.active.is_some() {
+            log::info!("pre-flight ignored: a take is running");
+            return;
+        }
+        self.update(|state| {
+            state.error = None;
+            state.preflight_result = None;
+        });
+        if let Err(err) = self.start_preflight_inner(keep_files) {
+            log::error!("could not start the pre-flight: {err}");
+            self.update(|state| state.error = Some(format!("The pre-flight could not start: {err}")));
+        }
+    }
+
+    /// Records into a fresh folder under the temp folder, outside the takes root, so it takes no take number and never shows in recovery.
+    ///
+    /// There is no countdown, and no take, marks or script state of the window changes.
+    fn start_preflight_inner(&mut self, keep_files: bool) -> Result<(), StartError> {
+        let profile = profiles::find(&self.settings.active_profile).unwrap_or_else(Profile::tutorial_av1_1440p60);
+        let now = chrono::Local::now();
+        let folder = std::env::temp_dir().join("Cutmark").join("preflight").join(now.format("%Y-%m-%d_%H-%M-%S").to_string());
+        std::fs::create_dir_all(&folder).map_err(|err| StartError::Take(format!("could not create {}: {err}", folder.display())))?;
+        let base_name = "preflight".to_owned();
+        let extension = format!("{:?}", profile.container).to_lowercase();
+        let output_file = folder.join(format!("{base_name}.{extension}"));
+        let fps = profile.fps;
+        let (tracks, missing) = track_specs(&self.settings);
+        if !missing.is_empty() {
+            log::warn!("pre-flight without these audio devices: {}", missing.join(", "));
+        }
+        let script = TakeScript::new(&folder, &base_name, now);
+        let started = Instant::now();
+        let tracker = StatsTracker::new(folder.clone(), started);
+        let cfg = self.session_config(profile, output_file.clone(), folder.clone(), base_name, tracks);
+        let session = match RecordingSession::start(cfg) {
+            Ok(session) => session,
+            Err(err) => {
+                remove_folder(&folder);
+                return Err(StartError::Session { file: output_file.display().to_string(), reason: err.to_string() });
+            }
+        };
+        let marks_warning = session.marks_warning();
+        self.active = Some(ActiveTake {
+            session,
+            marks_warning,
+            script,
+            paused: false,
+            last_poll: None,
+            last_mbps: 0.0,
+            started,
+            fps,
+            tracker,
+            monitor: Monitor::default(),
+            preflight: Some(PreflightRun { folder, keep_files, began: Instant::now() }),
+        });
+        self.update(|state| state.preflight = Some(PreflightProgress { status: preflight::RUNNING, progress: 0.0 }));
+        Ok(())
+    }
+
+    /// Publishes the pre-flight's progress, and finishes it after 5 seconds of media time.
+    fn poll_preflight(&mut self) {
+        let Some(active) = &self.active else { return };
+        let Some(run) = &active.preflight else { return };
+        let media_ms = active.session.stats().frames.saturating_mul(1000) / u64::from(active.fps.max(1));
+        if media_ms >= PREFLIGHT_MEDIA_MS || run.began.elapsed() >= PREFLIGHT_TIMEOUT {
+            self.finish_preflight();
+            return;
+        }
+        let progress = media_ms as f32 / PREFLIGHT_MEDIA_MS as f32;
+        self.update_quietly(|state| state.preflight = Some(PreflightProgress { status: preflight::RUNNING, progress }));
+    }
+
+    /// Stops the pre-flight's session, builds the report, and deletes the temp folder unless it is kept.
+    fn finish_preflight(&mut self) {
+        if !self.is_preflight() {
+            return;
+        }
+        let Some(active) = self.active.take() else { return };
+        let Some(run) = active.preflight else { return };
+        let fps = active.fps;
+        // The report is built from the summary before the folder goes.
+        let report = active.session.stop().map(|summary| preflight::judge(&summary, fps));
+        let keep = run.keep_files && report.is_ok();
+        if !keep {
+            remove_folder(&run.folder);
+        }
+        // The free space is read again right away, so the idle status bar shows what the test left.
+        self.last_idle_check = None;
+        match report {
+            Ok(report) => {
+                log::info!("pre-flight finished: {}", report.overall.label());
+                let kept_folder = keep.then_some(run.folder);
+                self.update(|state| {
+                    state.preflight = None;
+                    state.preflight_result = Some(PreflightResult { report, kept_folder });
+                });
+            }
+            Err(err) => {
+                log::error!("the pre-flight failed on stop: {err}");
+                self.update(|state| {
+                    state.preflight = None;
+                    state.error = Some(format!("The pre-flight failed: {err}"));
+                });
+            }
+        }
+    }
+
+    /// Stops the pre-flight's session and deletes its temp folder; there is no report.
+    fn cancel_preflight(&mut self) {
+        if !self.is_preflight() {
+            return;
+        }
+        let Some(active) = self.active.take() else { return };
+        let Some(run) = active.preflight else { return };
+        if let Err(err) = active.session.stop() {
+            log::warn!("the cancelled pre-flight did not stop cleanly: {err}");
+        }
+        remove_folder(&run.folder);
+        self.last_idle_check = None;
+        log::info!("pre-flight cancelled");
+        self.update(|state| state.preflight = None);
+    }
+
     /// Stops the running take, keeps its summary for the window and returns to idle.
     fn stop_take(&mut self) {
+        if self.is_preflight() {
+            self.cancel_preflight();
+            return;
+        }
         if self.active.is_none() {
             return;
         }
@@ -1323,6 +1518,13 @@ fn apply_control(control: &Receiver<Control>, settings: &mut Settings) -> (bool,
     }
 }
 
+/// Deletes a pre-flight's temp folder; one that stays behind is logged, never fatal.
+fn remove_folder(folder: &Path) {
+    if let Err(err) = std::fs::remove_dir_all(folder) {
+        log::warn!("could not delete {}: {err}", folder.display());
+    }
+}
+
 /// Builds a spec for every enabled track in the settings, resolving each device, and names the tracks whose device is missing.
 fn track_specs(settings: &Settings) -> (Vec<TrackSpec>, Vec<String>) {
     let mut specs = Vec::new();
@@ -1491,6 +1693,7 @@ mod tests {
             CommandKind::Mark(MarkKind::Silent),
             CommandKind::LabeledMark { category: ::marks::MarkType::Note, label: None },
             CommandKind::SetProfile("Any".to_owned()),
+            CommandKind::Preflight { keep_files: false },
         ];
         for kind in &ignored {
             assert_eq!(countdown_verdict(true, kind, None), Verdict::Ignore, "{kind:?}");

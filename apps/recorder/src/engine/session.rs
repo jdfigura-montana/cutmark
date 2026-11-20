@@ -311,6 +311,15 @@ impl TrackSlot {
     }
 }
 
+/// The highest output level one audio track reached over a whole take.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrackPeak {
+    /// The track name.
+    pub name: String,
+    /// The peak in dBFS, held for the whole take; -100.0 for silence.
+    pub peak_dbfs: f32,
+}
+
 /// The totals of one finished take.
 pub struct Summary {
     /// The file the recording was written to.
@@ -331,6 +340,12 @@ pub struct Summary {
     pub average_mbps: f64,
     /// The WAV sidecar files written for the take.
     pub wav_files: Vec<PathBuf>,
+    /// The average time the video thread spent per frame to convert, send and drain, in milliseconds.
+    pub encode_avg_ms: f64,
+    /// The 95th percentile of that per-frame time, in milliseconds.
+    pub encode_p95_ms: f64,
+    /// The peak level of each audio track over the whole take, in track order.
+    pub track_peaks: Vec<TrackPeak>,
 }
 
 /// Messages from the video thread back to the session.
@@ -702,6 +717,13 @@ impl RecordingSession {
             (Err(err), Ok(_)) => Err(err),
             (Ok(finished), Ok(mut summary)) => {
                 summary.wav_files = finished.wav_files;
+                summary.track_peaks = self
+                    .stats
+                    .tracks
+                    .iter()
+                    .zip(&finished.track_peaks_dbfs)
+                    .map(|(slot, peak_dbfs)| TrackPeak { name: slot.name.clone(), peak_dbfs: *peak_dbfs })
+                    .collect();
                 Ok(summary)
             }
             (_, outcome) => outcome,

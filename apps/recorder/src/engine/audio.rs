@@ -61,6 +61,8 @@ pub(super) struct AudioSetup {
 pub(super) struct AudioSummary {
     /// The WAV sidecar files written, one per track.
     pub(super) wav_files: Vec<PathBuf>,
+    /// The peak level of each track over the whole take in dBFS, in track order.
+    pub(super) track_peaks_dbfs: Vec<f32>,
 }
 
 /// The command that releases the audio thread to start.
@@ -151,7 +153,7 @@ fn record(
     let start = match start_rx.recv() {
         Ok(start) => start,
         // The session gave up; leave quietly without writing any files.
-        Err(_) => return Ok(AudioSummary { wav_files: Vec::new() }),
+        Err(_) => return Ok(AudioSummary { wav_files: Vec::new(), track_peaks_dbfs: Vec::new() }),
     };
     let mut rig = AudioRig::new(
         tracks.clone(),
@@ -238,7 +240,8 @@ fn record(
         finish_stream(encoder.as_mut(), stream, &start.mux)?;
     }
     rig.flush_wavs();
-    Ok(AudioSummary { wav_files: rig.finalize_wavs() })
+    let track_peaks_dbfs = rig.pipelines.iter().map(TrackPipeline::peak_hold_dbfs).collect();
+    Ok(AudioSummary { wav_files: rig.finalize_wavs(), track_peaks_dbfs })
 }
 
 /// One WAV sidecar: the hound writer and the file it lands in.

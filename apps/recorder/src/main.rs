@@ -11,6 +11,7 @@ mod hotkeys;
 mod label_popup;
 mod marks_ui;
 mod platform;
+mod preflight_ui;
 mod preview_ui;
 mod profile_ui;
 mod profiles;
