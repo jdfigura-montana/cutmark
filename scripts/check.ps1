@@ -34,7 +34,7 @@ function Invoke-Step {
 }
 
 Invoke-Step "fmt" @("fmt", "--all", "--check")
-# One cargo invocation per package: building cutmark-audio (eframe glow) together with the video crates (eframe wgpu) unifies eframe features and breaks the build.
+# One cargo invocation per package: building cutmark-audio (which runs on wgpu) together with the video crates (eframe wgpu) unifies eframe features and breaks the build.
 foreach ($p in $packages) {
     Invoke-Step "clippy $p" @("clippy", "-p", $p, "--all-targets", "--", "-D", "warnings")
 }
