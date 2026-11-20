@@ -1,4 +1,4 @@
-//! kittest tests for the core widgets (spec "Components": the first six rows).
+//! kittest tests for the core widgets (spec "Components").
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -148,4 +148,122 @@ fn the_icon_button_shows_its_tooltip_on_hover() {
     harness.get_by_label("Settings").hover();
     harness.run();
     assert!(harness.query_all_by_label("Settings").count() > 1, "the tooltip text must appear in the tree on hover");
+}
+
+/// Dragging the slider across its track changes the value, staying in range.
+#[test]
+fn dragging_the_slider_changes_the_value_within_range() {
+    let value = Rc::new(Cell::new(0.25f32));
+    let state = value.clone();
+    let mut harness = new_harness(move |ui| {
+        let mut v = state.get();
+        ui_kit::slider(ui, &mut v, 0.0..=1.0, ui_kit::SliderKind::Accent);
+        state.set(v);
+    });
+    harness.run();
+
+    let rect = harness.get_by_role(egui::accesskit::Role::Slider).rect();
+    let start = egui::Pos2::new(rect.left() + rect.width() * 0.3, rect.center().y);
+    let end = egui::Pos2::new(rect.right() - rect.width() * 0.1, rect.center().y);
+    harness.drag_at(start);
+    harness.run();
+    harness.hover_at(end);
+    harness.run();
+    harness.drop_at(end);
+    harness.run();
+
+    let v = value.get();
+    assert!((0.0..=1.0).contains(&v), "the dragged value must stay within the range, got {v}");
+    assert!(v > 0.6, "dragging near the right end must raise the value, got {v}");
+}
+
+/// With the slider focused, the Right arrow steps the value by 1% of the range.
+#[test]
+fn the_right_arrow_steps_the_focused_slider() {
+    let value = Rc::new(Cell::new(0.5f32));
+    let state = value.clone();
+    let mut harness = new_harness(move |ui| {
+        let mut v = state.get();
+        ui_kit::slider(ui, &mut v, 0.0..=1.0, ui_kit::SliderKind::Zoom);
+        state.set(v);
+    });
+    harness.run();
+
+    harness.get_by_role(egui::accesskit::Role::Slider).focus();
+    harness.run();
+    let before = value.get();
+    harness.key_press(egui::Key::ArrowRight);
+    harness.run();
+    let after = value.get();
+    assert!((after - before - 0.01).abs() < 1e-4, "the Right arrow must step the value by 1% of the range, moved {before} to {after}");
+}
+
+/// Typing into the text field updates the string.
+#[test]
+fn typing_into_the_text_field_updates_the_string() {
+    let text = Rc::new(std::cell::RefCell::new(String::new()));
+    let state = text.clone();
+    let mut harness = new_harness(move |ui| {
+        let mut value = state.borrow_mut();
+        ui_kit::text_field(ui, &mut value, "Project name");
+    });
+    harness.run();
+
+    harness.get_by_label("Project name").click();
+    harness.run();
+    harness.get_by_label("Project name").type_text("abc");
+    harness.run();
+    assert_eq!(text.borrow().as_str(), "abc", "typing must update the string");
+}
+
+/// Clicking a list row reports clicked.
+#[test]
+fn clicking_a_list_row_reports_clicked() {
+    let (watch, state) = shared_bool();
+    let mut harness = new_harness(move |ui| {
+        if ui_kit::list_row(ui, false, Some(ui_kit::tokens::color::MARKER_CUT), "Interview take 3", Some("02:14")).clicked() {
+            state.set(true);
+        }
+    });
+    harness.run();
+    harness.fit_contents();
+    harness.run();
+
+    harness.get_by_label("Interview take 3").click();
+    harness.run();
+    assert!(watch.get(), "the list row must report the click");
+}
+
+/// The main toolbar centers the center zone on the window midpoint, even when
+/// the side zones have different widths (spec "Layout rules" item 3).
+#[test]
+fn the_main_toolbar_centers_the_center_zone_on_the_window() {
+    let mode = Rc::new(Cell::new(0usize));
+    let drift = Rc::new(Cell::new(f32::NAN));
+    let mode_state = mode.clone();
+    let drift_watch = drift.clone();
+    let mut harness = new_harness(move |ui| {
+        let zones = ui_kit::main_toolbar(
+            ui,
+            |ui| {
+                ui_kit::icon_button(ui, "icon", "Undo");
+                ui_kit::icon_button(ui, "icon", "Redo");
+            },
+            |ui| {
+                let mut m = mode_state.get();
+                ui_kit::segmented(ui, &mut m, &["Edit", "Mix"]);
+                mode_state.set(m);
+            },
+            |ui| {
+                ui_kit::icon_button(ui, "icon", "Export");
+                ui_kit::primary_button(ui, "Share");
+            },
+        );
+        drift_watch.set(zones.center.center().x - zones.bar.center().x);
+    });
+    harness.run();
+
+    let drift = drift.get();
+    assert!(drift.is_finite(), "the toolbar zones must be reported");
+    assert!(drift.abs() <= 1.0, "the center zone must sit on the window midpoint, off by {drift}px");
 }

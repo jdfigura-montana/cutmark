@@ -7,18 +7,34 @@
 pub mod chip;
 pub mod focus;
 pub mod icon_button;
+pub mod inspector;
+pub mod list_row;
+pub mod main_toolbar;
 pub mod panel;
 pub mod primary_button;
+pub mod scroll_thumb;
+pub mod search_field;
 pub mod segmented;
+pub mod slider;
+pub mod status_bar;
 pub mod switch;
+pub mod text_field;
 
 pub use chip::chip;
 pub use focus::focus_ring;
 pub use icon_button::icon_button;
+pub use inspector::{inspector_group, inspector_header, inspector_row};
+pub use list_row::list_row;
+pub use main_toolbar::{MainToolbar, main_toolbar};
 pub use panel::panel;
 pub use primary_button::primary_button;
+pub use scroll_thumb::scroll_thumb;
+pub use search_field::search_field;
 pub use segmented::segmented;
+pub use slider::{SliderKind, slider};
+pub use status_bar::status_bar;
 pub use switch::switch;
+pub use text_field::text_field;
 
 use egui::CornerRadius;
 
