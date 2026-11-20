@@ -16,6 +16,7 @@ use super::bus::{Bus, BusSender, Command, CommandKind, MarkKind};
 use super::marks::{MarksWarning, RecentMark, TakeMarks};
 use super::script::{PositionMsg, ScriptMsg, ScriptSnapshot, TakeScript};
 use super::session::{RecordingSession, SessionConfig, StatsSnapshot, Summary, TrackSpec};
+use super::stats::{self, GIB, StatsTracker, TakeStats};
 use crate::config::{AudioCodecChoice, Profile, Settings, TrackKind};
 use crate::label_popup::PopupHandle;
 use crate::profiles;
@@ -42,6 +43,30 @@ const TAG_LIMIT: usize = 1024;
 /// How many scripts the controller keeps a snapshot of before the oldest are forgotten.
 const SNAPSHOT_LIMIT: usize = 32;
 
+/// How often the free space is read while no take runs.
+const IDLE_DISK_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Below this much free space a warning banner and sound are raised.
+const LOW_FREE_BYTES: u64 = 10 * GIB;
+
+/// Below this much free space the take is stopped.
+const STOP_FREE_BYTES: u64 = 2 * GIB;
+
+/// Below this many seconds of recording time left a warning banner and sound are raised.
+const LOW_REMAINING_SECS: u64 = 15 * 60;
+
+/// How far back the dropped-frame share is measured.
+const OVERLOAD_WINDOW: Duration = Duration::from_secs(10);
+
+/// The share of frames that may be dropped within the window before the encoder counts as overloaded.
+const OVERLOAD_RATIO: f64 = 0.005;
+
+/// How many warning banners the state keeps.
+const BANNER_LIMIT: usize = 6;
+
+/// How many raised warnings the state keeps for the API.
+const WARNING_LOG_LIMIT: usize = 32;
+
 /// What the Recorder is doing right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Phase {
@@ -65,6 +90,17 @@ pub struct LastTake {
     pub duplicated: u64,
     /// Frames dropped because the encoder was behind.
     pub dropped: u64,
+}
+
+/// One warning that was raised, kept so the control API can send it as a `warning` event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WarningNote {
+    /// The number of the warning, counting from 1 across all takes.
+    pub seq: u64,
+    /// A short machine-readable code such as `disk_low`.
+    pub code: String,
+    /// The text for people.
+    pub message: String,
 }
 
 /// Everything the window draws, published by the controller thread.
@@ -108,6 +144,16 @@ pub struct ControllerState {
     pub marks_warning: Option<String>,
     /// The final numbers of the take that just ended, kept until the next take starts.
     pub last_take: Option<LastTake>,
+    /// The live numbers of the running take, sampled twice a second.
+    pub take_stats: Option<TakeStats>,
+    /// Free space on the volume the next take goes to, read every 2 seconds while idle.
+    pub idle_free_bytes: Option<u64>,
+    /// The warning banners of the running or last take, oldest first.
+    pub banners: Vec<String>,
+    /// The warnings raised most recently, newest last.
+    pub warnings: VecDeque<WarningNote>,
+    /// How many warnings were raised so far; the newest note carries this number.
+    pub warning_seq: u64,
 }
 
 /// A function the controller calls with the state after every change, while it holds the state lock.
@@ -309,6 +355,7 @@ impl Controller {
             active: None,
             popup,
             deferred: VecDeque::new(),
+            last_idle_check: None,
         };
         let handle = match std::thread::Builder::new().name("controller".to_owned()).spawn(move || worker.run()) {
             Ok(handle) => Some(handle),
@@ -386,6 +433,14 @@ struct ActiveTake {
     last_poll: Option<(Instant, u64)>,
     /// The bitrate of the last sample, in megabits per second.
     last_mbps: f64,
+    /// When the take started.
+    started: Instant,
+    /// Frames per second of the take.
+    fps: u32,
+    /// Builds the live numbers twice a second.
+    tracker: StatsTracker,
+    /// Watches the live numbers for the conditions that raise warnings.
+    monitor: Monitor,
 }
 
 /// Why a take could not start.
@@ -421,6 +476,8 @@ struct Worker {
     popup: PopupHandle,
     /// Commands that were taken off the bus while a stop collected the popup's mark; handled before new ones.
     deferred: VecDeque<Command>,
+    /// When the free space was last read while idle.
+    last_idle_check: Option<Instant>,
 }
 
 impl Worker {
@@ -433,6 +490,7 @@ impl Worker {
                 self.handle(command);
             }
             self.poll_stats();
+            self.poll_idle_disk();
         }
         self.stop_take();
     }
@@ -551,6 +609,8 @@ impl Worker {
             state.recent_marks.clear();
             state.marks_warning = None;
             state.last_take = None;
+            state.take_stats = None;
+            state.banners.clear();
         });
         if let Err(err) = self.start_take_inner() {
             log::error!("could not start the recording: {err}");
@@ -573,6 +633,8 @@ impl Worker {
         let take_folder = take.video_file.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
         let base_name = take.video_file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let script = TakeScript::new(&take_folder, &base_name, chrono::Local::now());
+        let started = Instant::now();
+        let tracker = StatsTracker::new(take_folder.clone(), started);
         let cfg = SessionConfig {
             adapter: 0,
             monitor: 0,
@@ -590,7 +652,18 @@ impl Worker {
         let session =
             RecordingSession::start(cfg).map_err(|err| StartError::Session { file: take.video_file.display().to_string(), reason: err.to_string() })?;
         let marks_warning = session.marks_warning();
-        self.active = Some(ActiveTake { session, marks_warning, script, paused: false, last_poll: None, last_mbps: 0.0 });
+        self.active = Some(ActiveTake {
+            session,
+            marks_warning,
+            script,
+            paused: false,
+            last_poll: None,
+            last_mbps: 0.0,
+            started,
+            fps,
+            tracker,
+            monitor: Monitor::default(),
+        });
         self.update(|state| {
             state.phase = Phase::Recording;
             state.take = Some(take);
@@ -624,8 +697,11 @@ impl Worker {
             state.phase = Phase::Idle;
             state.take = None;
             state.stats = None;
+            state.take_stats = None;
             state.mbps = 0.0;
         });
+        // The free space is read again right away, so the idle status bar shows what the take left.
+        self.last_idle_check = None;
         let stopped = active.session.stop();
         // Finishing the marks happens inside stop and may leave a warning.
         if let Some(text) = marks_warning.take() {
@@ -802,6 +878,15 @@ impl Worker {
             }
         }
         let mbps = active.last_mbps;
+        let counters = active.session.counters();
+        let sample = active.tracker.due(now).then(|| active.tracker.sample(now, &stats, counters, active.fps));
+        let alerts = match &sample {
+            Some(sample) => {
+                let tracks: Vec<(&str, bool)> = stats.tracks.iter().map(|track| (track.name.as_str(), track.device_lost)).collect();
+                active.monitor.check(now.saturating_duration_since(active.started), sample, &tracks, active.paused)
+            }
+            None => Vec::new(),
+        };
         self.update_quietly(|state| {
             // Reading the counters resets the level peaks, so keep the ones the window has not seen yet.
             if state.stats_seq != state.ui_seen_seq
@@ -815,7 +900,218 @@ impl Worker {
             state.stats = Some(stats);
             state.stats_seq += 1;
             state.mbps = mbps;
+            if sample.is_some() {
+                state.take_stats = sample;
+            }
         });
+        self.raise(alerts);
+    }
+
+    /// Acts on the warnings the monitor found: the System mark, the sound, a clean stop, the banner and the API event.
+    fn raise(&mut self, alerts: Vec<Alert>) {
+        for alert in alerts {
+            log::warn!("warning {}: {}", alert.code, alert.message);
+            if let Some((kind, label)) = &alert.mark {
+                let qpc = capture::qpc_now();
+                self.with_marks(|marks| marks.system(qpc, kind, label));
+            }
+            if alert.sound {
+                stats::play_warning_sound();
+            }
+            if alert.stop {
+                self.stop_take();
+            }
+            self.update(|state| {
+                if alert.banner {
+                    if state.banners.len() >= BANNER_LIMIT {
+                        state.banners.remove(0);
+                    }
+                    state.banners.push(alert.message.clone());
+                }
+                state.warning_seq += 1;
+                if state.warnings.len() >= WARNING_LOG_LIMIT {
+                    state.warnings.pop_front();
+                }
+                let seq = state.warning_seq;
+                state.warnings.push_back(WarningNote { seq, code: alert.code.to_owned(), message: alert.message.clone() });
+            });
+        }
+    }
+
+    /// While no take runs, reads the free space on the volume the next take goes to every couple of seconds.
+    fn poll_idle_disk(&mut self) {
+        if self.active.is_some() {
+            return;
+        }
+        let now = Instant::now();
+        if self.last_idle_check.is_some_and(|last| now.saturating_duration_since(last) < IDLE_DISK_INTERVAL) {
+            return;
+        }
+        self.last_idle_check = Some(now);
+        let free = stats::free_space(&crate::config::takes_root(&self.settings), 0);
+        if lock(&self.shared).idle_free_bytes != free {
+            self.update(|state| state.idle_free_bytes = free);
+        }
+    }
+}
+
+/// A warning the monitor found, and what to do about it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Alert {
+    /// The short machine-readable code the API event carries.
+    code: &'static str,
+    /// The text for the banner and the API event.
+    message: String,
+    /// Whether the message is also shown as a banner.
+    banner: bool,
+    /// Whether the warning sound plays.
+    sound: bool,
+    /// A System mark to add, as its `auto.kind` and its label.
+    mark: Option<(&'static str, String)>,
+    /// Whether the take is stopped cleanly.
+    stop: bool,
+}
+
+/// Fires once when a condition starts and fires again only after the condition has cleared.
+#[derive(Debug, Default)]
+struct Rearm {
+    fired: bool,
+}
+
+impl Rearm {
+    /// Whether this is the first sample of a condition that is `active`; a clear sample rearms it.
+    fn crossing(&mut self, active: bool) -> bool {
+        if !active {
+            self.fired = false;
+            return false;
+        }
+        !std::mem::replace(&mut self.fired, true)
+    }
+}
+
+/// The share of frames dropped across a rolling window.
+#[derive(Debug)]
+struct DroppedWindow {
+    /// How far back the share is measured.
+    window: Duration,
+    /// The share above which the window counts as overloaded.
+    ratio: f64,
+    /// Time since the take started, frames written and frames dropped, oldest first.
+    samples: VecDeque<(Duration, u64, u64)>,
+}
+
+impl DroppedWindow {
+    /// A window of `window` that is over its limit above `ratio` of the frames.
+    fn new(window: Duration, ratio: f64) -> Self {
+        Self { window, ratio, samples: VecDeque::new() }
+    }
+
+    /// Adds the running totals seen `at` after the start and forgets samples older than the window.
+    fn push(&mut self, at: Duration, frames: u64, dropped: u64) {
+        self.samples.push_back((at, frames, dropped));
+        // The oldest sample stays until the next one is old enough to take its place, so the span covers the whole window.
+        while self.samples.get(1).is_some_and(|(next, _, _)| *next + self.window <= at) {
+            self.samples.pop_front();
+        }
+    }
+
+    /// Whether more than `ratio` of the frames in the last full window were dropped; false until a full window has passed.
+    fn exceeded(&self) -> bool {
+        let (Some(first), Some(last)) = (self.samples.front(), self.samples.back()) else {
+            return false;
+        };
+        if last.0.saturating_sub(first.0) < self.window {
+            return false;
+        }
+        let dropped = last.2.saturating_sub(first.2);
+        let total = last.1.saturating_sub(first.1).saturating_add(dropped);
+        total > 0 && dropped as f64 / total as f64 > self.ratio
+    }
+}
+
+/// Watches a take's live numbers and says which warnings to raise, each once per crossing.
+struct Monitor {
+    /// Rearms when the disk is no longer low.
+    low_disk: Rearm,
+    /// Rearms when the dropped-frame share is back under the limit.
+    overload: Rearm,
+    /// The dropped-frame share across the last 10 seconds.
+    dropped: DroppedWindow,
+    /// Whether the disk-full stop was already asked for.
+    stopped: bool,
+    /// Whether each audio track's device was lost at the last check; empty until the first check.
+    lost: Vec<bool>,
+}
+
+impl Default for Monitor {
+    fn default() -> Self {
+        Self {
+            low_disk: Rearm::default(),
+            overload: Rearm::default(),
+            dropped: DroppedWindow::new(OVERLOAD_WINDOW, OVERLOAD_RATIO),
+            stopped: false,
+            lost: Vec::new(),
+        }
+    }
+}
+
+impl Monitor {
+    /// The warnings to raise for the numbers `stats` taken `at` after the start; `tracks` holds each track's name and whether its device is lost.
+    ///
+    /// While `paused` only device loss is watched: nothing is written, so the disk and the encoder stay as they were.
+    fn check(&mut self, at: Duration, stats: &TakeStats, tracks: &[(&str, bool)], paused: bool) -> Vec<Alert> {
+        let mut alerts = Vec::new();
+        if self.lost.len() == tracks.len() {
+            for ((name, lost), was_lost) in tracks.iter().zip(&mut self.lost) {
+                if *lost && !*was_lost {
+                    alerts.push(Alert {
+                        code: "device_lost",
+                        message: format!("The audio device of track {name} was lost. It records silence until the device returns."),
+                        banner: false,
+                        sound: false,
+                        mark: Some(("recorder.device_lost", (*name).to_owned())),
+                        stop: false,
+                    });
+                }
+                *was_lost = *lost;
+            }
+        } else {
+            // The first check only learns which devices are already lost.
+            self.lost = tracks.iter().map(|(_, lost)| *lost).collect();
+        }
+        if paused {
+            return alerts;
+        }
+        if stats.disk_free_bytes.is_some_and(|free| free < STOP_FREE_BYTES) {
+            if !self.stopped {
+                self.stopped = true;
+                alerts.push(Alert { code: "disk_full", message: "Stopped: disk almost full".to_owned(), banner: true, sound: false, mark: None, stop: true });
+            }
+            return alerts;
+        }
+        let low = stats.disk_free_bytes.is_some_and(|free| free < LOW_FREE_BYTES) || stats.remaining_secs.is_some_and(|secs| secs < LOW_REMAINING_SECS);
+        if self.low_disk.crossing(low) {
+            let mut message = String::from("Low disk space");
+            if let Some(free) = stats.disk_free_bytes {
+                message.push_str(&format!(": {:.1} GB free", free as f64 / GIB as f64));
+            }
+            if let Some(secs) = stats.remaining_secs {
+                message.push_str(&format!(", about {} min left at the current rate", secs.div_ceil(60)));
+            }
+            alerts.push(Alert { code: "disk_low", message, banner: true, sound: true, mark: None, stop: false });
+        }
+        self.dropped.push(at, stats.frames, stats.dropped);
+        if self.overload.crossing(self.dropped.exceeded()) {
+            alerts.push(Alert {
+                code: "encoder_overload",
+                message: "The encoder is overloaded: more than 0.5% of the frames were dropped in the last 10 seconds.".to_owned(),
+                banner: true,
+                sound: false,
+                mark: Some(("recorder.encoder_overload", "Encoder overload".to_owned())),
+                stop: false,
+            });
+        }
+        alerts
     }
 }
 
@@ -875,6 +1171,86 @@ mod tests {
 
     use super::*;
     use crate::config::Container;
+
+    fn secs(seconds: f64) -> Duration {
+        Duration::from_secs_f64(seconds)
+    }
+
+    #[test]
+    fn a_warning_fires_once_per_crossing_and_rearms_when_the_condition_clears() {
+        let mut rearm = Rearm::default();
+        assert!(!rearm.crossing(false));
+        assert!(rearm.crossing(true));
+        assert!(!rearm.crossing(true));
+        assert!(!rearm.crossing(true));
+        assert!(!rearm.crossing(false));
+        assert!(rearm.crossing(true));
+    }
+
+    /// Fills a window with 60 fps samples every half second up to `until` seconds, and `dropped` frames from the sample at `drop_at`.
+    fn feed(window: &mut DroppedWindow, until: u32, drop_at: u32, dropped: u64) {
+        for step in 0..=until * 2 {
+            let lost = if step >= drop_at * 2 { dropped } else { 0 };
+            window.push(secs(f64::from(step) * 0.5), u64::from(step) * 30, lost);
+        }
+    }
+
+    #[test]
+    fn the_dropped_share_needs_a_full_window_and_more_than_half_a_percent() {
+        // 3 of 603 frames is under 0.5%; 4 of 604 is over.
+        let mut few = DroppedWindow::new(OVERLOAD_WINDOW, OVERLOAD_RATIO);
+        feed(&mut few, 15, 10, 3);
+        assert!(!few.exceeded());
+        let mut many = DroppedWindow::new(OVERLOAD_WINDOW, OVERLOAD_RATIO);
+        feed(&mut many, 15, 10, 4);
+        assert!(many.exceeded());
+        // Before 10 seconds of history there is no verdict, however many frames were dropped.
+        let mut early = DroppedWindow::new(OVERLOAD_WINDOW, OVERLOAD_RATIO);
+        feed(&mut early, 5, 1, 50);
+        assert!(!early.exceeded());
+    }
+
+    #[test]
+    fn the_dropped_share_forgets_drops_older_than_the_window() {
+        let mut window = DroppedWindow::new(OVERLOAD_WINDOW, OVERLOAD_RATIO);
+        feed(&mut window, 15, 10, 4);
+        assert!(window.exceeded());
+        // No further drops: 10 seconds on, the old ones are out of the window.
+        for step in 31u32..=44 {
+            window.push(secs(f64::from(step) * 0.5), u64::from(step) * 30, 4);
+        }
+        assert!(!window.exceeded());
+    }
+
+    #[test]
+    fn the_monitor_warns_once_for_a_low_disk_and_again_after_it_recovers() {
+        let mut monitor = Monitor::default();
+        let low = TakeStats { disk_free_bytes: Some(8 * GIB), remaining_secs: Some(3600), ..TakeStats::default() };
+        let fine = TakeStats { disk_free_bytes: Some(50 * GIB), remaining_secs: Some(36_000), ..TakeStats::default() };
+        let codes = |alerts: Vec<Alert>| alerts.iter().map(|alert| alert.code).collect::<Vec<_>>();
+        assert_eq!(codes(monitor.check(secs(0.5), &low, &[], false)), ["disk_low"]);
+        assert!(monitor.check(secs(1.0), &low, &[], false).is_empty());
+        assert!(monitor.check(secs(1.5), &fine, &[], false).is_empty());
+        assert_eq!(codes(monitor.check(secs(2.0), &low, &[], false)), ["disk_low"]);
+    }
+
+    #[test]
+    fn the_monitor_stops_the_take_once_under_2_gb_and_marks_a_lost_device_once() {
+        let mut monitor = Monitor::default();
+        let full = TakeStats { disk_free_bytes: Some(GIB), ..TakeStats::default() };
+        let stops = monitor.check(secs(0.5), &full, &[], false);
+        assert_eq!(stops.len(), 1);
+        assert!(stops[0].stop && stops[0].banner && stops[0].message == "Stopped: disk almost full");
+        assert!(monitor.check(secs(1.0), &full, &[], false).is_empty());
+
+        let mut monitor = Monitor::default();
+        let fine = TakeStats::default();
+        assert!(monitor.check(secs(0.5), &fine, &[("Mic", false)], false).is_empty());
+        let lost = monitor.check(secs(1.0), &fine, &[("Mic", true)], false);
+        assert_eq!(lost.len(), 1);
+        assert_eq!(lost[0].mark, Some(("recorder.device_lost", "Mic".to_owned())));
+        assert!(monitor.check(secs(1.5), &fine, &[("Mic", true)], true).is_empty());
+    }
 
     #[test]
     fn a_settings_change_before_start_changes_the_take_folder() -> Result<(), Box<dyn Error>> {

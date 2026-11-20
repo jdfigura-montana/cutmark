@@ -8,6 +8,8 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 use thiserror::Error;
 
+#[cfg(test)]
+use crate::engine::controller::WarningNote;
 use crate::engine::controller::{ControllerState, Phase};
 
 /// The longest mark label the API keeps, in bytes.
@@ -309,6 +311,19 @@ pub fn event(kind: EventKind, data: Value) -> String {
     json!({ "op": "event", "event": kind.name(), "data": data }).to_string()
 }
 
+/// The `warning` events for the warnings raised after number `after`, oldest first, each with its number.
+///
+/// A client that has sent everything up to number N calls this with N after every state change.
+#[allow(dead_code)]
+pub fn warning_events(state: &ControllerState, after: u64) -> Vec<(u64, String)> {
+    state
+        .warnings
+        .iter()
+        .filter(|note| note.seq > after)
+        .map(|note| (note.seq, event(EventKind::Warning, json!({ "code": note.code, "message": note.message }))))
+        .collect()
+}
+
 /// The recorder's status as clients see it, in `getStatus` and in the `status` and phase events.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -327,6 +342,16 @@ pub struct StatusData {
     pub duplicated: u64,
     /// Frames dropped because the encoder was behind.
     pub dropped: u64,
+    /// Bytes of all the take's files so far; 0 when idle.
+    pub bytes: u64,
+    /// The current data rate in kilobits a second; 0 when idle.
+    pub bitrate_kbps: u64,
+    /// Free space on the take's volume in bytes, or on the take folder's volume when idle; none when unknown.
+    pub disk_free_bytes: Option<u64>,
+    /// Seconds until the disk is full at the current data rate; none when unknown or not recording.
+    pub remaining_secs: Option<u64>,
+    /// Packets waiting for the muxer; 0 when idle.
+    pub queue_depth: usize,
 }
 
 impl StatusData {
@@ -345,6 +370,11 @@ impl StatusData {
             marks_count: state.marks_count,
             duplicated: state.stats.as_ref().map_or(0, |stats| stats.duplicated),
             dropped: state.stats.as_ref().map_or(0, |stats| stats.dropped),
+            bytes: state.take_stats.as_ref().map_or(0, |live| live.bytes),
+            bitrate_kbps: state.take_stats.as_ref().map_or(0, |live| live.bitrate_kbps().round() as u64),
+            disk_free_bytes: state.take_stats.as_ref().map_or(state.idle_free_bytes, |live| live.disk_free_bytes),
+            remaining_secs: state.take_stats.as_ref().and_then(|live| live.remaining_secs),
+            queue_depth: state.take_stats.as_ref().map_or(0, |live| live.queue_depth),
         }
     }
 
@@ -499,6 +529,15 @@ mod tests {
         assert_eq!(status.state, "idle");
         assert_eq!((status.elapsed_ms, status.marks_count, status.duplicated, status.dropped), (0, 0, 0, 0));
         assert_eq!(status.take, None);
+        assert_eq!((status.bytes, status.bitrate_kbps, status.disk_free_bytes, status.remaining_secs, status.queue_depth), (0, 0, None, None, 0));
+        let mut raised = ControllerState::default();
+        raised.warnings.push_back(WarningNote { seq: 1, code: "disk_low".to_owned(), message: "x".to_owned() });
+        raised.warnings.push_back(WarningNote { seq: 2, code: "disk_full".to_owned(), message: "y".to_owned() });
+        let sent = warning_events(&raised, 1);
+        assert_eq!(sent.len(), 1);
+        let wire: Value = serde_json::from_str(&sent[0].1).unwrap_or(Value::Null);
+        assert_eq!(wire, json!({ "op": "event", "event": "warning", "data": { "code": "disk_full", "message": "y" } }));
+        assert_eq!(sent[0].0, 2);
         assert_eq!(status.to_value()["marksCount"], json!(0));
         assert_eq!(status.to_value()["elapsedMs"], json!(0));
     }

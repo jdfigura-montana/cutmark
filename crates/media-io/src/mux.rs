@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread::JoinHandle;
 
@@ -235,6 +235,15 @@ pub struct SendParameters(pub Parameters);
 #[allow(unsafe_code)]
 unsafe impl Send for SendParameters {}
 
+/// Live counters the mux thread shares with every sender handle.
+#[derive(Default)]
+struct MuxCounters {
+    /// Packet bytes the mux thread has written so far.
+    bytes: AtomicU64,
+    /// Packets queued and not yet taken by the mux thread.
+    queued: AtomicUsize,
+}
+
 /// The first error the mux thread hit, shared with every sender handle.
 type SharedFailure = Arc<Mutex<Option<&'static str>>>;
 
@@ -246,6 +255,8 @@ pub struct MuxSender {
     sender: SyncSender<(usize, EncodedPacket)>,
     /// Counter for sends that had to wait for queue space.
     queue_full: Arc<AtomicU64>,
+    /// The byte and queue-depth counters the mux thread keeps.
+    counters: Arc<MuxCounters>,
     /// The stored first failure of the mux thread, if it died.
     failure: SharedFailure,
 }
@@ -254,14 +265,29 @@ impl MuxSender {
     /// Queues one packet for its stream, blocking until there is room and
     /// counting how often that wait happened.
     pub fn send(&self, stream: usize, packet: EncodedPacket) -> Result<(), MediaError> {
-        match self.sender.try_send((stream, packet)) {
+        self.counters.queued.fetch_add(1, Ordering::Relaxed);
+        let result = match self.sender.try_send((stream, packet)) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full((stream, packet))) => {
                 self.queue_full.fetch_add(1, Ordering::Relaxed);
                 self.sender.send((stream, packet)).map_err(|_| self.closed_error())
             }
             Err(TrySendError::Disconnected(_)) => Err(self.closed_error()),
+        };
+        if result.is_err() {
+            self.counters.queued.fetch_sub(1, Ordering::Relaxed);
         }
+        result
+    }
+
+    /// Packet bytes the mux thread has written so far.
+    pub fn bytes_written(&self) -> u64 {
+        self.counters.bytes.load(Ordering::Relaxed)
+    }
+
+    /// How many packets wait in the queue for the mux thread.
+    pub fn queue_depth(&self) -> usize {
+        self.counters.queued.load(Ordering::Relaxed)
     }
 
     /// The stored first mux failure if the thread died, else the generic text.
@@ -295,15 +321,17 @@ impl MuxThread {
     pub fn start(muxer: Muxer) -> Result<Self, MediaError> {
         let (sender, receiver) = sync_channel(1024);
         let queue_full = Arc::new(AtomicU64::new(0));
+        let counters = Arc::new(MuxCounters::default());
+        let thread_counters = counters.clone();
         let failure: SharedFailure = Arc::new(Mutex::new(None));
         let thread_failure = failure.clone();
         let chapters: SharedChapters = Arc::new(Mutex::new(Vec::new()));
         let thread_chapters = chapters.clone();
         let join = std::thread::Builder::new()
             .name("mux".to_string())
-            .spawn(move || mux_loop(muxer, receiver, thread_failure, thread_chapters))
+            .spawn(move || mux_loop(muxer, receiver, thread_failure, thread_chapters, thread_counters))
             .map_err(|_| MediaError::Null("mux thread spawn"))?;
-        Ok(Self { sender: MuxSender { sender, queue_full, failure }, chapters, join })
+        Ok(Self { sender: MuxSender { sender, queue_full, counters, failure }, chapters, join })
     }
 
     /// Sets the chapters, as start ms, end ms and title, that the thread adds just before the trailer; call before `finish`.
@@ -311,6 +339,16 @@ impl MuxThread {
         if let Ok(mut slot) = self.chapters.lock() {
             *slot = chapters;
         }
+    }
+
+    /// Packet bytes the mux thread has written so far.
+    pub fn bytes_written(&self) -> u64 {
+        self.sender.bytes_written()
+    }
+
+    /// How many packets wait in the queue for the mux thread.
+    pub fn queue_depth(&self) -> usize {
+        self.sender.queue_depth()
     }
 
     /// A handle to the queue; every stream thread sends through one.
@@ -334,11 +372,21 @@ impl MuxThread {
 }
 
 /// Writes queued packets until the queue closes, then the trailer.
-fn mux_loop(mut muxer: Muxer, receiver: Receiver<(usize, EncodedPacket)>, failure: SharedFailure, chapters: SharedChapters) -> Result<MuxSummary, MediaError> {
+fn mux_loop(
+    mut muxer: Muxer,
+    receiver: Receiver<(usize, EncodedPacket)>,
+    failure: SharedFailure,
+    chapters: SharedChapters,
+    counters: Arc<MuxCounters>,
+) -> Result<MuxSummary, MediaError> {
     let mut packets = vec![0u64; muxer.stream_count()];
     while let Ok((stream, packet)) = receiver.recv() {
+        counters.queued.fetch_sub(1, Ordering::Relaxed);
         let outcome = match packets.get_mut(stream) {
-            Some(slot) => muxer.write(stream, &packet).map(|()| *slot += 1),
+            Some(slot) => muxer.write(stream, &packet).map(|()| {
+                *slot += 1;
+                counters.bytes.fetch_add(packet.data().map_or(0, |data| data.len() as u64), Ordering::Relaxed);
+            }),
             None => Err(MediaError::Null("mux thread stream index")),
         };
         if let Err(err) = outcome {

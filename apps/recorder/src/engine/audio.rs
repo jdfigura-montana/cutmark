@@ -440,6 +440,10 @@ impl AudioRig {
             }
             *taken += common as u64;
         }
+        if self.wavs.iter().any(Option::is_some) {
+            let wav_count = self.wavs.iter().flatten().count() as u64;
+            stats.wav_bytes.fetch_add(wav_count * common as u64 * u64::from(OUT_CHANNELS) * u64::from(WAV_BITS / 8), Ordering::Relaxed);
+        }
         if self.mixdown_on {
             let stream = self.stream_indexes.first().copied().ok_or(EngineError::Failed("the mixdown stream index is missing".into()))?;
             let mut mix = vec![0.0f32; common * 2];

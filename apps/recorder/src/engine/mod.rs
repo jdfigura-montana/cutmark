@@ -29,6 +29,9 @@ pub mod pacer;
 /// The Prompter link's files for one take: the script snapshot and the script position log.
 pub mod script;
 
+/// Live numbers of a running take: bytes, bitrate, free disk space and time left.
+pub mod stats;
+
 /// The recording session: session config, live stats, and start/pause/resume/stop.
 /// The UI wires it up in a later phase 2 prompt.
 #[allow(dead_code)]

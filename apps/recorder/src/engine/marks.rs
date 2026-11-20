@@ -139,6 +139,12 @@ impl TakeMarks {
         self.add_system("recorder.resume", "Resumed", t_ms);
     }
 
+    /// Adds a System mark with an automatic kind such as `recorder.device_lost` and a label, at the moment `qpc`.
+    pub fn system(&mut self, qpc: i64, kind: &str, label: &str) {
+        let t_ms = self.media_ms(qpc);
+        self.add_system(kind, label, t_ms);
+    }
+
     /// Ends the take's marks: writes the sidecar with the Markdown and CSV logs, and returns the chapters for the MKV.
     ///
     /// `wav_files` are the WAV sidecars of the take. `durations_ms` holds the video's length, then each WAV's length.

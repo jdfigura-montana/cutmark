@@ -17,6 +17,7 @@ use crate::platform;
 use crate::preview_ui::PreviewView;
 use crate::profile_ui::{ProfileOutcome, ProfileSection};
 use crate::recovery::{self, RecoveryReport};
+use crate::status_ui;
 use crate::tracks_ui::{self, LiveTrackStats, TracksChanged};
 use crate::tray::{Tray, TrayHandle, TrayState};
 
@@ -678,6 +679,8 @@ impl eframe::App for RecorderApp {
         self.sync_preview(&ctx);
         self.update_preview_activity(&ctx);
 
+        egui::Panel::bottom("status-bar").show(ui, |ui| status_ui::show(ui, &state));
+
         egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("Cutmark Recorder");
             ui.label(format!("Active profile: {}", self.settings.active_profile));
@@ -694,6 +697,9 @@ impl eframe::App for RecorderApp {
                 }
                 if let Some(notice) = &state.audio_notice {
                     ui.colored_label(warn, notice);
+                }
+                for banner in &state.banners {
+                    ui.colored_label(warn, banner);
                 }
                 for problem in &self.hotkeys.problems {
                     ui.colored_label(warn, problem);

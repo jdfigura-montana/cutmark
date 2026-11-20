@@ -115,6 +115,8 @@ pub struct Stats {
     pub(super) last_error: Mutex<Option<String>>,
     /// Total audio frames handed to the audio encoders across all streams.
     pub(super) audio_frames: AtomicU64,
+    /// Bytes of audio data written to the WAV sidecars so far.
+    pub(super) wav_bytes: AtomicU64,
     /// One entry per audio track, folded in by the audio thread.
     tracks: Vec<TrackSlot>,
 }
@@ -131,6 +133,7 @@ impl Stats {
             paused: AtomicBool::new(false),
             last_error: Mutex::new(None),
             audio_frames: AtomicU64::new(0),
+            wav_bytes: AtomicU64::new(0),
             tracks: tracks
                 .iter()
                 .map(|track| TrackSlot {
@@ -228,6 +231,17 @@ pub struct StatsSnapshot {
     pub audio_frames: u64,
     /// One entry per audio track, in track order.
     pub tracks: Vec<TrackSnapshot>,
+}
+
+/// The byte and queue counters of a take's files at one instant.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TakeCounters {
+    /// Packet bytes the mux thread has written to the video file.
+    pub mux_bytes: u64,
+    /// Audio bytes written to the WAV sidecars.
+    pub wav_bytes: u64,
+    /// Packets waiting for the mux thread.
+    pub queue_depth: usize,
 }
 
 /// One audio track's counters at one instant.
@@ -624,6 +638,15 @@ impl RecordingSession {
     /// A snapshot of the live counters, safe to call from the UI thread at any time.
     pub fn stats(&self) -> StatsSnapshot {
         self.stats.snapshot()
+    }
+
+    /// The bytes written to the take's files and the mux queue depth, safe to call from any thread at any time.
+    pub fn counters(&self) -> TakeCounters {
+        TakeCounters {
+            mux_bytes: self.mux.as_ref().map_or(0, MuxThread::bytes_written),
+            wav_bytes: self.stats.wav_bytes.load(Ordering::Relaxed),
+            queue_depth: self.mux.as_ref().map_or(0, MuxThread::queue_depth),
+        }
     }
 
     /// Finishes the file and returns the summary of the take. The audio
