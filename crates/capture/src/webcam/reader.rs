@@ -8,7 +8,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use super::devices::{CameraFormat, CameraSubtype, native_types, pack_pair};
-use super::{ComGuard, MfGuard, RunningStats, hns_to_qpc, qpc_ticks_to_ms};
+use super::{CameraControls, ComGuard, MfGuard, RunningStats, hns_to_qpc, qpc_ticks_to_ms};
 use crate::{CaptureError, Gpu, qpc_frequency, qpc_now, with_context};
 use windows::Win32::Graphics::Direct3D10::ID3D10Multithread;
 use windows::Win32::Graphics::Direct3D11::{
@@ -98,9 +98,16 @@ struct Shared {
     received: AtomicU64,
     stop: AtomicBool,
     cpu_path: AtomicBool,
+    /// The control interfaces of the open camera; cleared before the camera is reopened and when the thread ends.
+    controls: Mutex<Option<CameraControls>>,
 }
 
 impl Shared {
+    /// Replaces the control interfaces that the owner can fetch.
+    fn set_controls(&self, controls: Option<CameraControls>) {
+        *self.controls.lock().unwrap_or_else(PoisonError::into_inner) = controls;
+    }
+
     /// Locks the state, recovering it if a thread panicked while holding the lock.
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
@@ -120,6 +127,7 @@ impl Shared {
 pub struct WebcamCapture {
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
+    format: CameraFormat,
 }
 
 impl WebcamCapture {
@@ -136,7 +144,7 @@ impl WebcamCapture {
             .spawn(move || run_thread(thread_gpu, thread_id, thread_format, thread_shared, ready_tx))
             .map_err(|error| CaptureError::Webcam(format!("failed to spawn the webcam thread: {error}")))?;
         match ready_rx.recv_timeout(START_TIMEOUT) {
-            Ok(Ok(())) => Ok(Self { shared, thread: Some(handle) }),
+            Ok(Ok(())) => Ok(Self { shared, thread: Some(handle), format: *format }),
             Ok(Err(error)) => {
                 let _ = handle.join();
                 Err(error)
@@ -156,6 +164,16 @@ impl WebcamCapture {
             return None;
         }
         state.latest.clone()
+    }
+
+    /// The format the camera was opened in.
+    pub fn format(&self) -> CameraFormat {
+        self.format
+    }
+
+    /// The camera's exposure, focus, white balance, gain and brightness controls; empty when the camera has none.
+    pub fn controls(&self) -> CameraControls {
+        self.shared.controls.lock().unwrap_or_else(PoisonError::into_inner).clone().unwrap_or_else(CameraControls::empty)
     }
 
     /// How many frames were read from the camera so far.
@@ -233,11 +251,14 @@ fn run_thread(gpu: Gpu, camera_id: String, format: CameraFormat, shared: Arc<Sha
         }
     };
     shared.cpu_path.store(session.path == WebcamPath::Cpu, Ordering::SeqCst);
+    shared.set_controls(Some(session.controls.clone()));
     log::info!("webcam: {}x{} {} using the {} path", format.width, format.height, format.subtype, session.path);
     if ready.send(Ok(())).is_err() {
+        shared.set_controls(None);
         return;
     }
     session.run(&shared);
+    shared.set_controls(None);
 }
 
 /// Everything the reader thread owns.
@@ -245,6 +266,7 @@ struct Session {
     // The reader is declared before the device manager so it is released first.
     reader: Option<IMFSourceReader>,
     _manager: Option<IMFDXGIDeviceManager>,
+    controls: CameraControls,
     gpu: Gpu,
     ring: Vec<ID3D11Texture2D>,
     next: usize,
@@ -266,21 +288,24 @@ impl Session {
             ring.push(texture);
         }
         let mut manager = create_device_manager(gpu);
-        let mut reader = None;
+        let mut built = None;
         if let Some(candidate) = manager.as_ref() {
             match build_reader(camera_id, format, Some(candidate)) {
-                Ok(built) => reader = Some(built),
+                Ok(pair) => built = Some(pair),
                 Err(error) => log::warn!("webcam: the D3D11 output path failed ({error}); falling back to CPU samples"),
             }
         }
-        let path = if reader.is_some() { WebcamPath::D3d11 } else { WebcamPath::Cpu };
-        if reader.is_none() {
+        let path = if built.is_some() { WebcamPath::D3d11 } else { WebcamPath::Cpu };
+        if built.is_none() {
             manager = None;
-            reader = Some(build_reader(camera_id, format, None)?);
+            built = Some(build_reader(camera_id, format, None)?);
         }
+        let (reader, source) = built.ok_or(CaptureError::Missing("the camera reader was not built"))?;
+        let controls = CameraControls::from_source(&source);
         Ok(Self {
-            reader,
+            reader: Some(reader),
             _manager: manager,
+            controls,
             gpu: gpu.clone(),
             ring,
             next: 0,
@@ -313,9 +338,12 @@ impl Session {
                 if self.path == WebcamPath::D3d11 && shared.received.load(Ordering::SeqCst) == 0 {
                     log::warn!("webcam: the first read failed on the D3D11 path ({error}); retrying with CPU samples");
                     drop(reader);
+                    // The old controls keep the old camera source open, so let go of them first.
+                    shared.set_controls(None);
                     match self.fall_back_to_cpu() {
                         Ok(()) => {
                             shared.cpu_path.store(true, Ordering::SeqCst);
+                            shared.set_controls(Some(self.controls.clone()));
                             continue;
                         }
                         Err(fallback) => {
@@ -374,7 +402,10 @@ impl Session {
         // Release the old reader first: the camera cannot be opened twice.
         self.reader = None;
         self._manager = None;
-        self.reader = Some(build_reader(&self.camera_id, &self.format, None)?);
+        self.controls = CameraControls::empty();
+        let (reader, source) = build_reader(&self.camera_id, &self.format, None)?;
+        self.controls = CameraControls::from_source(&source);
+        self.reader = Some(reader);
         self.path = WebcamPath::Cpu;
         Ok(())
     }
@@ -570,7 +601,8 @@ fn create_source(camera_id: &str) -> Result<IMFMediaSource, CaptureError> {
 ///
 /// With a device manager the reader decodes into D3D11 textures on our device.
 /// Advanced video processing lets it insert the MJPEG decoder and converters.
-fn build_reader(camera_id: &str, format: &CameraFormat, manager: Option<&IMFDXGIDeviceManager>) -> Result<IMFSourceReader, CaptureError> {
+/// The camera's media source is returned with the reader, for its controls.
+fn build_reader(camera_id: &str, format: &CameraFormat, manager: Option<&IMFDXGIDeviceManager>) -> Result<(IMFSourceReader, IMFMediaSource), CaptureError> {
     let source = create_source(camera_id)?;
     let mut attributes: Option<IMFAttributes> = None;
     // SAFETY: attributes is a valid out pointer.
@@ -605,7 +637,7 @@ fn build_reader(camera_id: &str, format: &CameraFormat, manager: Option<&IMFDXGI
     }
     // SAFETY: the reader is live.
     with_context("failed to select the video stream", unsafe { reader.SetStreamSelection(VIDEO_STREAM, true) })?;
-    Ok(reader)
+    Ok((reader, source))
 }
 
 /// Creates the NV12 output media type for the given camera format.

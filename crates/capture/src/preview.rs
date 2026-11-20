@@ -1,7 +1,8 @@
-//! A live, scaled-down preview of a monitor for the Recorder window.
+//! A live, scaled-down preview of a monitor or a webcam for the Recorder window.
 //!
-//! The preview runs its own [`MonitorCapture`] on its own thread, independent of any recording
-//! session. Scaling happens on the GPU (D3D11 video processor, BGRA in and BGRA out), and only the
+//! A monitor preview runs its own [`MonitorCapture`] on its own thread, independent of any recording
+//! session. A webcam preview shows the latest NV12 frame of a [`WebcamCapture`] that someone else owns.
+//! Scaling happens on the GPU (D3D11 video processor, BGRA or NV12 in and BGRA out), and only the
 //! small scaled frame is read back, through a ring of staging textures that is never waited on.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -9,16 +10,17 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::{CaptureError, Gpu, LatestFrame, MonitorCapture, MonitorInfo, with_context};
+use crate::webcam::WebcamCapture;
+use crate::{CaptureError, Gpu, MonitorCapture, MonitorInfo, with_context};
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_CPU_ACCESS_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV,
     D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, D3D11_VIDEO_COLOR, D3D11_VIDEO_COLOR_0, D3D11_VIDEO_COLOR_RGBA,
     D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_COLOR_SPACE, D3D11_VIDEO_PROCESSOR_CONTENT_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC,
-    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC,
-    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_STREAM, D3D11_VIDEO_USAGE_PLAYBACK_NORMAL, D3D11_VPIV_DIMENSION_TEXTURE2D,
-    D3D11_VPOV_DIMENSION_TEXTURE2D, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, ID3D11VideoContext, ID3D11VideoDevice, ID3D11VideoProcessor,
-    ID3D11VideoProcessorEnumerator, ID3D11VideoProcessorInputView, ID3D11VideoProcessorOutputView,
+    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255, D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235,
+    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_STREAM, D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
+    D3D11_VPIV_DIMENSION_TEXTURE2D, D3D11_VPOV_DIMENSION_TEXTURE2D, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, ID3D11VideoContext, ID3D11VideoDevice,
+    ID3D11VideoProcessor, ID3D11VideoProcessorEnumerator, ID3D11VideoProcessorInputView, ID3D11VideoProcessorOutputView,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_RATIONAL, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::DXGI_ERROR_WAS_STILL_DRAWING;
@@ -35,6 +37,12 @@ const DEFAULT_SIZE: (u32, u32) = (960, 540);
 
 /// How many staging textures the readback ring has.
 const SLOTS: usize = 3;
+
+/// How many input views the video processor keeps, enough for a camera's whole texture ring.
+const VIEW_CACHE: usize = 8;
+
+/// The picture height from which an NV12 camera frame uses the HD colour matrix.
+const HD_HEIGHT: u32 = 720;
 
 /// The shortest time between two produced frames, a little under 1/60 s.
 const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(16);
@@ -95,20 +103,60 @@ fn unpack(word: u64) -> (u32, u32) {
     ((word >> 32) as u32, (word & 0xFFFF_FFFF) as u32)
 }
 
-/// A running preview of one monitor.
+/// Where a preview gets its pictures.
+enum Source {
+    /// A monitor that the preview captures by itself.
+    Monitor {
+        /// The monitor to capture.
+        monitor: MonitorInfo,
+        /// Whether the cursor is drawn.
+        cursor: bool,
+    },
+    /// A running webcam capture that someone else owns.
+    Webcam(Arc<WebcamCapture>),
+}
+
+/// The newest picture of a source, ready for the video processor.
+struct Input {
+    /// The texture to scale.
+    texture: ID3D11Texture2D,
+    /// Width in pixels.
+    width: u32,
+    /// Height in pixels.
+    height: u32,
+    /// The frame number of the source.
+    seq: u64,
+    /// True for an NV12 camera frame, false for a BGRA screen frame.
+    nv12: bool,
+}
+
+/// A running preview of one monitor or one webcam.
 pub struct Preview {
     shared: Arc<Shared>,
-    monitor_size: (u32, u32),
+    source_size: (u32, u32),
     handle: Option<JoinHandle<()>>,
 }
 
 impl Preview {
     /// Starts the "preview" thread with its own capture of the monitor; fails when the capture cannot start.
     pub fn start(gpu: &Gpu, monitor: &MonitorInfo, cursor: bool) -> Result<Self, CaptureError> {
-        let monitor_size = (u32::try_from(monitor.width).unwrap_or(0), u32::try_from(monitor.height).unwrap_or(0));
+        let source_size = (u32::try_from(monitor.width).unwrap_or(0), u32::try_from(monitor.height).unwrap_or(0));
+        Self::spawn(gpu, Source::Monitor { monitor: monitor.clone(), cursor }, source_size)
+    }
+
+    /// Starts the "preview" thread on the latest frames of a webcam capture.
+    ///
+    /// The capture must have been started on the same [`Gpu`]. Switching the preview off does not stop the capture.
+    pub fn start_webcam(gpu: &Gpu, webcam: Arc<WebcamCapture>) -> Result<Self, CaptureError> {
+        let format = webcam.format();
+        Self::spawn(gpu, Source::Webcam(webcam), (format.width, format.height))
+    }
+
+    /// Starts the preview thread for a source and waits until it reports that it runs.
+    fn spawn(gpu: &Gpu, source: Source, source_size: (u32, u32)) -> Result<Self, CaptureError> {
         let shared = Arc::new(Shared {
             latest: Mutex::new(None),
-            target: AtomicU64::new(pack(fit_target(DEFAULT_SIZE.0, DEFAULT_SIZE.1, monitor_size.0, monitor_size.1))),
+            target: AtomicU64::new(pack(fit_target(DEFAULT_SIZE.0, DEFAULT_SIZE.1, source_size.0, source_size.1))),
             active: AtomicBool::new(true),
             stop: AtomicBool::new(false),
             callback: Mutex::new(None),
@@ -117,13 +165,12 @@ impl Preview {
         let (ready_tx, ready_rx) = mpsc::channel();
         let thread_shared = Arc::clone(&shared);
         let gpu = gpu.clone();
-        let monitor = monitor.clone();
         let handle = std::thread::Builder::new()
             .name("preview".to_owned())
-            .spawn(move || run_thread(gpu, monitor, cursor, thread_shared, ready_tx))
+            .spawn(move || run_thread(gpu, source, thread_shared, ready_tx))
             .map_err(|_| CaptureError::Missing("the preview thread could not be started"))?;
         match ready_rx.recv() {
-            Ok(Ok(())) => Ok(Self { shared, monitor_size, handle: Some(handle) }),
+            Ok(Ok(())) => Ok(Self { shared, source_size, handle: Some(handle) }),
             Ok(Err(err)) => {
                 let _ = handle.join();
                 Err(err)
@@ -140,13 +187,13 @@ impl Preview {
         lock(&self.shared.latest).clone()
     }
 
-    /// Asks for a preview that fits the given size in pixels, kept at the monitor's aspect ratio.
+    /// Asks for a preview that fits the given size in pixels, kept at the source's aspect ratio.
     pub fn set_target_size(&self, width: u32, height: u32) {
-        let size = fit_target(width, height, self.monitor_size.0, self.monitor_size.1);
+        let size = fit_target(width, height, self.source_size.0, self.source_size.1);
         self.shared.target.store(pack(size), Ordering::Relaxed);
     }
 
-    /// Switches the preview on or off; while off the thread stops its capture and does no GPU work.
+    /// Switches the preview on or off; while off the thread stops its own capture, if it has one, and does no GPU work.
     pub fn set_active(&self, active: bool) {
         self.shared.active.store(active, Ordering::Relaxed);
     }
@@ -236,31 +283,30 @@ fn bgra_to_rgba(src: &[u8], row_pitch: usize, width: usize, height: usize) -> Ve
     out
 }
 
-/// The body of the "preview" thread: starts the capture, reports how that went, then runs the loop.
-fn run_thread(gpu: Gpu, monitor: MonitorInfo, cursor: bool, shared: Arc<Shared>, ready: mpsc::Sender<Result<(), CaptureError>>) {
-    let capture = match MonitorCapture::start(&gpu, &monitor, cursor) {
-        Ok(capture) => {
-            // A receiver that is gone means the handle was dropped; the loop then sees the stop flag.
-            let _ = ready.send(Ok(()));
-            capture
-        }
-        Err(err) => {
-            let _ = ready.send(Err(err));
-            return;
-        }
+/// The body of the "preview" thread: starts the monitor capture if there is one, reports how that went, then runs the loop.
+fn run_thread(gpu: Gpu, source: Source, shared: Arc<Shared>, ready: mpsc::Sender<Result<(), CaptureError>>) {
+    let capture = match &source {
+        Source::Monitor { monitor, cursor } => match MonitorCapture::start(&gpu, monitor, *cursor) {
+            Ok(capture) => Some(capture),
+            Err(err) => {
+                let _ = ready.send(Err(err));
+                return;
+            }
+        },
+        Source::Webcam(_) => None,
     };
-    let mut worker =
-        Worker { gpu, monitor, cursor, shared, capture: Some(capture), pipeline: None, last_seq: 0, last_submit: None, out_seq: 0, retry_at: None };
+    // A receiver that is gone means the handle was dropped; the loop then sees the stop flag.
+    let _ = ready.send(Ok(()));
+    let mut worker = Worker { gpu, source, shared, capture, pipeline: None, last_seq: 0, last_submit: None, out_seq: 0, retry_at: None };
     worker.run();
 }
 
 /// The state of the preview thread.
 struct Worker {
     gpu: Gpu,
-    monitor: MonitorInfo,
-    cursor: bool,
+    source: Source,
     shared: Arc<Shared>,
-    /// The running capture, or None while the preview is off.
+    /// The running monitor capture, or None while the preview is off or when the source is a webcam.
     capture: Option<MonitorCapture>,
     /// The scaler and readback ring, or None until the first frame and after errors.
     pipeline: Option<Pipeline>,
@@ -283,7 +329,7 @@ impl Worker {
                 self.nap(IDLE_SLEEP);
                 continue;
             }
-            if self.capture.is_none() && !self.restart_capture() {
+            if !self.has_input() && !self.restart_capture() {
                 self.nap(IDLE_SLEEP);
                 continue;
             }
@@ -316,12 +362,18 @@ impl Worker {
         self.pipeline = None;
     }
 
-    /// Starts the capture again after the preview was off; false while it cannot start.
+    /// True when pictures can be read: always for a webcam, and for a monitor while its capture runs.
+    fn has_input(&self) -> bool {
+        matches!(self.source, Source::Webcam(_)) || self.capture.is_some()
+    }
+
+    /// Starts the monitor capture again after the preview was off; false while it cannot start.
     fn restart_capture(&mut self) -> bool {
+        let Source::Monitor { monitor, cursor } = &self.source else { return true };
         if self.retry_at.is_some_and(|at| Instant::now() < at) {
             return false;
         }
-        match MonitorCapture::start(&self.gpu, &self.monitor, self.cursor) {
+        match MonitorCapture::start(&self.gpu, monitor, *cursor) {
             Ok(capture) => {
                 self.capture = Some(capture);
                 self.retry_at = None;
@@ -338,10 +390,27 @@ impl Worker {
         }
     }
 
+    /// The newest picture of the source, or None before the first one.
+    fn latest_input(&self) -> Option<Input> {
+        match &self.source {
+            Source::Monitor { .. } => self.capture.as_ref().and_then(MonitorCapture::latest).map(|frame| Input {
+                texture: frame.texture.clone(),
+                width: u32::try_from(frame.width).unwrap_or(0),
+                height: u32::try_from(frame.height).unwrap_or(0),
+                seq: frame.seq,
+                nv12: false,
+            }),
+            Source::Webcam(webcam) => {
+                let format = webcam.format();
+                webcam.latest().map(|frame| Input { texture: frame.texture, width: format.width, height: format.height, seq: frame.seq, nv12: true })
+            }
+        }
+    }
+
     /// Scales a new captured frame when one is due and publishes a frame that the readback finished; true when it did either.
     fn step(&mut self) -> Result<bool, CaptureError> {
         let mut worked = false;
-        if let Some(frame) = self.capture.as_ref().and_then(MonitorCapture::latest) {
+        if let Some(frame) = self.latest_input() {
             let due = frame.seq != self.last_seq && self.last_submit.is_none_or(|at| at.elapsed() >= MIN_FRAME_INTERVAL);
             if due {
                 self.submit(&frame)?;
@@ -359,13 +428,13 @@ impl Worker {
     }
 
     /// Scales one captured frame into the next ring slot, rebuilding the pipeline when a size changed.
-    fn submit(&mut self, frame: &LatestFrame) -> Result<(), CaptureError> {
-        let in_size = (u32::try_from(frame.width).unwrap_or(0), u32::try_from(frame.height).unwrap_or(0));
+    fn submit(&mut self, frame: &Input) -> Result<(), CaptureError> {
+        let in_size = (frame.width, frame.height);
         let target = unpack(self.shared.target.load(Ordering::Relaxed));
-        let current = self.pipeline.as_ref().is_some_and(|pipeline| pipeline.matches(in_size, target));
+        let current = self.pipeline.as_ref().is_some_and(|pipeline| pipeline.matches(in_size, target, frame.nv12));
         if !current {
             self.pipeline = None;
-            self.pipeline = Some(Pipeline::new(&self.gpu, in_size, target)?);
+            self.pipeline = Some(Pipeline::new(&self.gpu, in_size, target, frame.nv12)?);
         }
         // Count the frame as taken even when the scaling fails, so an error does not repeat at once.
         self.last_seq = frame.seq;
@@ -395,7 +464,7 @@ struct Slot {
     seq: Option<u64>,
 }
 
-/// The video processor that scales BGRA to BGRA, and the ring that reads the result back.
+/// The video processor that scales BGRA or NV12 to BGRA, and the ring that reads the result back.
 struct Pipeline {
     context: ID3D11DeviceContext,
     video_device: ID3D11VideoDevice,
@@ -413,13 +482,15 @@ struct Pipeline {
     in_h: u32,
     out_w: u32,
     out_h: u32,
-    /// Cached input view with the texture it was created from.
-    input_view: Option<(ID3D11Texture2D, ID3D11VideoProcessorInputView)>,
+    /// True when the input textures are NV12 camera frames.
+    nv12: bool,
+    /// Cached input views, each with the texture it was created from.
+    input_views: Vec<(ID3D11Texture2D, ID3D11VideoProcessorInputView)>,
 }
 
 impl Pipeline {
     /// Creates the processor, the output texture and the staging ring for one input and output size.
-    fn new(gpu: &Gpu, (in_w, in_h): (u32, u32), (out_w, out_h): (u32, u32)) -> Result<Self, CaptureError> {
+    fn new(gpu: &Gpu, (in_w, in_h): (u32, u32), (out_w, out_h): (u32, u32), nv12: bool) -> Result<Self, CaptureError> {
         if in_w == 0 || in_h == 0 || out_w == 0 || out_h == 0 {
             return Err(CaptureError::Missing("the preview sizes must be greater than zero"));
         }
@@ -428,7 +499,7 @@ impl Pipeline {
         let video_device: ID3D11VideoDevice = with_context("failed to query ID3D11VideoDevice", device.cast())?;
         let video_context: ID3D11VideoContext = with_context("failed to query ID3D11VideoContext", context.cast())?;
         let (enumerator, processor) = create_processor(&video_device, in_w, in_h, out_w, out_h)?;
-        configure(&video_context, &processor, (in_w, in_h), (out_w, out_h));
+        configure(&video_context, &processor, (in_w, in_h), (out_w, out_h), nv12);
         let output = create_texture(device, out_w, out_h, false)?;
         let output_view = create_output_view(&video_device, &enumerator, &output)?;
         let slots = [
@@ -450,24 +521,32 @@ impl Pipeline {
             in_h,
             out_w,
             out_h,
-            input_view: None,
+            nv12,
+            input_views: Vec::new(),
         })
     }
 
-    /// True when the pipeline was built for these sizes.
-    fn matches(&self, input: (u32, u32), output: (u32, u32)) -> bool {
-        (self.in_w, self.in_h) == input && (self.out_w, self.out_h) == output
+    /// True when the pipeline was built for these sizes and this kind of input.
+    fn matches(&self, input: (u32, u32), output: (u32, u32), nv12: bool) -> bool {
+        (self.in_w, self.in_h) == input && (self.out_w, self.out_h) == output && self.nv12 == nv12
     }
 
     /// Scales the captured texture into the output texture and copies it into the next ring slot, without waiting.
     #[allow(unsafe_code)]
     fn submit(&mut self, input: &ID3D11Texture2D, seq: u64) -> Result<(), CaptureError> {
-        let current = self.input_view.as_ref().is_some_and(|(texture, _)| std::ptr::eq(texture.as_raw(), input.as_raw()));
-        if !current {
-            let view = create_input_view(&self.video_device, &self.enumerator, input)?;
-            self.input_view = Some((input.clone(), view));
-        }
-        let (_, input_view) = self.input_view.as_ref().ok_or(CaptureError::Missing("the cached preview input view is gone"))?;
+        let cached = self.input_views.iter().position(|(texture, _)| std::ptr::eq(texture.as_raw(), input.as_raw()));
+        let view_index = match cached {
+            Some(position) => position,
+            None => {
+                let view = create_input_view(&self.video_device, &self.enumerator, input)?;
+                if self.input_views.len() >= VIEW_CACHE {
+                    self.input_views.remove(0);
+                }
+                self.input_views.push((input.clone(), view));
+                self.input_views.len() - 1
+            }
+        };
+        let (_, input_view) = self.input_views.get(view_index).ok_or(CaptureError::Missing("the cached preview input view is gone"))?;
         blt(&self.video_context, &self.processor, input_view, &self.output_view)?;
         let index = self.next;
         self.next = (self.next + 1) % SLOTS;
@@ -519,15 +598,28 @@ fn read_slot(context: &ID3D11DeviceContext, texture: &ID3D11Texture2D, width: u3
     if rgba.len() == w * h * 4 { Ok(Some(rgba)) } else { Err(CaptureError::Missing("the preview readback returned a short frame")) }
 }
 
+/// The colour space bits of a video processor stream.
+///
+/// Full range RGB holds only Nominal_Range 0 to 255 in bits 4 to 5. An NV12 camera frame is limited range
+/// (16 to 235) YCbCr, and bit 2 picks the BT.709 matrix for HD pictures and BT.601 below.
+fn color_space_bits(nv12: bool, height: u32) -> u32 {
+    if nv12 {
+        let matrix = u32::from(height >= HD_HEIGHT);
+        ((D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235.0 as u32) << 4) | (matrix << 2)
+    } else {
+        (D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255.0 as u32) << 4
+    }
+}
+
 /// Sets the colour spaces and letterboxes the picture when the input and output aspects differ.
 #[allow(unsafe_code)]
-fn configure(video_context: &ID3D11VideoContext, processor: &ID3D11VideoProcessor, (in_w, in_h): (u32, u32), (out_w, out_h): (u32, u32)) {
-    // Full range RGB in and out: the bitfield holds only Nominal_Range 0 to 255 in bits 4 to 5.
-    let space = D3D11_VIDEO_PROCESSOR_COLOR_SPACE { _bitfield: (D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255.0 as u32) << 4 };
+fn configure(video_context: &ID3D11VideoContext, processor: &ID3D11VideoProcessor, (in_w, in_h): (u32, u32), (out_w, out_h): (u32, u32), nv12: bool) {
+    let input_space = D3D11_VIDEO_PROCESSOR_COLOR_SPACE { _bitfield: color_space_bits(nv12, in_h) };
+    let output_space = D3D11_VIDEO_PROCESSOR_COLOR_SPACE { _bitfield: color_space_bits(false, out_h) };
     // SAFETY: the processor is a live COM object; the descriptors are plain values.
     unsafe {
-        video_context.VideoProcessorSetStreamColorSpace(processor, 0, &space);
-        video_context.VideoProcessorSetOutputColorSpace(processor, &space);
+        video_context.VideoProcessorSetStreamColorSpace(processor, 0, &input_space);
+        video_context.VideoProcessorSetOutputColorSpace(processor, &output_space);
         video_context.VideoProcessorSetStreamAutoProcessingMode(processor, 0, false);
     }
     if aspects_differ(in_w, in_h, out_w, out_h) {
@@ -712,6 +804,20 @@ mod tests {
         let src = [1, 2, 3, 0, 4, 5, 6, 0, 99, 99, 99, 99, 7, 8, 9, 0, 10, 11, 12, 0, 99, 99, 99, 99];
         let out = bgra_to_rgba(&src, 12, 2, 2);
         assert_eq!(out, vec![3, 2, 1, 255, 6, 5, 4, 255, 9, 8, 7, 255, 12, 11, 10, 255]);
+    }
+
+    #[test]
+    fn colour_space_bits_pick_range_and_matrix() {
+        // Full range RGB: Nominal_Range 2 in bits 4 to 5.
+        assert_eq!(color_space_bits(false, 1080), 0b10_0000);
+        // Limited range YCbCr with the HD matrix, and with the SD matrix.
+        assert_eq!(color_space_bits(true, 1080), 0b01_0100);
+        assert_eq!(color_space_bits(true, 480), 0b01_0000);
+    }
+
+    #[test]
+    fn a_camera_keeps_its_aspect_ratio_in_the_preview() {
+        assert_eq!(fit_target(640, 360, 1280, 960), (480, 360));
     }
 
     #[test]

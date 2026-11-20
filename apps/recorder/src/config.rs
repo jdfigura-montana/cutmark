@@ -4,7 +4,7 @@ use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use capture::{AudioDevice, CaptureError, DeviceKind};
+use capture::{AudioDevice, CaptureError, ControlProp, DeviceKind};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -286,6 +286,122 @@ fn default_keyframe_secs() -> f32 {
     DEFAULT_KEYFRAME_SECS
 }
 
+/// How one camera property is held in a profile: left to the camera, or fixed at a value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlSetting {
+    /// The camera adjusts the property by itself.
+    Auto,
+    /// The property is held at this value.
+    Manual(i32),
+}
+
+/// The camera controls saved in a profile; a property that is None is left as the camera has it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebcamControls {
+    /// Exposure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exposure: Option<ControlSetting>,
+    /// Focus.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focus: Option<ControlSetting>,
+    /// White balance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub white_balance: Option<ControlSetting>,
+    /// Gain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gain: Option<ControlSetting>,
+    /// Brightness.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brightness: Option<ControlSetting>,
+}
+
+impl WebcamControls {
+    /// The saved setting of a property.
+    pub fn get(&self, prop: ControlProp) -> Option<ControlSetting> {
+        match prop {
+            ControlProp::Exposure => self.exposure,
+            ControlProp::Focus => self.focus,
+            ControlProp::WhiteBalance => self.white_balance,
+            ControlProp::Gain => self.gain,
+            ControlProp::Brightness => self.brightness,
+        }
+    }
+
+    /// Replaces the saved setting of a property.
+    pub fn set(&mut self, prop: ControlProp, setting: Option<ControlSetting>) {
+        match prop {
+            ControlProp::Exposure => self.exposure = setting,
+            ControlProp::Focus => self.focus = setting,
+            ControlProp::WhiteBalance => self.white_balance = setting,
+            ControlProp::Gain => self.gain = setting,
+            ControlProp::Brightness => self.brightness = setting,
+        }
+    }
+}
+
+/// The camera mode saved in a profile.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebcamFormat {
+    /// The pixel format as its FourCC text, for example MJPG, NV12 or YUY2.
+    pub subtype: String,
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
+    /// Frames per second.
+    pub fps: f32,
+}
+
+impl Default for WebcamFormat {
+    fn default() -> Self {
+        Self { subtype: "MJPG".to_owned(), width: 1280, height: 720, fps: 30.0 }
+    }
+}
+
+/// The webcam settings of a profile; a profile without them has the webcam off.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebcamSettings {
+    /// The symbolic link that identifies the camera; empty until one is picked.
+    pub camera_id: String,
+    /// The camera's name, shown when the camera is not plugged in.
+    pub camera_name: String,
+    /// The camera mode.
+    pub format: WebcamFormat,
+    /// The saved camera controls.
+    pub controls: WebcamControls,
+    /// Whether the raw camera is also written to its own file.
+    pub iso: bool,
+    /// Rate control of that file.
+    pub iso_rc: RateControl,
+    /// Delay of the camera frames against the screen, in milliseconds, from -500 to 500.
+    pub offset_ms: i32,
+}
+
+impl Default for WebcamSettings {
+    fn default() -> Self {
+        Self {
+            camera_id: String::new(),
+            camera_name: String::new(),
+            format: WebcamFormat::default(),
+            controls: WebcamControls::default(),
+            iso: true,
+            iso_rc: RateControl::ConstantQuality { quality: 70, max_mbps: 30.0 },
+            offset_ms: 0,
+        }
+    }
+}
+
+impl WebcamSettings {
+    /// The offset limited to the range the window allows.
+    pub fn offset_clamped(&self) -> i32 {
+        self.offset_ms.clamp(-MAX_OFFSET_MS, MAX_OFFSET_MS)
+    }
+}
+
 /// One capture and encode profile, stored as profiles\{name}.json.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Profile {
@@ -314,6 +430,9 @@ pub struct Profile {
     pub aac_tracks: bool,
     /// Also write a mixdown track.
     pub mixdown: bool,
+    /// The webcam settings; profile files without them have the webcam off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webcam: Option<WebcamSettings>,
 }
 
 impl Profile {
@@ -331,6 +450,7 @@ impl Profile {
             container: Container::Mkv,
             aac_tracks: true,
             mixdown: true,
+            webcam: None,
         }
     }
 
@@ -348,6 +468,7 @@ impl Profile {
             container: Container::Mp4,
             aac_tracks: true,
             mixdown: true,
+            webcam: None,
         }
     }
 
@@ -458,6 +579,85 @@ fn write_then_rename(tmp_path: &Path, path: &Path, bytes: &[u8]) -> io::Result<(
     file.sync_all()?;
     drop(file);
     fs::rename(tmp_path, path)
+}
+
+#[cfg(test)]
+mod webcam_tests {
+    use std::error::Error;
+
+    use super::*;
+
+    #[test]
+    fn empty_webcam_settings_get_the_defaults() -> Result<(), Box<dyn Error>> {
+        let settings: WebcamSettings = serde_json::from_str("{}")?;
+        assert_eq!(settings, WebcamSettings::default());
+        assert!(settings.iso);
+        assert_eq!(settings.iso_rc, RateControl::ConstantQuality { quality: 70, max_mbps: 30.0 });
+        assert_eq!(settings.offset_ms, 0);
+        assert_eq!(settings.controls, WebcamControls::default());
+        Ok(())
+    }
+
+    #[test]
+    fn a_partial_webcam_block_keeps_the_other_defaults() -> Result<(), Box<dyn Error>> {
+        let settings: WebcamSettings = serde_json::from_str(r#"{ "camera_id": "usb#1", "offset_ms": -40, "format": { "width": 1920 } }"#)?;
+        assert_eq!(settings.camera_id, "usb#1");
+        assert_eq!(settings.offset_ms, -40);
+        assert_eq!(settings.format.width, 1920);
+        assert_eq!(settings.format.height, 720);
+        assert!(settings.iso);
+        Ok(())
+    }
+
+    #[test]
+    fn control_settings_serialize_as_auto_or_a_manual_value() -> Result<(), Box<dyn Error>> {
+        assert_eq!(serde_json::to_string(&ControlSetting::Auto)?, "\"auto\"");
+        assert_eq!(serde_json::to_string(&ControlSetting::Manual(-6))?, "{\"manual\":-6}");
+        let controls = WebcamControls { exposure: Some(ControlSetting::Manual(-6)), gain: Some(ControlSetting::Auto), ..WebcamControls::default() };
+        let text = serde_json::to_string(&controls)?;
+        assert!(!text.contains("focus"), "{text}");
+        assert_eq!(serde_json::from_str::<WebcamControls>(&text)?, controls);
+        Ok(())
+    }
+
+    #[test]
+    fn controls_are_read_and_written_by_property() {
+        let mut controls = WebcamControls::default();
+        for (index, prop) in ControlProp::ALL.into_iter().enumerate() {
+            assert_eq!(controls.get(prop), None);
+            controls.set(prop, Some(ControlSetting::Manual(index as i32)));
+        }
+        assert_eq!(controls.get(ControlProp::Brightness), Some(ControlSetting::Manual(4)));
+        controls.set(ControlProp::Brightness, None);
+        assert_eq!(controls.get(ControlProp::Brightness), None);
+    }
+
+    #[test]
+    fn a_profile_file_from_before_the_webcam_still_loads() -> Result<(), Box<dyn Error>> {
+        let mut value = serde_json::to_value(Profile::tutorial_av1_1440p60())?;
+        assert!(value.as_object_mut().is_some_and(|object| object.remove("webcam").is_none()), "a profile without a webcam writes no webcam key");
+        let profile: Profile = serde_json::from_value(value)?;
+        assert_eq!(profile, Profile::tutorial_av1_1440p60());
+        assert_eq!(profile.webcam, None);
+        Ok(())
+    }
+
+    #[test]
+    fn a_profile_with_webcam_settings_round_trips() -> Result<(), Box<dyn Error>> {
+        let webcam = WebcamSettings { camera_name: "Cam".to_owned(), offset_ms: 120, ..WebcamSettings::default() };
+        let profile = Profile { webcam: Some(webcam), ..Profile::premiere_hevc_1080p60() };
+        let back: Profile = serde_json::from_str(&serde_json::to_string(&profile)?)?;
+        assert_eq!(back, profile);
+        Ok(())
+    }
+
+    #[test]
+    fn the_offset_is_limited_to_half_a_second() {
+        let late = WebcamSettings { offset_ms: 900, ..WebcamSettings::default() };
+        let early = WebcamSettings { offset_ms: -900, ..WebcamSettings::default() };
+        assert_eq!(late.offset_clamped(), 500);
+        assert_eq!(early.offset_clamped(), -500);
+    }
 }
 
 #[cfg(test)]

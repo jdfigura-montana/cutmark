@@ -31,7 +31,10 @@ pub use monitor::{MonitorInfo, list_monitors};
 #[cfg(windows)]
 pub use preview::{Preview, PreviewFrame};
 #[cfg(windows)]
-pub use webcam::{CamFrame, CameraFormat, CameraInfo, CameraSubtype, WebcamCapture, WebcamPath, WebcamStats, list_cameras};
+pub use webcam::{
+    CamFrame, CameraControls, CameraFormat, CameraInfo, CameraSubtype, ControlInfo, ControlProp, ControlRange, ControlState, WebcamCapture, WebcamPath,
+    WebcamStats, list_cameras,
+};
 #[cfg(windows)]
 pub use wgc::{LatestFrame, MonitorCapture};
 

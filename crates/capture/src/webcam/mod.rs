@@ -5,9 +5,11 @@
 //! into a texture we own and stamped with the sample time converted to QPC. See
 //! the recorder spec: Webcam, chroma key, compositor, Camera.
 
+mod controls;
 mod devices;
 mod reader;
 
+pub use controls::{CameraControls, ControlInfo, ControlProp, ControlRange, ControlState};
 pub use devices::{CameraFormat, CameraInfo, CameraSubtype, list_cameras};
 pub use reader::{CamFrame, WebcamCapture, WebcamPath, WebcamStats};
 

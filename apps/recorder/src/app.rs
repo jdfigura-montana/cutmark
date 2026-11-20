@@ -21,6 +21,8 @@ use crate::recovery::{self, RecoveryReport};
 use crate::status_ui;
 use crate::tracks_ui::{self, LiveTrackStats, TracksChanged};
 use crate::tray::{Tray, TrayHandle, TrayState};
+use crate::webcam::WebcamHost;
+use crate::webcam_ui;
 
 /// How often the window repaints while recording, so the level meters move smoothly.
 const METER_REFRESH: Duration = Duration::from_millis(33);
@@ -70,6 +72,8 @@ pub struct RecorderApp {
     preview_start_error: Option<String>,
     /// Whether the preview was last told to run, so the window only tells it about changes.
     preview_active: bool,
+    /// The webcam of the active profile: its settings, the open camera, its preview and its controls.
+    webcam: WebcamHost,
     /// Where the startup recovery scan delivers its report, until it has.
     recovery_rx: Option<std::sync::mpsc::Receiver<RecoveryReport>>,
     /// What the recovery scan found, until the banner is dismissed.
@@ -177,6 +181,7 @@ impl RecorderApp {
             preview_gpu: None,
             preview_start_error: None,
             preview_active: true,
+            webcam: WebcamHost::new(&cc.egui_ctx),
             recovery_rx,
             recovery: None,
             recovery_details: false,
@@ -684,6 +689,7 @@ impl eframe::App for RecorderApp {
             self.sync_api(&ctx);
             self.controller.stop();
             self.profile_section.flush();
+            self.webcam.flush();
             if self.settings_dirty {
                 self.save_settings();
             }
@@ -701,6 +707,8 @@ impl eframe::App for RecorderApp {
         self.hide_to_tray_when_minimized(&ctx, active);
         self.sync_preview(&ctx);
         self.update_preview_activity(&ctx);
+        let window_shown = !ctx.input(|input| input.viewport().minimized).unwrap_or(false);
+        self.webcam.sync(&self.settings.active_profile, window_shown);
 
         egui::Panel::bottom("status-bar").show(ui, |ui| status_ui::show(ui, &state));
 
@@ -730,6 +738,9 @@ impl eframe::App for RecorderApp {
                 if let Some(problem) = self.preview_problem() {
                     ui.colored_label(warn, format!("Preview: {problem}"));
                 }
+                if let Some(problem) = self.webcam.warning() {
+                    ui.colored_label(warn, format!("Webcam: {problem}"));
+                }
                 if let Some(problem) = &self.api_error {
                     ui.colored_label(warn, problem);
                 }
@@ -741,6 +752,9 @@ impl eframe::App for RecorderApp {
                     self.apply_hide_from_capture();
                 }
                 self.show_preview(ui);
+                ui.add_space(8.0);
+
+                webcam_ui::show(ui, &mut self.webcam, active);
                 ui.add_space(8.0);
 
                 marks_ui::show(ui, &state.recent_marks);
