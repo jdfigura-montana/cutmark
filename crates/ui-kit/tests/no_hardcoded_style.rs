@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Apps join here when their restyle is done (audio editor in phase 13).
-const OPT_IN: &[&str] = &[];
+const OPT_IN: &[&str] = &["crates/ui-kit/src/widgets"];
 
 /// Marker that lets a single line opt out of the lint.
 const ALLOW_MARKER: &str = "// style-lint: allow";

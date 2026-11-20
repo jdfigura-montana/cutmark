@@ -16,12 +16,14 @@ pub struct Theme {
     pub accent: accent::Accent,
     /// True for painted glass, false for the solid `bg.group` fallback.
     pub glass: bool,
+    /// True when the OS asks for reduced motion: ui-kit animations become instant.
+    pub reduce_motion: bool,
 }
 
 impl Default for Theme {
-    /// The default Blue preset with glass on.
+    /// The default Blue preset with glass on and full motion.
     fn default() -> Self {
-        Self { accent: accent::default_accent(), glass: true }
+        Self { accent: accent::default_accent(), glass: true, reduce_motion: false }
     }
 }
 
@@ -54,7 +56,7 @@ mod tests {
     #[test]
     fn set_then_get_round_trips() {
         let ctx = egui::Context::default();
-        let theme = Theme { accent: accent::derive(accent::presets()[1].1), glass: false };
+        let theme = Theme { accent: accent::derive(accent::presets()[1].1), glass: false, reduce_motion: false };
         Theme::set(&ctx, theme);
         assert_eq!(Theme::get(&ctx), theme);
     }

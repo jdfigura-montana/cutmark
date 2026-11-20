@@ -75,7 +75,7 @@ fn load_from_str(text: &str) -> Theme {
         return Theme::default();
     }
     let Some(pick) = parse_hex(&file.accent_pick) else { return Theme::default() };
-    Theme { accent: crate::accent::derive(pick), glass: file.glass }
+    Theme { accent: crate::accent::derive(pick), glass: file.glass, reduce_motion: false }
 }
 
 /// Parses a `#RRGGBB` pick (the `#` optional) into an sRGB color.

@@ -21,9 +21,11 @@ pub mod meter;
 pub mod palette;
 pub mod theme;
 pub mod tokens;
+pub mod widgets;
 
 pub use meter::level_meter;
 pub use theme::Theme;
+pub use widgets::{chip, focus_ring, icon_button, panel, primary_button, segmented, switch};
 
 use tokens::{color, radius, size, space, typography};
 
@@ -179,7 +181,7 @@ mod tests {
         let ctx = egui::Context::default();
         apply(&ctx);
         let violet = accent::derive(tokens::accent::PRESET_VIOLET);
-        Theme::set(&ctx, Theme { accent: violet, glass: false });
+        Theme::set(&ctx, Theme { accent: violet, glass: false, reduce_motion: false });
         refresh(&ctx);
         let visuals = &ctx.style_of(ctx.theme()).visuals;
         assert_eq!(visuals.selection.stroke.color, violet.accent, "selection stroke follows Violet after refresh");
