@@ -5,8 +5,8 @@
 //! A camera that is missing is a warning and nothing more: recording works without it. The recording
 //! session reuses this capture later.
 
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use capture::{CameraFormat, CameraInfo, CameraSubtype, ControlInfo, ControlProp, ControlState, Gpu, Preview, WebcamCapture};
@@ -26,6 +26,28 @@ type OpenKey = (String, CameraFormat);
 
 /// What a capture thread reports: the open camera or why it did not open.
 type OpenResult = Result<WebcamCapture, String>;
+
+/// The open camera and the graphics device its frames live on, as a recording takes it over.
+#[derive(Clone)]
+pub struct CamShare {
+    /// The graphics device of the capture; the camera frames are textures on it.
+    pub gpu: Gpu,
+    /// The open capture, shared with the host and its preview, never reopened by a recording.
+    pub capture: Arc<WebcamCapture>,
+}
+
+/// The camera the host has open right now, for the recording session to read from the controller thread.
+static SHARED: Mutex<Option<CamShare>> = Mutex::new(None);
+
+/// The open camera for a recording session, or None while no camera is open.
+pub fn shared() -> Option<CamShare> {
+    SHARED.lock().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+/// Replaces the camera that [`shared`] hands out.
+fn publish(share: Option<CamShare>) {
+    *SHARED.lock().unwrap_or_else(PoisonError::into_inner) = share;
+}
 
 /// What the settings and the list of cameras say should be open.
 #[derive(Debug, Clone, PartialEq)]
@@ -303,6 +325,7 @@ impl WebcamHost {
         if self.preview.take().is_some() {
             self.preview_view.reset();
         }
+        publish(None);
         self.capture = None;
         self.open_key = None;
         self.controls.clear();
@@ -503,6 +526,7 @@ impl WebcamHost {
         self.camera_warning = None;
         self.retry_at = None;
         self.start_preview(&capture);
+        publish(self.gpu.clone().map(|gpu| CamShare { gpu, capture: Arc::clone(&capture) }));
         self.capture = Some(capture);
     }
 
@@ -555,6 +579,12 @@ impl WebcamHost {
                 settings.controls.set(info.prop, Some(setting_from_state(&info.current)));
             }
         });
+    }
+}
+
+impl Drop for WebcamHost {
+    fn drop(&mut self) {
+        publish(None);
     }
 }
 

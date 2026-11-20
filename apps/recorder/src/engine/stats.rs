@@ -21,6 +21,17 @@ pub const FAKE_FREE_ENV: &str = "CUTMARK_FAKE_FREE_GB";
 /// A data rate below this many bytes a second counts as no data, so no time remaining is worked out.
 const MIN_RATE: f64 = 1.0;
 
+/// The live numbers of the camera ISO file while it is being written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CamLine {
+    /// Frames written to the camera encoder.
+    pub frames: u64,
+    /// Recorded frames that repeated the previous camera frame.
+    pub duplicated: u64,
+    /// Frames that never reached the camera encoder.
+    pub dropped: u64,
+}
+
 /// The live numbers of one take at one instant.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TakeStats {
@@ -28,7 +39,7 @@ pub struct TakeStats {
     pub elapsed_ms: u64,
     /// Frames written to the encoder.
     pub frames: u64,
-    /// Bytes of all the take's files so far: the video file and the WAV sidecars.
+    /// Bytes of all the take's files so far: the video file, the camera file and the WAV sidecars.
     pub bytes: u64,
     /// The current data rate of all the take's files in bytes a second, over the last 2 seconds.
     pub bytes_per_sec: f64,
@@ -42,6 +53,8 @@ pub struct TakeStats {
     pub dropped: u64,
     /// Packets waiting for the mux thread.
     pub queue_depth: usize,
+    /// The camera file's numbers, only while the camera file is being written.
+    pub cam: Option<CamLine>,
 }
 
 impl TakeStats {
@@ -172,7 +185,7 @@ impl StatsTracker {
     /// Builds the numbers at `now` from the session's counters; `fps` turns frames into the elapsed time.
     pub fn sample(&mut self, now: Instant, snapshot: &StatsSnapshot, counters: TakeCounters, fps: u32) -> TakeStats {
         self.last = Some(now);
-        let bytes = counters.mux_bytes.saturating_add(counters.wav_bytes);
+        let bytes = counters.mux_bytes.saturating_add(counters.wav_bytes).saturating_add(counters.cam_bytes);
         self.rate.push(now.saturating_duration_since(self.started), bytes);
         let bytes_per_sec = self.rate.bytes_per_sec();
         let disk_free_bytes = free_space(&self.folder, bytes);
@@ -186,6 +199,7 @@ impl StatsTracker {
             duplicated: snapshot.duplicated,
             dropped: snapshot.dropped,
             queue_depth: counters.queue_depth,
+            cam: snapshot.cam.filter(|cam| cam.running).map(|cam| CamLine { frames: cam.frames, duplicated: cam.duplicated, dropped: cam.dropped }),
         }
     }
 }
@@ -221,6 +235,36 @@ mod tests {
             rate.push(secs(f64::from(step) * 0.5), 4000);
         }
         assert_eq!(rate.bytes_per_sec(), 0.0);
+    }
+
+    /// A snapshot with no tracks and this camera state.
+    fn snapshot(cam: Option<crate::engine::cam::CamSnapshot>) -> StatsSnapshot {
+        StatsSnapshot {
+            frames: 600,
+            duplicated: 0,
+            dropped: 0,
+            frames_received: 600,
+            bytes_written: 0,
+            started_qpc: 0,
+            paused: false,
+            last_error: None,
+            audio_frames: 0,
+            cam,
+            tracks: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_camera_numbers_show_only_while_the_camera_file_runs_and_its_bytes_count() {
+        let mut tracker = StatsTracker::new(PathBuf::new(), Instant::now());
+        let counters = TakeCounters { mux_bytes: 100, cam_bytes: 40, wav_bytes: 10, queue_depth: 0 };
+        let live = crate::engine::cam::CamSnapshot { frames: 90, duplicated: 2, dropped: 1, running: true, lost: false };
+        let sample = tracker.sample(Instant::now(), &snapshot(Some(live)), counters, 60);
+        assert_eq!(sample.cam, Some(CamLine { frames: 90, duplicated: 2, dropped: 1 }));
+        assert_eq!(sample.bytes, 150);
+        let ended = crate::engine::cam::CamSnapshot { running: false, lost: true, ..live };
+        assert_eq!(tracker.sample(Instant::now(), &snapshot(Some(ended)), counters, 60).cam, None);
+        assert_eq!(tracker.sample(Instant::now(), &snapshot(None), counters, 60).cam, None);
     }
 
     #[test]

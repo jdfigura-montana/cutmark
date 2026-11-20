@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 
 use super::bus::{Bus, BusSender, Command, CommandKind, MarkKind};
+use super::cam::CamSummary;
 use super::marks::{MarksWarning, RecentMark, TakeMarks};
 use super::preflight::{self, PreflightReport};
 use super::script::{PositionMsg, ScriptMsg, ScriptSnapshot, TakeScript};
@@ -153,6 +154,8 @@ pub struct ControllerState {
     pub fps: u32,
     /// The summary of the last finished take, kept until the next one starts.
     pub summary: Option<Summary>,
+    /// The totals of the last finished take's camera file, kept until the next take starts; none when it had no camera file.
+    pub cam_summary: Option<CamSummary>,
     /// The latest counters of the running take.
     pub stats: Option<StatsSnapshot>,
     /// Counts the stats samples published, so the window can tell a new one.
@@ -847,6 +850,7 @@ impl Worker {
             state.error = None;
             state.audio_notice = None;
             state.summary = None;
+            state.cam_summary = None;
             state.marks_count = 0;
             state.recent_marks.clear();
             state.marks_warning = None;
@@ -884,6 +888,7 @@ impl Worker {
         let session =
             RecordingSession::start(cfg).map_err(|err| StartError::Session { file: take.video_file.display().to_string(), reason: err.to_string() })?;
         let marks_warning = session.marks_warning();
+        let cam_notice = session.cam_notice().map(str::to_owned);
         self.active = Some(ActiveTake {
             session,
             marks_warning,
@@ -897,6 +902,10 @@ impl Worker {
             monitor: Monitor::default(),
             preflight: None,
         });
+        // A camera file the profile asked for but the take could not have is a banner; the recording carries on.
+        if let Some(notice) = cam_notice {
+            self.update(|state| state.banners.push(notice));
+        }
         self.update(|state| {
             state.phase = Phase::Recording;
             state.take = Some(take);
@@ -1016,7 +1025,8 @@ impl Worker {
         let Some(run) = active.preflight else { return };
         let fps = active.fps;
         // The report is built from the summary before the folder goes.
-        let report = active.session.stop().map(|summary| preflight::judge(&summary, fps));
+        let (stopped, cam) = active.session.stop_with_cam();
+        let report = stopped.map(|summary| preflight::judge_with_cam(&summary, cam.as_ref(), fps));
         let keep = run.keep_files && report.is_ok();
         if !keep {
             remove_folder(&run.folder);
@@ -1088,7 +1098,7 @@ impl Worker {
         });
         // The free space is read again right away, so the idle status bar shows what the take left.
         self.last_idle_check = None;
-        let stopped = active.session.stop();
+        let (stopped, cam) = active.session.stop_with_cam();
         // Finishing the marks happens inside stop and may leave a warning.
         if let Some(text) = marks_warning.take() {
             self.update(|state| state.marks_warning = Some(text));
@@ -1096,7 +1106,10 @@ impl Worker {
         match stopped {
             Ok(summary) => {
                 log::info!("take finished: {} frames, {} bytes", summary.frames, summary.bytes_written);
-                self.update(|state| state.summary = Some(summary));
+                self.update(|state| {
+                    state.summary = Some(summary);
+                    state.cam_summary = cam;
+                });
             }
             Err(err) => {
                 log::error!("the recording failed on stop: {err}");
@@ -1266,13 +1279,15 @@ impl Worker {
         let mbps = active.last_mbps;
         let counters = active.session.counters();
         let sample = active.tracker.due(now).then(|| active.tracker.sample(now, &stats, counters, active.fps));
-        let alerts = match &sample {
+        let mut alerts = match &sample {
             Some(sample) => {
                 let tracks: Vec<(&str, bool)> = stats.tracks.iter().map(|track| (track.name.as_str(), track.device_lost)).collect();
                 active.monitor.check(now.saturating_duration_since(active.started), sample, &tracks, active.paused)
             }
             None => Vec::new(),
         };
+        // A lost camera is watched on every poll, also while paused, so its mark lands as near the loss as possible.
+        alerts.extend(active.monitor.check_cam(stats.cam.is_some_and(|cam| cam.lost)));
         self.update_quietly(|state| {
             // Reading the counters resets the level peaks, so keep the ones the window has not seen yet.
             if state.stats_seq != state.ui_seen_seq
@@ -1427,6 +1442,8 @@ struct Monitor {
     stopped: bool,
     /// Whether each audio track's device was lost at the last check; empty until the first check.
     lost: Vec<bool>,
+    /// Fires once when the webcam is lost.
+    cam_lost: Rearm,
 }
 
 impl Default for Monitor {
@@ -1437,11 +1454,27 @@ impl Default for Monitor {
             dropped: DroppedWindow::new(OVERLOAD_WINDOW, OVERLOAD_RATIO),
             stopped: false,
             lost: Vec::new(),
+            cam_lost: Rearm::default(),
         }
     }
 }
 
 impl Monitor {
+    /// The warning to raise once when the webcam is lost: a System mark, a banner and the API event; the recording carries on.
+    fn check_cam(&mut self, lost: bool) -> Vec<Alert> {
+        if !self.cam_lost.crossing(lost) {
+            return Vec::new();
+        }
+        vec![Alert {
+            code: "device_lost",
+            message: "The webcam was lost. Its camera file is finished, and the recording carries on without it.".to_owned(),
+            banner: true,
+            sound: false,
+            mark: Some(("recorder.device_lost", "Webcam".to_owned())),
+            stop: false,
+        }]
+    }
+
     /// The warnings to raise for the numbers `stats` taken `at` after the start; `tracks` holds each track's name and whether its device is lost.
     ///
     /// While `paused` only device loss is watched: nothing is written, so the disk and the encoder stay as they were.
@@ -1644,6 +1677,18 @@ mod tests {
         assert_eq!(lost[0].mark, Some(("recorder.device_lost", "Mic".to_owned())));
         assert!(lost[0].banner && lost[0].message.contains("track Mic"));
         assert!(monitor.check(secs(1.5), &fine, &[("Mic", true)], true).is_empty());
+    }
+
+    #[test]
+    fn a_lost_webcam_is_marked_and_bannered_once_and_the_take_carries_on() {
+        let mut monitor = Monitor::default();
+        assert!(monitor.check_cam(false).is_empty());
+        let lost = monitor.check_cam(true);
+        assert_eq!(lost.len(), 1);
+        assert_eq!(lost[0].code, "device_lost");
+        assert_eq!(lost[0].mark, Some(("recorder.device_lost", "Webcam".to_owned())));
+        assert!(lost[0].banner && !lost[0].stop);
+        assert!(monitor.check_cam(true).is_empty());
     }
 
     #[test]

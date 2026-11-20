@@ -1,0 +1,711 @@
+//! The camera ISO file: a second video pipeline on its own thread that writes the raw camera, unkeyed and at its
+//! native size, to `{base}_cam.{ext}` with its own encoder, pacer and mux thread.
+//!
+//! The camera is already NV12, so a frame is copied into a hardware frame and encoded with no conversion.
+//! Each frame is placed on the constant frame rate timeline by its own QPC time plus the webcam's sync offset.
+
+use std::ops::Range;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+use capture::{qpc_frequency, qpc_now};
+use media_io::encode::{EncoderConfig, check_combo};
+use media_io::mux::{MuxSender, MuxThread, Muxer};
+use media_io::{AmfEncoder, AudioCodec, D3d11Device, D3d11FramePool, EncodedPacket, Encoder, HwFrame, MediaError};
+use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
+
+use super::pacer::Pacer;
+use super::session::{SessionConfig, Stats, encoder_config};
+use crate::config::Container;
+use crate::webcam::CamShare;
+
+/// How long the loop sleeps while it waits for the next camera frame.
+const POLL: Duration = Duration::from_millis(1);
+
+/// Frames may fail in a row this many times before the camera file is ended.
+const MAX_CONSECUTIVE_FAILURES: u32 = 30;
+
+/// The muxer stream index of the video stream, the only stream of the file.
+const CAM_STREAM: usize = 0;
+
+/// The width of one bucket of the encode-time histogram, in milliseconds.
+const TIME_BUCKET_MS: f64 = 0.1;
+
+/// How many buckets the encode-time histogram has, so it covers 0 to 100 ms.
+const TIME_BUCKETS: usize = 1000;
+
+/// The audio codec the container check is run with: the camera file has no audio, so any codec every container takes will do.
+fn no_audio() -> AudioCodec {
+    AudioCodec::Aac { kbps: 320 }
+}
+
+/// The constant frame rate pacer of the camera file.
+///
+/// It is driven by the camera's own frame times instead of the wall clock: a frame stamped `qpc` plus the sync
+/// offset claims every tick up to half a frame after its time, so each camera frame lands on the nearest tick.
+pub struct CamPacer {
+    /// The shared pacer that counts frames, duplicates and drops.
+    pacer: Pacer,
+    /// The sync offset in QPC ticks; positive delays the camera in the file, negative advances it.
+    offset_qpc: i64,
+    /// Half a frame in QPC ticks.
+    half_tick: i64,
+}
+
+impl CamPacer {
+    /// A pacer at `fps_num` over `fps_den` frames per second from the session's `start_qpc`, with the sync offset in ms.
+    pub fn new(qpc_freq: i64, fps_num: u32, fps_den: u32, start_qpc: i64, offset_ms: i32) -> Self {
+        let offset_qpc = (i128::from(offset_ms) * i128::from(qpc_freq) / 1000) as i64;
+        let half_tick = (i128::from(qpc_freq) * i128::from(fps_den) / (2 * i128::from(fps_num.max(1)))) as i64;
+        Self { pacer: Pacer::new(qpc_freq, fps_num, fps_den, start_qpc), offset_qpc, half_tick }
+    }
+
+    /// The tick indexes that a camera frame stamped `frame_qpc` fills; empty while paused or while the frame is too early.
+    pub fn on_frame(&mut self, frame_qpc: i64) -> Range<u64> {
+        self.pacer.due_frames(frame_qpc.saturating_add(self.offset_qpc).saturating_add(self.half_tick))
+    }
+
+    /// The ticks that the wall clock has passed and no camera frame filled, for the end of the take.
+    pub fn tail(&mut self, now_qpc: i64) -> Range<u64> {
+        self.pacer.due_frames(now_qpc)
+    }
+
+    /// The presentation timestamp of tick `n`.
+    pub fn pts_for(&self, n: u64) -> i64 {
+        self.pacer.pts_for(n)
+    }
+
+    /// Counts one sent or dropped frame; a repeated source sequence is a duplicate.
+    pub fn record(&mut self, n: u64, source_seq: u64, sent: bool) {
+        self.pacer.record(n, source_seq, sent);
+    }
+
+    /// Stops the clock until [`CamPacer::resume`].
+    pub fn pause(&mut self, now_qpc: i64) {
+        self.pacer.pause(now_qpc);
+    }
+
+    /// Continues from the same tick with no gap.
+    pub fn resume(&mut self, now_qpc: i64) {
+        self.pacer.resume(now_qpc);
+    }
+
+    /// Total frames recorded so far.
+    pub fn frames(&self) -> u64 {
+        self.pacer.frames()
+    }
+
+    /// Total recorded frames that repeated the previous camera frame.
+    pub fn duplicated(&self) -> u64 {
+        self.pacer.duplicated()
+    }
+
+    /// Total recorded frames that never reached the encoder.
+    pub fn dropped(&self) -> u64 {
+        self.pacer.dropped()
+    }
+}
+
+/// How long each camera frame took to copy, send and drain, kept as a histogram so a long take uses no more memory than a short one.
+struct CamTimes {
+    /// How many frames fell into each 0.1 ms bucket.
+    buckets: Vec<u64>,
+    /// How many frames were timed, slow ones included.
+    count: u64,
+    /// The sum of all frame times, in milliseconds.
+    sum_ms: f64,
+    /// The slowest frame, in milliseconds.
+    max_ms: f64,
+}
+
+impl CamTimes {
+    /// An empty histogram.
+    fn new() -> Self {
+        Self { buckets: vec![0; TIME_BUCKETS], count: 0, sum_ms: 0.0, max_ms: 0.0 }
+    }
+
+    /// Adds one frame's time.
+    fn add(&mut self, elapsed: Duration) {
+        let ms = elapsed.as_secs_f64() * 1000.0;
+        self.count += 1;
+        self.sum_ms += ms;
+        self.max_ms = self.max_ms.max(ms);
+        if let Some(bucket) = self.buckets.get_mut((ms / TIME_BUCKET_MS) as usize) {
+            *bucket += 1;
+        }
+    }
+
+    /// The average frame time in milliseconds; 0 with no frames.
+    fn average_ms(&self) -> f64 {
+        if self.count == 0 { 0.0 } else { self.sum_ms / self.count as f64 }
+    }
+
+    /// The 95th percentile of the frame times in milliseconds, to the bucket width; 0 with no frames.
+    fn p95_ms(&self) -> f64 {
+        if self.count == 0 {
+            return 0.0;
+        }
+        let rank = (self.count * 95).div_ceil(100);
+        let mut seen = 0;
+        for (index, frames) in self.buckets.iter().enumerate() {
+            seen += frames;
+            if seen >= rank {
+                return ((index + 1) as f64 * TIME_BUCKET_MS).min(self.max_ms);
+            }
+        }
+        self.max_ms
+    }
+}
+
+/// The live counters of the camera file, shared with the UI thread through the session's stats.
+pub(super) struct CamCounters {
+    /// Whether the camera file has started recording in this take.
+    started: AtomicBool,
+    /// Whether the camera file is being written right now.
+    running: AtomicBool,
+    /// Whether the camera was lost during the take.
+    lost: AtomicBool,
+    /// Frames written to the camera encoder.
+    frames: AtomicU64,
+    /// Recorded frames that repeated the previous camera frame.
+    duplicated: AtomicU64,
+    /// Frames that never reached the camera encoder.
+    dropped: AtomicU64,
+    /// Packet bytes the camera mux thread has written.
+    bytes: AtomicU64,
+}
+
+impl CamCounters {
+    /// Counters for a take with no camera file yet.
+    pub(super) fn new() -> Self {
+        Self {
+            started: AtomicBool::new(false),
+            running: AtomicBool::new(false),
+            lost: AtomicBool::new(false),
+            frames: AtomicU64::new(0),
+            duplicated: AtomicU64::new(0),
+            dropped: AtomicU64::new(0),
+            bytes: AtomicU64::new(0),
+        }
+    }
+
+    /// A plain copy of the counters, or none when the take has no camera file.
+    pub(super) fn snapshot(&self) -> Option<CamSnapshot> {
+        if !self.started.load(Ordering::Relaxed) {
+            return None;
+        }
+        Some(CamSnapshot {
+            frames: self.frames.load(Ordering::Relaxed),
+            duplicated: self.duplicated.load(Ordering::Relaxed),
+            dropped: self.dropped.load(Ordering::Relaxed),
+            running: self.running.load(Ordering::Relaxed),
+            lost: self.lost.load(Ordering::Relaxed),
+        })
+    }
+
+    /// Packet bytes the camera mux thread has written so far.
+    pub(super) fn bytes(&self) -> u64 {
+        self.bytes.load(Ordering::Relaxed)
+    }
+
+    /// Copies the pacer's counters and the mux byte count in.
+    fn store(&self, pacer: &CamPacer, bytes: u64) {
+        self.frames.store(pacer.frames(), Ordering::Relaxed);
+        self.duplicated.store(pacer.duplicated(), Ordering::Relaxed);
+        self.dropped.store(pacer.dropped(), Ordering::Relaxed);
+        self.bytes.store(bytes, Ordering::Relaxed);
+    }
+}
+
+/// A plain copy of the camera file's live counters at one instant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CamSnapshot {
+    /// Frames written to the camera encoder.
+    pub frames: u64,
+    /// Recorded frames that repeated the previous camera frame.
+    pub duplicated: u64,
+    /// Frames that never reached the camera encoder.
+    pub dropped: u64,
+    /// Whether the camera file is being written right now.
+    pub running: bool,
+    /// Whether the camera was lost during the take.
+    pub lost: bool,
+}
+
+/// The totals of the finished camera file.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CamSummary {
+    /// The camera file.
+    pub file: PathBuf,
+    /// Frames written to the camera encoder.
+    pub frames: u64,
+    /// Recorded frames that repeated the previous camera frame.
+    pub duplicated: u64,
+    /// Frames that never reached the camera encoder.
+    pub dropped: u64,
+    /// The size of the finished file.
+    pub bytes_written: u64,
+    /// The length of the file in milliseconds.
+    pub duration_ms: u64,
+    /// The camera's frame rate, which sets the encode time budget.
+    pub fps: f64,
+    /// The average time per camera frame to copy, send and drain, in milliseconds.
+    pub encode_avg_ms: f64,
+    /// The 95th percentile of that per-frame time, in milliseconds.
+    pub encode_p95_ms: f64,
+    /// Whether the camera was lost before the take ended.
+    pub lost: bool,
+}
+
+/// What a take needs to record the camera file, decided before the session starts its other threads.
+pub(super) struct CamPlan {
+    /// The open camera and its graphics device.
+    share: CamShare,
+    /// The encoder settings: the profile's codec at the camera's size and rate, with the webcam's rate control.
+    encoder: EncoderConfig,
+    /// The profile's container.
+    container: Container,
+    /// Where the camera file is written.
+    file: PathBuf,
+    /// The webcam's sync offset in ms.
+    offset_ms: i32,
+}
+
+/// Works out whether the take records a camera file.
+///
+/// None when the profile has no webcam or its ISO is off. The error is the text of the banner for a take that
+/// could not have the camera file: the camera is not open, or the container cannot hold the codec.
+pub(super) fn plan(cfg: &SessionConfig) -> Result<Option<CamPlan>, String> {
+    let Some(webcam) = cfg.profile.webcam.as_ref().filter(|webcam| webcam.iso) else { return Ok(None) };
+    let Some(share) = crate::webcam::shared() else {
+        return Err("The camera is not open, so this take has no camera file.".to_owned());
+    };
+    let format = share.capture.format();
+    let encoder = EncoderConfig {
+        width: format.width,
+        height: format.height,
+        fps_num: format.fps_num,
+        fps_den: format.fps_den,
+        rate_control: webcam.iso_rc,
+        ..encoder_config(&cfg.profile)
+    };
+    encoder.validate().map_err(|err| format!("The camera file was skipped: {err}"))?;
+    check_combo(cfg.profile.container, encoder.codec, encoder.height, no_audio()).map_err(|err| format!("The camera file was skipped: {err}"))?;
+    let file = cfg.take_folder.join(format!("{}_cam.{}", cfg.base_name, cfg.profile.container.extension()));
+    Ok(Some(CamPlan { share, encoder, container: cfg.profile.container, file, offset_ms: webcam.offset_clamped() }))
+}
+
+/// What the camera thread reports back to the session.
+enum CamMessage {
+    /// The setup ended: the encoder and the file are ready, or this is why not.
+    Setup(Result<(), String>),
+    /// The camera file ended, with its totals or the reason it could not be finished.
+    Finished(Result<CamSummary, String>),
+}
+
+/// The session's handle on the running camera thread.
+pub(super) struct CamHandle {
+    /// Releases the thread to start pacing, carrying the shared start QPC.
+    start_tx: Sender<i64>,
+    /// The thread's messages.
+    rx: Receiver<CamMessage>,
+    /// The thread, joined by `finish` or `abort`.
+    handle: JoinHandle<()>,
+    /// The camera file.
+    file: PathBuf,
+}
+
+impl CamHandle {
+    /// The camera file.
+    pub(super) fn file(&self) -> &Path {
+        &self.file
+    }
+
+    /// Releases the thread to record from `start_qpc`; false when the thread has already ended.
+    pub(super) fn begin(&self, start_qpc: i64) -> bool {
+        self.start_tx.send(start_qpc).is_ok()
+    }
+
+    /// Waits for the thread to finish the file and returns its totals; the stop flag must be set.
+    pub(super) fn finish(self) -> Result<CamSummary, String> {
+        let mut outcome = Err("the camera thread ended without reporting a summary".to_owned());
+        while let Ok(message) = self.rx.recv() {
+            if let CamMessage::Finished(result) = message {
+                outcome = result;
+                break;
+            }
+        }
+        let _ = self.handle.join();
+        outcome
+    }
+
+    /// Ends a camera thread that never started recording, and waits for it.
+    pub(super) fn abort(self) {
+        drop(self.start_tx);
+        let _ = self.handle.join();
+    }
+}
+
+/// Starts the "cam-video" thread, waits for it to open the encoder and the file, and returns the handle.
+///
+/// The error is the text of the banner for a camera file that could not be started.
+pub(super) fn spawn(plan: CamPlan, stats: Arc<Stats>, stop: Arc<AtomicBool>) -> Result<CamHandle, String> {
+    let file = plan.file.clone();
+    let (tx, rx) = mpsc::channel();
+    let (start_tx, start_rx) = mpsc::channel::<i64>();
+    let handle = std::thread::Builder::new()
+        .name("cam-video".to_owned())
+        .spawn(move || run(plan, &stats, &stop, &tx, &start_rx))
+        .map_err(|err| format!("The camera file was skipped: its thread could not be started: {err}"))?;
+    match rx.recv() {
+        Ok(CamMessage::Setup(Ok(()))) => Ok(CamHandle { start_tx, rx, handle, file }),
+        Ok(CamMessage::Setup(Err(err))) => {
+            let _ = handle.join();
+            Err(format!("The camera file was skipped: {err}"))
+        }
+        Ok(CamMessage::Finished(_)) | Err(_) => {
+            let _ = handle.join();
+            Err("The camera file was skipped: its thread ended before it was ready.".to_owned())
+        }
+    }
+}
+
+/// Everything the per-frame path owns.
+struct Pipeline {
+    /// The hardware frames the camera textures are copied into; ends before the encoder.
+    pool: D3d11FramePool,
+    /// The camera file's encoder.
+    encoder: AmfEncoder,
+    /// The thread that writes the camera file.
+    mux: MuxThread,
+}
+
+/// Entry point of the camera thread: sets up, waits for the start command, records until told to stop, then reports.
+fn run(plan: CamPlan, stats: &Stats, stop: &AtomicBool, tx: &Sender<CamMessage>, start_rx: &Receiver<i64>) {
+    let pipeline = match setup(&plan) {
+        Ok(pipeline) => pipeline,
+        Err(err) => {
+            let _ = tx.send(CamMessage::Setup(Err(err)));
+            return;
+        }
+    };
+    if tx.send(CamMessage::Setup(Ok(()))).is_err() {
+        return;
+    }
+    let outcome = match start_rx.recv() {
+        Ok(start_qpc) => record(&plan, stats, stop, pipeline, start_qpc),
+        Err(_) => {
+            // The session gave up before the take began: the empty file goes.
+            let _ = pipeline.mux.finish();
+            let _ = std::fs::remove_file(&plan.file);
+            Err("the session stopped before recording started".to_owned())
+        }
+    };
+    let _ = tx.send(CamMessage::Finished(outcome));
+}
+
+/// Opens the frame pool, the encoder and the muxer for the camera file.
+fn setup(plan: &CamPlan) -> Result<Pipeline, String> {
+    let device = D3d11Device::from_device(plan.share.gpu.device()).map_err(|err| err.to_string())?;
+    let pool = D3d11FramePool::new(&device, plan.encoder.width, plan.encoder.height, 8).map_err(|err| err.to_string())?;
+    let encoder = AmfEncoder::open(&plan.encoder, &pool).map_err(|err| err.to_string())?;
+    let mut muxer = Muxer::create(&plan.file, plan.container).map_err(|err| err.to_string())?;
+    let fps = (plan.encoder.fps_num as i32, plan.encoder.fps_den as i32);
+    muxer.add_video(encoder.parameters(), encoder.time_base(), fps).map_err(|err| err.to_string())?;
+    muxer.start().map_err(|err| err.to_string())?;
+    let mux = MuxThread::start(muxer).map_err(|err| err.to_string())?;
+    Ok(Pipeline { pool, encoder, mux })
+}
+
+/// The recording loop's state: the pipeline, its pacer and the per-frame bookkeeping.
+struct Recorder<'a> {
+    pipeline: Pipeline,
+    sender: MuxSender,
+    pacer: CamPacer,
+    times: CamTimes,
+    plan: &'a CamPlan,
+    stats: &'a Stats,
+    /// How many frames failed in a row.
+    failures: u32,
+}
+
+impl Recorder<'_> {
+    /// Encodes the camera texture for tick `n`; false once too many frames in a row failed.
+    fn emit(&mut self, n: u64, texture: &ID3D11Texture2D, seq: u64) -> bool {
+        let timer = Instant::now();
+        let sent = encode_one_frame(&mut self.pipeline, &self.sender, self.plan, texture, self.pacer.pts_for(n));
+        self.times.add(timer.elapsed());
+        match &sent {
+            Ok(()) => self.failures = 0,
+            Err(err) => {
+                self.failures += 1;
+                self.stats.set_last_error(format!("Camera encode: {err}"));
+            }
+        }
+        self.pacer.record(n, seq, sent.is_ok());
+        self.stats.cam.store(&self.pacer, self.pipeline.mux.bytes_written());
+        self.failures < MAX_CONSECUTIVE_FAILURES
+    }
+}
+
+/// Runs the paced recording loop from the shared start QPC, then finishes the camera file.
+fn record(plan: &CamPlan, stats: &Stats, stop: &AtomicBool, pipeline: Pipeline, start_qpc: i64) -> Result<CamSummary, String> {
+    let capture = &plan.share.capture;
+    let counters = &stats.cam;
+    let pacer = CamPacer::new(qpc_frequency(), plan.encoder.fps_num, plan.encoder.fps_den, start_qpc, plan.offset_ms);
+    let sender = pipeline.mux.sender();
+    let mut rec = Recorder { pipeline, sender, pacer, times: CamTimes::new(), plan, stats, failures: 0 };
+    counters.started.store(true, Ordering::Relaxed);
+    counters.running.store(true, Ordering::Relaxed);
+    let mut paused = false;
+    let mut last_seq = 0u64;
+    let mut lost = false;
+    let mut broken = false;
+
+    while !stop.load(Ordering::Relaxed) {
+        if let Some(error) = capture.error() {
+            log::warn!("the camera was lost: {error}");
+            lost = true;
+            break;
+        }
+        let want_pause = stats.paused.load(Ordering::Relaxed);
+        if want_pause != paused {
+            let now = qpc_now();
+            if want_pause {
+                rec.pacer.pause(now);
+            } else {
+                rec.pacer.resume(now);
+            }
+            paused = want_pause;
+        }
+        let Some(frame) = capture.latest().filter(|frame| frame.seq != last_seq) else {
+            std::thread::sleep(POLL);
+            continue;
+        };
+        last_seq = frame.seq;
+        for n in rec.pacer.on_frame(frame.qpc) {
+            if !rec.emit(n, &frame.texture, frame.seq) {
+                broken = true;
+                break;
+            }
+        }
+        if broken {
+            break;
+        }
+    }
+
+    counters.running.store(false, Ordering::Relaxed);
+    if lost {
+        counters.lost.store(true, Ordering::Relaxed);
+    } else if broken {
+        stats.set_last_error("The camera file stopped: its frames kept failing to encode.".to_owned());
+    } else if capture.error().is_none()
+        && let Some(frame) = capture.latest()
+    {
+        // The take ended: the ticks the wall clock passed after the last camera frame repeat it, so the file is as long as the take.
+        for n in rec.pacer.tail(qpc_now()) {
+            if !rec.emit(n, &frame.texture, frame.seq) {
+                break;
+            }
+        }
+    }
+    finish_file(rec, plan, lost)
+}
+
+/// Copies one camera texture into a pool frame, encodes it and queues the packets.
+fn encode_one_frame(pipeline: &mut Pipeline, mux: &MuxSender, plan: &CamPlan, texture: &ID3D11Texture2D, pts: i64) -> Result<(), MediaError> {
+    let mut hw = HwFrame::from_pool(&pipeline.pool)?;
+    hw.copy_from(plan.share.gpu.context(), texture)?;
+    hw.set_pts(pts);
+    pipeline.encoder.send(hw)?;
+    let mut mux_err: Option<MediaError> = None;
+    pipeline.encoder.receive(&mut |packet| write_packet(packet, mux, &mut mux_err))?;
+    mux_err.map_or(Ok(()), Err)
+}
+
+/// Queues one packet into the camera's mux thread; the first failure is kept.
+fn write_packet(packet: EncodedPacket, mux: &MuxSender, mux_err: &mut Option<MediaError>) {
+    if mux_err.is_some() {
+        return;
+    }
+    if let Err(err) = mux.send(CAM_STREAM, packet) {
+        *mux_err = Some(err);
+    }
+}
+
+/// Drains the encoder, writes the trailer and builds the totals.
+fn finish_file(rec: Recorder<'_>, plan: &CamPlan, lost: bool) -> Result<CamSummary, String> {
+    let Recorder { pipeline, sender, pacer, times, stats, .. } = rec;
+    let Pipeline { pool, mut encoder, mux } = pipeline;
+    let mut mux_err: Option<MediaError> = None;
+    let drained = encoder.finish(&mut |packet| write_packet(packet, &sender, &mut mux_err));
+    // The queue closes only when every sender is gone.
+    drop(sender);
+    drop(encoder);
+    drop(pool);
+    let mux_summary = mux.finish();
+    drained.map_err(|err| err.to_string())?;
+    if let Some(err) = mux_err {
+        return Err(err.to_string());
+    }
+    let mux_summary = mux_summary.map_err(|err| err.to_string())?;
+    stats.cam.store(&pacer, mux_summary.bytes_written);
+    let (fps_num, fps_den) = (u64::from(plan.encoder.fps_num.max(1)), u64::from(plan.encoder.fps_den));
+    Ok(CamSummary {
+        file: plan.file.clone(),
+        frames: pacer.frames(),
+        duplicated: pacer.duplicated(),
+        dropped: pacer.dropped(),
+        bytes_written: mux_summary.bytes_written,
+        duration_ms: pacer.frames().saturating_mul(1000).saturating_mul(fps_den) / fps_num,
+        fps: fps_num as f64 / fps_den.max(1) as f64,
+        encode_avg_ms: times.average_ms(),
+        encode_p95_ms: times.p95_ms(),
+        lost,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A real QPC frequency: 100 ns ticks.
+    const QPC_FREQ: i64 = 10_000_000;
+
+    /// A pacer at 30 fps from QPC 0 with this sync offset.
+    fn pacer(offset_ms: i32) -> CamPacer {
+        CamPacer::new(QPC_FREQ, 30, 1, 0, offset_ms)
+    }
+
+    /// The QPC time of camera frame `k` of a perfect 30 fps camera that started at 0.
+    fn frame_time(k: i64) -> i64 {
+        k * QPC_FREQ / 30
+    }
+
+    /// Feeds frames `from..to` and returns, for each frame, the ticks it filled.
+    fn feed(pacer: &mut CamPacer, from: i64, to: i64) -> Vec<Vec<u64>> {
+        (from..to).map(|k| pacer.on_frame(frame_time(k)).collect()).collect()
+    }
+
+    #[test]
+    fn with_no_offset_every_camera_frame_fills_its_own_tick() {
+        let mut pacer = pacer(0);
+        let ticks = feed(&mut pacer, 0, 90);
+        for (k, filled) in ticks.iter().enumerate() {
+            assert_eq!(filled, &vec![k as u64], "frame {k}");
+        }
+    }
+
+    #[test]
+    fn a_positive_offset_delays_the_camera_and_pads_the_start_with_its_first_frame() {
+        // 100 ms is 3 frames at 30 fps: the first frame fills ticks 0 to 3, and every later frame lands 3 ticks late.
+        let mut pacer = pacer(100);
+        let ticks = feed(&mut pacer, 0, 10);
+        assert_eq!(ticks[0], vec![0, 1, 2, 3]);
+        for (k, filled) in ticks.iter().enumerate().skip(1) {
+            assert_eq!(filled, &vec![k as u64 + 3], "frame {k}");
+        }
+    }
+
+    #[test]
+    fn a_negative_offset_advances_the_camera_and_drops_its_first_frames() {
+        // -100 ms: the first 3 frames fall before the start of the file, and frame 3 becomes tick 0.
+        let mut pacer = pacer(-100);
+        let ticks = feed(&mut pacer, 0, 10);
+        for filled in &ticks[..3] {
+            assert!(filled.is_empty());
+        }
+        for (k, filled) in ticks.iter().enumerate().skip(3) {
+            assert_eq!(filled, &vec![k as u64 - 3], "frame {k}");
+        }
+    }
+
+    #[test]
+    fn an_offset_in_ms_scales_with_the_qpc_frequency() {
+        // A 1 kHz style clock: 1 tick is 1 ms, so 100 ms is 100 ticks and a frame is 33 ticks.
+        let mut pacer = CamPacer::new(1000, 30, 1, 0, 100);
+        assert_eq!(pacer.on_frame(0).collect::<Vec<_>>(), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn a_camera_that_skips_a_frame_repeats_the_one_before_it_in_the_count() {
+        let mut pacer = pacer(0);
+        let first: Vec<u64> = pacer.on_frame(frame_time(0)).collect();
+        assert_eq!(first, vec![0]);
+        // Frame 1 never arrives: frame 2 fills ticks 1 and 2, so one tick is a repeat of the same source frame.
+        let late: Vec<u64> = pacer.on_frame(frame_time(2)).collect();
+        assert_eq!(late, vec![1, 2]);
+        pacer.record(0, 1, true);
+        pacer.record(1, 3, true);
+        pacer.record(2, 3, true);
+        assert_eq!((pacer.frames(), pacer.duplicated(), pacer.dropped()), (3, 1, 0));
+    }
+
+    #[test]
+    fn a_pause_adds_no_ticks_and_the_timeline_continues_with_no_gap() {
+        let mut pacer = pacer(0);
+        // The first second: frames 0 to 29 fill ticks 0 to 29.
+        let before: Vec<u64> = feed(&mut pacer, 0, 30).into_iter().flatten().collect();
+        assert_eq!(before, (0..30).collect::<Vec<u64>>());
+        // Paused for 2 seconds: the camera frames of that time fill nothing.
+        pacer.pause(QPC_FREQ);
+        let during = feed(&mut pacer, 30, 90);
+        assert!(during.iter().all(Vec::is_empty));
+        pacer.resume(3 * QPC_FREQ);
+        let after: Vec<u64> = feed(&mut pacer, 90, 120).into_iter().flatten().collect();
+        assert_eq!(after, (30..60).collect::<Vec<u64>>());
+    }
+
+    #[test]
+    fn a_pause_with_an_offset_keeps_the_offset() {
+        let mut pacer = pacer(100);
+        let before: Vec<u64> = feed(&mut pacer, 0, 30).into_iter().flatten().collect();
+        // Frames 0 to 29 fill ticks 0 to 32 with the first frame padded 3 ticks.
+        assert_eq!(before, (0..33).collect::<Vec<u64>>());
+        pacer.pause(QPC_FREQ);
+        pacer.resume(3 * QPC_FREQ);
+        let after: Vec<u64> = feed(&mut pacer, 90, 100).into_iter().flatten().collect();
+        assert_eq!(after, (33..43).collect::<Vec<u64>>());
+    }
+
+    #[test]
+    fn the_tail_fills_the_ticks_the_wall_clock_passed() {
+        let mut pacer = pacer(0);
+        feed(&mut pacer, 0, 30);
+        // The take ends at 1.1 s: ticks 30 to 32 are due on the wall clock.
+        let tail: Vec<u64> = pacer.tail(QPC_FREQ + QPC_FREQ / 10).collect();
+        assert_eq!(tail, vec![30, 31, 32]);
+        assert!(pacer.tail(QPC_FREQ + QPC_FREQ / 10).is_empty());
+    }
+
+    #[test]
+    fn a_tick_is_never_given_out_twice() {
+        let mut pacer = pacer(-40);
+        let mut seen = Vec::new();
+        for k in 0..300 {
+            seen.extend(pacer.on_frame(frame_time(k)));
+        }
+        for pair in seen.windows(2) {
+            assert!(pair[0] < pair[1]);
+        }
+    }
+
+    #[test]
+    fn the_encode_times_give_an_average_and_a_95th_percentile() {
+        let empty = CamTimes::new();
+        assert_eq!((empty.average_ms(), empty.p95_ms()), (0.0, 0.0));
+        let mut times = CamTimes::new();
+        for _ in 0..95 {
+            times.add(Duration::from_micros(1000));
+        }
+        for _ in 0..5 {
+            times.add(Duration::from_micros(10_000));
+        }
+        assert!((times.average_ms() - 1.45).abs() < 1e-6);
+        assert!((times.p95_ms() - 1.0).abs() <= 0.11);
+    }
+}

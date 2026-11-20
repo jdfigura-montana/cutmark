@@ -13,6 +13,9 @@ pub mod audio_track;
 #[allow(dead_code)]
 pub mod audio;
 
+/// The camera ISO file: its own pacer, encoder and mux thread, fed by the shared camera.
+pub mod cam;
+
 /// The media clock: QPC times to recording time with paused time removed.
 pub mod clock;
 

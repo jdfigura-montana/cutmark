@@ -55,6 +55,8 @@ pub struct TakeMarks {
     warning: MarksWarning,
     /// The script line being read, stamped on every mark made while it is known.
     script: Option<ScriptRef>,
+    /// The camera ISO file and its length in ms, listed as media after the WAV files when the take ends.
+    cam: Option<(PathBuf, u64)>,
 }
 
 impl TakeMarks {
@@ -81,7 +83,13 @@ impl TakeMarks {
             recent: VecDeque::new(),
             warning,
             script: None,
+            cam: None,
         }
+    }
+
+    /// Lists the take's camera ISO file, of `duration_ms`, as media in the sidecar when the marks are finished.
+    pub fn set_cam(&mut self, file: PathBuf, duration_ms: u64) {
+        self.cam = Some((file, duration_ms));
     }
 
     /// Sets the script line that marks made from now on carry, as its line number and its label.
@@ -156,6 +164,12 @@ impl TakeMarks {
             match writer.add_media(wav, 0) {
                 Ok(_) => durations.push(*length),
                 Err(err) => self.fail(&format!("a WAV file could not be listed in the marks: {err}")),
+            }
+        }
+        if let Some((file, length)) = self.cam.take() {
+            match writer.add_media(&file, 0) {
+                Ok(_) => durations.push(length),
+                Err(err) => self.fail(&format!("the camera file could not be listed in the marks: {err}")),
             }
         }
         let path = match writer.finish(&durations) {
@@ -340,6 +354,20 @@ mod tests {
         assert!(md.contains("| System | Paused |") && md.contains("| System | Resumed |"), "{md}");
         let csv = fs::read_to_string(dir.join("take_marks.csv")).expect("csv log");
         assert!(csv.contains(",system,Paused,") && csv.contains(",system,Resumed,"), "{csv}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_camera_file_is_listed_as_media_after_the_video() {
+        let dir = scratch("cam");
+        let mut take = TakeMarks::begin(&dir, "cam", &dir.join("cam.mkv"), 60, MediaClock::new(START, FREQ), MarksWarning::default());
+        take.note(at_seconds(1));
+        take.set_cam(dir.join("cam_cam.mkv"), 9000);
+        take.finish(&[], &[10_000]);
+        let (sidecar, _) = ::marks::load(&dir.join("cam.marks.json")).expect("load");
+        assert_eq!(sidecar.media.len(), 2);
+        assert_eq!(sidecar.media[0].duration_ms, 10_000);
+        assert_eq!(sidecar.media[1].duration_ms, 9000);
         let _ = fs::remove_dir_all(&dir);
     }
 

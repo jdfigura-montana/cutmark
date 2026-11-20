@@ -1,7 +1,7 @@
 //! The status bar at the bottom of the window: the live numbers while a take runs, the free disk space while idle.
 
 use crate::engine::controller::{ControllerState, Phase};
-use crate::engine::stats::{GIB, TakeStats};
+use crate::engine::stats::{CamLine, GIB, TakeStats};
 
 /// Draws the status bar's contents: every live number while recording or paused, the free disk space while idle.
 pub fn show(ui: &mut egui::Ui, state: &ControllerState) {
@@ -37,6 +37,21 @@ fn recording(ui: &mut egui::Ui, stats: &TakeStats) {
     }
     ui.separator();
     ui.label(format!("Queue {}", stats.queue_depth));
+    // The camera file's line, only while the camera file is being written.
+    if let Some(cam) = &stats.cam {
+        ui.separator();
+        let text = cam_text(cam);
+        if cam.dropped > 0 {
+            ui.label(egui::RichText::new(text).color(ui.visuals().error_fg_color));
+        } else {
+            ui.label(text);
+        }
+    }
+}
+
+/// The camera file's line: its frames, the repeated frames and the dropped frames.
+fn cam_text(cam: &CamLine) -> String {
+    format!("Cam {} frames, duplicated {}, dropped {}", cam.frames, cam.duplicated, cam.dropped)
 }
 
 /// Formats a number of seconds as HH:MM:SS.
@@ -77,5 +92,11 @@ mod tests {
         assert_eq!(format_left(None), "--");
         assert_eq!(format_left(Some(90)), "2 min");
         assert_eq!(format_left(Some(7500)), "2h 05m");
+    }
+
+    #[test]
+    fn the_camera_line_names_its_frames_duplicates_and_drops() {
+        let cam = CamLine { frames: 900, duplicated: 3, dropped: 1 };
+        assert_eq!(cam_text(&cam), "Cam 900 frames, duplicated 3, dropped 1");
     }
 }

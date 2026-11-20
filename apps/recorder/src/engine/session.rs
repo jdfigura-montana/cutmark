@@ -15,6 +15,7 @@ use media_io::encode::{ComboError, EncoderConfig, check_combo};
 use media_io::mux::{MuxSender, MuxThread, Muxer, SendParameters};
 
 use super::audio::{self, AudioMessage, AudioStart};
+use super::cam::{self, CamCounters, CamHandle, CamSnapshot, CamSummary};
 use super::clock::MediaClock;
 use super::marks::{MarksWarning, TakeMarks, wav_length_ms};
 use super::video;
@@ -117,6 +118,8 @@ pub struct Stats {
     pub(super) audio_frames: AtomicU64,
     /// Bytes of audio data written to the WAV sidecars so far.
     pub(super) wav_bytes: AtomicU64,
+    /// The counters of the camera ISO file, written by the camera thread.
+    pub(super) cam: CamCounters,
     /// One entry per audio track, folded in by the audio thread.
     tracks: Vec<TrackSlot>,
 }
@@ -134,6 +137,7 @@ impl Stats {
             last_error: Mutex::new(None),
             audio_frames: AtomicU64::new(0),
             wav_bytes: AtomicU64::new(0),
+            cam: CamCounters::new(),
             tracks: tracks
                 .iter()
                 .map(|track| TrackSlot {
@@ -161,6 +165,7 @@ impl Stats {
             paused: self.paused.load(Ordering::Relaxed),
             last_error: self.last_error.lock().ok().and_then(|slot| slot.clone()),
             audio_frames: self.audio_frames.load(Ordering::Relaxed),
+            cam: self.cam.snapshot(),
             tracks: self.tracks.iter().map(TrackSlot::snapshot).collect(),
         }
     }
@@ -229,6 +234,8 @@ pub struct StatsSnapshot {
     pub last_error: Option<String>,
     /// Total audio frames handed to the audio encoders across all streams.
     pub audio_frames: u64,
+    /// The camera ISO file's counters, or none while the take has no camera file.
+    pub cam: Option<CamSnapshot>,
     /// One entry per audio track, in track order.
     pub tracks: Vec<TrackSnapshot>,
 }
@@ -238,6 +245,8 @@ pub struct StatsSnapshot {
 pub struct TakeCounters {
     /// Packet bytes the mux thread has written to the video file.
     pub mux_bytes: u64,
+    /// Packet bytes the camera's mux thread has written to the camera file.
+    pub cam_bytes: u64,
     /// Audio bytes written to the WAV sidecars.
     pub wav_bytes: u64,
     /// Packets waiting for the mux thread.
@@ -420,6 +429,8 @@ impl SessionFile {
             "take": cfg.base_name,
             "started_at": chrono::Local::now().to_rfc3339(),
             "video_file": cfg.output_file.file_name().map(|name| name.to_string_lossy().into_owned()),
+            "cam_file": serde_json::Value::Null,
+            "cam_notice": serde_json::Value::Null,
             "profile": serde_json::to_value(&cfg.profile).unwrap_or(serde_json::Value::Null),
             "audio": {
                 "codec": format!("{:?}", cfg.audio_codec),
@@ -433,13 +444,21 @@ impl SessionFile {
         Self { path: cfg.take_folder.join(format!("{}_session.json", cfg.base_name)), doc }
     }
 
+    /// Lists the camera ISO file, or the reason the take has none although the profile asked for one.
+    fn set_cam(&mut self, file: Option<&Path>, notice: Option<&str>) {
+        if let Some(doc) = self.doc.as_object_mut() {
+            doc.insert("cam_file".to_owned(), serde_json::json!(file.and_then(Path::file_name).map(|name| name.to_string_lossy().into_owned())));
+            doc.insert("cam_notice".to_owned(), serde_json::json!(notice));
+        }
+    }
+
     /// Writes the file through a temp file in the same folder, then renames it over the target.
     fn write(&self) -> Result<(), String> {
         crate::config::write_json(&self.path, &self.doc).map_err(|err| err.to_string())
     }
 
-    /// Fills in how the take ended: the totals when it finished, or the error and the counters so far when it did not.
-    fn finish(&mut self, outcome: &Result<Summary, EngineError>, so_far: &StatsSnapshot) {
+    /// Fills in how the take ended: the totals, with the camera file's, when it finished, or the error and the counters so far when it did not.
+    fn finish(&mut self, outcome: &Result<Summary, EngineError>, so_far: &StatsSnapshot, cam: Option<&CamSummary>) {
         let result = match outcome {
             Ok(summary) => serde_json::json!({
                 "finished": true,
@@ -452,6 +471,16 @@ impl SessionFile {
                 "average_mbps": summary.average_mbps,
                 "packets": summary.packets,
                 "wav_files": summary.wav_files.iter().filter_map(|wav| wav.file_name()).map(|name| name.to_string_lossy().into_owned()).collect::<Vec<_>>(),
+                "cam": cam.map(|cam| serde_json::json!({
+                    "frames": cam.frames,
+                    "duplicated_frames": cam.duplicated,
+                    "dropped_frames": cam.dropped,
+                    "bytes_written": cam.bytes_written,
+                    "duration_ms": cam.duration_ms,
+                    "encode_avg_ms": cam.encode_avg_ms,
+                    "encode_p95_ms": cam.encode_p95_ms,
+                    "lost": cam.lost,
+                })),
             }),
             Err(err) => serde_json::json!({
                 "finished": false,
@@ -486,6 +515,10 @@ pub struct RecordingSession {
     fps: u32,
     /// The take's session.json, rewritten at stop.
     session_file: SessionFile,
+    /// The camera ISO thread, until stop() finishes it.
+    cam: Option<CamHandle>,
+    /// Why the profile's camera file is not being recorded, for a banner.
+    cam_notice: Option<String>,
 }
 
 impl RecordingSession {
@@ -502,7 +535,9 @@ impl RecordingSession {
         let output_file = cfg.output_file.clone();
         let (take_folder, base_name) = (cfg.take_folder.clone(), cfg.base_name.clone());
         let fps = cfg.profile.fps;
-        let session_file = SessionFile::begin(&cfg);
+        let mut session_file = SessionFile::begin(&cfg);
+        // The camera file is decided before the config moves to the video thread.
+        let cam_plan = cam::plan(&cfg);
         let stats = Arc::new(Stats::new(&cfg.tracks));
         let stop_flag = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
@@ -573,6 +608,15 @@ impl RecordingSession {
                 return Err(err);
             }
         };
+        // The camera file has its own encoder and mux thread; a camera file that cannot start never stops the recording.
+        let (cam, cam_notice) = match cam_plan {
+            Ok(Some(plan)) => match cam::spawn(plan, Arc::clone(&stats), Arc::clone(&stop_flag)) {
+                Ok(handle) => (Some(handle), None),
+                Err(notice) => (None, Some(notice)),
+            },
+            Ok(None) => (None, None),
+            Err(notice) => (None, Some(notice)),
+        };
         // One start instant for every stream: the video thread only begins
         // pacing, and the audio thread only begins filling, once they receive
         // their commands.
@@ -587,6 +631,9 @@ impl RecordingSession {
             wind_up_audio(&stop_flag, audio_start_tx, &audio_rx, audio_handle);
             wind_up(&stop_flag, &rx, handle);
             let _ = mux.0.finish();
+            if let Some(cam) = cam {
+                cam.abort();
+            }
             return Err(EngineError::Failed("the video thread ended before recording started".into()));
         }
         let audio_sent = audio_start_tx.send(AudioStart { start_qpc: start_100ns, mux: mux.0.sender(), streams: mux.1 });
@@ -594,8 +641,23 @@ impl RecordingSession {
         if audio_sent.is_err() {
             wind_up(&stop_flag, &rx, handle);
             let _ = mux.0.finish();
+            if let Some(cam) = cam {
+                cam.abort();
+            }
             return Err(EngineError::Failed("the audio thread ended before recording started".into()));
         }
+        // The camera thread starts from the same instant as every other stream.
+        let (cam, cam_notice) = match cam {
+            Some(handle) if !handle.begin(start_qpc) => {
+                handle.abort();
+                (None, Some("The camera file was skipped: its thread ended before recording started.".to_owned()))
+            }
+            other => (other, cam_notice),
+        };
+        if let Some(notice) = &cam_notice {
+            log::warn!("{notice}");
+        }
+        session_file.set_cam(cam.as_ref().map(CamHandle::file), cam_notice.as_deref());
         let marks_warning = MarksWarning::default();
         let marks = TakeMarks::begin(&take_folder, &base_name, &output_file, fps, MediaClock::new(start_qpc, qpc_freq), marks_warning.clone());
         // A session.json that cannot be written is a warning, never a reason to stop the recording.
@@ -615,7 +677,14 @@ impl RecordingSession {
             marks_warning,
             fps,
             session_file,
+            cam,
+            cam_notice,
         })
+    }
+
+    /// Why the profile's camera file is not being recorded in this take, if it asked for one.
+    pub fn cam_notice(&self) -> Option<&str> {
+        self.cam_notice.as_deref()
     }
 
     /// The take's marks, until the take is stopped.
@@ -659,14 +728,21 @@ impl RecordingSession {
     pub fn counters(&self) -> TakeCounters {
         TakeCounters {
             mux_bytes: self.mux.as_ref().map_or(0, MuxThread::bytes_written),
+            cam_bytes: self.stats.cam.bytes(),
             wav_bytes: self.stats.wav_bytes.load(Ordering::Relaxed),
             queue_depth: self.mux.as_ref().map_or(0, MuxThread::queue_depth),
         }
     }
 
-    /// Finishes the file and returns the summary of the take. The audio
-    /// thread stops first, then the video thread, then the mux thread.
-    pub fn stop(mut self) -> Result<Summary, EngineError> {
+    /// Finishes the file and returns the summary of the take; the camera file's totals are dropped, see [`RecordingSession::stop_with_cam`].
+    pub fn stop(self) -> Result<Summary, EngineError> {
+        self.stop_with_cam().0
+    }
+
+    /// Finishes the files and returns the summary of the take with the camera ISO file's totals, which are none when the
+    /// take had no camera file or the file could not be finished. The audio thread stops first, then the video thread,
+    /// the camera thread, and the mux thread.
+    pub fn stop_with_cam(mut self) -> (Result<Summary, EngineError>, Option<CamSummary>) {
         self.stop_flag.store(true, Ordering::Relaxed);
         // The audio thread stops first so every stream and WAV ends at the
         // video's length.
@@ -688,16 +764,29 @@ impl RecordingSession {
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
+        // The camera thread ends with the stop flag and finishes its own file; a camera file that fails here never fails the take.
+        let cam = match self.cam.take().map(CamHandle::finish) {
+            Some(Ok(summary)) => Some(summary),
+            Some(Err(err)) => {
+                log::warn!("the camera file could not be finished: {err}");
+                self.stats.set_last_error(format!("The camera file could not be finished: {err}"));
+                None
+            }
+            None => None,
+        };
         // Finish the mux thread and fold its totals into the summary.
         if outcome.is_ok()
             && let Some(mux) = self.mux.take()
         {
             // The marks are finished before the trailer, so the chapters go into the file.
-            if let (Some(marks), Ok(summary)) = (self.marks.take(), &outcome) {
+            if let (Some(mut marks), Ok(summary)) = (self.marks.take(), &outcome) {
                 let wav_files = audio.as_ref().map(|finished| finished.wav_files.clone()).unwrap_or_default();
                 let video_ms = u64::try_from(u128::from(summary.frames) * 1000 / u128::from(self.fps.max(1))).unwrap_or(u64::MAX);
                 let mut durations_ms = vec![video_ms];
                 durations_ms.extend(wav_files.iter().map(|wav| wav_length_ms(wav).unwrap_or(video_ms)));
+                if let Some(cam) = &cam {
+                    marks.set_cam(cam.file.clone(), cam.duration_ms);
+                }
                 mux.set_chapters(marks.finish(&wav_files, &durations_ms));
             }
             outcome = match mux.finish() {
@@ -729,12 +818,12 @@ impl RecordingSession {
             (_, outcome) => outcome,
         };
         // The totals go into session.json; a failed write is logged and shown as a warning, and the take is still finished.
-        self.session_file.finish(&outcome, &self.stats.snapshot());
+        self.session_file.finish(&outcome, &self.stats.snapshot(), cam.as_ref());
         if let Err(err) = self.session_file.write() {
             log::warn!("could not update the session file: {err}");
             self.stats.set_last_error(format!("The session file could not be updated: {err}"));
         }
-        outcome
+        (outcome, cam)
     }
 }
 
