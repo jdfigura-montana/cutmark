@@ -13,14 +13,23 @@ The API token, shown in the Recorder's Control API section.
 .PARAMETER Port
 The API port. Defaults to 4466.
 
+.PARAMETER Prompter
+Runs a fake Prompter instead of the basic run: sends a 20-line script snapshot, starts a take, sends a scriptPosition
+every 500 ms for lines 1 to 20, marks a Retake at line 8, then stops. The take folder gets _script.md and _script.csv.
+
 .EXAMPLE
 .\scripts\recorder-api-test.ps1 -Token 0123abcd...
+
+.EXAMPLE
+.\scripts\recorder-api-test.ps1 -Token 0123abcd... -Prompter
 #>
 param(
     [Parameter(Mandatory = $true)]
     [string]$Token,
 
-    [int]$Port = 4466
+    [int]$Port = 4466,
+
+    [switch]$Prompter
 )
 
 $ErrorActionPreference = 'Stop'
@@ -118,6 +127,42 @@ function Close-Recorder {
         # The server may have closed first.
     }
     $Connection.Socket.Dispose()
+}
+
+# Plays a Prompter that reads a 20-line script: a snapshot, a start, a position every 500 ms, a flub at line 8, then a stop.
+function Invoke-FakePrompter {
+    param([int]$Port, [string]$Token)
+    $lines = 1..20 | ForEach-Object { "Line $_ of the fake script: this is the sentence the presenter reads aloud." }
+    $markdown = "# Fake script`n`n" + ($lines -join "`n`n")
+
+    Write-Host "== Fake Prompter, port $Port =="
+    $connection = Connect-Recorder $Port
+    Send-Message $connection @{ op = 'auth'; token = $Token }
+    [void](Receive-For $connection 1000)
+
+    [void](Invoke-Command-Api $connection @{ op = 'scriptSnapshot'; id = 1; scriptId = 'fake-1'; title = 'Fake script'; markdown = $markdown })
+    [void](Invoke-Command-Api $connection @{ op = 'start'; id = 2 })
+    [void](Receive-For $connection 2000)
+
+    for ($number = 1; $number -le 20; $number++) {
+        $text = $lines[$number - 1]
+        $token = ($text -split ' ')[0..1] -join ' '
+        Send-Message $connection @{ op = 'scriptPosition'; scriptId = 'fake-1'; title = 'Fake script'; token = $token; line = $number; text = $text }
+        if ($number -eq 8) {
+            # A flub: the Prompter marks a Retake with the line it was on.
+            [void](Invoke-Command-Api $connection @{ op = 'mark'; id = 3; type = 'Retake'; label = $text })
+        }
+        [void](Receive-For $connection 500)
+    }
+
+    [void](Invoke-Command-Api $connection @{ op = 'stop'; id = 4 })
+    [void](Receive-For $connection 1500)
+    Close-Recorder $connection
+}
+
+if ($Prompter) {
+    Invoke-FakePrompter $Port $Token
+    return
 }
 
 Write-Host "== Good token, port $Port =="

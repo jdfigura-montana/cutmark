@@ -26,6 +26,9 @@ pub mod marks;
 /// The constant frame rate pacer: QPC time to exact frame indexes, pure logic.
 pub mod pacer;
 
+/// The Prompter link's files for one take: the script snapshot and the script position log.
+pub mod script;
+
 /// The recording session: session config, live stats, and start/pause/resume/stop.
 /// The UI wires it up in a later phase 2 prompt.
 #[allow(dead_code)]

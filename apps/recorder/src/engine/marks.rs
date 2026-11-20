@@ -8,7 +8,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use ::marks::{AutoInfo, Mark, MarkType, NewMark, SessionWriter, Sidecar, Source, SystemClock, WriterInfo};
+use ::marks::{AutoInfo, Mark, MarkType, NewMark, ScriptRef, SessionWriter, Sidecar, Source, SystemClock, WriterInfo};
 
 use super::clock::MediaClock;
 
@@ -53,6 +53,8 @@ pub struct TakeMarks {
     count: usize,
     recent: VecDeque<RecentMark>,
     warning: MarksWarning,
+    /// The script line being read, stamped on every mark made while it is known.
+    script: Option<ScriptRef>,
 }
 
 impl TakeMarks {
@@ -69,7 +71,27 @@ impl TakeMarks {
                 None
             }
         };
-        Self { writer, clock, fps: fps.max(1), dir: dir.to_path_buf(), base_name: base_name.to_owned(), count: 0, recent: VecDeque::new(), warning }
+        Self {
+            writer,
+            clock,
+            fps: fps.max(1),
+            dir: dir.to_path_buf(),
+            base_name: base_name.to_owned(),
+            count: 0,
+            recent: VecDeque::new(),
+            warning,
+            script: None,
+        }
+    }
+
+    /// Sets the script line that marks made from now on carry, as its line number and its label.
+    pub fn set_script(&mut self, line: u64, label: String) {
+        self.script = Some(ScriptRef { line: label, position: line });
+    }
+
+    /// The media time of a moment in ms on the take's clock, not snapped to a frame.
+    pub fn clock_ms(&self, qpc: i64) -> u64 {
+        self.clock.media_ms(qpc)
     }
 
     /// How many marks the take has so far.
@@ -170,8 +192,11 @@ impl TakeMarks {
     }
 
     /// Writes one mark, and keeps it for the window's list.
-    fn add(&mut self, mark: NewMark) {
+    fn add(&mut self, mut mark: NewMark) {
         let Some(writer) = &mut self.writer else { return };
+        if mark.script.is_none() {
+            mark.script.clone_from(&self.script);
+        }
         let (t_ms, category, label) = (mark.t_ms, category_name(mark.mark_type), mark.label.clone());
         match writer.add_mark(mark) {
             Ok(Some(_)) => {
@@ -258,7 +283,7 @@ fn mkv_chapters(sidecar: &Sidecar) -> Vec<MkvChapter> {
 }
 
 /// Writes a file through a temp file in the same folder, then renames it over the target.
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut temp = path.as_os_str().to_owned();
     temp.push(".tmp");
     let temp = PathBuf::from(temp);
@@ -335,6 +360,27 @@ mod tests {
         assert_eq!(api.len(), 1);
         assert_eq!((api[0].mark_type, api[0].label.as_deref()), (MarkType::Retake, Some("redo intro")));
         assert!(sidecar.marks.iter().any(|mark| mark.source == Source::Hotkey && mark.mark_type == MarkType::Note));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn marks_made_while_a_script_line_is_known_carry_it_and_the_logs_gain_a_script_column() {
+        let dir = scratch("script");
+        let mut take = TakeMarks::begin(&dir, "script", &dir.join("script.mkv"), 60, MediaClock::new(START, FREQ), MarksWarning::default());
+        take.note(at_seconds(1));
+        take.set_script(8, "L8: Now run the build".to_owned());
+        take.labeled(at_seconds(4), MarkType::Retake, Some("flub".to_owned()), Source::Api);
+        take.pause(at_seconds(5));
+        take.finish(&[], &[10_000]);
+        let (sidecar, _) = ::marks::load(&dir.join("script.marks.json")).expect("load");
+        let scripts: Vec<(Source, Option<&str>)> = sidecar.marks.iter().map(|mark| (mark.source, mark.script.as_ref().map(|s| s.line.as_str()))).collect();
+        assert_eq!(scripts, vec![(Source::Hotkey, None), (Source::Api, Some("L8: Now run the build")), (Source::Auto, Some("L8: Now run the build"))]);
+        assert_eq!(sidecar.marks[1].script.as_ref().map(|s| s.position), Some(8));
+        let csv = fs::read_to_string(dir.join("script_marks.csv")).expect("csv log");
+        assert!(csv.lines().next().is_some_and(|header| header.ends_with(",script")), "{csv}");
+        assert!(csv.contains(",api,L8: Now run the build"), "{csv}");
+        let md = fs::read_to_string(dir.join("script_marks.md")).expect("markdown log");
+        assert!(md.contains("| Script |") && md.contains("| L8: Now run the build |"), "{md}");
         let _ = fs::remove_dir_all(&dir);
     }
 

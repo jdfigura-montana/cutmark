@@ -13,6 +13,9 @@ use crate::engine::controller::{ControllerState, Phase};
 /// The longest mark label the API keeps, in bytes.
 const LABEL_MAX_BYTES: usize = 200;
 
+/// The largest script snapshot the API keeps, in bytes.
+const MARKDOWN_MAX_BYTES: usize = 2 * 1024 * 1024;
+
 /// What a client asked for.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
@@ -48,6 +51,35 @@ pub enum Op {
     },
     /// Ask for the current status.
     GetStatus,
+    /// The Prompter's script, kept for the script file of the next take that gets a position.
+    ScriptSnapshot {
+        /// Identifies the script across messages.
+        script_id: String,
+        /// The script's title.
+        title: String,
+        /// The script as Markdown, up to 2 MB.
+        markdown: String,
+    },
+    /// Where the Prompter is in the script.
+    ScriptPosition {
+        /// Identifies the script across messages.
+        script_id: String,
+        /// The script's title.
+        title: String,
+        /// The word or token the Prompter is at.
+        token: String,
+        /// The line number the Prompter is at.
+        line: u64,
+        /// The text of that line.
+        text: String,
+    },
+}
+
+impl Op {
+    /// Whether this is one of the two Prompter script commands, which reply only when the message has an `id`.
+    pub fn is_script(&self) -> bool {
+        matches!(self, Self::ScriptSnapshot { .. } | Self::ScriptPosition { .. })
+    }
 }
 
 /// One parsed client message.
@@ -130,6 +162,17 @@ impl<'a> Args<'a> {
         Ok(None)
     }
 
+    /// The first of `keys` that is present and not null, as a whole number.
+    fn unsigned(&self, keys: &[&str]) -> Result<Option<u64>, ParseError> {
+        for key in keys {
+            match self.data.and_then(|data| data.get(*key)).or_else(|| self.top.get(*key)) {
+                None | Some(Value::Null) => {}
+                Some(value) => return value.as_u64().map(Some).ok_or_else(|| ParseError::BadArgument(format!("{key} must be a whole number"))),
+            }
+        }
+        Ok(None)
+    }
+
     /// Like [`Args::string`], but the argument must be there and not empty.
     fn required(&self, keys: &[&str]) -> Result<String, ParseError> {
         match self.string(keys)? {
@@ -164,6 +207,20 @@ fn parse_op(object: &Map<String, Value>) -> Result<Op, ParseError> {
         "mute" => Ok(Op::Mute { track: args.string(&["track"])?.filter(|track| !track.trim().is_empty()) }),
         "setProfile" => Ok(Op::SetProfile { name: args.required(&["name"])? }),
         "getStatus" => Ok(Op::GetStatus),
+        "scriptSnapshot" => {
+            let markdown = args.string(&["markdown"])?.unwrap_or_default();
+            if markdown.len() > MARKDOWN_MAX_BYTES {
+                return Err(ParseError::BadArgument("markdown is larger than 2 MB".to_owned()));
+            }
+            Ok(Op::ScriptSnapshot { script_id: args.required(&["scriptId"])?, title: args.string(&["title"])?.unwrap_or_default(), markdown })
+        }
+        "scriptPosition" => Ok(Op::ScriptPosition {
+            script_id: args.required(&["scriptId"])?,
+            title: args.string(&["title"])?.unwrap_or_default(),
+            token: args.string(&["token"])?.unwrap_or_default(),
+            line: args.unsigned(&["line"])?.ok_or_else(|| ParseError::BadArgument("line is required".to_owned()))?,
+            text: args.string(&["text"])?.unwrap_or_default(),
+        }),
         other => Err(ParseError::UnknownOp(other.to_owned())),
     }
 }
@@ -380,6 +437,32 @@ mod tests {
         assert_eq!(parsed(r#"{"op":"setProfile","name":"Premiere HEVC 1080p60"}"#).op, Op::SetProfile { name: "Premiere HEVC 1080p60".to_owned() });
         assert!(matches!(rejected(r#"{"op":"setProfile"}"#).error, ParseError::BadArgument(_)));
         assert!(matches!(rejected(r#"{"op":"mute","track":[1]}"#).error, ParseError::BadArgument(_)));
+    }
+
+    #[test]
+    fn script_commands_parse_with_or_without_an_id() {
+        let snapshot = parsed(r##"{"op":"scriptSnapshot","id":4,"scriptId":"s1","title":"Fake script","markdown":"# Hi"}"##);
+        assert_eq!(snapshot.id, Some(json!(4)));
+        assert_eq!(snapshot.op, Op::ScriptSnapshot { script_id: "s1".to_owned(), title: "Fake script".to_owned(), markdown: "# Hi".to_owned() });
+        let position = parsed(r#"{"op":"scriptPosition","data":{"scriptId":"s1","title":"T","token":"Hi","line":8,"text":"Hi there"}}"#);
+        assert_eq!(position.id, None);
+        assert_eq!(
+            position.op,
+            Op::ScriptPosition { script_id: "s1".to_owned(), title: "T".to_owned(), token: "Hi".to_owned(), line: 8, text: "Hi there".to_owned() }
+        );
+        assert!(position.op.is_script() && snapshot.op.is_script() && !Op::Start.is_script());
+        assert!(matches!(rejected(r#"{"op":"scriptPosition","scriptId":"s1"}"#).error, ParseError::BadArgument(_)));
+        assert!(matches!(rejected(r#"{"op":"scriptPosition","scriptId":"s1","line":"x"}"#).error, ParseError::BadArgument(_)));
+        assert!(matches!(rejected(r#"{"op":"scriptSnapshot","markdown":"x"}"#).error, ParseError::BadArgument(_)));
+    }
+
+    #[test]
+    fn a_snapshot_may_be_2_mb_but_not_more() {
+        let fits = json!({ "op": "scriptSnapshot", "scriptId": "s", "markdown": "x".repeat(MARKDOWN_MAX_BYTES) });
+        assert!(parse(&fits.to_string()).is_ok());
+        let too_big = json!({ "op": "scriptSnapshot", "id": 2, "scriptId": "s", "markdown": "x".repeat(MARKDOWN_MAX_BYTES + 1) });
+        let failure = parse(&too_big.to_string()).err().map(|failed| (failed.id, failed.error));
+        assert!(matches!(failure, Some((Some(_), ParseError::BadArgument(_)))));
     }
 
     #[test]

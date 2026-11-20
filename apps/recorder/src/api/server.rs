@@ -19,14 +19,21 @@ use tungstenite::{Error as WsError, Message};
 use super::protocol::{EventKind, Op, Request, StatusData, auth_ok, error_message, event, parse, result_error, result_ok};
 use super::token;
 use crate::engine::bus::CommandKind;
-use crate::engine::controller::{ApiIntent, ApiLink, ControllerState, Phase};
+use crate::engine::controller::{ApiIntent, ApiLink, ControllerState, LastTake, Phase};
+use crate::engine::script::{PositionMsg, ScriptMsg};
 use crate::profiles;
 
 /// The most clients that can be connected at once.
 const MAX_CLIENTS: usize = 8;
 
-/// The largest message, and the largest frame, a client may send, in bytes.
+/// The largest message, and the largest frame, a client may send, in bytes; `scriptSnapshot` may be larger.
 const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+
+/// The largest message, and the largest frame, a signed-in client may send, in bytes; only `scriptSnapshot` may use it.
+const MAX_SNAPSHOT_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+
+/// The shortest time between two `scriptPosition` messages one connection gets through: 10 a second.
+const POSITION_SPACING: Duration = Duration::from_millis(100);
 
 /// How long a new connection has to finish the handshake and send a good `auth`.
 const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -163,6 +170,9 @@ impl EventTracker {
         if status.take.is_some() {
             self.take.clone_from(&status.take);
         }
+        if let (Phase::Idle, Some(last)) = (state.phase, &state.last_take) {
+            apply_last_take(&mut status, last);
+        }
         let phase_event = match (self.phase, state.phase) {
             (Phase::Idle, Phase::Recording) => Some(EventKind::RecordingStarted),
             (Phase::Recording, Phase::Paused) => Some(EventKind::Paused),
@@ -197,6 +207,14 @@ impl EventTracker {
         }
         self.marks_count = count;
     }
+}
+
+/// Fills a status with the final numbers of the take that just ended, so `recordingStopped` is not all zeros.
+fn apply_last_take(status: &mut StatusData, last: &LastTake) {
+    status.elapsed_ms = last.elapsed_ms;
+    status.duplicated = last.duplicated;
+    status.dropped = last.dropped;
+    status.take = Some(last.take.clone());
 }
 
 /// Adds a `warning` event when `current` holds a text that `last` did not, and remembers `current`.
@@ -337,9 +355,45 @@ fn status_loop(link: &ApiLink, hub: &Hub, stop: &AtomicBool) {
     }
 }
 
-/// The WebSocket limits: 64 KB per message and per frame.
-fn socket_config() -> WebSocketConfig {
-    WebSocketConfig::default().max_message_size(Some(MAX_MESSAGE_BYTES)).max_frame_size(Some(MAX_MESSAGE_BYTES))
+/// The WebSocket limits for messages and frames of up to `limit` bytes.
+fn socket_config(limit: usize) -> WebSocketConfig {
+    WebSocketConfig::default().max_message_size(Some(limit)).max_frame_size(Some(limit))
+}
+
+/// Holds `scriptPosition` to 10 a second for one connection, keeping the newest of the extras.
+#[derive(Default)]
+struct PositionLimiter {
+    last_sent: Option<Instant>,
+    held: Option<PositionMsg>,
+}
+
+impl PositionLimiter {
+    /// Takes a position that arrived at `now`: returns it when it may go on, or holds it for [`PositionLimiter::due`].
+    fn offer(&mut self, now: Instant, position: PositionMsg) -> Option<PositionMsg> {
+        if self.ready(now) {
+            self.last_sent = Some(now);
+            self.held = None;
+            Some(position)
+        } else {
+            self.held = Some(position);
+            None
+        }
+    }
+
+    /// The held position, once it may go on.
+    fn due(&mut self, now: Instant) -> Option<PositionMsg> {
+        if self.held.is_some() && self.ready(now) {
+            self.last_sent = Some(now);
+            self.held.take()
+        } else {
+            None
+        }
+    }
+
+    /// Whether enough time has passed since the last position went on.
+    fn ready(&self, now: Instant) -> bool {
+        self.last_sent.is_none_or(|last| now.saturating_duration_since(last) >= POSITION_SPACING)
+    }
 }
 
 /// Whether a read or write gave up waiting rather than failing.
@@ -357,7 +411,7 @@ fn serve_client(stream: TcpStream, ctx: &ClientCtx) {
     }
     // Small replies should not wait for more data; if this fails they are merely a little slower.
     let _ = stream.set_nodelay(true);
-    let mut socket = match tungstenite::accept_with_config(stream, Some(socket_config())) {
+    let mut socket = match tungstenite::accept_with_config(stream, Some(socket_config(MAX_MESSAGE_BYTES))) {
         Ok(socket) => socket,
         Err(err) => {
             log::info!("a control API handshake failed: {err}");
@@ -368,6 +422,7 @@ fn serve_client(stream: TcpStream, ctx: &ClientCtx) {
         return;
     }
     let mut subscription: Option<Subscription> = None;
+    let mut limiter = PositionLimiter::default();
     'session: loop {
         if ctx.stop.load(Ordering::Relaxed) {
             break;
@@ -380,7 +435,12 @@ fn serve_client(stream: TcpStream, ctx: &ClientCtx) {
         match socket.read() {
             Ok(Message::Text(text)) => {
                 let press_qpc = capture::qpc_now();
-                let (replies, close) = respond(text.as_str(), press_qpc, ctx, &mut subscription);
+                let was_signed_in = subscription.is_some();
+                let (replies, close) = respond(text.as_str(), press_qpc, ctx, &mut subscription, &mut limiter);
+                if !was_signed_in && subscription.is_some() {
+                    // A signed-in client may send a script snapshot, which is larger than any other message.
+                    socket.set_config(|config| *config = socket_config(MAX_SNAPSHOT_MESSAGE_BYTES));
+                }
                 for reply in replies {
                     if socket.send(Message::text(reply)).is_err() {
                         break 'session;
@@ -409,6 +469,10 @@ fn serve_client(stream: TcpStream, ctx: &ClientCtx) {
             }
             Err(_) => break,
         }
+        if let Some(position) = limiter.due(Instant::now()) {
+            // Only fails while the Recorder shuts down, when the position no longer matters.
+            let _ = ctx.link.send_script(ScriptMsg::Position(position));
+        }
         if let Some(subscription) = &subscription {
             while let Ok(text) = subscription.rx.try_recv() {
                 if socket.send(Message::text(text)).is_err() {
@@ -428,7 +492,7 @@ fn serve_client(stream: TcpStream, ctx: &ClientCtx) {
 }
 
 /// Answers one text message: the messages to send back, and whether to close the connection after them.
-fn respond(text: &str, press_qpc: i64, ctx: &ClientCtx, subscription: &mut Option<Subscription>) -> (Vec<String>, bool) {
+fn respond(text: &str, press_qpc: i64, ctx: &ClientCtx, subscription: &mut Option<Subscription>, limiter: &mut PositionLimiter) -> (Vec<String>, bool) {
     let request = parse(text);
     if subscription.is_none() {
         return match request {
@@ -439,22 +503,51 @@ fn respond(text: &str, press_qpc: i64, ctx: &ClientCtx, subscription: &mut Optio
             _ => (vec![error_message("unauthorized")], true),
         };
     }
+    // Only a script snapshot may be larger than the usual limit; the socket allows it for all messages.
+    if text.len() > MAX_MESSAGE_BYTES && !matches!(&request, Ok(Request { op: Op::ScriptSnapshot { .. }, .. })) {
+        let id = match &request {
+            Ok(request) => request.id.as_ref(),
+            Err(rejected) => rejected.id.as_ref(),
+        };
+        return (vec![result_error(id, "the message is too large")], false);
+    }
     let reply = match request {
-        Ok(request) => match execute(&ctx.link, request.op, press_qpc) {
-            Ok(data) => result_ok(request.id.as_ref(), data),
-            Err(message) => result_error(request.id.as_ref(), &message),
-        },
+        Ok(request) => {
+            let quiet = request.id.is_none() && request.op.is_script();
+            let outcome = execute(&ctx.link, request.op, press_qpc, limiter);
+            if quiet {
+                if let Err(message) = &outcome {
+                    log::warn!("a script message without an id failed: {message}");
+                }
+                return (Vec::new(), false);
+            }
+            match outcome {
+                Ok(data) => result_ok(request.id.as_ref(), data),
+                Err(message) => result_error(request.id.as_ref(), &message),
+            }
+        }
         Err(rejected) => result_error(rejected.id.as_ref(), &rejected.error.to_string()),
     };
     (vec![reply], false)
 }
 
 /// Carries out one command from an authenticated client; the error text goes back in the reply.
-fn execute(link: &ApiLink, op: Op, press_qpc: i64) -> Result<Value, String> {
+fn execute(link: &ApiLink, op: Op, press_qpc: i64, limiter: &mut PositionLimiter) -> Result<Value, String> {
     let phase = link.read_state(|state| state.phase);
     match op {
         Op::Auth { .. } => Err("already authenticated".to_owned()),
         Op::GetStatus => Ok(link.read_state(|state| StatusData::from_state(state).to_value())),
+        Op::ScriptSnapshot { script_id, title, markdown } => {
+            link.send_script(ScriptMsg::Snapshot { script_id, title, markdown })?;
+            Ok(json!({}))
+        }
+        Op::ScriptPosition { script_id, title, token, line, text } => {
+            let position = PositionMsg { script_id, title, token, line, text, qpc: press_qpc };
+            if let Some(position) = limiter.offer(Instant::now(), position) {
+                link.send_script(ScriptMsg::Position(position))?;
+            }
+            Ok(json!({}))
+        }
         Op::Start => {
             if phase != Phase::Idle {
                 return Err("a take is already running".to_owned());
@@ -742,6 +835,69 @@ mod tests {
         assert!(tracker.observe(&state).is_empty());
         state.marks_warning = Some("Marks problem".to_owned());
         assert_eq!(names(&tracker.observe(&state)), ["warning"]);
+    }
+
+    #[test]
+    fn recording_stopped_carries_the_final_numbers_of_the_take() {
+        let mut tracker = EventTracker::baseline(&recording_state());
+        let state = ControllerState {
+            last_take: Some(LastTake { take: "C:\\Takes\\take01.mkv".to_owned(), elapsed_ms: 61_500, duplicated: 3, dropped: 2 }),
+            ..ControllerState::default()
+        };
+        let events = tracker.observe(&state);
+        assert_eq!(names(&events), ["recordingStopped"]);
+        let stopped: Value = serde_json::from_str(&events[0]).unwrap_or(Value::Null);
+        assert_eq!(stopped["data"]["elapsedMs"], json!(61_500));
+        assert_eq!((stopped["data"]["duplicated"].clone(), stopped["data"]["dropped"].clone()), (json!(3), json!(2)));
+        assert_eq!(stopped["data"]["take"], json!("C:\\Takes\\take01.mkv"));
+        assert_eq!(stopped["data"]["state"], json!("idle"));
+    }
+
+    fn position(line: u64, qpc: i64) -> PositionMsg {
+        PositionMsg { script_id: "s".to_owned(), title: String::new(), token: String::new(), line, text: String::new(), qpc }
+    }
+
+    #[test]
+    fn script_positions_are_limited_to_ten_a_second_and_the_newest_extra_is_kept() {
+        let mut limiter = PositionLimiter::default();
+        let start = Instant::now();
+        assert_eq!(limiter.offer(start, position(1, 1)).map(|p| p.line), Some(1));
+        assert!(limiter.offer(start + Duration::from_millis(20), position(2, 2)).is_none());
+        assert!(limiter.offer(start + Duration::from_millis(40), position(3, 3)).is_none());
+        assert!(limiter.due(start + Duration::from_millis(60)).is_none());
+        let late = limiter.due(start + Duration::from_millis(100)).map(|p| (p.line, p.qpc));
+        assert_eq!(late, Some((3, 3)));
+        assert!(limiter.due(start + Duration::from_millis(250)).is_none());
+        assert_eq!(limiter.offer(start + Duration::from_millis(250), position(4, 4)).map(|p| p.line), Some(4));
+    }
+
+    #[test]
+    fn script_commands_reach_the_controller_and_reply_only_when_they_have_an_id() -> Result<(), Box<dyn Error>> {
+        let (link, _bus, script) = ApiLink::detached_with_script(ControllerState::default());
+        let server = ApiServer::start(0, "right".to_owned(), link, no_repaint())?;
+        let mut client = signed_in(server.port(), "right")?;
+        // A snapshot far larger than the usual 64 KB limit is accepted.
+        let markdown = "word ".repeat(200_000);
+        say(&mut client, &json!({ "op": "scriptSnapshot", "id": 1, "scriptId": "s1", "title": "Fake script", "markdown": markdown }))?;
+        let reply = hear(&mut client)?;
+        assert_eq!((reply["ok"].clone(), reply["id"].clone()), (json!(true), json!(1)));
+        say(&mut client, &json!({ "op": "scriptPosition", "scriptId": "s1", "title": "Fake script", "token": "word", "line": 3, "text": "word word" }))?;
+        say(&mut client, &json!({ "op": "scriptPosition", "id": 2, "scriptId": "s1", "line": 4 }))?;
+        // The first position had no id and got no reply, so the next message heard answers id 2.
+        let reply = hear(&mut client)?;
+        assert_eq!(reply["id"], json!(2));
+        // Another message over 64 KB is refused.
+        say(&mut client, &json!({ "op": "mark", "id": 3, "label": "x".repeat(100_000) }))?;
+        let refused = hear(&mut client)?;
+        assert_eq!((refused["ok"].clone(), refused["id"].clone()), (json!(false), json!(3)));
+        let first = script.recv_timeout(WAIT)?;
+        assert!(matches!(&first, ScriptMsg::Snapshot { script_id, markdown: text, .. } if script_id == "s1" && text.len() == markdown.len()));
+        let second = script.recv_timeout(WAIT)?;
+        assert!(matches!(&second, ScriptMsg::Position(position) if position.line == 3 && position.token == "word"));
+        // Positions 10 ms apart are limited, but the newest still arrives once the spacing has passed.
+        let third = script.recv_timeout(WAIT)?;
+        assert!(matches!(&third, ScriptMsg::Position(position) if position.line == 4));
+        Ok(())
     }
 
     #[test]

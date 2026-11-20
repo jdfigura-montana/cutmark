@@ -316,6 +316,7 @@ Every hotkey, button, and API call goes through one internal command bus, and a 
 **Prompter link** (the Prompter v1 spec's required Recorder changes)
 
 - Setting "Hide my countdown when a prompter is linked", default on, so only one countdown shows.
+- `scriptSnapshot { scriptId, title, markdown }` (markdown up to 2 MB) sends the script once; the Recorder keeps the latest per `scriptId` and writes it into `{name}_script.md` at the first `scriptPosition`.
 - `scriptPosition { scriptId, title, token, line, text }` arrives at most 10 times a second. The Recorder stamps it with its own clock.
 - The first `scriptPosition` of a take writes `{name}_script.md`, a snapshot of the script. Every one appends a row to `{name}_script.csv` (`ms, line, token, text`), flushed per row.
 - Every mark made while a script is linked carries the current line in the Script column of `_marks.md` and `_marks.csv`.

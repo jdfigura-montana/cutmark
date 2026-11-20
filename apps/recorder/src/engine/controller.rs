@@ -14,6 +14,7 @@ use thiserror::Error;
 
 use super::bus::{Bus, BusSender, Command, CommandKind, MarkKind};
 use super::marks::{MarksWarning, RecentMark, TakeMarks};
+use super::script::{PositionMsg, ScriptMsg, ScriptSnapshot, TakeScript};
 use super::session::{RecordingSession, SessionConfig, StatsSnapshot, Summary, TrackSpec};
 use crate::config::{AudioCodecChoice, Profile, Settings, TrackKind};
 use crate::label_popup::PopupHandle;
@@ -38,6 +39,9 @@ const MIC_TRACK_NAME: &str = "Mic";
 /// How many API command tags are kept before the oldest are forgotten; a tag lives only until its command is handled.
 const TAG_LIMIT: usize = 1024;
 
+/// How many scripts the controller keeps a snapshot of before the oldest are forgotten.
+const SNAPSHOT_LIMIT: usize = 32;
+
 /// What the Recorder is doing right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Phase {
@@ -48,6 +52,19 @@ pub enum Phase {
     Recording,
     /// A take is running but paused.
     Paused,
+}
+
+/// The numbers of a take that has just ended, kept for the `recordingStopped` event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LastTake {
+    /// The path of the take's video file.
+    pub take: String,
+    /// How much of the take was recorded, in milliseconds.
+    pub elapsed_ms: u64,
+    /// Frames repeated because no new one arrived in time.
+    pub duplicated: u64,
+    /// Frames dropped because the encoder was behind.
+    pub dropped: u64,
 }
 
 /// Everything the window draws, published by the controller thread.
@@ -89,6 +106,8 @@ pub struct ControllerState {
     pub recent_marks: VecDeque<RecentMark>,
     /// The text of the warning banner for a marks problem; the recording carries on.
     pub marks_warning: Option<String>,
+    /// The final numbers of the take that just ended, kept until the next take starts.
+    pub last_take: Option<LastTake>,
 }
 
 /// A function the controller calls with the state after every change, while it holds the state lock.
@@ -164,9 +183,15 @@ pub struct ApiLink {
     tags: ApiTags,
     shared: Arc<Mutex<ControllerState>>,
     listeners: Arc<Listeners>,
+    script: Sender<ScriptMsg>,
 }
 
 impl ApiLink {
+    /// Queues a script message from an API client for the controller.
+    pub fn send_script(&self, message: ScriptMsg) -> Result<(), String> {
+        self.script.send(message).map_err(|_| "the Recorder is shutting down".to_owned())
+    }
+
     /// Queues a command from an API client, issued at `press_qpc`, with what the client meant by it.
     pub fn send(&self, kind: CommandKind, intent: Option<ApiIntent>, press_qpc: i64) -> Result<(), String> {
         if let Some(intent) = intent {
@@ -181,9 +206,17 @@ impl ApiLink {
     /// A link with no controller behind it, for tests: it starts from `state`, and the returned bus receives its commands.
     #[cfg(test)]
     pub fn detached(state: ControllerState) -> (Self, Bus) {
-        let bus = Bus::default();
-        let link = Self { bus: bus.sender(), tags: ApiTags::default(), shared: Arc::new(Mutex::new(state)), listeners: Arc::new(Listeners::default()) };
+        let (link, bus, _script) = Self::detached_with_script(state);
         (link, bus)
+    }
+
+    /// Like [`ApiLink::detached`], and the returned receiver gets the script messages.
+    #[cfg(test)]
+    pub fn detached_with_script(state: ControllerState) -> (Self, Bus, Receiver<ScriptMsg>) {
+        let bus = Bus::default();
+        let (script, script_rx) = mpsc::channel();
+        let link = Self { bus: bus.sender(), tags: ApiTags::default(), shared: Arc::new(Mutex::new(state)), listeners: Arc::new(Listeners::default()), script };
+        (link, bus, script_rx)
     }
 
     /// Reads the controller state through `read` while holding its lock; keep `read` short.
@@ -238,6 +271,7 @@ pub struct Controller {
     shared: Arc<Mutex<ControllerState>>,
     listeners: Arc<Listeners>,
     tags: ApiTags,
+    script: Sender<ScriptMsg>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -261,9 +295,12 @@ impl Controller {
         let listeners = Arc::new(Listeners::default());
         listeners.add(listener);
         let tags = ApiTags::default();
+        let (script_tx, script_rx) = mpsc::channel();
         let worker = Worker {
             bus,
             control: control_rx,
+            script: script_rx,
+            snapshots: HashMap::new(),
             shared: Arc::clone(&shared),
             repaint,
             listeners: Arc::clone(&listeners),
@@ -281,12 +318,18 @@ impl Controller {
                 None
             }
         };
-        Self { bus: bus_sender, control: ControlSender { tx: control_tx }, shared, listeners, tags, handle }
+        Self { bus: bus_sender, control: ControlSender { tx: control_tx }, shared, listeners, tags, script: script_tx, handle }
     }
 
-    /// The handle the control API uses: the bus with intents, the state and the listener list.
+    /// The handle the control API uses: the bus with intents, the state, the listener list and the script messages.
     pub fn api_link(&self) -> ApiLink {
-        ApiLink { bus: self.bus.clone(), tags: self.tags.clone(), shared: Arc::clone(&self.shared), listeners: Arc::clone(&self.listeners) }
+        ApiLink {
+            bus: self.bus.clone(),
+            tags: self.tags.clone(),
+            shared: Arc::clone(&self.shared),
+            listeners: Arc::clone(&self.listeners),
+            script: self.script.clone(),
+        }
     }
 
     /// A handle that hotkeys, the tray and buttons send commands through.
@@ -336,6 +379,8 @@ struct ActiveTake {
     session: RecordingSession,
     /// The take's last marks error, read after every mark and at stop.
     marks_warning: MarksWarning,
+    /// The take's script files and the script line being read.
+    script: TakeScript,
     paused: bool,
     /// The time and byte count of the last bitrate sample.
     last_poll: Option<(Instant, u64)>,
@@ -363,6 +408,10 @@ enum StartError {
 struct Worker {
     bus: Bus,
     control: Receiver<Control>,
+    /// Script messages from API clients.
+    script: Receiver<ScriptMsg>,
+    /// The latest script snapshot for each script id, kept across takes.
+    snapshots: HashMap<String, ScriptSnapshot>,
     shared: Arc<Mutex<ControllerState>>,
     repaint: Box<dyn Fn() + Send>,
     listeners: Arc<Listeners>,
@@ -378,6 +427,7 @@ impl Worker {
     /// Handles settings, commands and stats samples until told to stop, then finishes any running take.
     fn run(mut self) {
         while self.drain_control() {
+            self.drain_script();
             let wait = if self.active.is_some() { ACTIVE_POLL } else { IDLE_POLL };
             if let Some(command) = self.deferred.pop_front().or_else(|| self.bus.recv_timeout(wait)) {
                 self.handle(command);
@@ -398,6 +448,37 @@ impl Worker {
         keep_running
     }
 
+    /// Handles every script message that is waiting.
+    fn drain_script(&mut self) {
+        while let Ok(message) = self.script.try_recv() {
+            match message {
+                ScriptMsg::Snapshot { script_id, title, markdown } => {
+                    if self.snapshots.len() >= SNAPSHOT_LIMIT && !self.snapshots.contains_key(&script_id) {
+                        self.snapshots.clear();
+                    }
+                    self.snapshots.insert(script_id, ScriptSnapshot { title, markdown });
+                }
+                ScriptMsg::Position(position) => self.script_position(&position),
+            }
+        }
+    }
+
+    /// Logs a script position in the running take and makes its line the one that marks carry; with no take it is ignored.
+    ///
+    /// A file error becomes a warning banner and the recording carries on.
+    fn script_position(&mut self, position: &PositionMsg) {
+        let Some(active) = &mut self.active else { return };
+        let ms = active.session.marks_mut().map_or(0, |marks| marks.clock_ms(position.qpc));
+        let result = active.script.position(self.snapshots.get(&position.script_id), position, ms);
+        if let (Some((line, label)), Some(marks)) = (active.script.current(), active.session.marks_mut()) {
+            marks.set_script(line, label);
+        }
+        if let Err(err) = result {
+            log::warn!("script: {err}");
+            self.update(|state| state.marks_warning = Some(format!("Script problem: {err}")));
+        }
+    }
+
     /// Changes the shared state, tells the listener about it and asks the window to repaint.
     fn update(&self, change: impl FnOnce(&mut ControllerState)) {
         {
@@ -416,6 +497,8 @@ impl Worker {
     /// Acts on one command.
     fn handle(&mut self, command: Command) {
         log::info!("command: {command:?}");
+        // A script position sent before this command sits in its own queue; it must count first.
+        self.drain_script();
         let press = command.press_qpc;
         // Only these commands can carry an API intent; the others have nothing to look up.
         let intent = match command.kind {
@@ -467,6 +550,7 @@ impl Worker {
             state.marks_count = 0;
             state.recent_marks.clear();
             state.marks_warning = None;
+            state.last_take = None;
         });
         if let Err(err) = self.start_take_inner() {
             log::error!("could not start the recording: {err}");
@@ -486,6 +570,9 @@ impl Worker {
             self.update(|state| state.audio_notice = Some(notice));
         }
         let (mixdown, track_streams) = (profile.mixdown, profile.aac_tracks);
+        let take_folder = take.video_file.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+        let base_name = take.video_file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let script = TakeScript::new(&take_folder, &base_name, chrono::Local::now());
         let cfg = SessionConfig {
             adapter: 0,
             monitor: 0,
@@ -497,13 +584,13 @@ impl Worker {
             mixdown,
             track_streams,
             wav_sidecars: self.settings.audio.wav_sidecars,
-            take_folder: take.video_file.parent().map(std::path::Path::to_path_buf).unwrap_or_default(),
-            base_name: take.video_file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+            take_folder,
+            base_name,
         };
         let session =
             RecordingSession::start(cfg).map_err(|err| StartError::Session { file: take.video_file.display().to_string(), reason: err.to_string() })?;
         let marks_warning = session.marks_warning();
-        self.active = Some(ActiveTake { session, marks_warning, paused: false, last_poll: None, last_mbps: 0.0 });
+        self.active = Some(ActiveTake { session, marks_warning, script, paused: false, last_poll: None, last_mbps: 0.0 });
         self.update(|state| {
             state.phase = Phase::Recording;
             state.take = Some(take);
@@ -524,7 +611,16 @@ impl Worker {
         self.commit_popup();
         let Some(active) = self.active.take() else { return };
         let marks_warning = active.marks_warning.clone();
+        // The counters as the take ends, for the recordingStopped event; the session's own summary comes later.
+        let last = active.session.stats();
         self.update(|state| {
+            let fps = u64::from(state.fps.max(1));
+            state.last_take = state.take.as_ref().map(|take| LastTake {
+                take: take.video_file.display().to_string(),
+                elapsed_ms: last.frames.saturating_mul(1000) / fps,
+                duplicated: last.duplicated,
+                dropped: last.dropped,
+            });
             state.phase = Phase::Idle;
             state.take = None;
             state.stats = None;
