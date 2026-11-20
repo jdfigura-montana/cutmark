@@ -7,102 +7,104 @@
 
 use egui::Color32;
 
+use crate::tokens;
+
 // ---- Surfaces ----
 
 /// The app background behind every panel.
 /// Replaced by `ui_kit::tokens::color::BG_GROUND`; this name is removed after S1.
-pub const APP_BG: Color32 = Color32::from_rgb(0x16, 0x18, 0x1C);
+pub const APP_BG: Color32 = tokens::color::BG_GROUND;
 
 /// Panel, window and central-area background.
 /// Replaced by `ui_kit::tokens::color::BG_PANEL`; this name is removed after S1.
-pub const PANEL_BG: Color32 = Color32::from_rgb(0x1A, 0x1D, 0x22);
+pub const PANEL_BG: Color32 = tokens::color::BG_PANEL;
 
 /// Menu bar and status bar background.
 /// Replaced by `ui_kit::tokens::color::BG_GROUND`; this name is removed after S1.
-pub const BAR_BG: Color32 = Color32::from_rgb(0x12, 0x14, 0x18);
+pub const BAR_BG: Color32 = tokens::color::BG_GROUND;
 
 /// Recessed surface (the audio editor's unlit meter bars and fader slots);
 /// egui's extreme background color.
 /// Replaced by `ui_kit::tokens::color::BG_CONTROL`; this name is removed after S1.
-pub const RECESSED: Color32 = Color32::from_rgb(0x0E, 0x10, 0x13);
+pub const RECESSED: Color32 = tokens::color::BG_CONTROL;
 
 /// Faint alternate shade for striped rows (the audio editor's odd lane
 /// shade); egui's faint background color.
 /// Replaced by `ui_kit::tokens::color::BG_TRACK_ALT`; this name is removed after S1.
-pub const FAINT_BG: Color32 = Color32::from_rgb(0x1E, 0x21, 0x27);
+pub const FAINT_BG: Color32 = tokens::color::BG_TRACK_ALT;
 
 /// General separator and window border color.
 /// Replaced by `ui_kit::tokens::color::STROKE_HAIRLINE`; this name is removed after S1.
-pub const BORDER: Color32 = Color32::from_rgb(0x23, 0x27, 0x2E);
+pub const BORDER: Color32 = tokens::color::STROKE_HAIRLINE;
 
 // ---- Controls ----
 
 /// Border color of controls.
 /// Replaced by `ui_kit::tokens::color::STROKE_HAIRLINE`; this name is removed after S1.
-pub const CONTROL_BORDER: Color32 = Color32::from_rgb(0x2B, 0x30, 0x38);
+pub const CONTROL_BORDER: Color32 = tokens::color::STROKE_HAIRLINE;
 
 /// Fill of an idle control.
 /// Replaced by `ui_kit::tokens::color::BG_CONTROL`; this name is removed after S1.
-pub const CONTROL_FILL: Color32 = Color32::from_rgb(0x22, 0x26, 0x2D);
+pub const CONTROL_FILL: Color32 = tokens::color::BG_CONTROL;
 
 /// Fill of a hovered control.
 /// Replaced by `ui_kit::tokens::color::BG_HOVER`; this name is removed after S1.
-pub const CONTROL_HOVER: Color32 = Color32::from_rgb(0x2B, 0x30, 0x38);
+pub const CONTROL_HOVER: Color32 = tokens::color::BG_HOVER;
 
 /// Corner rounding of controls.
 /// Replaced by `ui_kit::tokens::radius::SEGMENT`; this name is removed after S1.
-pub const CONTROL_ROUNDING: f32 = 6.0;
+pub const CONTROL_ROUNDING: f32 = tokens::radius::SEGMENT;
 
 /// Track color of an egui slider.
 /// Replaced by `ui_kit::tokens::color::BG_SELECTED`; this name is removed after S1.
-pub const SLIDER_TRACK: Color32 = Color32::from_rgb(0x2B, 0x30, 0x38);
+pub const SLIDER_TRACK: Color32 = tokens::color::BG_SELECTED;
 
 /// Filled part of an egui slider.
 /// Replaced by `ui_kit::tokens::accent::ACCENT`; this name is removed after S1.
-pub const SLIDER_FILL: Color32 = Color32::from_rgb(0x5A, 0x61, 0x6D);
+pub const SLIDER_FILL: Color32 = tokens::accent::ACCENT;
 
 /// Thumb color of an egui slider.
 /// Replaced by `ui_kit::tokens::color::TEXT_PRIMARY`; this name is removed after S1.
-pub const SLIDER_THUMB: Color32 = Color32::from_rgb(0xD7, 0xDA, 0xE0);
+pub const SLIDER_THUMB: Color32 = tokens::color::TEXT_PRIMARY;
 
 // ---- Text ----
 
 /// Brightest text (strong text, headings, pressed controls).
 /// Replaced by `ui_kit::tokens::color::TEXT_PRIMARY`; this name is removed after S1.
-pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(0xE6, 0xE9, 0xEE);
+pub const TEXT_PRIMARY: Color32 = tokens::color::TEXT_PRIMARY;
 
 /// Default text color.
 /// Replaced by `ui_kit::tokens::color::TEXT_SECONDARY`; this name is removed after S1.
-pub const TEXT_NORMAL: Color32 = Color32::from_rgb(0xC9, 0xCE, 0xD6);
+pub const TEXT_NORMAL: Color32 = tokens::color::TEXT_SECONDARY;
 
 /// Muted secondary text.
 /// Replaced by `ui_kit::tokens::color::TEXT_TERTIARY`; this name is removed after S1.
-pub const TEXT_MUTED: Color32 = Color32::from_rgb(0x8A, 0x90, 0x9A);
+pub const TEXT_MUTED: Color32 = tokens::color::TEXT_TERTIARY;
 
 // ---- Accent and signal colors ----
 
 /// The single accent color: selection, lit toggles, range lines and focus.
 /// Replaced by `ui_kit::tokens::accent::ACCENT` (runtime Theme from phase 4); this name is removed after S1.
-pub const ACCENT: Color32 = Color32::from_rgb(0x4C, 0x9B, 0xE8);
+pub const ACCENT: Color32 = tokens::accent::ACCENT;
 
 /// Red of an armed record button and of record state generally.
 /// Replaced by `ui_kit::tokens::color::SEM_RECORD`; this name is removed after S1.
-pub const RECORD_RED: Color32 = Color32::from_rgb(0xE5, 0x54, 0x4B);
+pub const RECORD_RED: Color32 = tokens::color::SEM_RECORD;
 
 /// Green of the transport play icon.
 /// Replaced by `ui_kit::tokens::accent::ACCENT` (Play uses the accent); this name is removed after S1.
-pub const PLAY_GREEN: Color32 = Color32::from_rgb(0x5C, 0xC4, 0x6E);
+pub const PLAY_GREEN: Color32 = tokens::accent::ACCENT;
 
 // ---- Meters ----
 
 /// Meter bar color below -18 dBFS.
 /// Replaced by `ui_kit::tokens::color::SEM_METER_OK`; this name is removed after S1.
-pub const METER_GREEN: Color32 = Color32::from_rgb(0x3D, 0xBE, 0x6B);
+pub const METER_GREEN: Color32 = tokens::color::SEM_METER_OK;
 
 /// Meter bar color above -18 dBFS.
 /// Replaced by `ui_kit::tokens::color::SEM_METER_WARN`; this name is removed after S1.
-pub const METER_YELLOW: Color32 = Color32::from_rgb(0xE3, 0xC0, 0x4A);
+pub const METER_YELLOW: Color32 = tokens::color::SEM_METER_WARN;
 
 /// Meter bar color above -6 dBFS.
 /// Replaced by `ui_kit::tokens::color::SEM_METER_CLIP`; this name is removed after S1.
-pub const METER_RED: Color32 = Color32::from_rgb(0xE5, 0x54, 0x4B);
+pub const METER_RED: Color32 = tokens::color::SEM_METER_CLIP;
