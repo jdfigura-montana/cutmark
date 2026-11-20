@@ -12,9 +12,11 @@
 //! IBM Plex Sans and JetBrains Mono are both SIL OFL 1.1. Their license files
 //! sit in `assets/fonts` and must ship with any installer that uses ui-kit.
 
+pub mod accent;
 pub mod fonts;
 pub mod meter;
 pub mod palette;
+pub mod tokens;
 
 pub use meter::level_meter;
 
