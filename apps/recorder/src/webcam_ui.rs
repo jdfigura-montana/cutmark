@@ -4,6 +4,7 @@ use capture::CameraFormat;
 use egui::{Button, Checkbox, ComboBox, Grid, Slider, Ui};
 
 use crate::config::ControlSetting;
+use crate::profiles::ProfileStore;
 use crate::webcam::WebcamHost;
 
 /// The widest the camera picture is drawn, in points, so it does not grow as large as the screen preview.
@@ -13,22 +14,22 @@ const PREVIEW_MAX_WIDTH: f32 = 360.0;
 const SLIDER_WIDTH: f32 = 220.0;
 
 /// Draws the Webcam section. Everything except the camera controls is read-only while recording.
-pub fn show(ui: &mut Ui, host: &mut WebcamHost, recording: bool) {
+pub fn show(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore, recording: bool) {
     ui.heading("Webcam");
-    let mut enabled = host.settings().is_some();
+    let mut enabled = host.settings(store).is_some();
     if ui.add_enabled(!recording, Checkbox::new(&mut enabled, "Enable")).changed() {
         if enabled {
-            host.enable();
+            host.enable(store);
         } else {
-            host.disable();
+            host.disable(store);
         }
     }
-    if host.settings().is_none() {
+    if host.settings(store).is_none() {
         return;
     }
     ui.add_enabled_ui(!recording, |ui| {
-        camera_row(ui, host);
-        format_row(ui, host);
+        camera_row(ui, host, store);
+        format_row(ui, host, store);
     });
     ui.add_space(4.0);
     ui.scope(|ui| {
@@ -36,12 +37,12 @@ pub fn show(ui: &mut Ui, host: &mut WebcamHost, recording: bool) {
         host.show_preview(ui);
     });
     ui.add_space(4.0);
-    controls(ui, host);
+    controls(ui, host, store);
 }
 
 /// The camera dropdown with its Refresh button.
-fn camera_row(ui: &mut Ui, host: &mut WebcamHost) {
-    let Some(settings) = host.settings() else { return };
+fn camera_row(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore) {
+    let Some(settings) = host.settings(store) else { return };
     let present = host.cameras().iter().any(|camera| camera.id == settings.camera_id);
     let selected = if settings.camera_name.is_empty() {
         if host.is_listing() { "Looking for cameras...".to_owned() } else { "No camera".to_owned() }
@@ -66,32 +67,32 @@ fn camera_row(ui: &mut Ui, host: &mut WebcamHost) {
         }
     });
     if let Some(id) = picked {
-        host.select_camera(&id);
+        host.select_camera(store, &id);
     }
 }
 
 /// The mode dropdown of the selected camera.
-fn format_row(ui: &mut Ui, host: &mut WebcamHost) {
-    let Some(settings) = host.settings() else { return };
+fn format_row(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore) {
+    let Some(settings) = host.settings(store) else { return };
     let saved = format!("{} {}x{} @ {} fps", settings.format.subtype, settings.format.width, settings.format.height, fps_text(f64::from(settings.format.fps)));
     let mut picked: Option<CameraFormat> = None;
     ui.horizontal(|ui| {
         ui.label("Format");
         ComboBox::from_id_salt("webcam-format").selected_text(saved).width(260.0).show_ui(ui, |ui| {
-            for format in host.formats() {
-                if ui.selectable_label(host.is_current_format(format), format_label(format)).clicked() {
+            for format in host.formats(store) {
+                if ui.selectable_label(host.is_current_format(store, format), format_label(format)).clicked() {
                     picked = Some(*format);
                 }
             }
         });
     });
     if let Some(format) = picked {
-        host.select_format(&format);
+        host.select_format(store, &format);
     }
 }
 
 /// The sliders with their Auto boxes, and the Lock and Reset buttons. These stay live while recording.
-fn controls(ui: &mut Ui, host: &mut WebcamHost) {
+fn controls(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore) {
     ui.label("Camera controls");
     let infos = host.controls().to_vec();
     if infos.is_empty() {
@@ -106,11 +107,11 @@ fn controls(ui: &mut Ui, host: &mut WebcamHost) {
             let mut auto = info.current.auto;
             let slider = Slider::new(&mut value, info.range.min..=info.range.max).step_by(f64::from(info.range.step.max(1)));
             if ui.add_enabled(!auto, slider).changed() {
-                host.set_control(info.prop, ControlSetting::Manual(value));
+                host.set_control(store, info.prop, ControlSetting::Manual(value));
             }
             if info.range.auto_capable {
                 if ui.checkbox(&mut auto, "Auto").changed() {
-                    host.set_control(info.prop, if auto { ControlSetting::Auto } else { ControlSetting::Manual(info.current.value) });
+                    host.set_control(store, info.prop, if auto { ControlSetting::Auto } else { ControlSetting::Manual(info.current.value) });
                 }
             } else {
                 ui.label("");
@@ -120,10 +121,10 @@ fn controls(ui: &mut Ui, host: &mut WebcamHost) {
     });
     ui.horizontal(|ui| {
         if ui.button("Lock current values").clicked() {
-            host.lock_current();
+            host.lock_current(store);
         }
         if ui.button("Reset to defaults").clicked() {
-            host.reset_defaults();
+            host.reset_defaults(store);
         }
     });
 }

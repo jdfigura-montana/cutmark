@@ -17,6 +17,7 @@ use crate::platform;
 use crate::preflight_ui::PreflightSection;
 use crate::preview_ui::PreviewView;
 use crate::profile_ui::{ProfileOutcome, ProfileSection};
+use crate::profiles::ProfileStore;
 use crate::recovery::{self, RecoveryReport};
 use crate::status_ui;
 use crate::tracks_ui::{self, LiveTrackStats, TracksChanged};
@@ -82,6 +83,8 @@ pub struct RecorderApp {
     recovery_details: bool,
     /// The profile dropdown, its buttons and every encoder option.
     profile_section: ProfileSection,
+    /// The profiles in memory: the one place the Profile and Webcam sections edit, with one debounced save.
+    profile_store: ProfileStore,
     /// The size of the captured monitor, which a profile with the Source output size records at.
     source_size: (u32, u32),
     /// The control API server, or None while it is off or could not start.
@@ -122,7 +125,8 @@ impl RecorderApp {
         let capture_exclusion_failed = !apply_capture_exclusion(hwnd, settings.hide_from_capture);
         let source_size = monitor_size();
         // This also makes the active profile one that exists, before the controller reads the settings.
-        let profile_section = ProfileSection::new(&cc.egui_ctx, &mut settings, source_size);
+        let mut profile_store = ProfileStore::load();
+        let profile_section = ProfileSection::new(&cc.egui_ctx, &mut profile_store, &mut settings, source_size);
         let repaint_ctx = cc.egui_ctx.clone();
         // The tray needs the controller's senders, and the controller's listener needs the tray handle, so the handle arrives later.
         let tray_slot: Arc<OnceLock<TrayHandle>> = Arc::default();
@@ -186,6 +190,7 @@ impl RecorderApp {
             recovery: None,
             recovery_details: false,
             profile_section,
+            profile_store,
             source_size,
             api: None,
             api_token,
@@ -688,8 +693,7 @@ impl eframe::App for RecorderApp {
             self.shutting_down = true;
             self.sync_api(&ctx);
             self.controller.stop();
-            self.profile_section.flush();
-            self.webcam.flush();
+            self.profile_store.flush();
             if self.settings_dirty {
                 self.save_settings();
             }
@@ -708,7 +712,7 @@ impl eframe::App for RecorderApp {
         self.sync_preview(&ctx);
         self.update_preview_activity(&ctx);
         let window_shown = !ctx.input(|input| input.viewport().minimized).unwrap_or(false);
-        self.webcam.sync(&self.settings.active_profile, window_shown);
+        self.webcam.sync(&mut self.profile_store, &self.settings.active_profile, window_shown);
 
         egui::Panel::bottom("status-bar").show(ui, |ui| status_ui::show(ui, &state));
 
@@ -754,7 +758,7 @@ impl eframe::App for RecorderApp {
                 self.show_preview(ui);
                 ui.add_space(8.0);
 
-                webcam_ui::show(ui, &mut self.webcam, active);
+                webcam_ui::show(ui, &mut self.webcam, &mut self.profile_store, active);
                 ui.add_space(8.0);
 
                 marks_ui::show(ui, &state.recent_marks);
@@ -778,7 +782,8 @@ impl eframe::App for RecorderApp {
                 ui.add_space(8.0);
 
                 let mut profile_outcome = ProfileOutcome::default();
-                self.profile_section.show(ui, &mut self.settings, self.source_size, active, &mut profile_outcome);
+                self.profile_section.show(ui, &mut self.profile_store, &mut self.settings, self.source_size, active, &mut profile_outcome);
+                self.profile_store.save_when_due(&ctx);
                 if profile_outcome.active_changed {
                     self.controller.set_settings(self.settings.clone());
                     self.save_settings();

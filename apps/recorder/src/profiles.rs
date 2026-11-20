@@ -1,13 +1,15 @@
 //! Profile files: one JSON file per profile in the Recorder's profiles folder, with the operations the window needs.
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
-use crate::config::{ConfigError, Profile, WebcamSettings, write_json};
+use crate::config::{ConfigError, Profile, write_json};
+
+/// How long an edit waits for further edits before the profile is written to its file.
+const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 
 /// The name given to a profile that is migrated out of an older settings file.
 const MIGRATED_NAME: &str = "Default";
@@ -103,36 +105,127 @@ pub fn find(name: &str) -> Option<Profile> {
     load_all(&dir).profiles.into_iter().find(|profile| profile.name == name)
 }
 
-/// The webcam settings the window saved last for each profile name.
-///
-/// The profile section holds its own copy of the active profile and writes all of it whenever an encoder option
-/// changes, so [`save`] puts these over the webcam settings of that copy and a camera change is never undone.
-static WEBCAM_SAVED: Mutex<BTreeMap<String, Option<WebcamSettings>>> = Mutex::new(BTreeMap::new());
-
-/// Locks the table of saved webcam settings, carrying on if a thread panicked while holding it.
-fn webcam_saved() -> MutexGuard<'static, BTreeMap<String, Option<WebcamSettings>>> {
-    WEBCAM_SAVED.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 /// Writes the profile to its file, through a temp file in the same folder.
-///
-/// The webcam settings are the ones [`save_webcam`] wrote last for this profile name, if it wrote any.
 pub fn save(dir: &Path, profile: &Profile) -> Result<(), ConfigError> {
     fs::create_dir_all(dir).map_err(|source| ConfigError::Io { path: dir.to_path_buf(), source })?;
-    let mut profile = profile.clone();
-    if let Some(webcam) = webcam_saved().get(&profile.name) {
-        profile.webcam.clone_from(webcam);
-    }
-    write_json(&dir.join(file_name(&profile.name)), &profile)
+    write_json(&dir.join(file_name(&profile.name)), profile)
 }
 
-/// Writes new webcam settings (or none, which turns the webcam off) into the named profile and leaves the rest of it as it is on disk.
-pub fn save_webcam(dir: &Path, name: &str, webcam: Option<&WebcamSettings>) -> Result<(), ProfileError> {
-    let mut profile = load_all(dir).profiles.into_iter().find(|profile| profile.name == name).ok_or_else(|| ProfileError::Missing(name.to_owned()))?;
-    webcam_saved().insert(name.to_owned(), webcam.cloned());
-    profile.webcam = webcam.cloned();
-    save(dir, &profile)?;
-    Ok(())
+/// The profiles in memory: the one place the window edits them, and the one debounced save that writes them.
+///
+/// The Profile section and the Webcam section both edit the profiles here, never copies of their own.
+#[derive(Debug, Default)]
+pub struct ProfileStore {
+    /// The profiles folder, or None when the config folder could not be found.
+    dir: Option<PathBuf>,
+    /// The valid profiles, sorted by name.
+    profiles: Vec<Profile>,
+    /// A line per profile file that was skipped.
+    warnings: Vec<String>,
+    /// When and for which profile the last edit happened, until it is written.
+    dirty: Option<(Instant, String)>,
+    /// The text of the last failed save, until a save works.
+    save_error: Option<String>,
+}
+
+impl ProfileStore {
+    /// Reads the profiles folder of the user's config folder.
+    pub fn load() -> Self {
+        Self::open(profiles_dir())
+    }
+
+    /// Reads the profiles of a folder; with none readable, the shipped profiles are used in memory.
+    pub fn open(dir: Option<PathBuf>) -> Self {
+        let mut store = Self { dir, ..Self::default() };
+        store.reload();
+        store
+    }
+
+    /// Reads the profile files again, dropping edits that were not written; call [`flush`](Self::flush) first to keep them.
+    pub fn reload(&mut self) {
+        if let Some(dir) = &self.dir {
+            let loaded = load_all(dir);
+            self.profiles = loaded.profiles;
+            self.warnings = loaded.warnings;
+        }
+        if self.profiles.is_empty() {
+            self.profiles = Profile::shipped().to_vec();
+        }
+        self.dirty = None;
+    }
+
+    /// The profiles folder, if it could be found.
+    pub fn dir(&self) -> Option<&Path> {
+        self.dir.as_deref()
+    }
+
+    /// The profiles, sorted by name.
+    pub fn profiles(&self) -> &[Profile] {
+        &self.profiles
+    }
+
+    /// One line per profile file that was skipped.
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    /// The text of the last failed save, if the latest save failed.
+    pub fn save_error(&self) -> Option<&str> {
+        self.save_error.as_deref()
+    }
+
+    /// The profile with this name.
+    pub fn get(&self, name: &str) -> Option<&Profile> {
+        self.profiles.iter().find(|profile| profile.name == name)
+    }
+
+    /// Replaces the profile of the same name with an edited one and schedules the save; false when there is no such profile.
+    pub fn update(&mut self, profile: Profile) -> bool {
+        let name = profile.name.clone();
+        let Some(slot) = self.profiles.iter_mut().find(|known| known.name == name) else { return false };
+        *slot = profile;
+        self.mark_dirty(name);
+        true
+    }
+
+    /// Changes the named profile in place and schedules the save; None when there is no such profile.
+    pub fn edit<R>(&mut self, name: &str, change: impl FnOnce(&mut Profile) -> R) -> Option<R> {
+        let result = change(self.profiles.iter_mut().find(|profile| profile.name == name)?);
+        self.mark_dirty(name.to_owned());
+        Some(result)
+    }
+
+    /// Notes that a profile changed; an edit of another profile than the pending one writes the pending one first.
+    fn mark_dirty(&mut self, name: String) {
+        if self.dirty.as_ref().is_some_and(|(_, pending)| *pending != name) {
+            self.flush();
+        }
+        self.dirty = Some((Instant::now(), name));
+    }
+
+    /// Writes the pending edit now.
+    pub fn flush(&mut self) {
+        let Some((_, name)) = self.dirty.take() else { return };
+        let (Some(dir), Some(profile)) = (&self.dir, self.profiles.iter().find(|profile| profile.name == name)) else { return };
+        match save(dir, profile) {
+            Ok(()) => self.save_error = None,
+            Err(err) => {
+                log::error!("could not save profile {name}: {err}");
+                self.save_error = Some(format!("Could not save the profile: {err}"));
+            }
+        }
+    }
+
+    /// Writes the pending edit once it has waited long enough, or asks for a repaint when it is due.
+    pub fn save_when_due(&mut self, ctx: &egui::Context) {
+        let Some((at, _)) = &self.dirty else { return };
+        let waited = at.elapsed();
+        if waited >= SAVE_DEBOUNCE {
+            self.flush();
+        } else {
+            ctx.request_repaint_after(SAVE_DEBOUNCE - waited);
+        }
+    }
 }
 
 /// A name based on `base` that no profile in `taken` uses, adding " 2", " 3" and so on.
@@ -172,12 +265,6 @@ pub fn rename(dir: &Path, old: &str, new: &str) -> Result<Profile, ProfileError>
         return Err(ProfileError::Exists(new.to_owned()));
     }
     profile.name = new.to_owned();
-    {
-        let mut saved = webcam_saved();
-        if let Some(webcam) = saved.remove(old) {
-            saved.insert(new.to_owned(), webcam);
-        }
-    }
     save(dir, &profile)?;
     if file_name(old) != file_name(new) {
         let old_path = dir.join(file_name(old));
@@ -197,7 +284,6 @@ pub fn delete(dir: &Path, name: &str) -> Result<(), ProfileError> {
     }
     let path = dir.join(file_name(name));
     fs::remove_file(&path).map_err(|source| ConfigError::Io { path, source })?;
-    webcam_saved().remove(name);
     Ok(())
 }
 
@@ -250,7 +336,7 @@ mod tests {
     use std::error::Error;
 
     use super::*;
-    use crate::config::{Codec, RateControl};
+    use crate::config::{Codec, RateControl, WebcamSettings};
 
     /// A fresh, empty folder under the system temp folder.
     fn fresh_dir(name: &str) -> Result<PathBuf, std::io::Error> {
@@ -373,7 +459,7 @@ mod tests {
         Ok(())
     }
 
-    /// A profile with its own name, so tests that touch the saved webcam table do not meet each other's profiles.
+    /// A profile with its own name.
     fn named(name: &str) -> Profile {
         Profile { name: name.to_owned(), ..Profile::tutorial_av1_1440p60() }
     }
@@ -397,46 +483,60 @@ mod tests {
     }
 
     #[test]
-    fn save_webcam_changes_only_the_webcam() -> Result<(), Box<dyn Error>> {
-        let dir = fresh_dir("save-webcam")?;
-        let base = Profile { rate_control: RateControl::Cbr { mbps: 25.0 }, ..named("Webcam test A") };
-        save(&dir, &base)?;
+    fn an_encoder_change_then_a_webcam_change_then_a_save_keeps_both() -> Result<(), Box<dyn Error>> {
+        let dir = fresh_dir("store-both")?;
+        save(&dir, &named("Store test"))?;
+        let mut store = ProfileStore::open(Some(dir.clone()));
+        // The Profile section edits a copy of the active profile and hands it back.
+        let mut encoder_edit = store.get("Store test").cloned().ok_or("the profile is missing")?;
+        encoder_edit.rate_control = RateControl::Cbr { mbps: 25.0 };
+        encoder_edit.fps = 30;
+        assert!(store.update(encoder_edit));
+        // The Webcam section then edits the same profile in the store.
         let webcam = WebcamSettings { camera_name: "Cam".to_owned(), offset_ms: 80, ..WebcamSettings::default() };
-        save_webcam(&dir, "Webcam test A", Some(&webcam))?;
-        let loaded = load_all(&dir).profiles;
-        assert_eq!(loaded, vec![Profile { webcam: Some(webcam), ..base }]);
-        save_webcam(&dir, "Webcam test A", None)?;
-        assert_eq!(load_all(&dir).profiles[0].webcam, None);
-        assert!(matches!(save_webcam(&dir, "Nope", None), Err(ProfileError::Missing(_))));
+        assert!(store.edit("Store test", |profile| profile.webcam = Some(webcam.clone())).is_some());
+        store.flush();
+        assert_eq!(store.save_error(), None);
+        let saved = load_all(&dir).profiles;
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].rate_control, RateControl::Cbr { mbps: 25.0 });
+        assert_eq!(saved[0].fps, 30);
+        assert_eq!(saved[0].webcam, Some(webcam));
         fs::remove_dir_all(&dir)?;
         Ok(())
     }
 
     #[test]
-    fn saving_an_older_copy_of_a_profile_keeps_the_saved_webcam() -> Result<(), Box<dyn Error>> {
-        /// The profile with this name in the folder.
-        fn found(dir: &Path, name: &str) -> Option<Profile> {
-            load_all(dir).profiles.into_iter().find(|profile| profile.name == name)
-        }
+    fn a_webcam_change_then_an_encoder_change_keeps_both_too() -> Result<(), Box<dyn Error>> {
+        let dir = fresh_dir("store-both-reversed")?;
+        save(&dir, &named("Store test"))?;
+        let mut store = ProfileStore::open(Some(dir.clone()));
+        let webcam = WebcamSettings { camera_name: "Cam".to_owned(), ..WebcamSettings::default() };
+        store.edit("Store test", |profile| profile.webcam = Some(webcam.clone()));
+        let mut encoder_edit = store.get("Store test").cloned().ok_or("the profile is missing")?;
+        encoder_edit.fps = 24;
+        store.update(encoder_edit);
+        store.flush();
+        let saved = load_all(&dir).profiles;
+        assert_eq!((saved[0].fps, saved[0].webcam.clone()), (24, Some(webcam)));
+        fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
 
-        let dir = fresh_dir("keep-webcam")?;
-        let stale = named("Webcam test B");
-        save(&dir, &stale)?;
-        // A second profile, so the first may be deleted below.
-        save(&dir, &named("Webcam test other"))?;
-        let webcam = WebcamSettings { camera_name: "Cam B".to_owned(), ..WebcamSettings::default() };
-        save_webcam(&dir, "Webcam test B", Some(&webcam))?;
-        // The profile section still holds the copy without a webcam and saves it after an encoder change.
-        save(&dir, &Profile { fps: 30, ..stale.clone() })?;
-        assert_eq!(found(&dir, "Webcam test B").map(|profile| (profile.fps, profile.webcam)), Some((30, Some(webcam.clone()))));
-        // The saved webcam follows a rename, also for the stale copy that is saved under the new name.
-        rename(&dir, "Webcam test B", "Webcam test C")?;
-        save(&dir, &Profile { name: "Webcam test C".to_owned(), fps: 24, ..stale })?;
-        assert_eq!(found(&dir, "Webcam test C").map(|profile| (profile.fps, profile.webcam)), Some((24, Some(webcam))));
-        // A delete forgets it, so a new profile with that name starts without a webcam.
-        delete(&dir, "Webcam test C")?;
-        save(&dir, &named("Webcam test C"))?;
-        assert_eq!(found(&dir, "Webcam test C").map(|profile| profile.webcam), Some(None));
+    #[test]
+    fn editing_a_second_profile_writes_the_first_one_and_unknown_names_change_nothing() -> Result<(), Box<dyn Error>> {
+        let dir = fresh_dir("store-two")?;
+        save(&dir, &named("Store one"))?;
+        save(&dir, &named("Store two"))?;
+        let mut store = ProfileStore::open(Some(dir.clone()));
+        store.edit("Store one", |profile| profile.fps = 30);
+        store.edit("Store two", |profile| profile.fps = 24);
+        let on_disk: Vec<(String, u32)> = load_all(&dir).profiles.into_iter().map(|profile| (profile.name, profile.fps)).collect();
+        assert_eq!(on_disk, vec![("Store one".to_owned(), 30), ("Store two".to_owned(), 60)]);
+        assert!(store.edit("Nope", |profile| profile.fps = 1).is_none());
+        assert!(!store.update(named("Nope")));
+        store.flush();
+        assert_eq!(load_all(&dir).profiles[1].fps, 24);
         fs::remove_dir_all(&dir)?;
         Ok(())
     }

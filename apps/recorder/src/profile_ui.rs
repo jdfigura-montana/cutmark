@@ -3,7 +3,6 @@
 //! See the recorder spec: Profiles, naming, settings.
 
 use std::ops::RangeInclusive;
-use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
@@ -13,10 +12,8 @@ use media_io::encode::{Codec as EncoderCodec, CodecSupport, ConfigError, MAX_MBP
 
 use crate::config::{AudioCodecChoice, Codec, Container, Preset, Profile, RateControl, Settings, takes_root};
 use crate::engine::session::encoder_config;
-use crate::{profiles, takes};
-
-/// How long an edit waits for further edits before it is written to the profile file.
-const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
+use crate::profiles::{self, ProfileStore};
+use crate::takes;
 
 /// The output sizes in the size dropdown, besides Source and Custom.
 const SIZES: [(u32, u32); 4] = [(3840, 2160), (2560, 1440), (1920, 1080), (1280, 720)];
@@ -158,18 +155,10 @@ impl AmfProbe {
     }
 }
 
-/// The Profile section: the profile files, the one being edited, and the state of its widgets.
+/// The Profile section: the state of its widgets. The profiles themselves live in the [`ProfileStore`].
 pub struct ProfileSection {
-    /// The profiles folder, or None when the config folder could not be found.
-    dir: Option<PathBuf>,
-    /// The valid profiles, sorted by name.
-    profiles: Vec<Profile>,
-    /// A line per profile file that was skipped.
-    warnings: Vec<String>,
     /// The encoder probe.
     probe: AmfProbe,
-    /// When and for which profile the last edit happened, until it is written.
-    dirty: Option<(Instant, String)>,
     /// The new name while the profile is being renamed.
     renaming: Option<String>,
     /// Whether Delete was clicked once and waits for a second click.
@@ -208,13 +197,9 @@ enum Action {
 
 impl ProfileSection {
     /// Loads the profile files, makes the active profile one that exists, and starts the first encoder probe.
-    pub fn new(ctx: &egui::Context, settings: &mut Settings, source: (u32, u32)) -> Self {
+    pub fn new(ctx: &egui::Context, store: &mut ProfileStore, settings: &mut Settings, source: (u32, u32)) -> Self {
         let mut section = Self {
-            dir: profiles::profiles_dir(),
-            profiles: Vec::new(),
-            warnings: Vec::new(),
             probe: AmfProbe::default(),
-            dirty: None,
             renaming: None,
             confirm_delete: false,
             size_custom: false,
@@ -223,9 +208,8 @@ impl ProfileSection {
             has_errors: false,
             preview: None,
         };
-        section.reload();
-        section.ensure_active(settings);
-        if let Some(profile) = section.profiles.iter().find(|profile| profile.name == settings.active_profile) {
+        section.ensure_active(store, settings);
+        if let Some(profile) = store.get(&settings.active_profile) {
             let size = effective_size(profile, source);
             section.probe.update(ctx, (size.0, size.1, profile.fps));
         }
@@ -237,57 +221,25 @@ impl ProfileSection {
         self.has_errors
     }
 
-    /// Writes an edit that is still waiting for its debounce.
-    pub fn flush(&mut self) {
-        let Some((_, name)) = self.dirty.take() else { return };
-        let (Some(dir), Some(profile)) = (&self.dir, self.profiles.iter().find(|profile| profile.name == name)) else { return };
-        if let Err(err) = profiles::save(dir, profile) {
-            log::error!("could not save profile {name}: {err}");
-            self.problem = Some(format!("Could not save the profile: {err}"));
-        }
-    }
-
-    /// Reads the profile files again; with none readable, the shipped profiles are used in memory.
-    fn reload(&mut self) {
-        if let Some(dir) = &self.dir {
-            let loaded = profiles::load_all(dir);
-            self.profiles = loaded.profiles;
-            self.warnings = loaded.warnings;
-        }
-        if self.profiles.is_empty() {
-            self.profiles = Profile::shipped().to_vec();
-        }
-    }
-
     /// Makes the active profile one that exists, reading the files again first when it is not in the list.
-    fn ensure_active(&mut self, settings: &mut Settings) -> bool {
-        if self.profiles.iter().any(|profile| profile.name == settings.active_profile) {
+    fn ensure_active(&mut self, store: &mut ProfileStore, settings: &mut Settings) -> bool {
+        if store.get(&settings.active_profile).is_some() {
             return false;
         }
-        self.reload();
-        if self.profiles.iter().any(|profile| profile.name == settings.active_profile) {
+        store.flush();
+        store.reload();
+        if store.get(&settings.active_profile).is_some() {
             return false;
         }
-        if let Some(first) = self.profiles.first() {
+        if let Some(first) = store.profiles().first() {
             settings.active_profile.clone_from(&first.name);
         }
         true
     }
 
-    /// Writes a pending edit once it has waited long enough, or asks for a repaint when it is due.
-    fn save_when_due(&mut self, ctx: &egui::Context) {
-        let Some((at, _)) = &self.dirty else { return };
-        let waited = at.elapsed();
-        if waited >= SAVE_DEBOUNCE {
-            self.flush();
-        } else {
-            ctx.request_repaint_after(SAVE_DEBOUNCE - waited);
-        }
-    }
-
     /// Makes another profile the active one.
-    fn switch_to(&mut self, settings: &mut Settings, name: String, outcome: &mut ProfileOutcome) {
-        self.flush();
+    fn switch_to(&mut self, store: &mut ProfileStore, settings: &mut Settings, name: String, outcome: &mut ProfileOutcome) {
+        store.flush();
         settings.active_profile = name;
         self.size_custom = false;
         self.fps_custom = false;
@@ -298,34 +250,32 @@ impl ProfileSection {
     }
 
     /// Draws the section. It is read-only while a take runs, and a profile can only be switched while idle.
-    pub fn show(&mut self, ui: &mut Ui, settings: &mut Settings, source: (u32, u32), recording: bool, outcome: &mut ProfileOutcome) {
-        if self.ensure_active(settings) {
+    pub fn show(&mut self, ui: &mut Ui, store: &mut ProfileStore, settings: &mut Settings, source: (u32, u32), recording: bool, outcome: &mut ProfileOutcome) {
+        if self.ensure_active(store, settings) {
             outcome.active_changed = true;
         }
-        let ctx = ui.ctx().clone();
         let audio = audio_codec(settings.audio.codec);
         ui.heading("Profile");
         let warn = ui.visuals().warn_fg_color;
         let error = ui.visuals().error_fg_color;
-        for warning in &self.warnings {
+        for warning in store.warnings() {
             ui.colored_label(warn, warning);
         }
-        if let Some(problem) = &self.problem {
+        if let Some(problem) = self.problem.as_deref().or_else(|| store.save_error()) {
             ui.colored_label(error, problem);
         }
         ui.add_enabled_ui(!recording, |ui| {
-            self.picker_row(ui, settings, outcome);
-            self.fields(ui, &ctx, settings, source, audio, recording);
-            self.naming_fields(ui, settings, outcome);
+            self.picker_row(ui, store, settings, outcome);
+            self.fields(ui, store, settings, source, audio, recording);
+            self.naming_fields(ui, store, settings, outcome);
         });
         if recording {
             ui.colored_label(ui_kit::palette::TEXT_MUTED, "Profile settings are locked while recording");
         }
-        self.save_when_due(&ctx);
     }
 
     /// Draws the Project and Naming template fields, which are global settings, and the full path of the next take.
-    fn naming_fields(&mut self, ui: &mut Ui, settings: &mut Settings, outcome: &mut ProfileOutcome) {
+    fn naming_fields(&mut self, ui: &mut Ui, store: &ProfileStore, settings: &mut Settings, outcome: &mut ProfileOutcome) {
         ui.separator();
         let mut changed = false;
         egui::Grid::new("naming-fields").num_columns(2).show(ui, |ui| {
@@ -340,7 +290,7 @@ impl ProfileSection {
         if changed {
             outcome.active_changed = true;
         }
-        let container = self.profiles.iter().find(|profile| profile.name == settings.active_profile).map(|profile| profile.container).unwrap_or_default();
+        let container = store.get(&settings.active_profile).map(|profile| profile.container).unwrap_or_default();
         let root = takes_root(settings);
         let key = format!("{}|{}|{}|{}|{}", root.display(), settings.project, settings.naming_template, settings.active_profile, container.extension());
         if self.preview.as_ref().is_none_or(|preview| preview.key != key || preview.at.elapsed() > PREVIEW_REFRESH) {
@@ -357,12 +307,12 @@ impl ProfileSection {
     }
 
     /// Draws the profile dropdown and the New, Duplicate, Rename and Delete buttons.
-    fn picker_row(&mut self, ui: &mut Ui, settings: &mut Settings, outcome: &mut ProfileOutcome) {
+    fn picker_row(&mut self, ui: &mut Ui, store: &mut ProfileStore, settings: &mut Settings, outcome: &mut ProfileOutcome) {
         let mut chosen = None;
         let mut action = None;
         ui.horizontal(|ui| {
             ComboBox::from_id_salt("profile-picker").selected_text(settings.active_profile.clone()).width(240.0).show_ui(ui, |ui| {
-                for profile in &self.profiles {
+                for profile in store.profiles() {
                     if ui.selectable_label(profile.name == settings.active_profile, &profile.name).clicked() {
                         chosen = Some(profile.name.clone());
                     }
@@ -387,7 +337,7 @@ impl ProfileSection {
                     action = Some(Action::StartRename);
                 }
                 let delete_text = if self.confirm_delete { "Confirm delete" } else { "Delete" };
-                if ui.add_enabled(self.profiles.len() > 1, Button::new(delete_text)).clicked() {
+                if ui.add_enabled(store.profiles().len() > 1, Button::new(delete_text)).clicked() {
                     action = Some(Action::Delete);
                 }
             }
@@ -395,28 +345,28 @@ impl ProfileSection {
         if let Some(name) = chosen
             && name != settings.active_profile
         {
-            self.switch_to(settings, name, outcome);
+            self.switch_to(store, settings, name, outcome);
         }
         if let Some(action) = action {
-            self.run_action(action, settings, outcome);
+            self.run_action(action, store, settings, outcome);
         }
     }
 
     /// Does what a click in the profile row asked for.
-    fn run_action(&mut self, action: Action, settings: &mut Settings, outcome: &mut ProfileOutcome) {
+    fn run_action(&mut self, action: Action, store: &mut ProfileStore, settings: &mut Settings, outcome: &mut ProfileOutcome) {
         if !matches!(action, Action::Delete) {
             self.confirm_delete = false;
         }
         self.problem = None;
-        self.flush();
-        let Some(dir) = self.dir.clone() else {
+        store.flush();
+        let Some(dir) = store.dir().map(std::path::Path::to_path_buf) else {
             self.problem = Some("The profiles folder could not be found".to_owned());
             return;
         };
         let current = settings.active_profile.clone();
         let result = match action {
             Action::New => profiles::create(&dir).map(|profile| Some(profile.name)),
-            Action::Duplicate => match self.profiles.iter().find(|profile| profile.name == current) {
+            Action::Duplicate => match store.get(&current) {
                 Some(profile) => profiles::duplicate(&dir, profile).map(|copy| Some(copy.name)),
                 None => Ok(None),
             },
@@ -438,13 +388,13 @@ impl ProfileSection {
             }
             Action::Delete => {
                 self.confirm_delete = false;
-                profiles::delete(&dir, &current).map(|()| self.profiles.iter().map(|profile| profile.name.clone()).find(|name| *name != current))
+                profiles::delete(&dir, &current).map(|()| store.profiles().iter().map(|profile| profile.name.clone()).find(|name| *name != current))
             }
         };
         match result {
             Ok(Some(name)) => {
-                self.reload();
-                self.switch_to(settings, name, outcome);
+                store.reload();
+                self.switch_to(store, settings, name, outcome);
             }
             Ok(None) => {}
             Err(err) => self.problem = Some(err.to_string()),
@@ -452,13 +402,13 @@ impl ProfileSection {
     }
 
     /// Draws every field of the active profile and writes its edits after the debounce.
-    fn fields(&mut self, ui: &mut Ui, ctx: &egui::Context, settings: &Settings, source: (u32, u32), audio: AudioCodec, recording: bool) {
-        let Some(idx) = self.profiles.iter().position(|profile| profile.name == settings.active_profile) else { return };
-        let original = self.profiles[idx].clone();
+    fn fields(&mut self, ui: &mut Ui, store: &mut ProfileStore, settings: &Settings, source: (u32, u32), audio: AudioCodec, recording: bool) {
+        let ctx = ui.ctx().clone();
+        let Some(original) = store.get(&settings.active_profile).cloned() else { return };
         let mut p = original.clone();
         let size = effective_size(&p, source);
         if !recording {
-            self.probe.update(ctx, (size.0, size.1, p.fps));
+            self.probe.update(&ctx, (size.0, size.1, p.fps));
         }
         let errors = validate(&p, size, audio, &self.probe);
         self.has_errors = !errors.is_empty();
@@ -610,9 +560,7 @@ impl ProfileSection {
         self.size_custom = size_custom;
         self.fps_custom = fps_custom;
         if p != original {
-            let name = p.name.clone();
-            self.profiles[idx] = p;
-            self.dirty = Some((Instant::now(), name));
+            store.update(p);
         }
         if self.has_errors {
             ui.colored_label(ui.visuals().error_fg_color, "Fix the errors above before starting a take");

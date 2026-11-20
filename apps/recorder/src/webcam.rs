@@ -13,10 +13,7 @@ use capture::{CameraFormat, CameraInfo, CameraSubtype, ControlInfo, ControlProp,
 
 use crate::config::{ControlSetting, WebcamControls, WebcamFormat, WebcamSettings};
 use crate::preview_ui::PreviewView;
-use crate::profiles;
-
-/// How long after the last change the webcam settings are written to the profile.
-const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
+use crate::profiles::ProfileStore;
 
 /// How often the values of controls that are in auto mode are read back from the camera.
 const CONTROL_POLL: Duration = Duration::from_millis(500);
@@ -47,18 +44,15 @@ enum Resolution {
 }
 
 /// The webcam of the active profile.
+///
+/// The webcam settings are part of the profile in the [`ProfileStore`]; the host reads and edits them there
+/// and never keeps a copy, so the Profile section and the Webcam section cannot overwrite each other.
 pub struct WebcamHost {
     ctx: egui::Context,
-    /// The profile whose webcam settings are loaded, or None before the first frame.
+    /// The profile whose webcam is shown, or None before the first frame.
     profile: Option<String>,
-    /// The settings of that profile's webcam; None while the webcam is off.
-    settings: Option<WebcamSettings>,
     /// The settings of a webcam that was switched off, kept so that switching it on again restores them.
     parked: Option<WebcamSettings>,
-    /// When the settings last changed without being saved yet.
-    dirty_since: Option<Instant>,
-    /// Why the last save failed.
-    save_error: Option<String>,
     /// The cameras found at the last refresh.
     cameras: Vec<CameraInfo>,
     /// The running camera search, or None.
@@ -101,10 +95,7 @@ impl WebcamHost {
         Self {
             ctx: ctx.clone(),
             profile: None,
-            settings: None,
             parked: None,
-            dirty_since: None,
-            save_error: None,
             cameras: Vec::new(),
             listing: None,
             listed: false,
@@ -125,16 +116,15 @@ impl WebcamHost {
         }
     }
 
-    /// Follows the active profile and keeps the capture, the preview and the saved settings in step; call it once per frame.
-    pub fn sync(&mut self, profile: &str, shown: bool) {
+    /// Follows the active profile and keeps the capture and the preview in step with its webcam settings; call it once per frame.
+    pub fn sync(&mut self, store: &mut ProfileStore, profile: &str, shown: bool) {
         self.shown = shown;
         if self.profile.as_deref() != Some(profile) {
-            self.switch_profile(profile);
+            self.switch_profile(store, profile);
         }
-        self.save_if_due();
         self.poll_listing();
-        self.poll_open();
-        if self.settings.is_none() {
+        self.poll_open(store);
+        if self.settings(store).is_none() {
             self.want = None;
             self.camera_warning = None;
             self.release();
@@ -143,16 +133,27 @@ impl WebcamHost {
         if !self.listed && self.listing.is_none() {
             self.start_listing();
         }
-        self.reconcile();
+        self.reconcile(store);
         self.poll_controls();
         if let Some(preview) = &self.preview {
             preview.set_active(shown);
         }
     }
 
-    /// The webcam settings of the active profile, or None while the webcam is off.
-    pub fn settings(&self) -> Option<&WebcamSettings> {
-        self.settings.as_ref()
+    /// The webcam settings of the active profile in the store, or None while the webcam is off.
+    pub fn settings<'a>(&self, store: &'a ProfileStore) -> Option<&'a WebcamSettings> {
+        store.get(self.profile.as_deref()?)?.webcam.as_ref()
+    }
+
+    /// Changes the webcam settings of the active profile in the store, which schedules the save; does nothing while the webcam is off.
+    fn edit(&self, store: &mut ProfileStore, change: impl FnOnce(&mut WebcamSettings)) {
+        if let Some(name) = &self.profile {
+            store.edit(name, |profile| {
+                if let Some(settings) = &mut profile.webcam {
+                    change(settings);
+                }
+            });
+        }
     }
 
     /// The cameras found at the last refresh.
@@ -161,14 +162,14 @@ impl WebcamHost {
     }
 
     /// The formats of the selected camera, largest first.
-    pub fn formats(&self) -> &[CameraFormat] {
-        let Some(settings) = &self.settings else { return &[] };
+    pub fn formats(&self, store: &ProfileStore) -> &[CameraFormat] {
+        let Some(settings) = self.settings(store) else { return &[] };
         self.cameras.iter().find(|camera| camera.id == settings.camera_id).map_or(&[], |camera| camera.formats.as_slice())
     }
 
     /// Whether the format is the one the profile has saved.
-    pub fn is_current_format(&self, format: &CameraFormat) -> bool {
-        self.settings.as_ref().is_some_and(|settings| format_matches(&settings.format, format))
+    pub fn is_current_format(&self, store: &ProfileStore, format: &CameraFormat) -> bool {
+        self.settings(store).is_some_and(|settings| format_matches(&settings.format, format))
     }
 
     /// Whether a camera search is running.
@@ -183,26 +184,25 @@ impl WebcamHost {
 
     /// The text of the warning banner, if there is something to warn about.
     pub fn warning(&self) -> Option<String> {
-        self.camera_warning
-            .clone()
-            .or_else(|| self.save_error.clone())
-            .or_else(|| self.preview_error.clone())
-            .or_else(|| self.preview.as_ref().and_then(Preview::error))
+        self.camera_warning.clone().or_else(|| self.preview_error.clone()).or_else(|| self.preview.as_ref().and_then(Preview::error))
     }
 
     /// Switches the webcam on with the settings it had before, or the defaults.
-    pub fn enable(&mut self) {
-        if self.settings.is_none() {
-            self.settings = Some(self.parked.take().unwrap_or_default());
-            self.touch();
-        }
+    pub fn enable(&mut self, store: &mut ProfileStore) {
+        let Some(name) = &self.profile else { return };
+        let settings = self.parked.take().unwrap_or_default();
+        store.edit(name, |profile| {
+            if profile.webcam.is_none() {
+                profile.webcam = Some(settings);
+            }
+        });
     }
 
     /// Switches the webcam off; the profile loses its webcam settings, and the window keeps them for switching it on again.
-    pub fn disable(&mut self) {
-        if let Some(settings) = self.settings.take() {
+    pub fn disable(&mut self, store: &mut ProfileStore) {
+        let Some(name) = &self.profile else { return };
+        if let Some(settings) = store.edit(name, |profile| profile.webcam.take()).flatten() {
             self.parked = Some(settings);
-            self.touch();
         }
     }
 
@@ -215,31 +215,28 @@ impl WebcamHost {
     }
 
     /// Picks a camera by its symbolic link; its default mode is chosen, and the saved controls are dropped because they belonged to the old camera.
-    pub fn select_camera(&mut self, id: &str) {
+    pub fn select_camera(&mut self, store: &mut ProfileStore, id: &str) {
         let Some(camera) = self.cameras.iter().find(|camera| camera.id == id) else { return };
         let (camera_id, camera_name) = (camera.id.clone(), camera.name.clone());
         let format = pick_default_format(&camera.formats).map(|format| saved_format(&format));
-        if let Some(settings) = &mut self.settings {
+        self.edit(store, |settings| {
             settings.camera_id = camera_id;
             settings.camera_name = camera_name;
             if let Some(format) = format {
                 settings.format = format;
             }
             settings.controls = WebcamControls::default();
-            self.touch();
-        }
+        });
     }
 
     /// Picks a mode of the selected camera.
-    pub fn select_format(&mut self, format: &CameraFormat) {
-        if let Some(settings) = &mut self.settings {
-            settings.format = saved_format(format);
-            self.touch();
-        }
+    pub fn select_format(&mut self, store: &mut ProfileStore, format: &CameraFormat) {
+        let saved = saved_format(format);
+        self.edit(store, |settings| settings.format = saved);
     }
 
     /// Changes one camera control live and saves it to the profile.
-    pub fn set_control(&mut self, prop: ControlProp, setting: ControlSetting) {
+    pub fn set_control(&mut self, store: &mut ProfileStore, prop: ControlProp, setting: ControlSetting) {
         let Some(capture) = &self.capture else { return };
         let controls = capture.controls();
         let value = match setting {
@@ -254,28 +251,25 @@ impl WebcamHost {
         if let Some(info) = self.controls.iter_mut().find(|info| info.prop == prop) {
             info.current = state;
         }
-        if let Some(settings) = &mut self.settings {
-            settings.controls.set(prop, Some(setting_from_state(&state)));
-            self.touch();
-        }
+        self.edit(store, |settings| settings.controls.set(prop, Some(setting_from_state(&state))));
     }
 
     /// Switches every control that is in auto mode to manual at its current value.
-    pub fn lock_current(&mut self) {
+    pub fn lock_current(&mut self, store: &mut ProfileStore) {
         let Some(capture) = &self.capture else { return };
         let controls = capture.controls();
         controls.lock_current();
         self.controls = controls.supported();
-        self.store_controls();
+        self.store_controls(store);
     }
 
     /// Returns every control to the camera's default.
-    pub fn reset_defaults(&mut self) {
+    pub fn reset_defaults(&mut self, store: &mut ProfileStore) {
         let Some(capture) = &self.capture else { return };
         let controls = capture.controls();
         controls.reset_defaults();
         self.controls = controls.supported();
-        self.store_controls();
+        self.store_controls(store);
     }
 
     /// Draws the live camera picture, or a message when there is none.
@@ -288,54 +282,20 @@ impl WebcamHost {
         }
     }
 
-    /// Writes unsaved settings to the profile now.
-    pub fn flush(&mut self) {
-        if self.dirty_since.take().is_none() {
-            return;
-        }
-        let (Some(name), Some(dir)) = (self.profile.clone(), profiles::profiles_dir()) else { return };
-        match profiles::save_webcam(&dir, &name, self.settings.as_ref()) {
-            Ok(()) => self.save_error = None,
-            Err(error) => {
-                log::error!("could not save the webcam settings of profile {name}: {error}");
-                self.save_error = Some(format!("Could not save the webcam settings: {error}"));
-            }
-        }
-    }
-
-    /// Notes that the settings changed, so they are saved after the debounce.
-    fn touch(&mut self) {
-        self.dirty_since = Some(Instant::now());
-        self.ctx.request_repaint_after(SAVE_DEBOUNCE);
-    }
-
-    /// Saves the settings once they have been quiet for the debounce time.
-    fn save_if_due(&mut self) {
-        let Some(since) = self.dirty_since else { return };
-        if since.elapsed() >= SAVE_DEBOUNCE {
-            self.flush();
-        } else {
-            self.ctx.request_repaint_after(SAVE_DEBOUNCE.saturating_sub(since.elapsed()));
-        }
-    }
-
-    /// Saves what the old profile changed, closes its camera and loads the webcam settings of the new one.
-    fn switch_profile(&mut self, name: &str) {
-        self.flush();
+    /// Closes the old profile's camera and takes over the webcam of the new one.
+    fn switch_profile(&mut self, store: &mut ProfileStore, name: &str) {
         self.release();
         self.controls.clear();
         self.want = None;
         self.retry_at = None;
         self.camera_warning = None;
-        self.save_error = None;
         self.preview_error = None;
         self.parked = None;
-        self.settings = profiles::find(name).and_then(|profile| profile.webcam).map(|mut settings| {
-            // A hand-edited profile file may hold an offset outside the range the window allows.
-            settings.offset_ms = settings.offset_clamped();
-            settings
-        });
         self.profile = Some(name.to_owned());
+        // A hand-edited profile file may hold an offset outside the range the window allows.
+        if self.settings(store).is_some_and(|settings| settings.offset_ms != settings.offset_clamped()) {
+            self.edit(store, |settings| settings.offset_ms = settings.offset_clamped());
+        }
     }
 
     /// Ends the preview and closes the camera.
@@ -395,7 +355,7 @@ impl WebcamHost {
     }
 
     /// Opens, keeps or closes the capture so that it matches the settings and the cameras found.
-    fn reconcile(&mut self) {
+    fn reconcile(&mut self, store: &mut ProfileStore) {
         if !self.listed {
             return;
         }
@@ -407,7 +367,7 @@ impl WebcamHost {
             self.release();
             return;
         }
-        let resolution = match &self.settings {
+        let resolution = match self.settings(store) {
             Some(settings) => resolve(&self.cameras, settings, self.open_key.as_ref()),
             None => return,
         };
@@ -420,7 +380,7 @@ impl WebcamHost {
                 return;
             }
         };
-        self.adopt(&camera_id, &camera_name, &format);
+        self.adopt(store, &camera_id, &camera_name, &format);
         let key: OpenKey = (camera_id, format);
         self.want = Some(key.clone());
         if let Some(capture) = &self.capture
@@ -448,20 +408,18 @@ impl WebcamHost {
     }
 
     /// Writes the camera and mode that were resolved back into the settings when they differ from what is saved.
-    fn adopt(&mut self, camera_id: &str, camera_name: &str, format: &CameraFormat) {
-        let Some(settings) = &mut self.settings else { return };
-        let mut changed = false;
-        if settings.camera_id != camera_id || settings.camera_name != camera_name {
-            settings.camera_id = camera_id.to_owned();
-            settings.camera_name = camera_name.to_owned();
-            changed = true;
-        }
-        if !format_matches(&settings.format, format) {
-            settings.format = saved_format(format);
-            changed = true;
-        }
-        if changed {
-            self.touch();
+    fn adopt(&self, store: &mut ProfileStore, camera_id: &str, camera_name: &str, format: &CameraFormat) {
+        let differs = self
+            .settings(store)
+            .is_some_and(|settings| settings.camera_id != camera_id || settings.camera_name != camera_name || !format_matches(&settings.format, format));
+        if differs {
+            self.edit(store, |settings| {
+                settings.camera_id = camera_id.to_owned();
+                settings.camera_name = camera_name.to_owned();
+                if !format_matches(&settings.format, format) {
+                    settings.format = saved_format(format);
+                }
+            });
         }
     }
 
@@ -497,7 +455,7 @@ impl WebcamHost {
     }
 
     /// Takes in the capture that was being opened, when it is ready.
-    fn poll_open(&mut self) {
+    fn poll_open(&mut self, store: &ProfileStore) {
         let result = match &self.opening {
             Some((_, receiver)) => receiver.try_recv(),
             None => return,
@@ -506,9 +464,9 @@ impl WebcamHost {
             return;
         }
         let Some((key, _)) = self.opening.take() else { return };
-        let wanted = self.settings.is_some() && self.want.as_ref() == Some(&key);
+        let wanted = self.settings(store).is_some() && self.want.as_ref() == Some(&key);
         match result {
-            Ok(Ok(capture)) if wanted => self.install(key, capture),
+            Ok(Ok(capture)) if wanted => self.install(store, key, capture),
             // The settings changed while the camera opened: the capture is dropped here and the next frame opens the right one.
             Ok(Ok(_)) => {}
             Ok(Err(message)) if wanted => {
@@ -524,10 +482,10 @@ impl WebcamHost {
     }
 
     /// Makes a freshly opened capture the current one: applies the saved controls and starts its preview.
-    fn install(&mut self, key: OpenKey, capture: WebcamCapture) {
+    fn install(&mut self, store: &ProfileStore, key: OpenKey, capture: WebcamCapture) {
         let capture = Arc::new(capture);
         let controls = capture.controls();
-        if let Some(saved) = self.settings.as_ref().map(|settings| settings.controls.clone()) {
+        if let Some(saved) = self.settings(store).map(|settings| settings.controls.clone()) {
             for info in controls.supported() {
                 let applied = match saved.get(info.prop) {
                     Some(ControlSetting::Auto) => controls.set(info.prop, info.current.value, true),
@@ -591,12 +549,12 @@ impl WebcamHost {
     }
 
     /// Saves the state of every supported control into the settings.
-    fn store_controls(&mut self) {
-        let Some(settings) = &mut self.settings else { return };
-        for info in &self.controls {
-            settings.controls.set(info.prop, Some(setting_from_state(&info.current)));
-        }
-        self.touch();
+    fn store_controls(&self, store: &mut ProfileStore) {
+        self.edit(store, |settings| {
+            for info in &self.controls {
+                settings.controls.set(info.prop, Some(setting_from_state(&info.current)));
+            }
+        });
     }
 }
 
