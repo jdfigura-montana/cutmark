@@ -9,7 +9,7 @@
 //!
 //! # Font licenses
 //!
-//! IBM Plex Sans and JetBrains Mono are both SIL OFL 1.1. Their license files
+//! Inter and JetBrains Mono are both SIL OFL 1.1. Their license files
 //! sit in `assets/fonts` and must ship with any installer that uses ui-kit.
 
 pub mod accent;
@@ -41,8 +41,8 @@ const MENU_PAD: i8 = 6;
 /// Sets the fonts and the egui `Style` and `Visuals` once at startup.
 ///
 /// Owns the whole look: the dark palette surfaces, a single accent color for
-/// selection and focus, IBM Plex Sans (Proportional) and JetBrains Mono
-/// (Monospace) with a named "PlexSemiBold" family for headings, the phosphor
+/// selection and focus, Inter (Proportional) and JetBrains Mono
+/// (Monospace) with a named "InterSemiBold" family for headings, the phosphor
 /// icon font, and 4/8 px default spacing.
 pub fn apply(ctx: &egui::Context) {
     ctx.set_fonts(fonts::definitions());
