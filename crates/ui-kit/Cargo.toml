@@ -22,3 +22,9 @@ panic = "deny"
 eframe.workspace = true
 egui.workspace = true
 egui-phosphor.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

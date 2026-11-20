@@ -1,6 +1,6 @@
 # S1 Audio Editor and ui-kit: v1 Spec
 
-Nov 18, 2026 · @JD · rev 2: builds on the existing `ui-kit`
+Nov 19, 2026 · @JD · rev 3: Phase 1 findings (already on wgpu, nine mapping rows added)
 
 Exported from the Claude Project "Creator Suite". The Project copy is the source; this file is replaced when the spec changes.
 
@@ -10,7 +10,7 @@ S1 gives the suite its look and proves it on the first app. It grows the existin
 
 **What S1 delivers**
 
-1. The audio editor on wgpu, on the workspace's egui and eframe version.
+1. Confirmed by Phase 1: the audio editor is already on wgpu and on the workspace egui and eframe (0.36.2). No move is needed.
 2. `crates/ui-kit` extended: tokens, runtime accent, Inter, window chrome, and every component in the Design Language spec. Its current public API keeps working.
 3. `apps/gallery` (package `cutmark-gallery`): every `ui-kit` component in every state, with the accent picker.
 4. The audio editor restyled to the Glass Deck look, version 1.2.0, with a fresh installer.
@@ -48,7 +48,7 @@ Read from `crates/ui-kit` on Nov 18. Used by the Recorder.
 | File | Holds today | What S1 does with it |
 | --- | --- | --- |
 | `Cargo.toml` | egui, eframe, egui-phosphor from the workspace; strict lints with `unsafe_code = "forbid"` | Adds `windows` (Windows only) and `egui_kittest` (dev). `unsafe_code` goes from `forbid` to `deny`, with one allowed module (see Amendments) |
-| `src/palette.rs` | 25 color constants copied from the audio editor's old theme (`PANEL_BG`, `ACCENT`, `METER_GREEN` and so on), plus `CONTROL_ROUNDING` | Becomes a compatibility layer: every old name stays, now pointing at the nearest new token, marked `#[deprecated]` with the new name in the note. Deleted once no app uses it |
+| `src/palette.rs` | 21 color constants copied from the audio editor's old theme (`PANEL_BG`, `ACCENT`, `METER_GREEN` and so on), plus `CONTROL_ROUNDING` | Becomes a compatibility layer: every old name stays, now pointing at the nearest new token, marked `#[deprecated]` with the new name in the note. Deleted once no app uses it |
 | `src/fonts.rs` | IBM Plex Sans Regular, Medium, SemiBold; JetBrains Mono Regular, Medium; phosphor icons as fallback in every family; `mono()`, `medium()`, `semibold()` helpers; `MEDIUM_FAMILY`, `SEMIBOLD_FAMILY` | Plex is replaced by Inter (same three weights), JetBrains Mono gains SemiBold. Function and constant names stay, so callers do not change. Plex files and license are removed |
 | `src/lib.rs` | `apply(ctx)`: installs fonts, `Visuals` and spacing from the palette | Same signature. Rebuilt on tokens and the runtime `Theme`. Every app calling it gets the new look |
 | `src/meter.rs` | `level_meter(ui, peak_dbfs, clipped, width)`: horizontal bar, -60 to 0 dBFS, green to -12, yellow to -3, red above, clip light | Same signature and thresholds (they already match the Design Language spec). Restyled to the Meter component (6px bar, 3px radius, `sem.*` colors). A vertical variant is added |
@@ -62,7 +62,8 @@ The thresholds already in `meter.rs` become the tokens `sem.meter.ok` (below -12
 1. **Crate map, `ui-kit` row:** "Created at: S1" becomes "Created at: Recorder phase 1, extended in S1". "Holds" becomes "Design Language tokens, theme, fonts, icons, window chrome, all shared widgets (meters and faders included), dialog frame, accent picker".
 2. **Dependency rule 5:** `ui-kit` joins `capture`, `media-io` and `prompter-platform` as a crate allowed to hold Windows-only code, behind `cfg(windows)`, for the window chrome only.
 3. **Unsafe code:** the Win32 hit test needs `unsafe`. In `ui-kit`'s `Cargo.toml`, `unsafe_code` changes from `forbid` to `deny` (a crate-level `forbid` cannot be lifted for one module). Only `src/chrome/windows.rs` carries `#[allow(unsafe_code)]`, with a safety comment on every block.
-4. **CI:** if the Linux job does not already cover `ui-kit`, it adds `fmt`, `clippy` and `test` for it (non-Windows code). About one extra minute per run. Approving this spec approves that change.
+4. **Stale renderer notes:** S0-Workspace and the `scripts/check.ps1` comment describe `cutmark-audio` as an eframe glow app. It is on wgpu (`main.rs` sets `Renderer::Wgpu`). The `check.ps1` comment is fixed in Phase 3.
+5. **CI:** if the Linux job does not already cover `ui-kit`, it adds `fmt`, `clippy` and `test` for it (non-Windows code). About one extra minute per run. Approving this spec approves that change.
 
 ### To the Cutmark Design Language v1 Spec
 
@@ -86,9 +87,10 @@ S1 runs in the git worktree `cm_suite\cutmark-s1` on branch `s1`; the Recorder r
 
 | Topic | Decision |
 | --- | --- |
-| egui and eframe | The workspace version `ui-kit` already uses. Phase 1 confirms the audio editor is on it; Phase 2 moves it there if not. |
-| Renderer | eframe `wgpu` feature in the audio editor, `glow` removed. `ui-kit` stays renderer-neutral, as today. |
-| Custom painting | Glow paint callbacks found in Phase 1 move to egui `Shape`s or a wgpu `PaintCallback`. |
+| egui and eframe | 0.36.2 from the workspace, already used by the audio editor, `ui-kit` and the Recorder. |
+| Renderer | eframe `wgpu`, already set in the audio editor. `ui-kit` stays renderer-neutral. |
+| Custom painting | egui `Shape`s, as today. No paint callbacks. |
+| Test harness | `egui_kittest` 0.36 is already a workspace dependency; `ui-kit` uses it. The audio editor keeps its own `ui/test_util.rs` harness. |
 | Fonts | Inter Regular, Medium, SemiBold and JetBrains Mono Regular, Medium, SemiBold, static TTFs in `crates/ui-kit/assets/fonts/` with their OFL files, embedded with `include_bytes!` as today. |
 | Icons | Phosphor through `egui-phosphor`, Regular and Fill variants. |
 | Tokens | `design/tokens.json` at the repo root. `ui-kit/build.rs` generates `src/tokens.rs` and writes `design/tokens.css`. |
@@ -120,6 +122,15 @@ The restyle maps what the app has today onto Design Language components. Phase 1
 | `start_screen.rs` | Panel-style start screen in the same window chrome: recent projects as list rows, New and Open as buttons |
 | `dialogs/*` | `ui-kit` dialog frame; buttons, fields, sliders and switches from `ui-kit` |
 | New: View > Appearance | Dialog holding the `ui-kit` accent picker and the glass switch. The only new UI in S1, required by the Design Language spec |
+| `timeline/interaction.rs` visuals | Marquee: `accent` at 12% fill, 1px `accent` rim. Snap line: 1px `accent`. Ghost (dragged) clip: the Clip component at 50% opacity. Range selection: `accent.tint` fill. Clip context menu: `ui-kit` glass popover menu. Inline gain edit: `ui-kit` text field. Gesture behavior unchanged |
+| `timeline/mod.rs` scrollbar and lane backgrounds | New `ui-kit` Scrollbar component: 6px capsule thumb, `text.tertiary` at 40%, 70% on hover and drag, no track fill. Lane backgrounds per the Track row component |
+| Track header meters and sliders (`track_header.rs`, `widgets/meter.rs` `header_meter`) | `ui-kit` `level_meter` (compact) and `ui-kit` slider. `header_meter` is deleted with the app's meter module |
+| `dialogs/mod.rs` shared dialog kit (form rows, segmented control, footer buttons, dB and ms controls) | Each helper is replaced by the matching `ui-kit` widget in Phase 13. Helpers with no `ui-kit` equivalent (dB and ms controls) become thin wrappers that only compose `ui-kit` widgets and read only tokens |
+| Start screen painted logo (`start_bar_heights`) and status line (`status_bar::show_start`) | Logo replaced by the `ui-kit` app mark. Status line uses the Status bar component |
+| `ui/test_util.rs` | Not restyled. Keeps working; tests change only where a restyled widget changes what they look for |
+| F12 debug style window (`theme::debug_window`) | Deleted with the theme module. The gallery app replaces it |
+| Window title and icon (`main.rs`, `app.rs` `update_title`) | The OS window title keeps its current text (project name, dirty marker) for the taskbar. The toolbar shows the same project name, with an 8px `text.secondary` dot after it when unsaved. Window icon unchanged until the app mark is final |
+| Status bar view readouts (RIPPLE, SNAP) and View menu toggles (ripple, snap, wave scale with Alt+wheel) | Readouts become sentence-case status bar items ("Ripple on", "Snap on"). The toggles stay in the View menu and as timeline toolbar chips. Alt+wheel wave scale unchanged. Zoom readout sits next to the zoom slider in the timeline panel toolbar |
 
 Layer rule 5 of the audio editor still holds: only `ui` and `app` import `egui` and `ui-kit`.
 
@@ -141,15 +152,15 @@ Cline writes `docs/audio-editor/ui-inventory.md`: the egui and eframe versions i
 
 **Done when:** the file exists and no code changed.
 
-### Phase 2: wgpu move
+### Phase 2: wgpu move (not needed)
 
-Align the audio editor with the workspace egui and eframe if needed, switch eframe to `wgpu`, remove `glow`, port any glow drawing.
+Phase 1 found the audio editor already on wgpu and on egui 0.36.2. Nothing to do. The stale `check.ps1` comment is fixed in Phase 3. Phase numbers stay as they are.
 
-**Done when:** the app looks and behaves as in the "before" screenshots, all tests pass, playback and scrubbing stay smooth with a 4-track, 10-minute project.
+**Done:** Nov 19, closed by the Phase 1 inventory.
 
 ### Phase 3: Tokens and palette compatibility (G1)
 
-`design/tokens.json` with every fixed value from the Design Language spec, `ui-kit/build.rs`, generated `src/tokens.rs`, written `design/tokens.css`. `palette.rs` turns into deprecated aliases onto the new tokens.
+`design/tokens.json` with every fixed value from the Design Language spec, `ui-kit/build.rs`, generated `src/tokens.rs`, written `design/tokens.css`. `palette.rs` turns into deprecated aliases onto the new tokens. The stale glow comment in `scripts/check.ps1` is corrected.
 
 **Done when:** a test checks that every token in the spec's tables exists, the Recorder builds (deprecation warnings allowed in the Recorder only), and all counts from Phase 0 hold.
 
@@ -167,7 +178,7 @@ Align the audio editor with the workspace egui and eframe if needed, switch efra
 
 ### Phase 6: Fonts, apply and core widgets (G2)
 
-Inter in, Plex out, JetBrains Mono SemiBold added, same font API. `apply` rebuilt on tokens and `Theme`. Core widgets: panel, main toolbar layout (without chrome), icon button, primary button, segmented control, chip, switch, slider, text field, search field, list row, inspector group and row, focus ring, states.
+Inter in, Plex out, JetBrains Mono SemiBold added, same font API. `apply` rebuilt on tokens and `Theme`. Core widgets: panel, main toolbar layout (without chrome), icon button, primary button, segmented control, chip, switch, slider, text field, search field, list row, inspector group and row, scrollbar, focus ring, states.
 
 **Done when:** widget behavior tests pass where `egui_kittest` allows, the Recorder runs with the new look and no broken screens, clippy is clean.
 
@@ -225,8 +236,6 @@ Version 1.2.0, installer rebuilt with the Inter and JetBrains Mono license files
 
 | Risk | Mitigation |
 | --- | --- |
-| egui version gap in the audio editor | Phase 1 measures it. More than one minor version: Phase 2 splits into one prompt per minor version |
-| Glow-specific waveform drawing is slow as shapes | wgpu `PaintCallback` for waveforms if shapes drop below 60 fps on the Phase 2 test project |
 | Win32 chrome edge cases (multi-monitor DPI, snap) | Timeboxed Phase 7 with a recorded fallback |
 | Restyle loses a control | Mapping table, inventory, before and after screenshots |
 | S1 and the Recorder track edit `ui-kit` at the same time | One owner at a time, Recorder built and tested in every `ui-kit` phase |

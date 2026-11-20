@@ -15,6 +15,7 @@
 pub mod fonts;
 pub mod meter;
 pub mod palette;
+pub mod tokens;
 
 pub use meter::level_meter;
 
