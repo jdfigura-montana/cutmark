@@ -16,6 +16,8 @@ mod monitor;
 #[cfg(windows)]
 mod preview;
 #[cfg(windows)]
+mod webcam;
+#[cfg(windows)]
 mod wgc;
 
 #[cfg(windows)]
@@ -28,6 +30,8 @@ pub use gpu::{AdapterInfo, Gpu, list_adapters};
 pub use monitor::{MonitorInfo, list_monitors};
 #[cfg(windows)]
 pub use preview::{Preview, PreviewFrame};
+#[cfg(windows)]
+pub use webcam::{CamFrame, CameraFormat, CameraInfo, CameraSubtype, WebcamCapture, WebcamPath, WebcamStats, list_cameras};
 #[cfg(windows)]
 pub use wgc::{LatestFrame, MonitorCapture};
 
@@ -50,6 +54,9 @@ pub enum CaptureError {
     /// An expected result was missing, for example no primary monitor.
     #[error("{0}")]
     Missing(&'static str),
+    /// The webcam failed in a way that has no Windows error behind it.
+    #[error("{0}")]
+    Webcam(String),
     /// The input texture does not match the size the converter was created for.
     #[error("input size {actual_w}x{actual_h} does not match the converter input size {expected_w}x{expected_h}; recreate the Nv12Converter")]
     InputSizeChanged {
