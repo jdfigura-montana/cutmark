@@ -93,7 +93,20 @@ pub(super) fn install(cc: &eframe::CreationContext) {
             return;
         }
     };
-    let shared = Arc::new(Shared { ctx: cc.egui_ctx.clone(), state: Mutex::new(State::default()) });
+    hook(hwnd, &cc.egui_ctx);
+}
+
+/// Subclasses `hwnd` with the chrome procedure, sets the round corners and
+/// reads the animation setting.
+///
+/// The first window wins: when a window is already hooked, `hwnd` keeps its
+/// native title bar and the hooked window's state is never overwritten.
+fn hook(hwnd: HWND, ctx: &egui::Context) {
+    if shared().is_some() {
+        log::warn!("chrome: a window is already hooked; the new window keeps the native title bar");
+        return;
+    }
+    let shared = Arc::new(Shared { ctx: ctx.clone(), state: Mutex::new(State::default()) });
 
     // SAFETY: hwnd is the live top-level window eframe just created, on this
     // thread. The subclass id is ours alone, and the reference data (the Arc's
@@ -115,7 +128,7 @@ pub(super) fn install(cc: &eframe::CreationContext) {
         let _ =
             DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, ptr::from_ref(&preference).cast(), size_of::<DWM_WINDOW_CORNER_PREFERENCE>() as u32);
     }
-    apply_client_area_animation(&cc.egui_ctx);
+    apply_client_area_animation(ctx);
 }
 
 /// Converts the frame's regions to physical pixels and hands them to the
@@ -334,5 +347,59 @@ fn apply_client_area_animation(ctx: &egui::Context) {
     if theme.reduce_motion != reduce_motion {
         theme.reduce_motion = reduce_motion;
         crate::Theme::set(ctx, theme);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Serializes the tests that touch the process-wide SHARED global.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// A fresh shared state for one test.
+    fn test_shared() -> Arc<Shared> {
+        Arc::new(Shared { ctx: egui::Context::default(), state: Mutex::new(State::default()) })
+    }
+
+    /// The install hook never overwrites an already-hooked window: the second
+    /// call returns before touching the Win32 side, and the first window's
+    /// state stays in the global.
+    #[test]
+    fn hook_refuses_to_overwrite_an_already_hooked_window() {
+        let _order = lock(&TEST_LOCK);
+        let existing = test_shared();
+        let existing_ptr = Arc::as_ptr(&existing) as usize;
+        *lock(&SHARED) = Some(existing);
+        INSTALLED.store(true, Ordering::Release);
+
+        // A null HWND would fail any Win32 call; the guard must return before
+        // the subclass step, so nothing here touches the OS.
+        hook(HWND(ptr::null_mut()), &egui::Context::default());
+
+        let guard = lock(&SHARED);
+        let current = guard.as_ref().map(|shared| Arc::as_ptr(shared) as usize);
+        assert_eq!(current, Some(existing_ptr), "the first window's shared state must survive");
+        assert!(INSTALLED.load(Ordering::Acquire), "install state must stay true");
+        drop(guard);
+
+        // Leave the globals clean for any other test.
+        *lock(&SHARED) = None;
+        INSTALLED.store(false, Ordering::Release);
+    }
+
+    /// After the guard path the hook proceeds normally once the global is
+    /// empty again (the null HWND fails the subclass step, which logs and
+    /// leaves the globals untouched instead of panicking).
+    #[test]
+    fn hook_with_a_free_slot_and_a_bad_hwnd_fails_without_panic_or_overwrite() {
+        let _order = lock(&TEST_LOCK);
+        *lock(&SHARED) = None;
+        INSTALLED.store(false, Ordering::Release);
+
+        hook(HWND(ptr::null_mut()), &egui::Context::default());
+
+        assert!(lock(&SHARED).is_none(), "a failed subclass must not leave state behind");
+        assert!(!INSTALLED.load(Ordering::Acquire), "a failed subclass must not report a custom chrome");
     }
 }
