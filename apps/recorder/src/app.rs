@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, anyhow};
 use capture::{AudioDevice, Gpu, Preview};
 
+use crate::api::{ApiServer, token};
 use crate::config::{self, Settings};
 use crate::engine::controller::{Controller, ControllerState, Phase, lock};
 use crate::engine::session::Summary;
@@ -77,6 +78,22 @@ pub struct RecorderApp {
     profile_section: ProfileSection,
     /// The size of the captured monitor, which a profile with the Source output size records at.
     source_size: (u32, u32),
+    /// The control API server, or None while it is off or could not start.
+    api: Option<ApiServer>,
+    /// The token clients must send, or None when Credential Manager could not give one.
+    api_token: Option<String>,
+    /// The port and token the API was last started for, so the window only restarts it when they change.
+    api_started_with: Option<(u16, String)>,
+    /// The text of the yellow banner when the API is on but not running.
+    api_error: Option<String>,
+    /// Whether the token is shown in full.
+    api_show_token: bool,
+    /// Set by the Regenerate button; done at the start of the next frame, when the state lock is free.
+    api_regenerate: bool,
+    /// The port as typed in the window, applied when the field is left.
+    api_port_edit: u16,
+    /// Set once the window is closing, so the API is not started again.
+    shutting_down: bool,
 }
 
 impl RecorderApp {
@@ -125,6 +142,14 @@ impl RecorderApp {
         };
         let devices = list_devices();
         let recovery_rx = start_recovery(&settings, &controller, &cc.egui_ctx);
+        let (api_token, api_error) = match token::load_or_create() {
+            Ok(token) => (Some(token), None),
+            Err(err) => {
+                log::warn!("the control API token is not available: {err}");
+                (None, Some(format!("Control API is off: {err}")))
+            }
+        };
+        let api_port_edit = settings.api.port;
         let mut app = Self {
             sent_settings: settings.clone(),
             hwnd,
@@ -153,9 +178,94 @@ impl RecorderApp {
             recovery_details: false,
             profile_section,
             source_size,
+            api: None,
+            api_token,
+            api_started_with: None,
+            api_error,
+            api_show_token: false,
+            api_regenerate: false,
+            api_port_edit,
+            shutting_down: false,
         };
         app.sync_preview(&cc.egui_ctx);
+        app.sync_api(&cc.egui_ctx);
         app
+    }
+
+    /// Makes a new token when asked, then starts, restarts or stops the control API so it matches the switch, the port and the token.
+    ///
+    /// Stopping waits for the API's threads, which read the controller state, so this must run while the window does not hold the state lock.
+    fn sync_api(&mut self, ctx: &egui::Context) {
+        if self.api_regenerate {
+            self.api_regenerate = false;
+            match token::regenerate() {
+                Ok(new_token) => self.api_token = Some(new_token),
+                Err(err) => {
+                    log::warn!("the control API token could not be replaced: {err}");
+                    self.api_error = Some(format!("The API token could not be replaced: {err}"));
+                }
+            }
+        }
+        let wanted = match (&self.api_token, self.settings.api.enabled && !self.shutting_down) {
+            (Some(token), true) => Some((self.settings.api.port, token.clone())),
+            _ => None,
+        };
+        if wanted == self.api_started_with {
+            return;
+        }
+        // Dropping the old server closes its connections and frees its port before the new one binds.
+        self.api = None;
+        self.api_error = None;
+        self.api_started_with.clone_from(&wanted);
+        let Some((port, token)) = wanted else { return };
+        let repaint_ctx = ctx.clone();
+        match ApiServer::start(port, token, self.controller.api_link(), Arc::new(move || repaint_ctx.request_repaint())) {
+            Ok(server) => self.api = Some(server),
+            Err(err) => {
+                log::warn!("the control API could not start: {err}");
+                self.api_error = Some(format!("Control API: {err}"));
+            }
+        }
+    }
+
+    /// Draws the Control API section: the switch, the port, the token and the number of connected clients.
+    fn api_section(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Control API");
+        ui.checkbox(&mut self.settings.api.enabled, "On");
+        ui.horizontal(|ui| {
+            ui.label("Port");
+            let response = ui.add(egui::DragValue::new(&mut self.api_port_edit).range(1024..=65535).speed(0.0));
+            if response.lost_focus() || response.drag_stopped() {
+                self.settings.api.port = self.api_port_edit;
+            }
+        });
+        match &self.api {
+            Some(server) => {
+                ui.label(format!("Listening on 127.0.0.1:{}", server.port()));
+                ui.label(format!("Connected clients: {}", server.client_count()));
+            }
+            None => {
+                ui.label("Not running");
+            }
+        }
+        let Some(api_token) = self.api_token.clone() else { return };
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Token");
+            let shown = if self.api_show_token { api_token.clone() } else { "*".repeat(api_token.chars().count().min(24)) };
+            ui.add(egui::Label::new(egui::RichText::new(shown).monospace()).wrap());
+        });
+        ui.horizontal(|ui| {
+            if ui.button(if self.api_show_token { "Hide" } else { "Show" }).clicked() {
+                self.api_show_token = !self.api_show_token;
+            }
+            if ui.button("Copy").clicked() {
+                ui.ctx().copy_text(api_token);
+            }
+            if ui.button("Regenerate").on_hover_text("Makes a new token and disconnects every client").clicked() {
+                self.api_regenerate = true;
+                ui.ctx().request_repaint();
+            }
+        });
     }
 
     /// Takes in the recovery report once the background scan has delivered it.
@@ -545,13 +655,16 @@ impl eframe::App for RecorderApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if ctx.input(|input| input.viewport().close_requested()) {
-            // The X button or the tray's Quit: the controller finishes the take's file before the app goes away.
+            // The X button or the tray's Quit: the API closes its connections, then the controller finishes the take's file.
+            self.shutting_down = true;
+            self.sync_api(&ctx);
             self.controller.stop();
             self.profile_section.flush();
             if self.settings_dirty {
                 self.save_settings();
             }
         }
+        self.sync_api(&ctx);
         let shared = self.controller.shared();
         let mut state = lock(&shared);
         self.sync_from_controller(&mut state);
@@ -588,6 +701,9 @@ impl eframe::App for RecorderApp {
                 if let Some(problem) = self.preview_problem() {
                     ui.colored_label(warn, format!("Preview: {problem}"));
                 }
+                if let Some(problem) = &self.api_error {
+                    ui.colored_label(warn, problem);
+                }
                 self.recovery_banner(ui);
                 ui.add_space(8.0);
 
@@ -622,6 +738,9 @@ impl eframe::App for RecorderApp {
                     self.controller.set_settings(self.settings.clone());
                     self.save_settings();
                 }
+                ui.add_space(8.0);
+
+                self.api_section(ui);
                 ui.add_space(8.0);
 
                 let live_tracks = if active { Some(&self.live_tracks) } else { None };

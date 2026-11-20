@@ -88,10 +88,10 @@ impl TakeMarks {
         self.add(NewMark { media: Some(0), ..NewMark::point(MarkType::Note, t_ms, Source::Hotkey) });
     }
 
-    /// Adds a point mark of `category` with an optional label at the moment of the press.
-    pub fn labeled(&mut self, press_qpc: i64, category: MarkType, label: Option<String>) {
+    /// Adds a point mark of `category` with an optional label at the moment of the press, stored with `source`.
+    pub fn labeled(&mut self, press_qpc: i64, category: MarkType, label: Option<String>, source: Source) {
         let t_ms = self.media_ms(press_qpc);
-        let mut mark = NewMark { media: Some(0), ..NewMark::point(category, t_ms, Source::Hotkey) };
+        let mut mark = NewMark { media: Some(0), ..NewMark::point(category, t_ms, source) };
         mark.label = label;
         self.add(mark);
     }
@@ -316,10 +316,25 @@ mod tests {
     fn a_popup_mark_is_a_point_at_the_press_even_for_a_highlight() {
         let dir = scratch("popup");
         let mut take = TakeMarks::begin(&dir, "popup", &dir.join("popup.mkv"), 60, MediaClock::new(START, FREQ), MarksWarning::default());
-        take.labeled(at_seconds(3), MarkType::Cut, Some("oops".to_owned()));
-        take.labeled(at_seconds(5), MarkType::Highlight, None);
+        take.labeled(at_seconds(3), MarkType::Cut, Some("oops".to_owned()), Source::Hotkey);
+        take.labeled(at_seconds(5), MarkType::Highlight, None, Source::Hotkey);
         let chapters = take.finish(&[], &[10_000]);
         assert_eq!(chapters, vec![(3000, 5000, "Cut: oops".to_owned()), (5000, 10_000, "Highlight".to_owned())]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_api_mark_is_stored_with_source_api_and_its_category_and_label() {
+        let dir = scratch("api");
+        let mut take = TakeMarks::begin(&dir, "api", &dir.join("api.mkv"), 60, MediaClock::new(START, FREQ), MarksWarning::default());
+        take.labeled(at_seconds(4), MarkType::Retake, Some("redo intro".to_owned()), Source::Api);
+        take.labeled(at_seconds(6), MarkType::Note, None, Source::Hotkey);
+        take.finish(&[], &[10_000]);
+        let (sidecar, _) = ::marks::load(&dir.join("api.marks.json")).expect("load");
+        let api: Vec<_> = sidecar.marks.iter().filter(|mark| mark.source == Source::Api).collect();
+        assert_eq!(api.len(), 1);
+        assert_eq!((api[0].mark_type, api[0].label.as_deref()), (MarkType::Retake, Some("redo intro")));
+        assert!(sidecar.marks.iter().any(|mark| mark.source == Source::Hotkey && mark.mark_type == MarkType::Note));
         let _ = fs::remove_dir_all(&dir);
     }
 

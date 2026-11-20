@@ -3,7 +3,8 @@
 //! The window only draws [`ControllerState`] and sends commands, so hotkeys and tray clicks work
 //! while the window is hidden and no frames run.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
@@ -33,6 +34,9 @@ const BITRATE_WINDOW: Duration = Duration::from_millis(250);
 
 /// The name of the track the mute hotkey prefers.
 const MIC_TRACK_NAME: &str = "Mic";
+
+/// How many API command tags are kept before the oldest are forgotten; a tag lives only until its command is handled.
+const TAG_LIMIT: usize = 1024;
 
 /// What the Recorder is doing right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -73,6 +77,8 @@ pub struct ControllerState {
     pub active_profile: String,
     /// Whether each track in the settings is muted, in settings order.
     pub track_muted: Vec<bool>,
+    /// The name of each track in the settings, in settings order.
+    pub track_names: Vec<String>,
     /// Counts the changes the controller made to the settings, so the window can copy them.
     pub settings_rev: u64,
     /// The commands handled most recently, oldest first.
@@ -83,6 +89,117 @@ pub struct ControllerState {
     pub recent_marks: VecDeque<RecentMark>,
     /// The text of the warning banner for a marks problem; the recording carries on.
     pub marks_warning: Option<String>,
+}
+
+/// A function the controller calls with the state after every change, while it holds the state lock.
+///
+/// It must be quick and must not add or remove listeners.
+pub type Listener = Box<dyn Fn(&ControllerState) + Send>;
+
+/// The functions that follow every state change, such as the tray and the control API.
+#[derive(Default)]
+struct Listeners {
+    list: Mutex<Vec<(u64, Listener)>>,
+    next_id: AtomicU64,
+}
+
+impl Listeners {
+    /// Adds a listener and returns the id that removes it.
+    fn add(&self, listener: Listener) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.list.lock().unwrap_or_else(PoisonError::into_inner).push((id, listener));
+        id
+    }
+
+    /// Removes the listener with this id.
+    fn remove(&self, id: u64) {
+        self.list.lock().unwrap_or_else(PoisonError::into_inner).retain(|(listener_id, _)| *listener_id != id);
+    }
+
+    /// Calls every listener with the state.
+    fn notify(&self, state: &ControllerState) {
+        for (_, listener) in self.list.lock().unwrap_or_else(PoisonError::into_inner).iter() {
+            listener(state);
+        }
+    }
+}
+
+/// What an API client meant by a command, for the cases where the bus command alone is ambiguous.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApiIntent {
+    /// Start a take, and do nothing if one is already running.
+    Start,
+    /// Stop the take, and do nothing if none is running.
+    Stop,
+    /// The mark came from the API, so it is stored with source api.
+    Mark,
+    /// Toggle mute on the named track, or on the mic track when none is named.
+    Mute(Option<String>),
+}
+
+/// The intents of API commands that are queued on the bus, found again by their press time.
+#[derive(Debug, Clone, Default)]
+struct ApiTags(Arc<Mutex<HashMap<i64, ApiIntent>>>);
+
+impl ApiTags {
+    /// Remembers the intent of the command issued at `press_qpc`.
+    fn insert(&self, press_qpc: i64, intent: ApiIntent) {
+        let mut tags = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if tags.len() >= TAG_LIMIT {
+            tags.clear();
+        }
+        tags.insert(press_qpc, intent);
+    }
+
+    /// Takes the intent of the command issued at `press_qpc`, if it came from the API.
+    fn remove(&self, press_qpc: i64) -> Option<ApiIntent> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).remove(&press_qpc)
+    }
+}
+
+/// What the control API needs from the controller: the bus, the state and the listener list.
+#[derive(Clone)]
+pub struct ApiLink {
+    bus: BusSender,
+    tags: ApiTags,
+    shared: Arc<Mutex<ControllerState>>,
+    listeners: Arc<Listeners>,
+}
+
+impl ApiLink {
+    /// Queues a command from an API client, issued at `press_qpc`, with what the client meant by it.
+    pub fn send(&self, kind: CommandKind, intent: Option<ApiIntent>, press_qpc: i64) -> Result<(), String> {
+        if let Some(intent) = intent {
+            self.tags.insert(press_qpc, intent);
+        }
+        self.bus.send(Command::new(kind, press_qpc)).map_err(|_| {
+            self.tags.remove(press_qpc);
+            "the Recorder is shutting down".to_owned()
+        })
+    }
+
+    /// A link with no controller behind it, for tests: it starts from `state`, and the returned bus receives its commands.
+    #[cfg(test)]
+    pub fn detached(state: ControllerState) -> (Self, Bus) {
+        let bus = Bus::default();
+        let link = Self { bus: bus.sender(), tags: ApiTags::default(), shared: Arc::new(Mutex::new(state)), listeners: Arc::new(Listeners::default()) };
+        (link, bus)
+    }
+
+    /// Reads the controller state through `read` while holding its lock; keep `read` short.
+    pub fn read_state<T>(&self, read: impl FnOnce(&ControllerState) -> T) -> T {
+        read(&lock(&self.shared))
+    }
+
+    /// Adds a listener that is called after every state change, and returns the id that removes it.
+    pub fn add_listener(&self, listener: Listener) -> u64 {
+        self.listeners.add(listener)
+    }
+
+    /// Removes a listener added by [`ApiLink::add_listener`].
+    pub fn remove_listener(&self, id: u64) {
+        self.listeners.remove(id);
+    }
 }
 
 /// A message to the controller thread other than a command.
@@ -119,14 +236,17 @@ pub struct Controller {
     bus: BusSender,
     control: ControlSender,
     shared: Arc<Mutex<ControllerState>>,
+    listeners: Arc<Listeners>,
+    tags: ApiTags,
     handle: Option<JoinHandle<()>>,
 }
 
 impl Controller {
     /// Starts the "controller" thread with a settings snapshot, a callback that asks the window to repaint and a
-    /// listener that is called with the state after every change, so the tray can follow while no frames run.
+    /// first listener that is called with the state after every change, so the tray can follow while no frames run.
+    /// More listeners can be added later through [`Controller::api_link`].
     /// The label popup sends its saved marks to this controller's bus.
-    pub fn start(settings: Settings, repaint: Box<dyn Fn() + Send>, listener: Box<dyn Fn(&ControllerState) + Send>, popup: PopupHandle) -> Self {
+    pub fn start(settings: Settings, repaint: Box<dyn Fn() + Send>, listener: Listener, popup: PopupHandle) -> Self {
         let bus = Bus::default();
         let bus_sender = bus.sender();
         popup.connect(bus.sender());
@@ -135,10 +255,24 @@ impl Controller {
             fps: 60,
             active_profile: settings.active_profile.clone(),
             track_muted: settings.audio.tracks.iter().map(|track| track.muted).collect(),
+            track_names: settings.audio.tracks.iter().map(|track| track.name.clone()).collect(),
             ..ControllerState::default()
         }));
-        let worker =
-            Worker { bus, control: control_rx, shared: Arc::clone(&shared), repaint, listener, settings, active: None, popup, deferred: VecDeque::new() };
+        let listeners = Arc::new(Listeners::default());
+        listeners.add(listener);
+        let tags = ApiTags::default();
+        let worker = Worker {
+            bus,
+            control: control_rx,
+            shared: Arc::clone(&shared),
+            repaint,
+            listeners: Arc::clone(&listeners),
+            tags: tags.clone(),
+            settings,
+            active: None,
+            popup,
+            deferred: VecDeque::new(),
+        };
         let handle = match std::thread::Builder::new().name("controller".to_owned()).spawn(move || worker.run()) {
             Ok(handle) => Some(handle),
             Err(err) => {
@@ -147,7 +281,12 @@ impl Controller {
                 None
             }
         };
-        Self { bus: bus_sender, control: ControlSender { tx: control_tx }, shared, handle }
+        Self { bus: bus_sender, control: ControlSender { tx: control_tx }, shared, listeners, tags, handle }
+    }
+
+    /// The handle the control API uses: the bus with intents, the state and the listener list.
+    pub fn api_link(&self) -> ApiLink {
+        ApiLink { bus: self.bus.clone(), tags: self.tags.clone(), shared: Arc::clone(&self.shared), listeners: Arc::clone(&self.listeners) }
     }
 
     /// A handle that hotkeys, the tray and buttons send commands through.
@@ -226,7 +365,8 @@ struct Worker {
     control: Receiver<Control>,
     shared: Arc<Mutex<ControllerState>>,
     repaint: Box<dyn Fn() + Send>,
-    listener: Box<dyn Fn(&ControllerState) + Send>,
+    listeners: Arc<Listeners>,
+    tags: ApiTags,
     settings: Settings,
     active: Option<ActiveTake>,
     popup: PopupHandle,
@@ -252,6 +392,8 @@ impl Worker {
         let (keep_running, changed) = apply_control(&self.control, &mut self.settings);
         if changed {
             self.forward_live_controls();
+            let names: Vec<String> = self.settings.audio.tracks.iter().map(|track| track.name.clone()).collect();
+            self.update_quietly(|state| state.track_names = names);
         }
         keep_running
     }
@@ -261,7 +403,7 @@ impl Worker {
         {
             let mut state = lock(&self.shared);
             change(&mut state);
-            (self.listener)(&state);
+            self.listeners.notify(&state);
         }
         (self.repaint)();
     }
@@ -275,14 +417,18 @@ impl Worker {
     fn handle(&mut self, command: Command) {
         log::info!("command: {command:?}");
         let press = command.press_qpc;
+        // Only these commands can carry an API intent; the others have nothing to look up.
+        let intent = match command.kind {
+            CommandKind::StartStop | CommandKind::LabeledMark { .. } | CommandKind::Mute { .. } => self.tags.remove(press),
+            _ => None,
+        };
         match &command.kind {
-            CommandKind::StartStop => {
-                if self.active.is_some() {
-                    self.stop_take();
-                } else {
-                    self.start_take();
-                }
-            }
+            CommandKind::StartStop => match (self.active.is_some(), &intent) {
+                (true, Some(ApiIntent::Start)) => log::info!("start ignored: a take is already running"),
+                (false, Some(ApiIntent::Stop)) => log::info!("stop ignored: no take is running"),
+                (true, _) => self.stop_take(),
+                (false, _) => self.start_take(),
+            },
             CommandKind::Pause => self.pause(press),
             CommandKind::Resume => self.resume(press),
             CommandKind::PauseResume => {
@@ -292,11 +438,17 @@ impl Worker {
                     self.pause(press);
                 }
             }
-            CommandKind::Mute { .. } => self.toggle_mic_mute(),
+            CommandKind::Mute { .. } => match intent {
+                Some(ApiIntent::Mute(Some(name))) => self.toggle_mute(Some(name.as_str())),
+                _ => self.toggle_mute(None),
+            },
             CommandKind::SetProfile(name) => self.set_profile(name),
             CommandKind::Mark(kind) => self.add_mark(*kind, press),
-            CommandKind::LabeledMark { category, label } => self.add_labeled(*category, label.clone(), press),
-            CommandKind::GetStatus => log::info!("status requested (the control API answers it in a later phase)"),
+            CommandKind::LabeledMark { category, label } => {
+                let source = if intent == Some(ApiIntent::Mark) { ::marks::Source::Api } else { ::marks::Source::Hotkey };
+                self.add_labeled(*category, label.clone(), press, source);
+            }
+            CommandKind::GetStatus => log::info!("status requested (the control API reads it from the shared state)"),
         }
         self.update(|state| {
             if state.recent.len() == RECENT_LIMIT {
@@ -433,12 +585,12 @@ impl Worker {
     }
 
     /// Adds the popup's labeled point mark to the running take; with no take it is ignored.
-    fn add_labeled(&mut self, category: ::marks::MarkType, label: Option<String>, press_qpc: i64) {
+    fn add_labeled(&mut self, category: ::marks::MarkType, label: Option<String>, press_qpc: i64, source: ::marks::Source) {
         if self.active.is_none() {
             log::info!("labeled mark ignored: no take is running");
             return;
         }
-        self.with_marks(|marks| marks.labeled(press_qpc, category, label));
+        self.with_marks(|marks| marks.labeled(press_qpc, category, label, source));
     }
 
     /// Saves an open popup so its mark lands in the take that is stopping.
@@ -476,15 +628,19 @@ impl Worker {
         });
     }
 
-    /// Toggles mute on the track named Mic, or else on the first Input track, in the settings and in the running take.
-    fn toggle_mic_mute(&mut self) {
+    /// Toggles mute on the track with this name, or with none on the track named Mic, or else on the first Input track,
+    /// in the settings and in the running take.
+    fn toggle_mute(&mut self, name: Option<&str>) {
         let tracks = &mut self.settings.audio.tracks;
-        let position = tracks
-            .iter()
-            .position(|track| track.name.eq_ignore_ascii_case(MIC_TRACK_NAME))
-            .or_else(|| tracks.iter().position(|track| track.kind == TrackKind::Input));
+        let position = match name {
+            Some(name) => tracks.iter().position(|track| track.name.eq_ignore_ascii_case(name)),
+            None => tracks
+                .iter()
+                .position(|track| track.name.eq_ignore_ascii_case(MIC_TRACK_NAME))
+                .or_else(|| tracks.iter().position(|track| track.kind == TrackKind::Input)),
+        };
         let Some(track) = position.and_then(|index| tracks.get_mut(index)) else {
-            log::warn!("mute hotkey: there is no Mic or Input track to mute");
+            log::warn!("mute: there is no matching track to mute");
             return;
         };
         track.muted = !track.muted;
@@ -511,9 +667,11 @@ impl Worker {
     fn publish_settings(&self) {
         let profile = self.settings.active_profile.clone();
         let muted: Vec<bool> = self.settings.audio.tracks.iter().map(|track| track.muted).collect();
+        let names: Vec<String> = self.settings.audio.tracks.iter().map(|track| track.name.clone()).collect();
         self.update(|state| {
             state.active_profile = profile;
             state.track_muted = muted;
+            state.track_names = names;
             state.settings_rev += 1;
         });
     }

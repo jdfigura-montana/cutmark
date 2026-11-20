@@ -2,6 +2,7 @@
 
 //! Cutmark Recorder: screen, webcam and audio recorder for the Cutmark suite.
 
+mod api;
 mod app;
 mod config;
 mod engine;

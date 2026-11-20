@@ -51,6 +51,8 @@ rubato = "5.0.1"
 hound = "3.5.1"
 uuid = { version = "1.29.0", features = ["v4", "v7", "serde"] }
 thiserror = "2.0.21"
+# Synchronous WebSocket server for the Recorder's local control API; no async runtime.
+tungstenite = "0.30.0"
 # Shared FFmpeg wrapper. Each crate picks the features it needs; the base entry
 # enables none so consumers cannot drift apart on the version.
 ffmpeg-next = { version = "9", default-features = false }
