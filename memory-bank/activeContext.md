@@ -1,18 +1,19 @@
 # Active Context
 
-Milestone: S1. Current phase: 6c (done). Branch: s1.
+Milestone: S1. Current phase: 7a (done). Branch: s1.
 
 ## What is built
 - ui-kit: tokens (generated from design/tokens.json), palette, fonts, theme, appearance file/poll, level meter, accent derivation, style lint.
 - S1 phase 6c: `crates/ui-kit/src/widgets/` with the first six components: panel, primary_button, icon_button, segmented, chip, switch. Shared helpers: `widgets::focus_ring` and `widgets::capsule_radius` (height / 2 rule). No app uses them yet.
-- `Theme` now has `reduce_motion: bool` (default false, runtime-only, not persisted in appearance.json). Phase 7 (Win32 chrome) will set it from SPI_GETCLIENTAREAANIMATION. ui-kit animations (currently the switch knob) run 0ms when it is true.
+- S1 phase 7a: `crates/ui-kit/src/chrome/` (mod.rs OS-neutral API + pure hit_test; windows.rs the only `#![allow(unsafe_code)]` file). `chrome::viewport` keeps decorations on with min size 640 x 400; `chrome::install` subclasses the eframe window (WM_NCCALCSIZE caption removal, WM_NCHITTEST from `chrome::publish` regions, HTMAXBUTTON hover + click, DWM round corners, SPI_GETCLIENTAREAANIMATION drives `Theme::reduce_motion` at install and on WM_SETTINGCHANGE). Example: `cargo run -p ui-kit --example chrome`.
 
 ## Decisions made while coding
-- egui 0.36.2 has NO reduce-motion option (checked Options/InputOptions and the crate source). That is why reduce_motion lives in our Theme.
-- egui 0.36 API gotchas: `Response::widget_info` is a method taking a closure (`response.widget_info(|| WidgetInfo::...())`), not a field. `Sense::click()` includes FOCUSABLE; clicked focusable widgets get keyboard focus.
-- kittest/egui_kittest: no context injection for UI harnesses, and the first pass runs with default fonts, so `tests/widgets.rs` defers widget drawing by one pass while the closure installs `ui_kit::fonts::definitions()` (named Inter families panic otherwise). Harness exposes `pub ctx`, `fit_contents()`, `key_press(egui::Key)`, `Node::{click, focus, hover}`.
-- Segmented uses one `ui.interact` per segment (id `ui.id().with("segmented_segment").with(i)`); arrows handled when a segment has focus. Switch's accessible name is the const "Switch".
-- Segments' 1px shadow = glass shadow color rect offset 1px down under the segment (no RectShape shadow API used).
+- Phase 7a keeps the native frame (decorations on) and removes only the caption, so resize borders, Aero Snap, Win+arrows and double-click maximize stay OS-owned. Subclass id 0x4355_544D; one chrome window per process (global `Mutex<Option<Arc<Shared>>>` keyed by nothing; publish writes to the last installed window).
+- windows 0.62 API locations: TrackMouseEvent/TRACKMOUSEEVENT/TME_* live in Win32::UI::Input::KeyboardAndMouse (not WindowsAndMessaging); GetDpiForWindow and GetSystemMetricsForDpi in Win32::UI::HiDpi; PostMessageW takes Option<HWND>; TrackMouseEvent and SystemParametersInfoW return Result; DWM_WINDOW_CORNER_PREFERENCE(i32).
+- eframe 0.36: `CreationContext` implements HasWindowHandle (HWND via raw_window_handle 0.6, added to workspace.dependencies); the App trait's required method is `fn ui(&mut self, ui: &mut Ui, frame)` (no update(ctx, frame)); CentralPanel::show takes &mut Ui.
+- Hit test is a pure function in chrome/mod.rs (point, size, maximized, HitRegions in physical px, dpi) -> Zone, unit-tested on all platforms; windows.rs only maps Zone to HT*.
+- Maximize button press handling: WM_NCLBUTTONDOWN sets a down flag, WM_NCLBUTTONUP over HTMAXBUTTON posts WM_SYSCOMMAND SC_MAXIMIZE/SC_RESTORE. Hover tracked via WM_NCMOUSEMOVE + TrackMouseEvent(TME_LEAVE|TME_NONCLIENT), requests repaint through the stored egui Context.
 
 ## Next steps
-- More widgets in later 6x phases as the prompts name them; phase 7 wires `reduce_motion` from the OS inside the chrome module.
+- Phase 7b/7c as prompted: caption button drawing (min/max/close glyphs, 46 x 52), inactive window state, then more widgets (phase 8).
+- Phase 7a's manual Windows 11 hand-check items (drag, snap, Snap Layouts flyout, resize, round corners) still need on-screen verification in the example; unit tests cover the hit-test math only.

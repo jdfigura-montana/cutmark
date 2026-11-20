@@ -6867,8 +6867,11 @@ dependencies = [
  "egui",
  "egui-phosphor",
  "egui_kittest",
+ "log",
+ "raw-window-handle",
  "serde",
  "serde_json",
+ "windows 0.62.2",
 ]
 
 [[package]]
