@@ -267,3 +267,37 @@ fn the_main_toolbar_centers_the_center_zone_on_the_window() {
     assert!(drift.is_finite(), "the toolbar zones must be reported");
     assert!(drift.abs() <= 1.0, "the center zone must sit on the window midpoint, off by {drift}px");
 }
+
+/// Every widget's on-screen height matches its size token (spec
+/// "Spacing and sizes": primary button 32, icon button 32, chip 26,
+/// segment 28 inside a track with 3 padding).
+#[test]
+fn the_widget_heights_match_their_size_tokens() {
+    use ui_kit::tokens::size;
+
+    let chip_on = Rc::new(Cell::new(false));
+    let selected = Rc::new(Cell::new(0usize));
+    let segment_state = selected.clone();
+    let mut harness = new_harness(move |ui| {
+        ui_kit::primary_button(ui, "Export");
+        ui_kit::icon_button(ui, "icon", "Settings");
+        let mut on = chip_on.get();
+        ui_kit::chip(ui, &mut on, "Snap");
+        chip_on.set(on);
+        let mut segment = segment_state.get();
+        ui_kit::segmented(ui, "size-tokens", &mut segment, &["Video", "Audio"]);
+        segment_state.set(segment);
+    });
+    harness.run();
+
+    let near = |measured: f32, token: f32| (measured - token).abs() < 1e-3;
+    assert!(near(harness.get_by_label("Export").rect().height(), size::TOOLBAR_BUTTON), "the primary button must be {} tall", size::TOOLBAR_BUTTON);
+    assert!(near(harness.get_by_label("Settings").rect().height(), size::ICON_BUTTON), "the icon button must be {} tall", size::ICON_BUTTON);
+    assert!(near(harness.get_by_label("Snap").rect().height(), size::CHIP_HEIGHT), "the chip must be {} tall", size::CHIP_HEIGHT);
+    assert!(near(harness.get_by_label("Video").rect().height(), size::SEGMENT_HEIGHT), "the segment must be {} tall", size::SEGMENT_HEIGHT);
+    let track_padding = 3.0; // spec "Segmented control": track padding 3
+    assert!(
+        near(harness.get_by_label("Segmented control").rect().height(), size::SEGMENT_HEIGHT + 2.0 * track_padding),
+        "the track must add {track_padding} padding around the segment"
+    );
+}

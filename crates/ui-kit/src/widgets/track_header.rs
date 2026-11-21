@@ -1,6 +1,6 @@
 //! The track header (spec "Components": row "Track header", "Layout rules" item 5).
 
-use egui::{Color32, Pos2, Rect, Response, Sense, Ui, UiBuilder, WidgetInfo, WidgetType, vec2};
+use egui::{Color32, CornerRadius, Galley, Pos2, Rect, Response, Sense, Ui, UiBuilder, WidgetInfo, WidgetType, vec2};
 
 use crate::fonts;
 use crate::meter;
@@ -65,15 +65,23 @@ pub fn track_header(ui: &mut Ui, number: usize, name: &str, selected: bool, togg
     }
     let painter = ui.painter();
     let pad = space::SCALE_2;
+    if selected {
+        // The selected header shares its row's `bg.track.selected`, so the
+        // selection spans the header column too (spec "Track row").
+        painter.rect_filled(rect, CornerRadius::ZERO, color::BG_TRACK_SELECTED);
+    }
     let number_color = if selected { color::TEXT_PRIMARY } else { color::TEXT_TERTIARY };
     let number_galley = painter.layout_no_wrap(number.to_string(), fonts::mono(typography::VALUE_SIZE), number_color);
     let name_galley = painter.layout_no_wrap(name.to_owned(), fonts::semibold(typography::HEADLINE_SIZE), color::TEXT_PRIMARY);
     let line_height = name_galley.size().y.max(number_galley.size().y);
     let mut y = rect.top() + pad;
-    let name_x = rect.left() + pad + number_galley.size().x + space::SCALE_2;
-    painter.galley(Pos2::new(rect.left() + pad, y + (line_height - number_galley.size().y) / 2.0), number_galley, number_color);
+    let name_x = rect.left() + pad + number_galley.size().x + space::SCALE_8;
+    // One baseline (spec "Track header"): shift the name by the difference
+    // between the two fonts' first baselines.
+    let name_y = y + galley_baseline(&number_galley) - galley_baseline(&name_galley);
+    painter.galley(Pos2::new(rect.left() + pad, y), number_galley, number_color);
     painter.with_clip_rect(Rect::from_min_max(Pos2::new(rect.left() + pad, y), Pos2::new(rect.right() - pad, y + line_height))).galley(
-        Pos2::new(name_x, y + (line_height - name_galley.size().y) / 2.0),
+        Pos2::new(name_x, name_y),
         name_galley,
         color::TEXT_PRIMARY,
     );
@@ -107,4 +115,34 @@ pub fn track_header(ui: &mut Ui, number: usize, name: &str, selected: bool, togg
         meter::level_meter(&mut meter_ui, peak_dbfs, clipped, meter_rect.width());
     }
     response
+}
+
+/// The y of the first text baseline within a single-row galley, so the track
+/// number (mono) and the name (Inter) can share one baseline (spec
+/// "Track header"). `Glyph::pos` is the baseline position within its row.
+fn galley_baseline(galley: &Galley) -> f32 {
+    galley.rows.first().map_or(galley.size().y, |row| row.pos.y + row.glyphs.first().map_or(row.size.y, |glyph| glyph.pos.y))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The number (mono) and name (Inter) galleys give usable baselines, and
+    /// shifting the name by the baseline difference puts both on one line.
+    #[test]
+    fn the_number_and_name_galleys_share_one_baseline() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::fonts::definitions());
+        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+        let painter = egui::Painter::new(ctx, egui::LayerId::background(), Rect::EVERYTHING);
+        let number = painter.layout_no_wrap("3".to_owned(), fonts::mono(typography::VALUE_SIZE), Color32::WHITE);
+        let name = painter.layout_no_wrap("Voice".to_owned(), fonts::semibold(typography::HEADLINE_SIZE), Color32::WHITE);
+        for (galley, what) in [(&number, "number"), (&name, "name")] {
+            let baseline = galley_baseline(galley);
+            assert!(baseline > 0.0 && baseline <= galley.size().y, "{what} baseline {baseline} must sit inside its galley");
+        }
+        let name_y = galley_baseline(&number) - galley_baseline(&name);
+        assert!((name_y + galley_baseline(&name) - galley_baseline(&number)).abs() < 1e-4, "after the shift both baselines coincide");
+    }
 }

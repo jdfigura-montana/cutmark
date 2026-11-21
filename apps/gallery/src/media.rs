@@ -11,8 +11,8 @@ use ui_kit::icons::{fill, regular};
 use ui_kit::tokens::{color, radius, size, space, typography};
 use ui_kit::{
     ClipKind, ClipLook, MarkerKind, PlayKind, SliderKind, Theme, Toggle, ToggleKind, chip, deck_button, fader, icon_button, level_meter, paint_clip,
-    paint_marker, paint_marquee, paint_pending_band, paint_playhead, paint_ruler, paint_snap_line, paint_track_row, paint_waveform, panel, play_button,
-    segmented, slider, stereo_meter_vertical, timecode, track_header, transport_deck, waveform_color,
+    paint_marquee, paint_pending_band, paint_playhead, paint_ruler, paint_snap_line, paint_track_row, paint_waveform, panel, play_button, segmented, slider,
+    stereo_meter_vertical, timecode, track_header, transport_deck, waveform_color,
 };
 
 /// Total height of the mock timeline panel.
@@ -235,10 +235,7 @@ fn timeline_panel(ui: &mut egui::Ui, state: &mut MediaState) {
         if scrubbing && let Some(pos) = ruler.interact_pointer_pos() {
             state.playhead = seconds_at(pos.x, tracks_rect);
         }
-        paint_ruler(&painter, ruler_rect, &ruler_ticks(ruler_rect));
-        for (at, kind) in MARKERS {
-            paint_marker(&painter, Pos2::new(x_at(at, tracks_rect), ruler_rect.center().y), kind);
-        }
+        paint_ruler(&painter, ruler_rect, &ruler_ticks(ruler_rect), &ruler_markers(tracks_rect));
         for (i, name) in TRACKS.iter().enumerate() {
             let top = tracks_rect.top() + i as f32 * size::TRACK_AUDIO_DEFAULT;
             let row = Rect::from_min_max(Pos2::new(tracks_rect.left(), top), Pos2::new(tracks_rect.right(), top + size::TRACK_AUDIO_DEFAULT));
@@ -280,6 +277,11 @@ fn timeline_panel(ui: &mut egui::Ui, state: &mut MediaState) {
             deck_contents(ui, state);
         });
     });
+}
+
+/// The demo markers at their ruler x positions, for `paint_ruler`.
+fn ruler_markers(tracks_rect: Rect) -> Vec<(f32, MarkerKind)> {
+    MARKERS.iter().map(|(at, kind)| (x_at(*at, tracks_rect), *kind)).collect()
 }
 
 /// The timeline overlays: pending cut band, marquee, snap line and playhead.

@@ -3,8 +3,13 @@
 use egui::{Color32, Response, Sense, Ui, WidgetInfo, WidgetType, vec2};
 
 use crate::fonts;
-use crate::tokens::{color, size, space, typography};
+use crate::tokens::{color, size, typography};
 use crate::widgets::{capsule_radius, focus};
+
+/// Horizontal padding inside the chip (spec "Spacing and sizes": chip 26 tall
+/// with 11 horizontal padding; 11 is not on the spacing scale, so a named
+/// constant of its own).
+const CHIP_PADDING: f32 = 11.0;
 
 /// The chip: a 26 tall capsule, `bg.control` when off (`bg.hover` on hover),
 /// a `text.primary` fill with `bg.ground` text when on. Used for filters and
@@ -20,7 +25,7 @@ pub fn chip(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
     let height = size::CHIP_HEIGHT;
     let font = fonts::medium(typography::BODY_SIZE);
     let galley = ui.painter().layout_no_wrap(label.to_owned(), font, Color32::PLACEHOLDER);
-    let width = galley.size().x + 2.0 * space::SCALE_4;
+    let width = galley.size().x + 2.0 * CHIP_PADDING;
     let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
     response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, *on, label));
     if response.clicked() {

@@ -18,6 +18,9 @@ use ui_kit::{
 
 /// Width of the demo text and search fields, so three cells fit one row.
 const FIELD_WIDTH: f32 = 220.0;
+/// Narrowest width of a color swatch cell, so name and hex never wrap
+/// (spec "Style gallery": a wrapping grid of swatches).
+const SWATCH_CELL_WIDTH: f32 = 120.0;
 /// Width of the demo sliders.
 const SLIDER_WIDTH: f32 = 240.0;
 /// Width of the demo list rows.
@@ -621,15 +624,24 @@ fn color_panel(ui: &mut egui::Ui) {
     });
 }
 
-/// One color swatch: the color over a hairline rim, its token name and hex.
+/// One color swatch: the color over a hairline rim, its token name and hex,
+/// each on one line, in a cell at least `SWATCH_CELL_WIDTH` wide (wider when
+/// the name needs it) so the wrapping grid never breaks words.
 fn swatch(ui: &mut egui::Ui, name: &str, value: egui::Color32) {
+    let name_galley = ui.painter().layout_no_wrap(name.to_owned(), fonts::medium(typography::CAPTION_SIZE), color::TEXT_SECONDARY);
+    let hex_galley = ui.painter().layout_no_wrap(hex(value), fonts::mono(typography::VALUE_SIZE), color::TEXT_TERTIARY);
+    let cell_width = SWATCH_CELL_WIDTH.max(name_galley.size().x).max(hex_galley.size().x);
     ui.vertical(|ui| {
+        ui.set_min_width(cell_width);
         let (rect, _) = ui.allocate_exact_size(egui::vec2(SWATCH_SIDE, SWATCH_SIDE), egui::Sense::hover());
-        let painter = ui.painter();
+        let painter = ui.painter().clone();
         painter.rect_filled(rect, 0.0, value);
         painter.rect_stroke(rect, 0.0, egui::Stroke::new(HAIRLINE, color::STROKE_HAIRLINE), egui::StrokeKind::Inside);
-        ui.label(egui::RichText::new(name).font(fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_SECONDARY));
-        ui.label(egui::RichText::new(hex(value)).font(fonts::mono(typography::VALUE_SIZE)).color(color::TEXT_TERTIARY));
+        ui.add_space(space::SCALE_2);
+        let name_rect = ui.allocate_exact_size(egui::vec2(cell_width, name_galley.size().y), egui::Sense::hover()).0;
+        painter.galley(name_rect.min, name_galley, color::TEXT_SECONDARY);
+        let hex_rect = ui.allocate_exact_size(egui::vec2(cell_width, hex_galley.size().y), egui::Sense::hover()).0;
+        painter.galley(hex_rect.min, hex_galley, color::TEXT_TERTIARY);
     });
 }
 

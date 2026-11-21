@@ -9,8 +9,9 @@ use crate::widgets::focus_ring;
 /// Track padding around the segments (spec "Segmented control": padding 3;
 /// not on the 2-based spacing scale, so a named constant of its own).
 const TRACK_PADDING: f32 = 3.0;
-/// Horizontal padding inside each segment.
-const SEGMENT_PADDING: f32 = space::SCALE_4;
+/// Horizontal padding inside each segment (spec "Spacing and sizes":
+/// segment 28 tall with 12 horizontal padding).
+const SEGMENT_PADDING: f32 = space::SCALE_12;
 /// The 1px shadow under the selected segment (spec "Segmented control").
 const SEGMENT_SHADOW_OFFSET: f32 = 1.0;
 

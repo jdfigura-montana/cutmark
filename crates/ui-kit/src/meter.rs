@@ -104,7 +104,8 @@ pub fn level_meter_vertical(ui: &mut Ui, peak_dbfs: f32, clipped: bool, height: 
 }
 
 /// Draws two vertical bars 3px apart (left, then right) with one clip light
-/// spanning both above them, and optional dB scale labels beside them.
+/// spanning both above them, and optional dB scale labels beside them
+/// (labels that would overlap their neighbour hide; 0 and -60 always show).
 ///
 /// `height` is the full allocated height including the clip light and the gap.
 pub fn stereo_meter_vertical(ui: &mut Ui, left_dbfs: f32, right_dbfs: f32, clipped: bool, height: f32, show_scale: bool) -> Response {
@@ -125,16 +126,40 @@ pub fn stereo_meter_vertical(ui: &mut Ui, left_dbfs: f32, right_dbfs: f32, clipp
         let light = Rect::from_min_size(Pos2::new(bars_left, rect.top()), vec2(bars_width, CLIP_HEIGHT));
         painter.rect_filled(light, ROUNDING, if clipped { color::SEM_METER_CLIP } else { color::STROKE_HAIRLINE });
         if show_scale {
-            for db in SCALE_LABELS {
-                let galley = painter.layout_no_wrap(format!("{db}"), fonts::mono(typography::VALUE_SIZE), color::TEXT_TERTIARY);
-                let half = galley.size().y / 2.0;
-                let center_y = (rect.bottom() - (rect.bottom() - bar_top) * fraction(db)).clamp(bar_top + half, rect.bottom() - half);
-                let pos = Pos2::new(bars_left - SCALE_GAP - galley.size().x, center_y - half);
+            let font = fonts::mono(typography::VALUE_SIZE);
+            let text_height = painter.layout_no_wrap("-60".to_owned(), font.clone(), color::TEXT_TERTIARY).size().y;
+            for (db, (center_y, shown)) in SCALE_LABELS.iter().zip(scale_label_centers(bar_top, rect.bottom(), text_height)) {
+                if !shown {
+                    continue;
+                }
+                let galley = painter.layout_no_wrap(format!("{db}"), font.clone(), color::TEXT_TERTIARY);
+                let pos = Pos2::new(bars_left - SCALE_GAP - galley.size().x, center_y - galley.size().y / 2.0);
                 painter.galley(pos, galley, color::TEXT_TERTIARY);
             }
         }
     }
     response
+}
+
+/// The center y of each dB scale label in a vertical bar and whether it is
+/// drawn: each label sits at its dB position, a label closer than its text
+/// height to the previously drawn one hides, and the first (-60) and last
+/// (0) labels always show.
+fn scale_label_centers(bar_top: f32, bar_bottom: f32, text_height: f32) -> Vec<(f32, bool)> {
+    let half = text_height / 2.0;
+    let centers: Vec<f32> =
+        SCALE_LABELS.iter().map(|db| (bar_bottom - (bar_bottom - bar_top) * fraction(*db)).clamp(bar_top + half, bar_bottom - half)).collect();
+    let mut drawn = vec![false; centers.len()];
+    let mut previous: Option<f32> = None;
+    for (index, &center) in centers.iter().enumerate() {
+        let forced = index == 0 || index == centers.len() - 1;
+        let far_enough = previous.is_none_or(|prev| prev - center >= text_height);
+        if forced || far_enough {
+            drawn[index] = true;
+            previous = Some(center);
+        }
+    }
+    centers.into_iter().zip(drawn).collect()
 }
 
 #[cfg(test)]
@@ -169,5 +194,35 @@ mod tests {
         assert_eq!(band_span(YELLOW_FROM_DBFS, RED_FROM_DBFS, -6.0), (fraction(-12.0), fraction(-6.0)));
         let unreached = band_span(RED_FROM_DBFS, CEILING_DBFS, -12.0);
         assert_eq!(unreached.0, unreached.1, "an unreached band stays empty");
+    }
+
+    /// The scale labels never overlap: every hideable label sits at least one
+    /// text height below the previously drawn one, and 0 and -60 always show
+    /// (they are exempt from the distance rule, so in a very short meter the
+    /// forced 0 may sit close to its neighbour).
+    #[test]
+    fn scale_labels_never_overlap_and_0_and_minus60_always_show() {
+        let text_height = 15.0;
+        for bar_height in [40.0, 60.0, 90.0, 140.0, 300.0] {
+            let labels = scale_label_centers(0.0, bar_height, text_height);
+            assert_eq!(labels.len(), SCALE_LABELS.len());
+            assert!(labels.first().is_some_and(|(_, shown)| *shown), "-60 always shows");
+            assert!(labels.last().is_some_and(|(_, shown)| *shown), "0 always shows");
+            for (index, &(center, shown)) in labels.iter().enumerate() {
+                if !shown || index == 0 || index == labels.len() - 1 {
+                    continue;
+                }
+                let previous = labels[..index].iter().rev().find(|(_, shown)| *shown).map(|(above, _)| *above);
+                let previous = previous.unwrap_or(center);
+                assert!(previous - center >= text_height, "label at {} sits only {} below the drawn label at {}", center, previous - center, previous);
+            }
+        }
+    }
+
+    /// A tall meter shows every scale label.
+    #[test]
+    fn a_tall_meter_shows_every_scale_label() {
+        let labels = scale_label_centers(0.0, 200.0, 15.0);
+        assert!(labels.iter().all(|(_, shown)| *shown), "every label fits at 200px, got {labels:?}");
     }
 }

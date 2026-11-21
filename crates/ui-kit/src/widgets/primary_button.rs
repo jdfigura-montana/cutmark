@@ -9,7 +9,8 @@ use crate::widgets::{capsule_radius, focus};
 
 /// The primary button: an accent capsule with `accent.on` text in
 /// `type.body` SemiBold, `accent.hover` on hover and `accent.pressed`
-/// pressed. One per screen (Export, Record, Go Live).
+/// pressed, 32 tall with 16 horizontal padding (spec "Spacing and sizes").
+/// One per screen (Export, Record, Go Live).
 ///
 /// Usage:
 ///
@@ -22,8 +23,8 @@ pub fn primary_button(ui: &mut Ui, label: &str) -> Response {
     let theme = Theme::get(ui.ctx());
     let font = fonts::semibold(typography::BODY_SIZE);
     let galley = ui.painter().layout_no_wrap(label.to_owned(), font, theme.accent.on);
-    let height = size::PANEL_BUTTON_HEIGHT;
-    let width = galley.size().x + 2.0 * space::SCALE_4;
+    let height = size::TOOLBAR_BUTTON;
+    let width = galley.size().x + 2.0 * space::SCALE_16;
     let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, label));
     if ui.is_rect_visible(rect) {
