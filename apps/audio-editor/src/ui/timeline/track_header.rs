@@ -150,9 +150,7 @@ pub fn show(
             continue;
         }
 
-        // Row background across the header column (the lanes paint their own).
         let selected = selected_tracks.contains(&ht.id);
-        ui_kit::paint_track_row(&painter, rect, index, selected);
 
         // Geometry of the header's parts. Two rows (ui-kit's track header, its
         // layout mirrored) when the height holds the sliders under it, one row
@@ -190,6 +188,9 @@ pub fn show(
             }
             host
         } else {
+            // The one-row header has no ui-kit widget to paint its selected
+            // fill and bottom line (the two-row one does).
+            paint_header_row(&painter, rect, selected);
             let host = ui.interact(rect, egui::Id::new(("track_host", ht.id)), egui::Sense::click());
             let row_center_y = geo.toggles[0].center().y;
             let number_color = if selected { color::TEXT_PRIMARY } else { color::TEXT_TERTIARY };
@@ -350,19 +351,21 @@ pub fn show(
             let make = |pan| Action::SetTrackPan { id: ht.id, pan };
             gesture_slider(ui, editor, locked, ("track_pan", ht.id), pan_rect, ht.pan, -1.0..=1.0, SliderKind::Bipolar, make, tip);
         }
-
-        // 1 px border-colored separator under the header, across the lane.
-        if rect.bottom() <= lane_rect.bottom() {
-            ui.painter_at(header_rect.union(lane_rect)).line_segment(
-                [egui::pos2(rect.left(), rect.bottom()), egui::pos2(lane_rect.right(), rect.bottom())],
-                egui::Stroke::new(THEME.hairline, THEME.border),
-            );
-        }
     }
 
     // "+ Add track" row under the last header (same action and shortcut as
-    // before: Ctrl+Shift+T); off while a take is recorded.
-    let add_rect = egui::Rect::from_min_size(egui::pos2(header_rect.left(), y), egui::vec2(header_rect.width(), ADD_ROW_H)).intersect(header_rect);
+    // before: Ctrl+Shift+T); off while a take is recorded. It ends in a
+    // `stroke.track` line across the header column and the lanes, like a
+    // track row.
+    let tracks_h = tracks.iter().map(|t| t.height).sum();
+    let add_full = add_row_rect(header_rect, scroll_y, tracks_h);
+    let add_rect = add_full.intersect(header_rect);
+    if add_full.bottom() <= lane_rect.bottom() {
+        paint_row_line(
+            &ui.painter_at(header_rect.union(lane_rect)),
+            egui::Rect::from_min_max(add_full.left_top(), egui::pos2(lane_rect.right(), add_full.bottom())),
+        );
+    }
     if add_rect.height() > 0.0 {
         let add = ui.interact(add_rect, egui::Id::new("track_add_row"), egui::Sense::click()).on_hover_text("Add a new track (Ctrl+Shift+T)");
         let text_color = if add.hovered() && !locked { color::TEXT_SECONDARY } else { color::TEXT_TERTIARY };
@@ -395,6 +398,28 @@ pub fn show(
     }
 
     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(STATE_KEY), state));
+}
+
+/// The "+ Add track" row's rect, unclipped: it starts where the last track
+/// header ends (`tracks_h` is the sum of the track heights, `scroll_y` the
+/// vertical scroll) and spans the header column.
+pub fn add_row_rect(header_rect: egui::Rect, scroll_y: f32, tracks_h: f32) -> egui::Rect {
+    egui::Rect::from_min_size(egui::pos2(header_rect.left(), header_rect.top() - scroll_y + tracks_h), egui::vec2(header_rect.width(), ADD_ROW_H))
+}
+
+/// The 1 px `stroke.track` line along the bottom edge of `rect`.
+fn paint_row_line(painter: &egui::Painter, rect: egui::Rect) {
+    let line = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - THEME.hairline), rect.right_bottom());
+    painter.rect_filled(line, 0.0, color::STROKE_TRACK);
+}
+
+/// Paints a one-row header's selected fill (`bg.track.header.selected`; the
+/// unselected header is the column strip itself) and its bottom line.
+fn paint_header_row(painter: &egui::Painter, rect: egui::Rect, selected: bool) {
+    if selected {
+        painter.rect_filled(rect, 0.0, color::BG_TRACK_HEADER_SELECTED);
+    }
+    paint_row_line(painter, rect);
 }
 
 /// Right-click menu on one track header: Rename, Delete Track, Add Above/Below.
@@ -828,6 +853,29 @@ mod tests {
         let _ = h.click(meter_rect.center(), |ui| draw(ui, &mut editor));
         drop(draw);
         assert!(!meters[&id][0].clip, "clicking the meter clears the clip light");
+    }
+
+    #[test]
+    fn a_selected_header_fills_with_the_selected_header_token_at_every_height() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let (header, lane) = rects();
+        let mut meters = HashMap::new();
+        for height in [40.0, 96.0] {
+            let mut editor = editor(2);
+            let id = editor.project.tracks[0].id;
+            editor.set_track_height(id, height);
+            editor.set_range(0, 1_000, vec![id]);
+            let out = h.frame(Vec::new(), |ui| {
+                show(ui, &mut editor, header, lane, 0.0, &mut meters);
+            });
+            let selected: Vec<_> = out.rects().into_iter().filter(|r| r.fill == color::BG_TRACK_HEADER_SELECTED).collect();
+            assert_eq!(selected.len(), 1, "one selected header at {height} px");
+            assert_eq!(selected[0].rect.top(), 0.0);
+            assert_eq!(selected[0].rect.height(), height);
+            assert!(out.rects().iter().all(|r| r.fill != color::BG_TRACK_SELECTED && r.fill != color::BG_TRACK_ALT), "the headers never take a lane fill");
+            let lines = out.rects().into_iter().filter(|r| r.fill == color::STROKE_TRACK && r.rect.width() >= header.width()).count();
+            assert_eq!(lines, 3, "a line under each header and one under the Add track row at {height} px");
+        }
     }
 
     #[test]

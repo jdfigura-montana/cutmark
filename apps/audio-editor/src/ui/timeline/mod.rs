@@ -535,8 +535,11 @@ fn draw(
     let painter = ui.painter_at(all);
     let view = editor.view.clone();
 
-    // No background fill: the panel's `bg.panel` shows through the unshaded
-    // track rows, the header column and the scrollbar strip.
+    // The track area backdrop goes under everything: the header column strip
+    // and the empty area below the Add track row. The unshaded track rows and
+    // the scrollbar strip let the panel's `bg.panel` show through.
+    let tracks_h: f32 = editor.project.tracks.iter().map(|t| t.height).sum();
+    paint_backdrop(&painter, ruler_rect, header_rect, lane_rect, view.scroll_y, tracks_h);
 
     // Track lanes: track rows and separators (ui::timeline::lane), with the
     // clips of each track drawn over its lane. A track is selected while the
@@ -548,7 +551,7 @@ fn draw(
         let bottom = y + track.height;
         if bottom >= lane_rect.top() && y <= lane_rect.bottom() {
             let track_rect = egui::Rect::from_min_max(egui::pos2(g.lane_left, y), egui::pos2(lane_rect.right(), bottom));
-            lane::draw(&lane_painter, track_rect, i, selected_tracks.contains(&track.id), egui::Stroke::new(THEME.hairline, THEME.border));
+            lane::draw(&lane_painter, track_rect, i, selected_tracks.contains(&track.id));
             // Clips (no waveforms yet, ui::timeline::clip_view).
             let gain_active = interaction::gain_line_active(ui.ctx());
             for clip in &track.clips {
@@ -581,6 +584,10 @@ fn draw(
     // Ruler: ticks, labels, markers and their faint lines.
     painter.rect_filled(ruler_rect, 0.0, THEME.ruler_bg);
     ruler::draw(&painter, ruler_rect, lane_rect, g, editor.project.sample_rate, editor.project_length(), &editor.project.markers, editor.selected_marker());
+    // `stroke.track.header` under the ruler, across the corner cell too.
+    let ruler_line =
+        egui::Rect::from_min_max(egui::pos2(header_rect.left(), ruler_rect.bottom() - THEME.hairline), egui::pos2(ruler_rect.right(), ruler_rect.bottom()));
+    painter.rect_filled(ruler_line, 0.0, color::STROKE_TRACK_HEADER);
 
     // Range selection: a 3 px accent bar along the ruler bottom across the
     // range (the tint and boundary lines are drawn by ui::timeline::interaction).
@@ -623,6 +630,37 @@ fn draw(
 
     // Track headers: grip, rename, menu, resize, controls, meter, reorder.
     track_header::show(ui, editor, header_rect, lane_rect, view.scroll_y, &mut meters.tracks);
+}
+
+/// Paints the track area backdrop (spec "Track area"): the header column as
+/// one `bg.track.header` strip from the ruler row's corner cell (labelled
+/// "Tracks") down through the Add track row, with its right-edge divider, and
+/// `bg.track.empty` over the header column and the lanes below the Add track
+/// row. `tracks_h` is the sum of the track heights.
+fn paint_backdrop(painter: &egui::Painter, ruler_rect: egui::Rect, header_rect: egui::Rect, lane_rect: egui::Rect, scroll_y: f32, tracks_h: f32) {
+    let add_bottom = track_header::add_row_rect(header_rect, scroll_y, tracks_h).bottom();
+    if let Some(empty) = empty_area_rect(header_rect, lane_rect, add_bottom) {
+        ui_kit::paint_track_area_empty(painter, empty);
+    }
+    let strip =
+        egui::Rect::from_min_max(egui::pos2(header_rect.left(), ruler_rect.top()), egui::pos2(header_rect.right(), add_bottom.min(header_rect.bottom())));
+    ui_kit::paint_track_header_column(painter, strip);
+    let corner = egui::Rect::from_min_max(strip.left_top(), egui::pos2(header_rect.right(), ruler_rect.bottom()));
+    painter.text(
+        egui::pos2(corner.left() + space::SCALE_8, corner.center().y),
+        egui::Align2::LEFT_CENTER,
+        "Tracks",
+        ui_kit::fonts::medium(typography::CAPTION_SIZE),
+        color::TEXT_TERTIARY,
+    );
+}
+
+/// The `bg.track.empty` rect: from the bottom of the Add track row (`add_bottom`)
+/// to the bottom of the lanes, across the header column and the lanes. `None`
+/// when the Add track row reaches the bottom.
+fn empty_area_rect(header_rect: egui::Rect, lane_rect: egui::Rect, add_bottom: f32) -> Option<egui::Rect> {
+    (add_bottom < lane_rect.bottom())
+        .then(|| egui::Rect::from_min_max(egui::pos2(header_rect.left(), add_bottom), egui::pos2(lane_rect.right(), lane_rect.bottom())))
 }
 
 /// Display name and offline flag of a media item, for clip drawing.
@@ -827,6 +865,79 @@ mod tests {
         assert_eq!(zoom_readout(4_800.0, 480.0), "10%");
         assert_eq!(zoom_readout(9_600.0, 480.0), "5.0%");
         assert_eq!(zoom_readout(480_000.0, 480.0), "0.10%");
+    }
+
+    /// One frame of the whole timeline over three tracks, in a 1400 x 700 window.
+    fn track_area_frame() -> crate::ui::test_util::Out {
+        let (mut editor, _dir) = crate::ui::test_util::armed_editor(&[&[(0, 48_000)], &[], &[]], "area");
+        let mut meters = meter::MeterState::default();
+        let mut rig = crate::ui::test_util::Headless::new(1400.0, 700.0);
+        rig.frame(Vec::new(), |ui| {
+            show(ui, &mut editor, ViewMenuAction::None, &mut meters);
+        })
+    }
+
+    #[test]
+    fn the_empty_area_starts_exactly_at_the_add_track_rows_bottom() {
+        let out = track_area_frame();
+        let rects = out.rects();
+        let empty = rects.iter().find(|r| r.fill == color::BG_TRACK_EMPTY).expect("the empty area below the Add track row").rect;
+        let strip = rects.iter().find(|r| r.fill == color::BG_TRACK_HEADER && r.rect.width() == THEME.header_col_w).expect("the header column strip").rect;
+        assert_eq!(strip.bottom(), empty.top(), "the header strip ends where the empty area starts");
+        assert_eq!(strip.left(), empty.left(), "the empty area covers the header column");
+        assert!(empty.right() > strip.right() + 100.0, "and the lanes");
+        // The Add track row's own bottom line ends exactly there too, across header and lanes.
+        let line = rects
+            .iter()
+            .find(|r| r.fill == color::STROKE_TRACK && r.rect.width() > strip.width() + 100.0 && r.rect.bottom() == empty.top())
+            .expect("a stroke.track line under the Add track row");
+        assert_eq!(line.rect.height(), THEME.hairline);
+        let add = out.text_rect("+ Add track").expect("the Add track label");
+        assert!(add.center().y > empty.top() - track_header::ADD_ROW_H && add.center().y < empty.top(), "the label sits in the row above the empty area");
+    }
+
+    #[test]
+    fn the_header_column_is_one_strip_with_a_tracks_label_a_divider_and_a_line_under_the_ruler() {
+        let out = track_area_frame();
+        let rects = out.rects();
+        let strip = rects.iter().find(|r| r.fill == color::BG_TRACK_HEADER && r.rect.width() == THEME.header_col_w).expect("the header column strip").rect;
+        let divider = rects.iter().find(|r| r.fill == color::STROKE_TRACK_HEADER && r.rect.height() == strip.height()).expect("the divider").rect;
+        assert_eq!((divider.right(), divider.width()), (strip.right(), THEME.hairline), "the divider is on the strip's right edge");
+        let label = out.texts().into_iter().find(|t| t.text == "Tracks").expect("the Tracks label");
+        assert_eq!(label.color, color::TEXT_TERTIARY);
+        assert!(label.rect.center().y < strip.top() + THEME.ruler_h && strip.contains_rect(label.rect), "the label is in the ruler row's corner cell");
+        let under_ruler = rects
+            .iter()
+            .find(|r| r.fill == color::STROKE_TRACK_HEADER && r.rect.height() == THEME.hairline && r.rect.left() == strip.left())
+            .expect("stroke.track.header under the ruler")
+            .rect;
+        assert_eq!(under_ruler.bottom(), strip.top() + THEME.ruler_h, "the line is the ruler's bottom edge");
+        assert!(under_ruler.width() > strip.width() + 100.0, "and runs over the lanes too");
+    }
+
+    #[test]
+    fn row_separators_are_painted_above_the_lane_fills() {
+        let out = track_area_frame();
+        let rects = out.rects();
+        let lane_wide = |r: &egui::epaint::RectShape| r.rect.width() > THEME.header_col_w + 100.0;
+        let separators: Vec<usize> = rects.iter().enumerate().filter(|(_, r)| r.fill == color::STROKE_TRACK && lane_wide(r)).map(|(i, _)| i).collect();
+        assert_eq!(separators.len(), 3 + 1, "one line per track and one under the Add track row");
+        let fills: Vec<usize> = rects
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| (r.fill == color::BG_TRACK_ALT || r.fill == color::BG_TRACK_SELECTED) && lane_wide(r))
+            .map(|(i, _)| i)
+            .collect();
+        assert!(!fills.is_empty(), "the second track is shaded");
+        for &line in &separators {
+            for &fill in &fills {
+                // Touching edges (the next row's fill starts where this line ends) are not covering.
+                let overlap = rects[fill].rect.intersect(rects[line].rect);
+                if overlap.width() > 0.0 && overlap.height() > 0.0 {
+                    assert!(fill < line, "the lane fill at paint index {fill} covers the separator at {line}: {:?} vs {:?}", rects[fill], rects[line]);
+                }
+            }
+        }
     }
 
     #[test]

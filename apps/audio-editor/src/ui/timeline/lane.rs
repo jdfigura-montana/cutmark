@@ -6,11 +6,10 @@ use eframe::egui;
 ///
 /// The fill is the ui-kit track row: `bg.track.alt` on every other row (odd
 /// `index`), `bg.track.selected` when `selected`, nothing on the rest so the
-/// panel shows through. Each lane also gets a 1 px separator line under its
-/// bottom edge.
-pub fn draw(painter: &egui::Painter, rect: egui::Rect, index: usize, selected: bool, separator: egui::Stroke) {
+/// panel shows through. The row then ends in the ui-kit `stroke.track` line,
+/// painted after the fill so it sits above it.
+pub fn draw(painter: &egui::Painter, rect: egui::Rect, index: usize, selected: bool) {
     ui_kit::paint_track_row(painter, rect, index, selected);
-    painter.line_segment([egui::pos2(rect.left(), rect.bottom()), egui::pos2(rect.right(), rect.bottom())], separator);
 }
 
 #[cfg(test)]
@@ -25,9 +24,9 @@ mod tests {
         let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(300.0, 50.0));
         let mut h = Headless::new(400.0, 200.0);
         let out = h.frame(Vec::new(), |ui| {
-            draw(ui.painter(), rect, 0, false, egui::Stroke::NONE);
-            draw(ui.painter(), rect.translate(egui::vec2(0.0, 60.0)), 1, false, egui::Stroke::NONE);
-            draw(ui.painter(), rect.translate(egui::vec2(0.0, 120.0)), 2, true, egui::Stroke::NONE);
+            draw(ui.painter(), rect, 0, false);
+            draw(ui.painter(), rect.translate(egui::vec2(0.0, 60.0)), 1, false);
+            draw(ui.painter(), rect.translate(egui::vec2(0.0, 120.0)), 2, true);
         });
         let fills: Vec<_> = out.rects().into_iter().map(|r| r.fill).collect();
         assert_eq!(fills.iter().filter(|f| **f == color::BG_TRACK_ALT).count(), 1, "the odd row is shaded");

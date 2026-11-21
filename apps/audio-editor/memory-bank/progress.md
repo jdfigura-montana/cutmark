@@ -1,3 +1,6 @@
+## Task S1 R3 (2026-11-21)
+- Track area structure: header column strip with "Tracks" corner, stroke.track lines under rows and the Add track row, bg.track.empty below it, selected header bg.track.header.selected. Tests 679, check.ps1 green. Details in activeContext.
+
 ## Task S1 phase 11c (2026-11-21)
 Transport deck, percent zoom readout, wave scale slider, Add track row; toolbar.rs deleted. Tests 672 (was 669): record and play/stop tests rewritten for the deck, +deck jump test, +add row and wave slider test, +timecode split test. Open for JD eyes: deck width and fade, no Loop button (no loop feature), end button kept after Record.
 
