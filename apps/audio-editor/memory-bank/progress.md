@@ -1,3 +1,6 @@
+## Task S1 phase 11b fixes (2026-11-21)
+Header layout by height (one row below the two-row threshold, all toggles visible from 40 px), Vol/Pan labels and values, toggle and grip tooltips, SliderKind::Bipolar for pan, clip lights clear only on a meter click. Tests: cutmark-audio 669 (was 665), ui-kit widgets +2. Dropped the " dB" unit from the slider value text for width (the tooltip keeps it).
+
 ## Task S1 phase 11b (2026-11-21)
 Track headers, lanes, clips, waveforms, interaction visuals, scrollbar DONE (details in activeContext). Tests 665 (was 663): -1 track_color test (concept deleted), +3 (lane shading, muted/selected clip fills, volume slider gesture). No marquee gesture exists in the app, so paint_marquee is unused (the inventory's "marquee dashed rect" is the new-track drop row, kept dashed). Open for JD's eyes: header at 40 to 54 px height clips the ui-kit toggles; sliders only show when they fit (about 86 px and up, was 64); clip name/gain pinning; glass look of the clip menu and gain edit.
 

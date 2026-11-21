@@ -15,22 +15,25 @@ const KNOB_DIAMETER: f32 = 14.0;
 /// Keyboard step as a share of the range: the arrow keys move 1% of the range.
 const KEY_STEP_FRACTION: f32 = 0.01;
 
-/// The fill color of a slider: [`SliderKind::Accent`] uses the theme accent,
-/// [`SliderKind::Zoom`] uses `text.primary`, because zoom is not a selection
-/// (spec "Slider").
+/// The fill color of a slider: [`SliderKind::Accent`] and
+/// [`SliderKind::Bipolar`] use the theme accent, [`SliderKind::Zoom`] uses
+/// `text.primary`, because zoom is not a selection (spec "Slider").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SliderKind {
     /// Accent fill, for value sliders.
     Accent,
     /// `text.primary` fill, for zoom sliders.
     Zoom,
+    /// Accent fill from the middle of the range to the value, for sliders
+    /// whose center is the neutral position, such as pan.
+    Bipolar,
 }
 
 impl SliderKind {
     /// The fill color for this kind, given the theme accent.
     fn fill_color(self, accent: Color32) -> Color32 {
         match self {
-            Self::Accent => accent,
+            Self::Accent | Self::Bipolar => accent,
             Self::Zoom => color::TEXT_PRIMARY,
         }
     }
@@ -45,8 +48,19 @@ fn fraction(value: f32, range: RangeInclusive<f32>) -> f32 {
     ((value - range.start()) / span).clamp(0.0, 1.0)
 }
 
+/// The filled part of the track as fractions of its width, `(from, to)` with
+/// `from <= to`: from the range start to the value, or for
+/// [`SliderKind::Bipolar`] between the range midpoint and the value.
+fn fill_span(kind: SliderKind, fraction: f32) -> (f32, f32) {
+    match kind {
+        SliderKind::Bipolar => (fraction.min(0.5), fraction.max(0.5)),
+        SliderKind::Accent | SliderKind::Zoom => (0.0, fraction),
+    }
+}
+
 /// The slider: a thin `bg.selected` track, the fill up to the value in the
-/// [`SliderKind`] color, a white knob. Pointer clicks and drags set the value;
+/// [`SliderKind`] color (from the range midpoint for [`SliderKind::Bipolar`]),
+/// a white knob. Pointer clicks and drags set the value;
 /// the arrow keys step it by 1% of the range when focused.
 ///
 /// Usage:
@@ -84,8 +98,10 @@ pub fn slider(ui: &mut Ui, value: &mut f32, range: RangeInclusive<f32>, kind: Sl
         let track = Rect::from_center_size(rect.center(), vec2(rect.width(), TRACK_HEIGHT));
         painter.rect_filled(track, capsule_radius(TRACK_HEIGHT), color::BG_SELECTED);
         let fraction = fraction(*value, range);
-        if fraction > 0.0 {
-            let fill = Rect::from_min_max(track.min, Pos2::new(track.left() + track.width() * fraction, track.max.y));
+        let (from, to) = fill_span(kind, fraction);
+        if to > from {
+            let fill =
+                Rect::from_min_max(Pos2::new(track.left() + track.width() * from, track.min.y), Pos2::new(track.left() + track.width() * to, track.max.y));
             painter.rect_filled(fill, capsule_radius(TRACK_HEIGHT), kind.fill_color(accent));
         }
         let knob_center = Pos2::new(track.left() + track.width() * fraction, track.center().y);
@@ -117,5 +133,15 @@ mod tests {
         assert_eq!(fraction(-1.0, 0.0..=1.0), 0.0);
         assert_eq!(fraction(2.0, 0.0..=1.0), 1.0);
         assert_eq!(fraction(0.5, 2.0..=2.0), 0.0);
+    }
+
+    /// The bipolar fill runs from the midpoint to the value, on either side.
+    #[test]
+    fn bipolar_fill_starts_at_the_midpoint() {
+        assert_eq!(fill_span(SliderKind::Bipolar, 0.5), (0.5, 0.5));
+        assert_eq!(fill_span(SliderKind::Bipolar, 0.25), (0.25, 0.5));
+        assert_eq!(fill_span(SliderKind::Bipolar, 1.0), (0.5, 1.0));
+        assert_eq!(fill_span(SliderKind::Accent, 0.25), (0.0, 0.25));
+        assert_eq!(fill_span(SliderKind::Zoom, 0.0), (0.0, 0.0));
     }
 }

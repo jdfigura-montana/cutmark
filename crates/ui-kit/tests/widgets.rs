@@ -301,3 +301,51 @@ fn the_widget_heights_match_their_size_tokens() {
         "the track must add {track_padding} padding around the segment"
     );
 }
+
+/// Height of the slider's thin track, for finding its rects in the painted shapes.
+const SLIDER_TRACK_HEIGHT: f32 = 4.0;
+
+/// The painted rectangles of the track and the fill: every 4 px high rect, in paint order.
+fn slider_track_rects(harness: &Harness<'_>) -> Vec<egui::Rect> {
+    fn walk(shape: &egui::Shape, into: &mut Vec<egui::Rect>) {
+        match shape {
+            egui::Shape::Vec(inner) => inner.iter().for_each(|shape| walk(shape, into)),
+            egui::Shape::Rect(rect) if (rect.rect.height() - SLIDER_TRACK_HEIGHT).abs() < 1e-3 => into.push(rect.rect),
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for clipped in &harness.output().shapes {
+        walk(&clipped.shape, &mut found);
+    }
+    found
+}
+
+/// A bipolar slider fills from the middle of its range to the value, on both sides of the middle.
+#[test]
+fn the_bipolar_slider_fills_from_the_center() {
+    for (value, from, to) in [(-0.5f32, 0.25f32, 0.5f32), (0.5, 0.5, 0.75)] {
+        let mut harness = new_harness(move |ui| {
+            let mut v = value;
+            ui_kit::slider(ui, &mut v, -1.0..=1.0, ui_kit::SliderKind::Bipolar);
+        });
+        harness.run();
+        let rects = slider_track_rects(&harness);
+        assert_eq!(rects.len(), 2, "the track and the fill are painted: {rects:?}");
+        let (track, fill) = (rects[0], rects[1]);
+        let width = track.width();
+        assert!((fill.left() - (track.left() + width * from)).abs() < 0.5, "the fill starts at {from} of the track for {value}: {fill:?} in {track:?}");
+        assert!((fill.right() - (track.left() + width * to)).abs() < 0.5, "the fill ends at {to} of the track for {value}: {fill:?} in {track:?}");
+    }
+}
+
+/// At the middle of its range a bipolar slider paints no fill at all.
+#[test]
+fn the_bipolar_slider_has_no_fill_at_the_center() {
+    let mut harness = new_harness(|ui| {
+        let mut v = 0.0f32;
+        ui_kit::slider(ui, &mut v, -1.0..=1.0, ui_kit::SliderKind::Bipolar);
+    });
+    harness.run();
+    assert_eq!(slider_track_rects(&harness).len(), 1, "only the track is painted at the center");
+}
