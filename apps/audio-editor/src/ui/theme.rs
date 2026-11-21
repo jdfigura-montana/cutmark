@@ -9,9 +9,6 @@ use std::sync::LazyLock;
 use eframe::egui;
 use ui_kit::tokens;
 
-/// The named egui font family holding the Inter SemiBold face.
-const SEMIBOLD_FAMILY: &str = ui_kit::fonts::SEMIBOLD_FAMILY;
-
 /// The application theme, constructed once and shared by every ui module.
 ///
 /// `apply` sets the egui Style/Visuals at startup; the fields are read
@@ -25,24 +22,12 @@ pub struct Theme {
     pub panel_bg: egui::Color32,
     /// Menu bar and status bar background.
     pub bar_bg: egui::Color32,
-    /// Recessed surface of the meter bars (unlit).
-    pub recessed_a: egui::Color32,
     /// Timecode ruler background.
     pub ruler_bg: egui::Color32,
     /// Border color of controls.
     pub control_border: egui::Color32,
     /// Fill of an idle control.
     pub control_fill: egui::Color32,
-    /// Fill of a hovered control.
-    pub control_hover: egui::Color32,
-    /// Corner rounding of controls.
-    pub control_rounding: f32,
-    /// Track color of an egui slider.
-    pub slider_track: egui::Color32,
-    /// Filled part of an egui slider.
-    pub slider_fill: egui::Color32,
-    /// Thumb color of an egui slider.
-    pub slider_thumb: egui::Color32,
 
     // ---- Clip visuals ----
     /// Height of the clip header strip (name + gain row).
@@ -145,10 +130,6 @@ pub struct Theme {
     // ---- Track header ----
     /// Height of the resize strip at the header's bottom edge.
     pub track_resize_h: f32,
-    /// Thickness of the custom slider track.
-    pub track_slider_track_w: f32,
-    /// Diameter of the custom slider thumb.
-    pub track_slider_thumb: f32,
     /// Header height below which the header uses the compact layout.
     pub compact_track_h: f32,
     /// Background of an armed record-arm button.
@@ -176,17 +157,10 @@ pub struct Theme {
     pub meter_green: egui::Color32,
 
     // ---- Errors / dialogs ----
-    /// Error text color inside dialogs.
-    pub error: egui::Color32,
     /// Softer error color on the start screen.
     pub error_soft: egui::Color32,
 
     // ---- Spacing ----
-    /// Extra-small spacing (2).
-    pub space_xs: f32,
-    /// Large spacing (16).
-    pub space_lg: f32,
-    /// Vertical grid spacing inside dialogs.
 
     // ---- Shared shapes ----
     /// Small corner radius for filled rects.
@@ -197,28 +171,8 @@ pub struct Theme {
     // ---- Accent & dialogs ----
     /// The single accent color: selection, playhead, focus, snap and range.
     pub accent: egui::Color32,
-    /// The accent at low alpha, for soft highlights.
-    pub accent_soft: egui::Color32,
-    /// Brightest text (strong text, headings).
-    pub text_primary: egui::Color32,
-    /// Default text color.
-    pub text_normal: egui::Color32,
-    /// Muted secondary text.
-    pub text_muted: egui::Color32,
     /// Faintest text (hints, disabled labels).
     pub text_faint: egui::Color32,
-    /// Default (and minimum) width of every modal dialog.
-    pub dialog_w: f32,
-    /// Translucent shade drawn over the UI behind modal windows.
-    pub modal_shade: egui::Color32,
-    /// Content width of a standard dialog card (420 px).
-    pub export_dialog_w: f32,
-    /// Corner radius of a dialog card.
-    pub card_radius: f32,
-    /// Inner padding of a dialog card.
-    pub card_pad: f32,
-    /// Soft shadow under a dialog card.
-    pub card_shadow: egui::Shadow,
     /// Corner radius of a menu popup.
     pub menu_radius: f32,
     /// Inner padding of a menu popup.
@@ -238,30 +192,6 @@ pub struct Theme {
     /// kept until the theme shim is deleted in phase 13.
     #[allow(dead_code)]
     pub unsaved_dot_d: f32,
-    /// Height of a dialog text field / segmented control / footer button.
-    pub field_h: f32,
-    /// Width of the form label column in a dialog.
-    pub form_label_w: f32,
-    /// Vertical gap between form rows.
-    pub form_row_gap: f32,
-    /// Padding added to a segmented-control label (both sides together).
-    pub segment_pad: f32,
-    /// Smallest segment padding when the labels are too wide for the row.
-    pub segment_pad_min: f32,
-    /// Width of the typed-value box next to a dialog slider.
-    pub value_box_w: f32,
-    /// Gap between a dialog slider and its typed-value box.
-    pub value_gap: f32,
-    /// Dialog title font size (PlexSemiBold).
-    pub dialog_title_size: f32,
-    /// Dialog description font size.
-    pub dialog_desc_size: f32,
-    /// Form label font size in a dialog.
-    pub dialog_label_size: f32,
-    /// Destructive footer-button text color.
-    pub destructive: egui::Color32,
-    /// Accent fill of the primary footer button while hovered.
-    pub accent_hover: egui::Color32,
 
     // ---- Start screen ----
     /// Status bar height (26), reused by the start screen status bar.
@@ -414,11 +344,6 @@ impl Theme {
     pub fn mono(size: f32) -> egui::FontId {
         egui::FontId::new(size, egui::FontFamily::Monospace)
     }
-
-    /// SemiBold heading font at `size`, used for headings and track names.
-    pub fn semibold(size: f32) -> egui::FontId {
-        egui::FontId::new(size, egui::FontFamily::Name(SEMIBOLD_FAMILY.into()))
-    }
 }
 
 impl Default for Theme {
@@ -428,17 +353,11 @@ impl Default for Theme {
             app_bg: tokens::color::BG_GROUND,
             panel_bg: tokens::color::BG_PANEL,
             bar_bg: tokens::color::BG_GROUND,
-            recessed_a: tokens::color::BG_CONTROL,
             // The ruler and the track lanes have no dedicated tokens yet;
             // these are the closest surfaces. Phase 11 restyles them.
             ruler_bg: tokens::color::BG_PANEL,
             control_border: tokens::color::STROKE_HAIRLINE,
             control_fill: tokens::color::BG_CONTROL,
-            control_hover: tokens::color::BG_HOVER,
-            control_rounding: tokens::radius::SEGMENT,
-            slider_track: tokens::color::BG_SELECTED,
-            slider_fill: tokens::accent::ACCENT,
-            slider_thumb: tokens::color::TEXT_PRIMARY,
             // Clip visuals
             header_strip_h: 18.0,
             trim_edge_w: 6.0,
@@ -490,8 +409,6 @@ impl Default for Theme {
             gain_edit_w: 52.0,
             // Track header
             track_resize_h: 4.0,
-            track_slider_track_w: 4.0,
-            track_slider_thumb: 12.0,
             compact_track_h: 64.0,
             record_red: tokens::color::SEM_RECORD,
             clip_body_alpha: 0x22,
@@ -507,27 +424,14 @@ impl Default for Theme {
 
             // Bin panel
             // Errors / dialogs
-            error: egui::Color32::from_rgb(225, 105, 105),
             error_soft: egui::Color32::from_rgb(235, 140, 140),
             // Spacing: 4/8 px grid, from the ui-kit space scale.
-            space_xs: tokens::space::SCALE_4,
-            space_lg: tokens::space::SCALE_16,
             // Shared shapes
             corner_r: 2.0,
             hairline: 1.0,
             // Accent, text roles & dialogs, from the ui-kit tokens.
             accent: tokens::accent::ACCENT,
-            accent_soft: accent_alpha(0x2E),
-            text_primary: tokens::color::TEXT_PRIMARY,
-            text_normal: tokens::color::TEXT_SECONDARY,
-            text_muted: tokens::color::TEXT_TERTIARY,
             text_faint: tokens::color::TEXT_DISABLED,
-            dialog_w: 420.0,
-            export_dialog_w: 480.0,
-            modal_shade: egui::Color32::from_black_alpha(140),
-            card_radius: tokens::radius::GROUP,
-            card_pad: 20.0,
-            card_shadow: egui::Shadow { offset: [0, 4], blur: 16, spread: 0, color: egui::Color32::from_black_alpha(90) },
             // Menus keep their pre-restyle popup look until phase 13 turns
             // them into ui-kit glass popovers; no token matches these yet.
             menu_radius: 8.0,
@@ -536,18 +440,6 @@ impl Default for Theme {
             menu_shadow: egui::Shadow { offset: [0, 4], blur: 12, spread: 0, color: egui::Color32::from_black_alpha(90) },
             menu_right_pad: 8.0,
             unsaved_dot_d: 6.0,
-            field_h: 30.0,
-            form_label_w: 140.0,
-            form_row_gap: 10.0,
-            segment_pad: 16.0,
-            segment_pad_min: 8.0,
-            value_box_w: 72.0,
-            value_gap: 8.0,
-            dialog_title_size: 15.0,
-            dialog_desc_size: 12.0,
-            dialog_label_size: 12.5,
-            destructive: tokens::color::SEM_RECORD,
-            accent_hover: tokens::accent::HOVER,
             // Start screen
             status_bar_h: tokens::size::STATUS_BAR_HEIGHT,
             start_card_margin: 48.0,
@@ -674,7 +566,7 @@ mod tests {
             egui::FontFamily::Proportional,
             egui::FontFamily::Monospace,
             egui::FontFamily::Name(ui_kit::fonts::MEDIUM_FAMILY.into()),
-            egui::FontFamily::Name(SEMIBOLD_FAMILY.into()),
+            egui::FontFamily::Name(ui_kit::fonts::SEMIBOLD_FAMILY.into()),
         ];
         // Both phosphor cuts are in every family's fallback list (the
         // tofu-icons regression this test guards).
@@ -728,16 +620,12 @@ mod tests {
         assert_eq!(t.meter_red, tokens::color::SEM_METER_CLIP);
         assert_eq!(t.meter_yellow, tokens::color::SEM_METER_WARN);
         assert_eq!(t.meter_green, tokens::color::SEM_METER_OK);
-        assert_eq!(t.space_xs, tokens::space::SCALE_4);
         assert_eq!(t.accent, tokens::accent::ACCENT, "one accent for selection, lit toggles, range lines and focus");
-        assert_eq!(t.accent_soft, accent_alpha(0x2E));
         assert_eq!(t.unsaved_dot_d, 6.0);
         assert_eq!(t.record_red, tokens::color::SEM_RECORD);
         assert_eq!((t.clip_body_alpha, t.clip_header_alpha), (0x22, 0x66));
         assert_eq!(t.menu_right_pad, 8.0);
         assert_eq!(t.app_bg, tokens::color::BG_GROUND);
-        assert_eq!(t.control_rounding, tokens::radius::SEGMENT);
-        assert_eq!(t.text_normal, tokens::color::TEXT_SECONDARY);
         assert_eq!(t.status_bar_h, tokens::size::STATUS_BAR_HEIGHT);
     }
 }

@@ -1,3 +1,6 @@
+## Task S1 phase 13a (2026-11-21)
+- Dialogs on ui-kit: ui_kit::dialog frame, inspector rows, segmented, text_field, slider, switch and primary_button; dialogs/mod.rs shrunk to thin helpers; bin remove confirm and start recovery dialog moved too. Tests 703 (unchanged). Open for JD eyes: footer order is now Cancel then primary, no red destructive buttons, label column is gone (controls sit after their label), whole-control greying for one-input devices and no-range scope, dialog widths 420/500 are my reading (no board image), Export em dash caption left unchanged.
+
 ## Task S1 phase 12b (2026-11-21)
 - Master panel on ui-kit panel, stereo meter with scale and fader; master_strip.rs off the theme shim; fader_bare and meter drawing helpers deleted (widget files stay, other code still uses them). Tests 703 (was 697), check.ps1 green. Open for JD eyes: fader range is now ui-kit's -60..+6 (was -60..+12), the bars show RMS like before but there is no peak-hold line, the peak value no longer turns red above 0 dB, panel width 136, no board image for this panel.
 

@@ -219,10 +219,16 @@ impl Out {
         self.rects().into_iter().filter(|r| r.fill.a() > 0 && r.rect.contains(point)).map(|r| r.rect).min_by(|a, b| a.area().total_cmp(&b.area()))
     }
 
-    /// The dialog footer's 1 px divider, whose edges are the card's content
-    /// edges: the widest filled rect that is one point tall.
-    pub fn footer_line(&self) -> Option<Rect> {
-        self.rects().into_iter().filter(|r| r.fill.a() > 0 && r.rect.height() == 1.0).map(|r| r.rect).max_by(|a, b| a.width().total_cmp(&b.width()))
+    /// The content rectangle of the dialog card: the largest filled, outlined
+    /// rectangle (the ui-kit dialog frame) inside its 24 px padding and 1 px
+    /// rim.
+    pub fn dialog_content(&self) -> Option<Rect> {
+        self.rects()
+            .into_iter()
+            .filter(|r| r.stroke.width > 0.0 && r.fill.a() > 0)
+            .map(|r| r.rect)
+            .max_by(|a, b| a.area().total_cmp(&b.area()))
+            .map(|card| card.shrink(ui_kit::tokens::space::SCALE_24 + 1.0))
     }
 
     /// True when this frame asked egui for another frame (an animation or an

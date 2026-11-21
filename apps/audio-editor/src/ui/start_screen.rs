@@ -15,8 +15,8 @@ use ui_kit::tokens::{color, radius, space, typography};
 
 use crate::editor::editor::EditorError;
 use crate::editor::{Editor, OpenOutcome, RecentEntry, recent_projects, remove_missing_recent, remove_recent};
+use crate::ui::dialogs;
 use crate::ui::dialogs::new_project::NewProjectDialog;
-use crate::ui::dialogs::{self, FooterButton};
 use crate::ui::menu;
 use crate::ui::status_bar;
 use crate::ui::theme::THEME;
@@ -447,32 +447,36 @@ impl StartScreen {
             LastSaved,
             Cancel,
         }
-        let mut choice = None;
-        let response = dialogs::modal("autosave_recovery_dialog").show(ui.ctx(), |ui| {
-            dialogs::card_width(ui, THEME.dialog_w);
-            dialogs::title(ui, "Recover autosave");
-            ui.add_space(THEME.space_xs);
-            dialogs::description(ui, "This project has unsaved changes from a session that didn't close properly.");
-            dialogs::before_form(ui);
-            dialogs::footer(ui, |ui| {
-                if dialogs::footer_button(ui, "Recover autosave", FooterButton::Primary, true).clicked() {
-                    choice = Some(Choice::Recover);
+        let mut open = true;
+        let mut clicked = None;
+        let mut enter = false;
+        dialogs::dialog(
+            ui.ctx(),
+            "autosave_recovery_dialog",
+            "Recover autosave",
+            dialogs::NARROW_W,
+            &mut open,
+            |ui| {
+                dialogs::description(ui, "This project has unsaved changes from a session that didn't close properly.");
+                // Enter recovers the autosave.
+                enter = dialogs::enter_pressed(ui);
+            },
+            |ui| {
+                if dialogs::secondary_button(ui, "Cancel").clicked() {
+                    clicked = Some(Choice::Cancel);
                 }
-                if dialogs::footer_button(ui, "Open last saved", FooterButton::Cancel, true).clicked() {
-                    choice = Some(Choice::LastSaved);
+                if dialogs::secondary_button(ui, "Open last saved").clicked() {
+                    clicked = Some(Choice::LastSaved);
                 }
-                if dialogs::footer_button(ui, "Cancel", FooterButton::Cancel, true).clicked() {
-                    choice = Some(Choice::Cancel);
+                if ui_kit::primary_button(ui, "Recover autosave").clicked() {
+                    clicked = Some(Choice::Recover);
                 }
-            });
-            // Enter recovers the autosave.
-            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                choice = Some(Choice::Recover);
-            }
-        });
+            },
+        );
         self.recovery = None;
+        let mut choice = if enter { Some(Choice::Recover) } else { clicked };
         // Esc or the backdrop cancels the open.
-        if choice.is_none() && response.should_close() {
+        if choice.is_none() && !open {
             choice = Some(Choice::Cancel);
         }
         if choice != Some(Choice::Cancel) {

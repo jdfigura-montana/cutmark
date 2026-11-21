@@ -1358,7 +1358,7 @@ mod tests {
         }
         let (keep, discard, cancel) =
             (out.text_rect("Keep Take").unwrap().center().x, out.text_rect("Discard").unwrap().center().x, out.text_rect("Cancel").unwrap().center().x);
-        assert!(keep < discard && discard < cancel, "left to right");
+        assert!(cancel < discard && discard < keep, "left to right, the primary action last");
         assert!(out.text_rect("Save changes to Test 2?").is_none());
 
         let out = rig.click("Keep Take");

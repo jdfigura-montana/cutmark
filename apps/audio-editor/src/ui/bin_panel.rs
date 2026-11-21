@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::editor::Editor;
 use crate::editor::action::Action;
 use crate::model::media::MediaItem;
-use crate::ui::dialogs::{self, FooterButton};
+use crate::ui::dialogs;
 use crate::ui::timeline::interaction::MediaDrag;
 
 /// Side of the icon tile at the left of a row.
@@ -361,32 +361,30 @@ impl BinPanel {
             self.confirm_remove = None;
             return;
         };
-        let open = true;
-        let mut remove = false;
-        let mut cancel = false;
-        let response = dialogs::modal("bin_remove_confirm").show(ctx, |ui| {
-            dialogs::card_width(ui, CONFIRM_W);
-            dialogs::title(ui, "Remove from Project");
-            ui.add_space(space::SCALE_4);
-            dialogs::description(ui, &format!("Remove \"{name}\"? This item is used by {usage} clips. Removing it also removes those clips."));
-            dialogs::before_form(ui);
-            dialogs::footer(ui, |ui| {
-                if dialogs::footer_button(ui, "Remove", FooterButton::Destructive, true).clicked() {
-                    remove = true;
-                }
-                if dialogs::footer_button(ui, "Cancel", FooterButton::Cancel, true).clicked() {
+        let mut open = true;
+        let (mut clicked, mut enter, mut cancel) = (false, false, false);
+        dialogs::dialog(
+            ctx,
+            "bin_remove_confirm",
+            "Remove from Project",
+            CONFIRM_W,
+            &mut open,
+            |ui| {
+                dialogs::description(ui, &format!("Remove \"{name}\"? This item is used by {usage} clips. Removing it also removes those clips."));
+                // Enter confirms the removal.
+                enter = dialogs::enter_pressed(ui);
+            },
+            |ui| {
+                if dialogs::secondary_button(ui, "Cancel").clicked() {
                     cancel = true;
                 }
-            });
-            // Enter confirms the removal.
-            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                remove = true;
-            }
-        });
+                if ui_kit::primary_button(ui, "Remove").clicked() {
+                    clicked = true;
+                }
+            },
+        );
         // Esc or the backdrop cancels.
-        if response.should_close() {
-            cancel = true;
-        }
+        let remove = clicked || enter;
         if remove {
             self.selected = None;
             if let Err(error) = editor.apply(Action::RemoveMedia { id }) {

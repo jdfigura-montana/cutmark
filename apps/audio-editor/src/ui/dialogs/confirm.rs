@@ -3,7 +3,7 @@
 
 use eframe::egui;
 
-use crate::ui::theme::THEME;
+use super::NARROW_W;
 
 /// Modal dialog showing a message with an OK button, e.g. for save errors.
 pub struct ConfirmDialog {
@@ -21,30 +21,28 @@ impl ConfirmDialog {
         ConfirmDialog { open: true, title: title.into(), message: message.into() }
     }
 
-    /// Shows the dialog; OK, Esc or clicking the backdrop dismisses it.
+    /// Shows the dialog; OK, Enter, Esc or clicking the backdrop dismisses it.
     pub fn show(&mut self, ctx: &egui::Context) {
         if !self.open {
             return;
         }
-        let mut ok = false;
-        let response = super::modal("confirm_dialog").show(ctx, |ui| {
-            super::card_width(ui, THEME.dialog_w);
-            super::title(ui, &self.title);
-            ui.add_space(THEME.space_xs);
-            super::description(ui, &self.message);
-            super::before_form(ui);
-            super::footer(ui, |ui| {
-                if super::footer_button(ui, "OK", super::FooterButton::Primary, true).clicked() {
-                    ok = true;
-                }
-            });
-            // Enter confirms.
-            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                ok = true;
-            }
-        });
-        // Esc or the backdrop dismisses the dialog.
-        if ok || response.should_close() {
+        let (mut clicked, mut enter) = (false, false);
+        super::dialog(
+            ctx,
+            "confirm_dialog",
+            &self.title,
+            NARROW_W,
+            &mut self.open,
+            |ui| {
+                super::description(ui, &self.message);
+                // Enter confirms.
+                enter = super::enter_pressed(ui);
+            },
+            |ui| {
+                clicked = ui_kit::primary_button(ui, "OK").clicked();
+            },
+        );
+        if clicked || enter {
             self.open = false;
         }
     }
@@ -62,7 +60,7 @@ pub enum CloseChoice {
 }
 
 /// Reusable unsaved-changes modal: "Save changes to <name>?" with
-/// Save, Don't Save and Cancel.
+/// Cancel, Don't Save and Save.
 pub struct CloseConfirmDialog {
     /// Message shown in the dialog body.
     message: String,
@@ -74,37 +72,38 @@ impl CloseConfirmDialog {
         CloseConfirmDialog { message: format!("Save changes to {project_name}?") }
     }
 
-    /// Shows the modal; Save / Don't Save / Cancel. Enter saves, Esc, the
-    /// backdrop and Cancel abort the close.
+    /// Shows the modal; Cancel / Don't Save / Save, with Save last. Enter
+    /// saves, Esc, the backdrop and Cancel abort the close.
     pub fn show(&self, ctx: &egui::Context) -> Option<CloseChoice> {
-        let mut choice = None;
-        let response = super::modal("close_confirm_dialog").show(ctx, |ui| {
-            super::card_width(ui, THEME.dialog_w);
-            super::title(ui, "Unsaved Changes");
-            ui.add_space(THEME.space_xs);
-            super::description(ui, &self.message);
-            super::before_form(ui);
-            super::footer(ui, |ui| {
-                if super::footer_button(ui, "Save", super::FooterButton::Primary, true).clicked() {
-                    choice = Some(CloseChoice::Save);
+        let mut open = true;
+        let mut clicked = None;
+        let mut enter = false;
+        super::dialog(
+            ctx,
+            "close_confirm_dialog",
+            "Unsaved Changes",
+            NARROW_W,
+            &mut open,
+            |ui| {
+                super::description(ui, &self.message);
+                // Enter saves.
+                enter = super::enter_pressed(ui);
+            },
+            |ui| {
+                if super::secondary_button(ui, "Cancel").clicked() {
+                    clicked = Some(CloseChoice::Cancel);
                 }
-                if super::footer_button(ui, "Don't Save", super::FooterButton::Destructive, true).clicked() {
-                    choice = Some(CloseChoice::DontSave);
+                if super::secondary_button(ui, "Don't Save").clicked() {
+                    clicked = Some(CloseChoice::DontSave);
                 }
-                if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
-                    choice = Some(CloseChoice::Cancel);
+                if ui_kit::primary_button(ui, "Save").clicked() {
+                    clicked = Some(CloseChoice::Save);
                 }
-            });
-            // Enter saves.
-            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                choice = Some(CloseChoice::Save);
-            }
-        });
+            },
+        );
+        let choice = if enter { Some(CloseChoice::Save) } else { clicked };
         // Esc and the backdrop cancel the close.
-        if choice.is_none() && response.should_close() {
-            choice = Some(CloseChoice::Cancel);
-        }
-        choice
+        if choice.is_none() && !open { Some(CloseChoice::Cancel) } else { choice }
     }
 }
 
@@ -124,27 +123,26 @@ impl ExportCloseDialog {
     /// Shows the modal; "Cancel Export and Close" or "Keep Exporting";
     /// Esc keeps exporting.
     pub fn show(&self, ctx: &egui::Context) -> Option<ExportCloseChoice> {
+        let mut open = true;
         let mut choice = None;
-        let response = super::modal("export_close_dialog").show(ctx, |ui| {
-            super::card_width(ui, THEME.dialog_w);
-            super::title(ui, "Exporting");
-            ui.add_space(THEME.space_xs);
-            super::description(ui, "An export is in progress. Cancel it and close?");
-            super::before_form(ui);
-            super::footer(ui, |ui| {
-                if super::footer_button(ui, "Keep Exporting", super::FooterButton::Primary, true).clicked() {
-                    choice = Some(ExportCloseChoice::KeepExporting);
-                }
-                if super::footer_button(ui, "Cancel Export and Close", super::FooterButton::Cancel, true).clicked() {
+        super::dialog(
+            ctx,
+            "export_close_dialog",
+            "Exporting",
+            NARROW_W,
+            &mut open,
+            |ui| super::description(ui, "An export is in progress. Cancel it and close?"),
+            |ui| {
+                if super::secondary_button(ui, "Cancel Export and Close").clicked() {
                     choice = Some(ExportCloseChoice::CancelExport);
                 }
-            });
-        });
+                if ui_kit::primary_button(ui, "Keep Exporting").clicked() {
+                    choice = Some(ExportCloseChoice::KeepExporting);
+                }
+            },
+        );
         // Esc and the backdrop keep the export running.
-        if choice.is_none() && response.should_close() {
-            choice = Some(ExportCloseChoice::KeepExporting);
-        }
-        choice
+        if choice.is_none() && !open { Some(ExportCloseChoice::KeepExporting) } else { choice }
     }
 }
 
@@ -160,41 +158,42 @@ pub enum RecordCloseChoice {
 }
 
 /// Modal shown when quitting, opening or closing while a take is recording:
-/// "A recording is in progress." with Keep Take, Discard and Cancel.
+/// "A recording is in progress." with Cancel, Discard and Keep Take.
 pub struct RecordCloseDialog;
 
 impl RecordCloseDialog {
     /// Shows the modal. Enter keeps the take; Esc, the backdrop and Cancel
     /// leave the recording running.
     pub fn show(&self, ctx: &egui::Context) -> Option<RecordCloseChoice> {
-        let mut choice = None;
-        let response = super::modal("record_close_dialog").show(ctx, |ui| {
-            super::card_width(ui, THEME.dialog_w);
-            super::title(ui, "Recording");
-            ui.add_space(THEME.space_xs);
-            super::description(ui, "A recording is in progress.");
-            super::before_form(ui);
-            super::footer(ui, |ui| {
-                if super::footer_button(ui, "Keep Take", super::FooterButton::Primary, true).clicked() {
-                    choice = Some(RecordCloseChoice::KeepTake);
+        let mut open = true;
+        let mut clicked = None;
+        let mut enter = false;
+        super::dialog(
+            ctx,
+            "record_close_dialog",
+            "Recording",
+            NARROW_W,
+            &mut open,
+            |ui| {
+                super::description(ui, "A recording is in progress.");
+                // Enter keeps the take (nothing is lost).
+                enter = super::enter_pressed(ui);
+            },
+            |ui| {
+                if super::secondary_button(ui, "Cancel").clicked() {
+                    clicked = Some(RecordCloseChoice::Cancel);
                 }
-                if super::footer_button(ui, "Discard", super::FooterButton::Destructive, true).clicked() {
-                    choice = Some(RecordCloseChoice::Discard);
+                if super::secondary_button(ui, "Discard").clicked() {
+                    clicked = Some(RecordCloseChoice::Discard);
                 }
-                if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
-                    choice = Some(RecordCloseChoice::Cancel);
+                if ui_kit::primary_button(ui, "Keep Take").clicked() {
+                    clicked = Some(RecordCloseChoice::KeepTake);
                 }
-            });
-            // Enter keeps the take (nothing is lost).
-            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                choice = Some(RecordCloseChoice::KeepTake);
-            }
-        });
+            },
+        );
+        let choice = if enter { Some(RecordCloseChoice::KeepTake) } else { clicked };
         // Esc and the backdrop cancel the close.
-        if choice.is_none() && response.should_close() {
-            choice = Some(RecordCloseChoice::Cancel);
-        }
-        choice
+        if choice.is_none() && !open { Some(RecordCloseChoice::Cancel) } else { choice }
     }
 }
 
@@ -214,7 +213,7 @@ mod tests {
     }
 
     #[test]
-    fn unsaved_footer_reads_save_dont_save_cancel_left_to_right() {
+    fn unsaved_footer_reads_cancel_dont_save_save_left_to_right() {
         let mut h = Headless::new(1280.0, 800.0);
         let mut got = None;
         for _ in 0..2 {
@@ -224,7 +223,7 @@ mod tests {
         let save = out.text_rect("Save").expect("Save button").center().x;
         let dont = out.text_rect("Don't Save").expect("Don't Save").center().x;
         let cancel = out.text_rect("Cancel").expect("Cancel button").center().x;
-        assert!(save < dont && dont < cancel, "{save} {dont} {cancel}");
+        assert!(cancel < dont && dont < save, "{cancel} {dont} {save}");
         assert_eq!(got, None, "nothing is chosen without a click");
     }
 
@@ -244,10 +243,10 @@ mod tests {
         };
         let (save, dont, cancel) = (button("Save"), button("Don't Save"), button("Cancel"));
         let tol = 0.6;
-        assert!((dont.left() - save.right() - ui_kit::tokens::space::SCALE_8).abs() < tol);
-        assert!((cancel.left() - dont.right() - ui_kit::tokens::space::SCALE_8).abs() < tol);
-        let line = out.footer_line().expect("footer divider");
-        assert!((cancel.right() - line.right()).abs() < tol, "Cancel ends {} short of the content edge", line.right() - cancel.right());
+        assert!((dont.left() - cancel.right() - ui_kit::tokens::space::SCALE_8).abs() < tol);
+        assert!((save.left() - dont.right() - ui_kit::tokens::space::SCALE_8).abs() < tol);
+        let content = out.dialog_content().expect("dialog card");
+        assert!((save.right() - content.right()).abs() < tol, "Save ends {} short of the content edge", content.right() - save.right());
     }
 
     #[test]

@@ -1,11 +1,12 @@
 //! ui::dialogs::save_as: the Save As dialog (Project > Save As, Ctrl+Shift+S).
 
+use std::cell::Cell;
 use std::path::PathBuf;
 
 use eframe::egui;
 
+use super::FORM_W;
 use crate::editor::Editor;
-use crate::ui::theme::THEME;
 
 /// Modal dialog for copying the open project to a new location and name.
 pub struct SaveAsDialog {
@@ -28,51 +29,66 @@ impl SaveAsDialog {
 
     /// Shows the dialog; runs Editor::save_as and closes on success.
     pub fn show(&mut self, ctx: &egui::Context, editor: &mut Editor) {
-        let mut cancel = false;
-        let response = super::modal("save_as_dialog").show(ctx, |ui| {
-            super::card_width(ui, THEME.dialog_w);
-            super::title(ui, "Save As");
-            ui.add_space(THEME.space_xs);
-            super::description(ui, "Copy the project to a new folder and name.");
-            super::before_form(ui);
-            super::form_row(ui, "Name", |ui| {
-                super::text_field(ui, &mut self.name, "sa_name");
-            });
-            super::form_row(ui, "Parent folder", |ui| {
-                let folder_text = match &self.parent {
-                    Some(path) => path.display().to_string(),
-                    None => String::new(),
-                };
-                let browse = super::with_browse(ui, |ui| {
-                    ui.add(egui::Label::new(egui::RichText::new(folder_text).color(THEME.text_normal).size(THEME.dialog_label_size)).truncate());
+        let mut open = true;
+        let (mut clicked, mut enter, mut cancel) = (false, false, false);
+        let can_save = Cell::new(false);
+        let SaveAsDialog { name, parent, error, .. } = self;
+        super::dialog(
+            ctx,
+            "save_as_dialog",
+            "Save As",
+            FORM_W,
+            &mut open,
+            |ui| {
+                super::description(ui, "Copy the project to a new folder and name.");
+                ui_kit::inspector_group(ui, |ui| {
+                    ui_kit::inspector_row(
+                        ui,
+                        "Name",
+                        |ui| {
+                            ui_kit::text_field(ui, name, "Project name");
+                        },
+                        None,
+                    );
+                    ui_kit::inspector_row(
+                        ui,
+                        "Parent folder",
+                        |ui| {
+                            let folder_text = match &*parent {
+                                Some(path) => path.display().to_string(),
+                                None => String::new(),
+                            };
+                            let browse = super::with_browse(ui, |ui| {
+                                ui.add(egui::Label::new(folder_text).truncate());
+                            });
+                            if browse {
+                                *parent = rfd::FileDialog::new().pick_folder();
+                            }
+                        },
+                        None,
+                    );
                 });
-                if browse {
-                    self.parent = rfd::FileDialog::new().pick_folder();
+                if let Some(error) = &*error {
+                    super::error_text(ui, error);
                 }
-            });
-            if let Some(error) = &self.error {
-                ui.label(egui::RichText::new(error).color(THEME.error_soft));
-            }
-            let can_save = !self.name.trim().is_empty() && self.parent.is_some();
-            super::footer(ui, |ui| {
-                if super::footer_button(ui, "Save", super::FooterButton::Primary, can_save).clicked() {
-                    self.try_save_as(editor);
-                }
-                if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
+                can_save.set(!name.trim().is_empty() && parent.is_some());
+                // Enter confirms (when valid).
+                enter = super::enter_pressed(ui) && can_save.get();
+            },
+            |ui| {
+                if super::secondary_button(ui, "Cancel").clicked() {
                     cancel = true;
                 }
-            });
-            // Enter confirms (when valid).
-            if ui.input(|i| i.key_pressed(egui::Key::Enter)) && can_save {
-                self.try_save_as(editor);
-            }
-        });
-        // Esc or the backdrop cancels.
-        if response.should_close() {
-            cancel = true;
-        }
-        if cancel {
+                if super::primary_button(ui, "Save", can_save.get()).clicked() {
+                    clicked = true;
+                }
+            },
+        );
+        // Cancel, Esc or the backdrop closes the dialog.
+        if cancel || !open {
             *self = SaveAsDialog { open: false, name: String::new(), parent: None, error: None };
+        } else if clicked || enter {
+            self.try_save_as(editor);
         }
     }
 
@@ -115,10 +131,13 @@ mod tests {
         let long = "C:/Users/someone/Documents/Programming_Projects/Audio_Editor/projects/a/very/deep/folder/tree/Test 2";
         let mut dialog = SaveAsDialog::new_open("Test 2", std::path::Path::new(long));
         let out = h.settle(|ui| dialog.show(ui.ctx(), &mut editor));
-        let line = out.footer_line().expect("footer divider");
+        let content = out.dialog_content().expect("dialog card");
         let text = out.text_rect("Browse...").expect("Browse button text");
         let browse = out.filled_rect_at(text.center()).expect("Browse button");
-        assert!((browse.right() - line.right()).abs() < 0.6, "Browse ends {} short of the content edge", line.right() - browse.right());
-        assert!(out.texts().iter().all(|t| t.rect.right() <= line.right() + 0.6), "no text runs past the card content");
+        // The inspector row keeps the group margin, its inset and one gap
+        // (4 + 4 + 8) between a control and the card's content edge.
+        let edge = content.right() - ui_kit::tokens::space::SCALE_16;
+        assert!((browse.right() - edge).abs() < 0.6, "Browse ends {} off the row's control edge", edge - browse.right());
+        assert!(out.texts().iter().all(|t| t.rect.right() <= content.right() + 0.6), "no text runs past the card content");
     }
 }
