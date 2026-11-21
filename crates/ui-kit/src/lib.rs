@@ -24,12 +24,13 @@ pub mod theme;
 pub mod tokens;
 pub mod widgets;
 
-pub use meter::level_meter;
+pub use meter::{level_meter, level_meter_vertical, stereo_meter_vertical};
 pub use theme::Theme;
 pub use widgets::{
-    CaptionRects, DeckState, MainToolbar, PlayKind, SliderKind, caption_buttons, chip, deck_button, dialog, focus_ring, glass_frame, icon_button,
-    inspector_group, inspector_header, inspector_row, list_row, main_toolbar, paint_glass_highlight, panel, play_button, primary_button, scroll_thumb,
-    search_field, segmented, set_toast_time, show_toasts, slider, status_bar, switch, text_field, timecode, toast, transport_deck,
+    CaptionRects, DeckState, MainToolbar, PlayKind, SliderKind, Toggle, ToggleKind, caption_buttons, chip, deck_button, dialog, fader, focus_ring, glass_frame,
+    icon_button, inspector_group, inspector_header, inspector_row, list_row, main_toolbar, paint_glass_highlight, paint_track_row, panel, play_button,
+    primary_button, scroll_thumb, search_field, segmented, set_toast_time, show_toasts, slider, status_bar, switch, text_field, timecode, toast, track_header,
+    transport_deck,
 };
 
 use tokens::{color, radius, size, space, typography};

@@ -1,6 +1,7 @@
 # Progress
 
 ## Done
+- S1 phase 8b: vertical + stereo meters in meter.rs (level_meter_vertical, stereo_meter_vertical with optional dB scale; level_meter untouched, shared band_span so vertical = horizontal mapping, unit-tested); widgets/fader.rs (vertical gain fader, -60..+6 dB, 0 dB at 75% of travel, double-click reset, 0.5 dB arrow steps, dB readout); widgets/track_header.rs (Toggle/ToggleKind, 24x24 toggles, RecordArm sem.record + white, hidden toggles only when selected/hovered, optional compact meter); widgets/track_row.rs (paint_track_row alternating/selected fill). Kittest tests tests/fader.rs + tests/track_header.rs; unit tests in meter/fader/track_row. cargo test -p ui-kit green (45 lib + kittest suites), scripts/check.ps1 ALL CHECKS PASSED.
 - S0: workspace, cutmark-hotkeys, marks, media-io, capture, recorder, video editor + video-ui, ui-kit base (tokens, palette, fonts, theme, appearance, meter), scripts/check.ps1.
 - S1 phase 6c: core widgets part 1 in crates/ui-kit/src/widgets/ (panel, primary_button, icon_button, segmented, chip, switch + focus_ring, capsule_radius). `cargo test -p ui-kit` green including the style lint (widgets dir is in no_hardcoded_style.rs OPT_IN); scripts/check.ps1 ALL CHECKS PASSED.
 - kittest interaction tests in crates/ui-kit/tests/widgets.rs (switch/chip toggles, second-segment click, Right-arrow selection, primary button click, icon button tooltip on hover) plus a unit test that the switch knob jumps in one frame when Theme.reduce_motion is true.
@@ -9,7 +10,7 @@
 - S1 phase 8a: glass recipe in widgets/glass.rs (glass_frame / paint_glass_highlight / shared glass_shadow, BG_GROUP fallback when Theme.glass off); apply()/refresh() glass-switch window_fill + popup_shadow, menu rows 32 (interact_size.y); widgets/transport.rs (transport_deck with clamped sideways drag + 200ms scrub fade to 40%, deck_button, play_button Play/Record, timecode, DeckState); widgets/toast.rs (queued toasts, one at a time, 4s, pub set_toast_time test hook); widgets/dialog.rs (egui::Modal dialog, right-aligned footer with primary bottom right, Esc/backdrop close). kittest tests tests/transport.rs + tests/dialogs.rs, unit tests in glass/transport/toast/lib. cargo test -p ui-kit green, scripts/check.ps1 ALL CHECKS PASSED.
 
 ## Not started
-- Apps using the new widgets; remaining Components rows; phase 8b media widgets.
+- Apps using the new widgets; remaining Components rows (clip, playhead, marker, pending band, inspector header as spec'd, tool strip, color picker).
 
 ## Known issues
 - None open for ui-kit. The chrome's on-screen behaviors (Snap Layouts flyout, snap, drag, caption buttons, inactive dim, multi-DPI) are only hand-checkable in the example; geometry and commands are unit/kittest-tested.
