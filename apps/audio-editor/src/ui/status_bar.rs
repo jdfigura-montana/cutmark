@@ -59,10 +59,11 @@ fn bit_depth(depth: crate::model::project::BitDepth) -> &'static str {
     }
 }
 
-/// The toolbar caption: the project format as the status bar spells it,
-/// "48 kHz / 24-bit".
-pub fn format_caption(rate: u32, depth: crate::model::project::BitDepth) -> String {
-    format!("{} kHz / {}", rate / 1000, bit_depth(depth))
+/// The title bar caption: the project format as the status bar spells it plus
+/// the track count, "48 kHz · 24-bit · 4 tracks".
+pub fn format_caption(rate: u32, depth: crate::model::project::BitDepth, tracks: usize) -> String {
+    let noun = if tracks == 1 { "track" } else { "tracks" };
+    format!("{} kHz \u{b7} {} \u{b7} {tracks} {noun}", rate / 1000, bit_depth(depth))
 }
 
 /// Start-screen status bar through the ui-kit component: the default output

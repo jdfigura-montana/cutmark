@@ -135,6 +135,8 @@ const ZOOM_SLIDER_W: f32 = 140.0;
 const WAVE_SLIDER_W: f32 = 90.0;
 /// Width reserved for the zoom readout ("100%"), in points.
 const ZOOM_READOUT_W: f32 = 56.0;
+/// Height of the separators in the panel toolbar, in points.
+const TOOLBAR_SEPARATOR_H: f32 = 20.0;
 /// Waveform height slider range: log2 of the 1x to 16x display scale.
 const WAVE_LOG2_RANGE: std::ops::RangeInclusive<f32> = 0.0..=4.0;
 
@@ -203,17 +205,21 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction, m
     messages
 }
 
-/// The panel toolbar row (44 tall): the Ripple and Snap chips on the left, the
-/// waveform height slider, the zoom slider, its readout and the Fit button on
-/// the right. The chips read
-/// the editor's view state every frame, so they stay in sync with the View
-/// menu and the R and N keys. Zoom stays live while a take is recorded; the
-/// chips do not.
+/// The panel toolbar row (44 tall): Undo and Redo, a separator and the Ripple
+/// and Snap chips on the left; on the right the waveform icon and height
+/// slider, a separator, the magnifier icon and zoom slider, the readout and
+/// the Fit button. Undo and Redo read the editor's history every frame and
+/// are disabled when there is nothing to undo or redo. The chips read the
+/// editor's view state every frame, so they stay in sync with the View menu
+/// and the R and N keys. Zoom stays live while a take is recorded; the chips
+/// do not.
 fn panel_toolbar(ui: &mut egui::Ui, editor: &mut Editor, lane_width: f32) {
     let recording = editor.is_recording();
     let row = egui::vec2(ui.available_width(), size::PANEL_TOOLBAR_HEIGHT);
     ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = space::SCALE_8;
+        undo_redo_buttons(ui, editor);
+        toolbar_separator(ui);
         ui.add_enabled_ui(!recording, |ui| {
             let mut ripple = editor.view.ripple;
             if ui_kit::chip(ui, &mut ripple, "Ripple").on_hover_text("Ripple edit (R)").clicked() {
@@ -226,7 +232,7 @@ fn panel_toolbar(ui: &mut egui::Ui, editor: &mut Editor, lane_width: f32) {
         });
 
         // Added right to left, so on screen it reads waveform icon and slider,
-        // zoom slider, readout, Fit.
+        // separator, magnifier icon and zoom slider, readout, Fit.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui_kit::icon_button(ui, regular::ARROWS_OUT_LINE_HORIZONTAL, "Zoom to fit (\\)").clicked() {
                 apply_fit(editor, lane_width);
@@ -249,9 +255,44 @@ fn panel_toolbar(ui: &mut egui::Ui, editor: &mut Editor, lane_width: f32) {
                 let (new_spp, scroll_x) = zoom_at(spp, editor.view.scroll_x, slider_to_zoom(value) / spp, lane_width / 2.0);
                 editor.set_view_x(new_spp, clamp_scroll_x(editor, new_spp, lane_width, scroll_x));
             }
+            toolbar_icon(ui, regular::MAGNIFYING_GLASS);
+            toolbar_separator(ui);
             wave_scale_slider(ui, editor);
         });
     });
+}
+
+/// The Undo and Redo icon buttons at the left of the panel toolbar, wired to
+/// the editor's undo and redo (the same actions as the Edit menu and Ctrl+Z,
+/// Ctrl+Y) and disabled while there is nothing to undo or redo.
+fn undo_redo_buttons(ui: &mut egui::Ui, editor: &mut Editor) {
+    let can_undo = editor.undo_label().is_some();
+    ui.add_enabled_ui(can_undo, |ui| {
+        if ui_kit::icon_button(ui, regular::ARROW_COUNTER_CLOCKWISE, "Undo").clicked() {
+            let _ = editor.undo();
+        }
+    });
+    let can_redo = editor.redo_label().is_some();
+    ui.add_enabled_ui(can_redo, |ui| {
+        if ui_kit::icon_button(ui, regular::ARROW_CLOCKWISE, "Redo").clicked() {
+            let _ = editor.redo();
+        }
+    });
+}
+
+/// A 1 x 20 `stroke.separator.strong` line between groups in the panel
+/// toolbar.
+fn toolbar_separator(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, TOOLBAR_SEPARATOR_H), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, color::STROKE_SEPARATOR_STRONG);
+}
+
+/// A decorative Phosphor icon in `text.secondary` in the panel toolbar (the
+/// waveform and magnifier marks beside their sliders).
+fn toolbar_icon(ui: &mut egui::Ui, glyph: &str) {
+    let (icon, _) = ui.allocate_exact_size(egui::vec2(size::ICON_BUTTON / 2.0, size::SEGMENT_HEIGHT), egui::Sense::hover());
+    let font = ui_kit::fonts::icon_regular(typography::HEADLINE_SIZE);
+    ui.painter().text(icon.center(), egui::Align2::CENTER_CENTER, glyph, font, color::TEXT_SECONDARY);
 }
 
 /// The waveform height control on the right of the panel toolbar: a Phosphor
@@ -273,9 +314,7 @@ fn wave_scale_slider(ui: &mut egui::Ui, editor: &mut Editor) {
     } else if (value - shown).abs() > 1e-4 {
         editor.set_wave_scale(value.exp2());
     }
-    let (icon, _) = ui.allocate_exact_size(egui::vec2(size::ICON_BUTTON / 2.0, size::SEGMENT_HEIGHT), egui::Sense::hover());
-    let font = ui_kit::fonts::icon_regular(typography::HEADLINE_SIZE);
-    ui.painter().text(icon.center(), egui::Align2::CENTER_CENTER, regular::WAVEFORM, font, color::TEXT_SECONDARY);
+    toolbar_icon(ui, regular::WAVEFORM);
 }
 
 /// The ruler, header column, lanes and scrollbar in the space the panel

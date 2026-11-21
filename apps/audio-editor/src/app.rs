@@ -13,13 +13,12 @@ use crate::ui::bin_panel::{self, BinPanel};
 use crate::ui::dialogs::confirm::{CloseChoice, CloseConfirmDialog, ConfirmDialog, ExportCloseChoice, ExportCloseDialog, RecordCloseChoice, RecordCloseDialog};
 use crate::ui::dialogs::export::{BANNER_SECONDS, ExportBanner};
 use crate::ui::master_strip;
-use crate::ui::menu::{ProjectMenu, ProjectMenuAction, project_title, start_title};
+use crate::ui::menu::{ProjectMenu, ProjectMenuAction, app_mark};
 use crate::ui::start_screen::StartScreen;
 use crate::ui::status_bar;
 use crate::ui::theme::THEME;
 use crate::ui::timeline::{self, ViewMenuAction};
 use crate::ui::widgets::meter::MeterState;
-use ui_kit::icons;
 use ui_kit::tokens::{color, size, space};
 
 /// The user-visible application name, used for the window title, the start
@@ -30,7 +29,7 @@ pub const APP_NAME: &str = "CutMark Audio Editor";
 /// panel heading.
 pub const APP_SHORT_NAME: &str = "Cutmark Audio";
 
-/// Height of the 52px main toolbar (the window's title bar).
+/// Height of the 44px main toolbar (the window's title bar).
 const TOP_BAR_H: f32 = size::TOOLBAR_MAIN_HEIGHT;
 /// Height of the bottom status bar panel.
 const STATUS_BAR_H: f32 = size::STATUS_BAR_HEIGHT;
@@ -285,30 +284,20 @@ impl App {
         Some(pending)
     }
 
-    /// The 52px main toolbar on the start screen: the app mark and the app
-    /// name in the left zone, empty center and right (no Undo, Redo or Export
+    /// The 44px main toolbar on the start screen: the app mark on the left,
+    /// the app name in the center, nothing on the right (no menus or Export
     /// while no project is open), but still the window's drag area and the
     /// caption buttons' home.
     fn show_start_bar(ui: &mut egui::Ui) {
         egui::Panel::top("start_bar").exact_size(TOP_BAR_H).frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
-            ui_kit::main_toolbar(ui, |ui| start_title(ui, APP_SHORT_NAME), |_| {}, |_| {});
-        });
-    }
-
-    /// The toolbar's Undo and Redo icon buttons, wired to the editor's undo
-    /// and redo and disabled while there is nothing to undo or redo.
-    fn toolbar_undo_redo(ui: &mut egui::Ui, editor: &std::cell::RefCell<&mut Editor>) {
-        let can_undo = editor.borrow().undo_label().is_some();
-        ui.add_enabled_ui(can_undo, |ui| {
-            if ui_kit::icon_button(ui, icons::regular::ARROW_COUNTER_CLOCKWISE, "Undo").clicked() {
-                let _ = editor.borrow_mut().undo();
-            }
-        });
-        let can_redo = editor.borrow().redo_label().is_some();
-        ui.add_enabled_ui(can_redo, |ui| {
-            if ui_kit::icon_button(ui, icons::regular::ARROW_CLOCKWISE, "Redo").clicked() {
-                let _ = editor.borrow_mut().redo();
-            }
+            ui_kit::main_toolbar(
+                ui,
+                app_mark,
+                |ui| {
+                    ui_kit::title_block(ui, &ui_kit::Title::App(APP_SHORT_NAME));
+                },
+                |_| {},
+            );
         });
     }
 
@@ -381,40 +370,38 @@ impl App {
         }
 
         let mut msgs: Vec<Message> = Vec::new();
-        // Top: the 52px main toolbar: app mark, project title, Undo and Redo
-        // in the left zone; the menu button and Export in the right zone; the
-        // center zone is empty in S1. It is also the window's drag area and
-        // the caption buttons' home.
+        // Top: the 44px main toolbar (the title bar): app mark and the menu
+        // bar on the left, the project title in the center, Export on the
+        // right, then the separator and the caption buttons. It is also the
+        // window's drag area.
         let menu_cell = std::cell::RefCell::new(&mut *menu);
         let editor_cell = std::cell::RefCell::new(&mut *editor);
-        let menu_button = std::cell::RefCell::new(None);
+        let chosen = std::cell::Cell::new((ProjectMenuAction::None, ViewMenuAction::None));
         egui::Panel::top("app_bar").exact_size(TOP_BAR_H).frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
             ui_kit::main_toolbar(
                 ui,
                 |ui| {
-                    let editor = editor_cell.borrow();
-                    let caption = status_bar::format_caption(editor.project.sample_rate, editor.project.export_bit_depth);
-                    project_title(ui, &editor.project.name, editor.dirty, &caption);
-                    drop(editor);
-                    ui.add_space(space::SCALE_4);
-                    Self::toolbar_undo_redo(ui, &editor_cell);
+                    app_mark(ui);
+                    ui.add_space(space::SCALE_8);
+                    chosen.set(crate::ui::menu::menu_bar(ui, &menu_cell, &editor_cell));
                 },
-                |_| {},
                 |ui| {
-                    *menu_button.borrow_mut() = Some(ProjectMenu::button(ui));
-                    ui.add_space(space::SCALE_4);
+                    let editor = editor_cell.borrow();
+                    let caption = status_bar::format_caption(editor.project.sample_rate, editor.project.export_bit_depth, editor.project.tracks.len());
+                    ui_kit::title_block(ui, &ui_kit::Title::Document { name: &editor.project.name, unsaved: editor.dirty, caption: Some(&caption) });
+                },
+                |ui| {
                     if ui_kit::primary_button(ui, "Export").clicked() {
                         menu_cell.borrow_mut().open_export(&editor_cell.borrow());
                     }
+                    ui.add_space(space::SCALE_4);
                 },
             );
         });
-        // The menu popover draws once per frame, outside the toolbar's
-        // measuring passes, anchored to the menu button's response.
-        let (mut action, view_action) = match menu_button.into_inner() {
-            Some(button) => menu.popover(ui, &button, editor),
-            None => (ProjectMenuAction::None, ViewMenuAction::None),
-        };
+        // The dialogs the menu items opened draw once per frame, outside the
+        // toolbar's measuring passes.
+        menu.show_dialogs(&ui.ctx().clone(), editor);
+        let (mut action, view_action) = chosen.get();
 
         if action == ProjectMenuAction::Import {
             msgs.extend(media_messages(bin_panel::pick_and_import(editor)));
@@ -1484,5 +1471,52 @@ mod tests {
         let out = rig.frame();
         assert!(out.text_rect("Snap on").is_none(), "N turned snap off");
         assert!(out.text_rect("Ripple on").is_some());
+    }
+
+    /// The title bar's height: nothing of the panel toolbar sits inside it.
+    const TITLE_BAR_H: f32 = size::TOOLBAR_MAIN_HEIGHT;
+
+    #[test]
+    fn the_title_bar_centers_the_project_name_dot_and_caption() {
+        let mut rig = Rig::new();
+        let _ = rig.frame();
+        let out = rig.frame();
+        let caption = status_bar::format_caption(48_000, BitDepth::Int24, rig.editor().project.tracks.len());
+        assert!(caption.starts_with("48 kHz \u{b7} 24-bit \u{b7} "), "the caption reads rate, depth, tracks: {caption}");
+        assert!(caption.ends_with(" tracks"), "{caption}");
+        let name = out.text_rect("Test 2").expect("the project name");
+        let caption = out.text_rect(&caption).expect("the format caption");
+        let dot = out.circles().into_iter().find(|c| c.fill == ui_kit::tokens::color::TEXT_SECONDARY && c.radius == 3.0).expect("the unsaved dot");
+        assert!(name.right() <= dot.center.x && dot.center.x <= caption.left(), "name, then the dot, then the caption, on one line");
+        for y in [name.center().y, dot.center.y, caption.center().y] {
+            assert!(y < TITLE_BAR_H, "the title block sits in the title bar");
+        }
+        let block = name.union(caption);
+        assert!((block.center().x - 640.0).abs() <= 1.0, "the title block is centered on the window, off by {}", block.center().x - 640.0);
+    }
+
+    #[test]
+    fn no_project_centers_the_app_name_and_the_start_screen_has_no_menus() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let mut app = App::default();
+        let _ = h.frame(Vec::new(), |ui| app.run(ui));
+        let out = h.frame(Vec::new(), |ui| app.run(ui));
+        let title = out.texts().into_iter().find(|t| t.text == APP_SHORT_NAME && t.rect.center().y < TITLE_BAR_H).expect("the app name in the title bar");
+        assert!((title.rect.center().x - 640.0).abs() <= 1.0, "the app name is centered, off by {}", title.rect.center().x - 640.0);
+        assert!(out.text_rect("Edit").is_none() && out.text_rect("Export").is_none(), "no menus or Export without a project");
+    }
+
+    #[test]
+    fn undo_and_redo_sit_left_of_the_panel_toolbar_chips_not_in_the_title_bar() {
+        let mut rig = Rig::new();
+        let _ = rig.frame();
+        let out = rig.frame();
+        let undo = out.text_rect(ui_kit::icons::regular::ARROW_COUNTER_CLOCKWISE).expect("Undo button");
+        let redo = out.text_rect(ui_kit::icons::regular::ARROW_CLOCKWISE).expect("Redo button");
+        let ripple = out.text_rect("Ripple").expect("Ripple chip");
+        let snap = out.text_rect("Snap").expect("Snap chip");
+        assert!(undo.center().y > TITLE_BAR_H && redo.center().y > TITLE_BAR_H, "Undo and Redo left the title bar");
+        assert!(undo.right() < redo.left() && redo.right() < ripple.left() && ripple.right() < snap.left(), "Undo, Redo, then the chips, left to right");
+        assert!((undo.center().y - ripple.center().y).abs() <= 1.0, "one row");
     }
 }
