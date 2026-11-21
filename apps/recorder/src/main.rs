@@ -4,11 +4,13 @@
 
 mod api;
 mod app;
+mod compositor;
 mod config;
 mod countdown;
 mod engine;
 mod hotkeys;
 mod label_popup;
+mod layout_ui;
 mod marks_ui;
 mod platform;
 mod preflight_ui;

@@ -402,6 +402,128 @@ impl WebcamSettings {
     }
 }
 
+/// The background of the Cam only layout in a profile file that has none: dark grey.
+const DEFAULT_CAM_ONLY_BG: [u8; 3] = [32, 32, 32];
+
+/// The Cam only background of a profile file that has none.
+fn default_cam_only_bg() -> [u8; 3] {
+    DEFAULT_CAM_ONLY_BG
+}
+
+/// Which pictures the composite of a profile shows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutKind {
+    /// Only the screen.
+    #[default]
+    ScreenOnly,
+    /// The camera over the screen.
+    Pip,
+    /// Only the camera, over a background colour.
+    CamOnly,
+}
+
+impl From<LayoutKind> for capture::Layout {
+    fn from(kind: LayoutKind) -> Self {
+        match kind {
+            LayoutKind::ScreenOnly => Self::ScreenOnly,
+            LayoutKind::Pip => Self::Pip,
+            LayoutKind::CamOnly => Self::CamOnly,
+        }
+    }
+}
+
+/// The corner of the frame the picture in picture camera sits in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnchorCorner {
+    /// Top left.
+    TopLeft,
+    /// Top right.
+    TopRight,
+    /// Bottom left.
+    BottomLeft,
+    /// Bottom right.
+    #[default]
+    BottomRight,
+}
+
+impl From<AnchorCorner> for capture::Corner {
+    fn from(corner: AnchorCorner) -> Self {
+        match corner {
+            AnchorCorner::TopLeft => Self::TopLeft,
+            AnchorCorner::TopRight => Self::TopRight,
+            AnchorCorner::BottomLeft => Self::BottomLeft,
+            AnchorCorner::BottomRight => Self::BottomRight,
+        }
+    }
+}
+
+/// The camera's place and look in the picture in picture layout, saved in a profile.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PipConfig {
+    /// The corner of the frame the camera is anchored to.
+    pub anchor: AnchorCorner,
+    /// Distance from the left or right edge, in percent of the output width.
+    pub offset_x_pct: f32,
+    /// Distance from the top or bottom edge, in percent of the output height.
+    pub offset_y_pct: f32,
+    /// Width of the camera picture, in percent of the output width.
+    pub scale_pct: f32,
+    /// How much of the camera's left side is cut off, in percent.
+    pub crop_left_pct: f32,
+    /// How much of the camera's right side is cut off, in percent.
+    pub crop_right_pct: f32,
+    /// How much of the camera's top is cut off, in percent.
+    pub crop_top_pct: f32,
+    /// How much of the camera's bottom is cut off, in percent.
+    pub crop_bottom_pct: f32,
+    /// Border width in output pixels; 0 for none.
+    pub border_px: f32,
+    /// Border colour as red, green and blue.
+    pub border_color: [u8; 3],
+    /// Corner radius in output pixels; 0 for square corners.
+    pub radius_px: f32,
+}
+
+impl Default for PipConfig {
+    fn default() -> Self {
+        let pip = capture::PipSettings::default();
+        Self {
+            anchor: AnchorCorner::BottomRight,
+            offset_x_pct: pip.offset_x_pct,
+            offset_y_pct: pip.offset_y_pct,
+            scale_pct: pip.scale_pct,
+            crop_left_pct: pip.crop_left_pct,
+            crop_right_pct: pip.crop_right_pct,
+            crop_top_pct: pip.crop_top_pct,
+            crop_bottom_pct: pip.crop_bottom_pct,
+            border_px: pip.border_px,
+            border_color: pip.border_color,
+            radius_px: pip.radius_px,
+        }
+    }
+}
+
+impl From<&PipConfig> for capture::PipSettings {
+    fn from(config: &PipConfig) -> Self {
+        Self {
+            anchor: config.anchor.into(),
+            offset_x_pct: config.offset_x_pct,
+            offset_y_pct: config.offset_y_pct,
+            scale_pct: config.scale_pct,
+            crop_left_pct: config.crop_left_pct,
+            crop_right_pct: config.crop_right_pct,
+            crop_top_pct: config.crop_top_pct,
+            crop_bottom_pct: config.crop_bottom_pct,
+            border_px: config.border_px,
+            border_color: config.border_color,
+            radius_px: config.radius_px,
+        }
+    }
+}
+
 /// One capture and encode profile, stored as profiles\{name}.json.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Profile {
@@ -433,6 +555,15 @@ pub struct Profile {
     /// The webcam settings; profile files without them have the webcam off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webcam: Option<WebcamSettings>,
+    /// Which pictures the composite shows; profile files without one use Screen only.
+    #[serde(default)]
+    pub layout: LayoutKind,
+    /// The camera's place and look in the Pip layout.
+    #[serde(default)]
+    pub pip: PipConfig,
+    /// The background colour of the Cam only layout as red, green and blue; profile files without one use dark grey.
+    #[serde(default = "default_cam_only_bg")]
+    pub cam_only_bg: [u8; 3],
 }
 
 impl Profile {
@@ -451,6 +582,9 @@ impl Profile {
             aac_tracks: true,
             mixdown: true,
             webcam: None,
+            layout: LayoutKind::default(),
+            pip: PipConfig::default(),
+            cam_only_bg: DEFAULT_CAM_ONLY_BG,
         }
     }
 
@@ -469,6 +603,9 @@ impl Profile {
             aac_tracks: true,
             mixdown: true,
             webcam: None,
+            layout: LayoutKind::default(),
+            pip: PipConfig::default(),
+            cam_only_bg: DEFAULT_CAM_ONLY_BG,
         }
     }
 
@@ -887,5 +1024,69 @@ mod tests {
         assert_eq!(fs::read_to_string(dir.join("settings.json"))?, "{ not json");
         fs::remove_dir_all(&dir)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use std::error::Error;
+
+    use super::*;
+
+    #[test]
+    fn a_profile_file_from_before_the_layouts_still_loads() -> Result<(), Box<dyn Error>> {
+        let mut value = serde_json::to_value(Profile::tutorial_av1_1440p60())?;
+        let object = value.as_object_mut().ok_or("a profile is a JSON object")?;
+        for key in ["layout", "pip", "cam_only_bg"] {
+            assert!(object.remove(key).is_some(), "a profile writes the {key} key");
+        }
+        let profile: Profile = serde_json::from_value(value)?;
+        assert_eq!(profile, Profile::tutorial_av1_1440p60());
+        assert_eq!(profile.layout, LayoutKind::ScreenOnly);
+        assert_eq!(profile.cam_only_bg, [32, 32, 32]);
+        Ok(())
+    }
+
+    #[test]
+    fn the_default_pip_is_bottom_right_with_two_percent_offsets() {
+        let pip = PipConfig::default();
+        assert_eq!(pip.anchor, AnchorCorner::BottomRight);
+        assert_eq!((pip.offset_x_pct, pip.offset_y_pct, pip.scale_pct), (2.0, 2.0, 25.0));
+        assert_eq!((pip.crop_left_pct, pip.crop_right_pct, pip.crop_top_pct, pip.crop_bottom_pct), (0.0, 0.0, 0.0, 0.0));
+        assert_eq!((pip.border_px, pip.radius_px), (0.0, 12.0));
+    }
+
+    #[test]
+    fn a_partial_pip_block_keeps_the_other_defaults() -> Result<(), Box<dyn Error>> {
+        let pip: PipConfig = serde_json::from_str(r#"{ "anchor": "top_left", "scale_pct": 40.0 }"#)?;
+        assert_eq!(pip.anchor, AnchorCorner::TopLeft);
+        assert_eq!(pip.scale_pct, 40.0);
+        assert_eq!(pip.offset_x_pct, 2.0);
+        assert_eq!(pip.radius_px, 12.0);
+        Ok(())
+    }
+
+    #[test]
+    fn a_profile_with_a_layout_round_trips() -> Result<(), Box<dyn Error>> {
+        let profile = Profile {
+            layout: LayoutKind::Pip,
+            pip: PipConfig { anchor: AnchorCorner::TopRight, border_px: 6.0, border_color: [255, 0, 0], ..PipConfig::default() },
+            cam_only_bg: [10, 20, 30],
+            ..Profile::premiere_hevc_1080p60()
+        };
+        let text = serde_json::to_string(&profile)?;
+        assert!(text.contains("\"layout\":\"pip\""), "{text}");
+        assert_eq!(serde_json::from_str::<Profile>(&text)?, profile);
+        Ok(())
+    }
+
+    #[test]
+    fn the_saved_pip_converts_to_the_compositor_settings() {
+        let config = PipConfig { anchor: AnchorCorner::BottomLeft, crop_top_pct: 5.0, ..PipConfig::default() };
+        let settings = capture::PipSettings::from(&config);
+        assert_eq!(settings.anchor, capture::Corner::BottomLeft);
+        assert_eq!(settings.crop_top_pct, 5.0);
+        assert_eq!(capture::PipSettings::from(&PipConfig::default()), capture::PipSettings::default());
+        assert_eq!(capture::Layout::from(LayoutKind::CamOnly), capture::Layout::CamOnly);
     }
 }

@@ -1,7 +1,8 @@
-//! A live, scaled-down preview of a monitor or a webcam for the Recorder window.
+//! A live, scaled-down preview of a monitor, a webcam or the composite for the Recorder window.
 //!
 //! A monitor preview runs its own [`MonitorCapture`] on its own thread, independent of any recording
 //! session. A webcam preview shows the latest NV12 frame of a [`WebcamCapture`] that someone else owns.
+//! A composite preview shows the newest frame that a function hands out, the output of the compositor.
 //! Scaling happens on the GPU (D3D11 video processor, BGRA or NV12 in and BGRA out), and only the
 //! small scaled frame is read back, through a ring of staging textures that is never waited on.
 
@@ -114,10 +115,28 @@ enum Source {
     },
     /// A running webcam capture that someone else owns.
     Webcam(Arc<WebcamCapture>),
+    /// The composite of the screen and the camera, as handed out by a function that the preview thread calls.
+    Composite(Box<dyn Fn() -> Option<CompositeInput> + Send>),
+}
+
+/// The newest composite frame: a BGRA texture and the device it lives on.
+pub struct CompositeInput {
+    /// The graphics device the texture lives on; the preview follows it when it changes.
+    pub gpu: Gpu,
+    /// The BGRA texture to scale.
+    pub texture: ID3D11Texture2D,
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// The frame number of the composite; the preview skips a frame it has seen.
+    pub seq: u64,
 }
 
 /// The newest picture of a source, ready for the video processor.
 struct Input {
+    /// The device the texture lives on when it is not the preview's own, or None.
+    gpu: Option<Gpu>,
     /// The texture to scale.
     texture: ID3D11Texture2D,
     /// Width in pixels.
@@ -152,6 +171,13 @@ impl Preview {
     pub fn start_webcam(gpu: &Gpu, webcam: Arc<WebcamCapture>) -> Result<Self, CaptureError> {
         let format = webcam.format();
         Self::spawn(gpu, Source::Webcam(webcam), (format.width, format.height))
+    }
+
+    /// Starts the "preview" thread on the composite frames that `source` returns, for a picture of the given size.
+    ///
+    /// `source` runs on the preview thread. When its frames move to another device, the preview follows them.
+    pub fn start_composite(gpu: &Gpu, size: (u32, u32), source: Box<dyn Fn() -> Option<CompositeInput> + Send>) -> Result<Self, CaptureError> {
+        Self::spawn(gpu, Source::Composite(source), size)
     }
 
     /// Starts the preview thread for a source and waits until it reports that it runs.
@@ -247,6 +273,11 @@ fn fit_target(req_w: u32, req_h: u32, mon_w: u32, mon_h: u32) -> (u32, u32) {
     (even(w), even(h))
 }
 
+/// True when both handles share one D3D11 device.
+fn same_device(a: &Gpu, b: &Gpu) -> bool {
+    std::ptr::eq(a.device().as_raw(), b.device().as_raw())
+}
+
 /// Rounds down to an even number, never below 2.
 fn even(value: u32) -> u32 {
     (value & !1).max(2)
@@ -295,7 +326,7 @@ fn run_thread(gpu: Gpu, source: Source, shared: Arc<Shared>, ready: mpsc::Sender
                 return;
             }
         },
-        Source::Webcam(_) => None,
+        Source::Webcam(_) | Source::Composite(_) => None,
     };
     // A receiver that is gone means the handle was dropped; the loop then sees the stop flag.
     let _ = ready.send(Ok(()));
@@ -364,9 +395,9 @@ impl Worker {
         self.pipeline = None;
     }
 
-    /// True when pictures can be read: always for a webcam, and for a monitor while its capture runs.
+    /// True when pictures can be read: always for a webcam or a composite, and for a monitor while its capture runs.
     fn has_input(&self) -> bool {
-        matches!(self.source, Source::Webcam(_)) || self.capture.is_some()
+        matches!(self.source, Source::Webcam(_) | Source::Composite(_)) || self.capture.is_some()
     }
 
     /// Starts the monitor capture again after the preview was off; false while it cannot start.
@@ -402,6 +433,7 @@ impl Worker {
                 seq: frame.seq,
                 nv12: false,
                 fps: (60, 1),
+                gpu: None,
             }),
             Source::Webcam(webcam) => {
                 let format = webcam.format();
@@ -412,8 +444,18 @@ impl Worker {
                     seq: frame.seq,
                     nv12: true,
                     fps: (format.fps_num, format.fps_den),
+                    gpu: None,
                 })
             }
+            Source::Composite(source) => source().map(|frame| Input {
+                texture: frame.texture,
+                width: frame.width,
+                height: frame.height,
+                seq: frame.seq,
+                nv12: false,
+                fps: (60, 1),
+                gpu: Some(frame.gpu),
+            }),
         }
     }
 
@@ -439,6 +481,13 @@ impl Worker {
 
     /// Scales one captured frame into the next ring slot, rebuilding the pipeline when a size changed.
     fn submit(&mut self, frame: &Input) -> Result<(), CaptureError> {
+        if let Some(gpu) = &frame.gpu
+            && !same_device(gpu, &self.gpu)
+        {
+            // The composite moved to another device: the scaler and the staging ring must live on it too.
+            self.pipeline = None;
+            self.gpu = gpu.clone();
+        }
         let in_size = (frame.width, frame.height);
         let target = unpack(self.shared.target.load(Ordering::Relaxed));
         let current = self.pipeline.as_ref().is_some_and(|pipeline| pipeline.matches(in_size, target, frame.nv12));

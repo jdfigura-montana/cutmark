@@ -4,14 +4,16 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, anyhow};
-use capture::{AudioDevice, Gpu, Preview};
+use capture::{AudioDevice, CompositeInput, Preview};
 
 use crate::api::{ApiServer, token};
+use crate::compositor::{ComposeConfig, CompositorThread};
 use crate::config::{self, Settings};
 use crate::engine::controller::{Controller, ControllerState, Phase, lock};
 use crate::engine::session::Summary;
 use crate::hotkeys::Hotkeys;
 use crate::label_popup::PopupHandle;
+use crate::layout_ui;
 use crate::marks_ui;
 use crate::platform;
 use crate::preflight_ui::PreflightSection;
@@ -55,20 +57,20 @@ pub struct RecorderApp {
     seen_settings_rev: u64,
     /// Whether a take was running on the previous frame, to clear the meters when it starts or ends.
     was_active: bool,
-    /// The live monitor preview, or None while it is off or could not start.
+    /// The live preview of the composite, or None while it is off or could not start.
     preview: Option<Preview>,
     /// Draws the preview picture.
     preview_view: PreviewView,
     /// The Preview toggle; on at every start and not saved.
     preview_enabled: bool,
-    /// The monitor the preview shows; there is no source setting yet, so this is the primary monitor like the recording.
+    /// The monitor the composite shows; there is no source setting yet, so this is the primary monitor like the recording.
     preview_monitor: usize,
-    /// Whether the preview shows the cursor, like the recording.
+    /// Whether the composite shows the cursor, like the recording.
     preview_cursor: bool,
-    /// The monitor and cursor setting the preview was last started for, or None while it is off.
-    preview_started_with: Option<(usize, bool)>,
-    /// The graphics device of the preview, kept apart from the recording session's.
-    preview_gpu: Option<Gpu>,
+    /// The output size the preview was last started for, or None while it is off.
+    preview_started_with: Option<(u32, u32)>,
+    /// The compose thread that makes the preview picture and the recording's video; started with the preview.
+    compositor: Option<CompositorThread>,
     /// Why the preview could not start, for the yellow banner.
     preview_start_error: Option<String>,
     /// Whether the preview was last told to run, so the window only tells it about changes.
@@ -182,7 +184,7 @@ impl RecorderApp {
             preview_monitor: 0,
             preview_cursor: true,
             preview_started_with: None,
-            preview_gpu: None,
+            compositor: None,
             preview_start_error: None,
             preview_active: true,
             webcam: WebcamHost::new(&cc.egui_ctx),
@@ -333,19 +335,27 @@ impl RecorderApp {
         }
     }
 
-    /// Starts, restarts or stops the preview so it matches the toggle, the monitor and the cursor setting.
+    /// The size of the composite: the active profile's output size, or the captured monitor's for the Source size.
+    fn output_size(&self) -> (u32, u32) {
+        match self.profile_store.get(&self.settings.active_profile) {
+            Some(profile) if !profile.is_source_size() => (profile.width, profile.height),
+            _ => (self.source_size.0 & !1, self.source_size.1 & !1),
+        }
+    }
+
+    /// Starts, restarts or stops the preview so it matches the toggle and the profile's output size.
     fn sync_preview(&mut self, ctx: &egui::Context) {
-        let wanted = self.preview_enabled.then_some((self.preview_monitor, self.preview_cursor));
+        let wanted = self.preview_enabled.then(|| self.output_size());
         if wanted == self.preview_started_with {
             return;
         }
-        // Dropping the old preview ends its thread and its capture before the new one starts.
+        // Dropping the old preview ends its thread before the new one starts.
         self.preview = None;
         self.preview_view.reset();
         self.preview_started_with = wanted;
         self.preview_start_error = None;
-        let Some((monitor, cursor)) = wanted else { return };
-        match self.open_preview(ctx, monitor, cursor) {
+        let Some(size) = wanted else { return };
+        match self.open_preview(ctx, size) {
             Ok(preview) => {
                 self.preview = Some(preview);
                 self.preview_active = true;
@@ -357,18 +367,38 @@ impl RecorderApp {
         }
     }
 
-    /// Starts a preview of one monitor on the preview's own graphics device.
-    fn open_preview(&mut self, ctx: &egui::Context, monitor_index: usize, cursor: bool) -> anyhow::Result<Preview> {
-        if self.preview_gpu.is_none() {
-            self.preview_gpu = Some(Gpu::create(Some(0)).context("could not open the graphics adapter")?);
+    /// Starts the compose thread if it is not running, and a preview of its composite.
+    fn open_preview(&mut self, ctx: &egui::Context, size: (u32, u32)) -> anyhow::Result<Preview> {
+        if self.compositor.is_none() {
+            let mut thread = CompositorThread::start(0).context("could not start the compositor")?;
+            thread.register();
+            self.compositor = Some(thread);
         }
-        let gpu = self.preview_gpu.as_ref().ok_or_else(|| anyhow!("the graphics device is missing"))?;
-        let monitors = capture::list_monitors().context("could not list the monitors")?;
-        let monitor = monitors.get(monitor_index).ok_or_else(|| anyhow!("monitor {monitor_index} was not found"))?;
-        let preview = Preview::start(gpu, monitor, cursor).context("could not start the capture")?;
+        let handle = self.compositor.as_ref().ok_or_else(|| anyhow!("the compositor is missing"))?.handle().clone();
+        let source = handle.clone();
+        let preview = Preview::start_composite(
+            &handle.gpu(),
+            size,
+            Box::new(move || {
+                source.latest().map(|frame| CompositeInput { gpu: frame.gpu, texture: frame.texture, width: frame.width, height: frame.height, seq: frame.seq })
+            }),
+        )
+        .context("could not start the preview")?;
         let repaint_ctx = ctx.clone();
         preview.set_frame_callback(Box::new(move || repaint_ctx.request_repaint()));
         Ok(preview)
+    }
+
+    /// Gives the compose thread the active profile's picture, and runs it while the window is shown with the preview on.
+    ///
+    /// A recording keeps the thread running and decides its picture for the length of the take.
+    fn sync_compositor(&self, window_shown: bool) {
+        let Some(thread) = &self.compositor else { return };
+        let handle = thread.handle();
+        if let Some(profile) = self.profile_store.get(&self.settings.active_profile) {
+            handle.set_config(ComposeConfig::from_profile(profile, self.source_size, self.preview_monitor, self.preview_cursor));
+        }
+        handle.set_active(window_shown && self.preview_enabled);
     }
 
     /// Pauses the preview while the window is minimized or hidden to the tray, and resumes it when the window is back.
@@ -393,7 +423,10 @@ impl RecorderApp {
 
     /// The text of the preview's warning, if it has one.
     fn preview_problem(&self) -> Option<String> {
-        self.preview_start_error.clone().or_else(|| self.preview.as_ref().and_then(Preview::error))
+        self.preview_start_error
+            .clone()
+            .or_else(|| self.compositor.as_ref().and_then(|thread| thread.handle().error()))
+            .or_else(|| self.preview.as_ref().and_then(Preview::error))
     }
 
     /// Takes in what the controller published: its settings changes and the level peaks.
@@ -713,6 +746,7 @@ impl eframe::App for RecorderApp {
         self.update_preview_activity(&ctx);
         let window_shown = !ctx.input(|input| input.viewport().minimized).unwrap_or(false);
         self.webcam.sync(&mut self.profile_store, &self.settings.active_profile, window_shown);
+        self.sync_compositor(window_shown);
 
         egui::Panel::bottom("status-bar").show(ui, |ui| status_ui::show(ui, &state));
 
@@ -759,6 +793,9 @@ impl eframe::App for RecorderApp {
                 ui.add_space(8.0);
 
                 webcam_ui::show(ui, &mut self.webcam, &mut self.profile_store, active, &state, &self.controller.sender());
+                ui.add_space(8.0);
+
+                layout_ui::show(ui, &mut self.profile_store, &self.settings.active_profile, active);
                 ui.add_space(8.0);
 
                 marks_ui::show(ui, &state.recent_marks);

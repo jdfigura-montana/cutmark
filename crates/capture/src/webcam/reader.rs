@@ -2,13 +2,14 @@
 #![allow(unsafe_code)]
 
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Once, PoisonError, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use super::devices::{CameraFormat, CameraSubtype, native_types, pack_pair};
 use super::{CameraControls, ComGuard, MfGuard, RunningStats, hns_to_qpc, qpc_ticks_to_ms};
+use crate::compose::CamColor;
 use crate::{CaptureError, Gpu, qpc_frequency, qpc_now, with_context};
 use windows::Win32::Graphics::Direct3D10::ID3D10Multithread;
 use windows::Win32::Graphics::Direct3D11::{
@@ -20,10 +21,10 @@ use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_NV12, DXGI_SAMPLE_DESC}
 use windows::Win32::Media::MediaFoundation::{
     IMF2DBuffer, IMFAttributes, IMFDXGIBuffer, IMFDXGIDeviceManager, IMFMediaBuffer, IMFMediaSource, IMFMediaType, IMFSample, IMFSourceReader,
     MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
-    MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SOURCE_READER_D3D_MANAGER,
-    MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_SOURCE_READERF_ENDOFSTREAM, MF_SOURCE_READERF_ERROR,
-    MFCreateAttributes, MFCreateDXGIDeviceManager, MFCreateDeviceSource, MFCreateMediaType, MFCreateSourceReaderFromMediaSource, MFMediaType_Video,
-    MFVideoFormat_NV12,
+    MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_MT_VIDEO_NOMINAL_RANGE, MF_MT_YUV_MATRIX, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
+    MF_SOURCE_READER_D3D_MANAGER, MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+    MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED, MF_SOURCE_READERF_ENDOFSTREAM, MF_SOURCE_READERF_ERROR, MFCreateAttributes, MFCreateDXGIDeviceManager,
+    MFCreateDeviceSource, MFCreateMediaType, MFCreateSourceReaderFromMediaSource, MFMediaType_Video, MFVideoFormat_NV12,
 };
 use windows::core::{HSTRING, Interface};
 
@@ -99,6 +100,8 @@ struct Shared {
     received: AtomicU64,
     stop: AtomicBool,
     cpu_path: AtomicBool,
+    /// The matrix in the high half and the range in the low half of the output media type, as Media Foundation numbers them; 0 when unknown.
+    color: AtomicU32,
     /// The control interfaces of the open camera; cleared before the camera is reopened and when the thread ends.
     controls: Mutex<Option<CameraControls>>,
 }
@@ -187,6 +190,12 @@ impl WebcamCapture {
         if self.shared.cpu_path.load(Ordering::SeqCst) { WebcamPath::Cpu } else { WebcamPath::D3d11 }
     }
 
+    /// The colour matrix and range of the frames, from the reader's output media type; BT.601 limited when it does not say.
+    pub fn color(&self) -> CamColor {
+        let packed = self.shared.color.load(Ordering::SeqCst);
+        CamColor::from_media_type(packed >> 16, packed & 0xFFFF)
+    }
+
     /// The error that stopped the capture, for example a camera that was unplugged.
     pub fn error(&self) -> Option<String> {
         self.shared.lock().error.clone()
@@ -252,6 +261,7 @@ fn run_thread(gpu: Gpu, camera_id: String, format: CameraFormat, shared: Arc<Sha
         }
     };
     shared.cpu_path.store(session.path == WebcamPath::Cpu, Ordering::SeqCst);
+    session.publish_color(&shared);
     shared.set_controls(Some(session.controls.clone()));
     log::info!("webcam: {}x{} {} using the {} path", format.width, format.height, format.subtype, session.path);
     if ready.send(Ok(())).is_err() {
@@ -343,6 +353,7 @@ impl Session {
                     match self.fall_back_to_cpu() {
                         Ok(()) => {
                             shared.cpu_path.store(true, Ordering::SeqCst);
+                            self.publish_color(shared);
                             shared.set_controls(Some(self.controls.clone()));
                             continue;
                         }
@@ -354,6 +365,9 @@ impl Session {
                 }
                 shared.set_error(format!("the camera stopped delivering frames (unplugged?): {error}"));
                 return;
+            }
+            if flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED.0 as u32 != 0 {
+                self.publish_color(shared);
             }
             if flags & MF_SOURCE_READERF_ERROR.0 as u32 != 0 {
                 shared.set_error("the camera reported a stream error (unplugged?)".to_owned());
@@ -381,6 +395,18 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// Reads the matrix and range from the reader's current output media type and shares them with the owner.
+    fn publish_color(&self, shared: &Shared) {
+        let Some(reader) = &self.reader else { return };
+        // SAFETY: the reader is live; the call returns an owned media type.
+        let Ok(media_type) = (unsafe { reader.GetCurrentMediaType(VIDEO_STREAM) }) else { return };
+        // SAFETY: the media type is live and the key pointers point at constants; a missing attribute is an error we turn into 0.
+        let matrix = unsafe { media_type.GetUINT32(&MF_MT_YUV_MATRIX) }.unwrap_or(0);
+        // SAFETY: as above.
+        let range = unsafe { media_type.GetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE) }.unwrap_or(0);
+        shared.color.store((matrix.min(0xFFFF) << 16) | range.min(0xFFFF), Ordering::SeqCst);
     }
 
     /// Stores a copied frame as the latest one and updates the timing statistics.
@@ -564,16 +590,28 @@ fn ring_bind_candidates(gpu: &Gpu) -> Vec<u32> {
     });
     let has = |bit: D3D11_FORMAT_SUPPORT| support & bit.0 as u32 != 0;
     let decoder_ok = has(D3D11_FORMAT_SUPPORT_DECODER_OUTPUT);
-    let target_ok = has(D3D11_FORMAT_SUPPORT_RENDER_TARGET) && has(D3D11_FORMAT_SUPPORT_SHADER_SAMPLE);
+    let sample_ok = has(D3D11_FORMAT_SUPPORT_SHADER_SAMPLE);
+    let target_ok = has(D3D11_FORMAT_SUPPORT_RENDER_TARGET) && sample_ok;
     LOGGED.call_once(|| {
         log::info!(
             "webcam: NV12 format support 0x{support:x}: decoder output {decoder_ok}, render target and shader sample {target_ok}, video processor input {}",
             has(D3D11_FORMAT_SUPPORT_VIDEO_PROCESSOR_INPUT)
         );
+        if !sample_ok {
+            log::warn!("webcam: the device cannot sample NV12 textures in shaders, so the compositor cannot show the camera");
+        }
     });
     let decoder = D3D11_BIND_DECODER.0 as u32;
     let target = (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32;
-    if target_ok && !decoder_ok { vec![target, decoder] } else { vec![decoder, target] }
+    // The compositor reads the texture through shader views, so the shader resource flag comes first when the device allows it.
+    let decoder_sampled = decoder | D3D11_BIND_SHADER_RESOURCE.0 as u32;
+    if target_ok && !decoder_ok {
+        vec![target, decoder]
+    } else if sample_ok {
+        vec![decoder_sampled, decoder, target]
+    } else {
+        vec![decoder, target]
+    }
 }
 
 /// Creates one NV12 ring texture with the first bind flags that the device accepts.

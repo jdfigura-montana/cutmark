@@ -8,6 +8,8 @@
 #[cfg(windows)]
 mod audio;
 #[cfg(windows)]
+mod compose;
+#[cfg(windows)]
 mod convert;
 #[cfg(windows)]
 mod gpu;
@@ -23,13 +25,18 @@ mod wgc;
 #[cfg(windows)]
 pub use audio::{AudioCapture, AudioDevice, AudioPacket, DeviceKind, find_device, list_audio_devices};
 #[cfg(windows)]
+pub use compose::{
+    CamColor, CamPlacement, ComposedFrame, Compositor, Corner, Layout, PipSettings, Placement, RectF, YuvMatrix, YuvRange, cam_crop, fit_rect, pip_placement,
+    place, read_bgra,
+};
+#[cfg(windows)]
 pub use convert::Nv12Converter;
 #[cfg(windows)]
 pub use gpu::{AdapterInfo, Gpu, list_adapters};
 #[cfg(windows)]
 pub use monitor::{MonitorInfo, list_monitors};
 #[cfg(windows)]
-pub use preview::{Preview, PreviewFrame};
+pub use preview::{CompositeInput, Preview, PreviewFrame};
 #[cfg(windows)]
 pub use webcam::{
     CamFrame, CameraControls, CameraFormat, CameraInfo, CameraSubtype, ControlInfo, ControlProp, ControlRange, ControlState, WebcamCapture, WebcamPath,
@@ -60,6 +67,9 @@ pub enum CaptureError {
     /// The webcam failed in a way that has no Windows error behind it.
     #[error("{0}")]
     Webcam(String),
+    /// The compositor failed in a way that has no Windows error behind it, for example a shader that does not compile.
+    #[error("{0}")]
+    Compose(String),
     /// The input texture does not match the size the converter was created for.
     #[error("input size {actual_w}x{actual_h} does not match the converter input size {expected_w}x{expected_h}; recreate the Nv12Converter")]
     InputSizeChanged {

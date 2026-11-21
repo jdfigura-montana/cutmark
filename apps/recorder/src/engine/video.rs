@@ -1,6 +1,6 @@
-//! The video thread: capture, NV12 conversion and AMF encode on one thread,
+//! The video thread: the latest composite, NV12 conversion and AMF encode on one thread,
 //! paced at the exact profile frame rate from the shared start QPC, with its
-//! packets queued into the session's mux thread.
+//! packets queued into the session's mux thread. The composite comes from the compose thread.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -8,13 +8,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
-use capture::{Gpu, LatestFrame, MonitorCapture, Nv12Converter, list_monitors, qpc_frequency, qpc_now};
+use capture::{Gpu, Nv12Converter, list_monitors, qpc_frequency, qpc_now};
 use media_io::mux::{MuxSender, SendParameters};
 use media_io::{AmfEncoder, D3d11Device, D3d11FramePool, EncodedPacket, Encoder, HwFrame, MediaError};
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 
 use super::pacer::Pacer;
 use super::session::{EngineError, SessionConfig, StartCommand, Stats, Summary, ThreadMessage, VideoSetup, encoder_config};
+use crate::compositor::{self, ComposeConfig, Composite, CompositorThread, PinGuard};
 
 /// Frames may fail in a row this many times before the session stops itself.
 const MAX_CONSECUTIVE_FAILURES: u32 = 30;
@@ -83,12 +84,15 @@ impl EncodeTimes {
 
 /// Everything the per-frame path needs, set up once at session start.
 struct Pipeline {
-    capture: MonitorCapture,
+    /// Holds the compositor for the take; the frames of the take are its composites.
+    compositor: PinGuard,
     gpu: Gpu,
     converter: Nv12Converter,
     nv12: ID3D11Texture2D,
     pool: D3d11FramePool,
     encoder: AmfEncoder,
+    /// The compositor this session started itself when the window has none; it ends after the guard above.
+    _private_compositor: Option<CompositorThread>,
 }
 
 /// Entry point of the video thread: sets up, waits for the start command,
@@ -112,21 +116,35 @@ pub(super) fn run(cfg: SessionConfig, stats: Arc<Stats>, stop: Arc<AtomicBool>, 
     let _ = tx.send(ThreadMessage::Finished(outcome));
 }
 
-/// Sets the capture, the converter, the frame pool and the encoder up, and
+/// Pins the compositor, sets the converter, the frame pool and the encoder up on its device, and
 /// reports the encoder facts the session needs for the mux stream.
 fn setup(cfg: &SessionConfig) -> Result<(Pipeline, VideoSetup), EngineError> {
     let profile = &cfg.profile;
-    let gpu = Gpu::create(Some(cfg.adapter))?;
+    list_monitors()?.into_iter().nth(cfg.monitor).ok_or(EngineError::MonitorIndex(cfg.monitor))?;
+    // The window's compositor serves the take; without one, for example in a test, the session starts its own.
+    let (handle, private_compositor) = match compositor::shared() {
+        Some(handle) => (handle, None),
+        None => {
+            let thread = CompositorThread::start(cfg.adapter)?;
+            (thread.handle().clone(), Some(thread))
+        }
+    };
+    let config = ComposeConfig::from_profile(profile, (profile.width, profile.height), cfg.monitor, cfg.cursor);
+    let compositor = handle.pin(config.layout).map_err(EngineError::Failed)?;
+    compositor.set_config(config);
+    let gpu = compositor.gpu().clone();
     let hw_device = D3d11Device::from_device(gpu.device())?;
-    let monitor = list_monitors()?.into_iter().nth(cfg.monitor).ok_or(EngineError::MonitorIndex(cfg.monitor))?;
-    let capture = MonitorCapture::start(&gpu, &monitor, cfg.cursor)?;
-    let first = wait_for_first_frame(&capture).ok_or_else(|| EngineError::Failed("no frame arrived from the capture session".into()))?;
-    let converter = Nv12Converter::new(&gpu, first.width as u32, first.height as u32, profile.width, profile.height, profile.fps)?;
+    let first = wait_for_first_frame(&compositor, profile.width, profile.height).ok_or_else(|| match compositor.error() {
+        Some(error) => EngineError::Failed(format!("no composite frame arrived: {error}")),
+        None => EngineError::Failed("no composite frame arrived from the compositor".into()),
+    })?;
+    // The composite already has the output size, so the converter only changes the pixel format.
+    let converter = Nv12Converter::new(&gpu, first.width, first.height, profile.width, profile.height, profile.fps)?;
     let nv12 = converter.create_output()?;
     let pool = D3d11FramePool::new(&hw_device, profile.width, profile.height, 8)?;
     let encoder = AmfEncoder::open(&encoder_config(profile), &pool)?;
     let facts = VideoSetup { params: SendParameters(encoder.parameters()), time_base: encoder.time_base() };
-    let pipeline = Pipeline { capture, gpu, converter, nv12, pool, encoder };
+    let pipeline = Pipeline { compositor, gpu, converter, nv12, pool, encoder, _private_compositor: private_compositor };
     Ok((pipeline, facts))
 }
 
@@ -174,8 +192,8 @@ fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, mut pipeline: P
         }
         for n in due {
             next_index = n + 1;
-            let Some(frame) = pipeline.capture.latest() else {
-                // No captured frame yet: wait without counting.
+            let Some(frame) = pipeline.compositor.latest() else {
+                // No composite yet: wait without counting.
                 continue;
             };
             let pts = pacer.pts_for(n);
@@ -185,14 +203,14 @@ fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, mut pipeline: P
             match encoded {
                 Ok(()) => {
                     consecutive_failures = 0;
-                    pacer.record(n, frame.seq, true);
-                    store_pacer_counters(stats, &pacer, pipeline.capture.frames_received());
+                    pacer.record(n, frame.content_seq, true);
+                    store_pacer_counters(stats, &pacer, frame.screen_received);
                 }
                 Err(err) => {
                     consecutive_failures += 1;
                     stats.set_last_error(err.to_string());
-                    pacer.record(n, frame.seq, false);
-                    store_pacer_counters(stats, &pacer, pipeline.capture.frames_received());
+                    pacer.record(n, frame.content_seq, false);
+                    store_pacer_counters(stats, &pacer, frame.screen_received);
                     if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
                         frame_error = Some(err);
                         break 'record;
@@ -202,7 +220,6 @@ fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, mut pipeline: P
         }
     }
 
-    pipeline.capture.stop();
     let Pipeline { encoder, .. } = pipeline;
     match frame_error {
         // Still drain the encoder so the take stays playable to the last frame.
@@ -215,7 +232,7 @@ fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, mut pipeline: P
 }
 
 /// Converts, encodes and queues one due frame.
-fn encode_one_frame(pipeline: &mut Pipeline, mux: &MuxSender, stats: &Stats, frame: &LatestFrame, pts: i64) -> Result<(), EngineError> {
+fn encode_one_frame(pipeline: &mut Pipeline, mux: &MuxSender, stats: &Stats, frame: &Composite, pts: i64) -> Result<(), EngineError> {
     pipeline.converter.convert(&frame.texture, &pipeline.nv12)?;
     let mut hw = HwFrame::from_pool(&pipeline.pool)?;
     hw.copy_from(pipeline.gpu.context(), &pipeline.nv12)?;
@@ -272,7 +289,7 @@ fn build_summary(file: &Path, pacer: &Pacer, fps: u32, times: &EncodeTimes) -> R
     })
 }
 
-/// Copies the pacer's counters and the capture's received count into the stats the UI thread reads.
+/// Copies the pacer's counters and the screen capture's received count into the stats the UI thread reads.
 fn store_pacer_counters(stats: &Stats, pacer: &Pacer, received: u64) {
     stats.frames.store(pacer.frames(), Ordering::Relaxed);
     stats.duplicated.store(pacer.duplicated(), Ordering::Relaxed);
@@ -280,10 +297,13 @@ fn store_pacer_counters(stats: &Stats, pacer: &Pacer, received: u64) {
     stats.frames_received.store(received, Ordering::Relaxed);
 }
 
-/// Waits up to two seconds for the first captured frame.
-fn wait_for_first_frame(capture: &MonitorCapture) -> Option<LatestFrame> {
-    for _ in 0..200 {
-        if let Some(frame) = capture.latest() {
+/// Waits up to three seconds for the first composite of the output size.
+fn wait_for_first_frame(compositor: &PinGuard, width: u32, height: u32) -> Option<Composite> {
+    for _ in 0..300 {
+        if let Some(frame) = compositor.latest()
+            && frame.width == width
+            && frame.height == height
+        {
             return Some(frame);
         }
         std::thread::sleep(Duration::from_millis(10));
