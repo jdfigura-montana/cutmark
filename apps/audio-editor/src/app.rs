@@ -430,14 +430,18 @@ impl App {
             master_strip::show(ui, editor, meters);
         });
 
-        // Left: Media Bin panel, resizable between 200 and 400 px, 236 default.
-        egui::Panel::left("media_bin").resizable(true).default_size(236.0).size_range(200.0..=400.0).frame(egui::Frame::new().fill(THEME.panel_bg)).show(
-            ui,
-            |ui| {
+        // Left: Media panel on the ground, resizable between 200 and 400 px,
+        // 236 default, with the window gap on its left, top and bottom.
+        let gap = space::WINDOW_GAP as i8;
+        egui::Panel::left("media_bin")
+            .resizable(true)
+            .default_size(236.0)
+            .size_range(200.0..=400.0)
+            .frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin { left: gap, top: gap, bottom: gap, right: 0 }))
+            .show(ui, |ui| {
                 ui.take_available_space();
                 msgs.extend(media_messages(bin.show(ui, editor)));
-            },
-        );
+            });
 
         // Center: the timeline panel on the ground, 8px window padding all
         // round, filling the remainder.
@@ -976,7 +980,8 @@ mod tests {
         assert!(!rig.editor().is_recording());
         assert!(out.text_rect("Arm a track first").is_some(), "the messages dialog says why");
         assert!(out.text_rect("Recording").is_some(), "the dialog is titled Recording");
-        assert!(out.text_rect("Media").is_none(), "and no longer Media");
+        let media = out.texts().into_iter().filter(|t| t.text == "Media").count();
+        assert_eq!(media, 1, "only the Media panel header says Media, not the dialog");
     }
 
     #[test]

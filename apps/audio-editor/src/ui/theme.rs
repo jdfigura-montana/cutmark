@@ -29,8 +29,6 @@ pub struct Theme {
     pub recessed_a: egui::Color32,
     /// Timecode ruler background.
     pub ruler_bg: egui::Color32,
-    /// General separator and window border color.
-    pub border: egui::Color32,
     /// Border color of controls.
     pub control_border: egui::Color32,
     /// Fill of an idle control.
@@ -185,48 +183,6 @@ pub struct Theme {
     /// Clip light color while clear.
     pub clip_light_off: egui::Color32,
 
-    // ---- Bin panel ----
-    /// Height of one bin item row.
-    pub bin_row_h: f32,
-    /// Vertical gap between bin rows.
-    pub bin_row_gap: f32,
-    /// Corner radius of the bin row background.
-    pub bin_row_rounding: f32,
-    /// Font size of the MEDIA header caption.
-    pub bin_header_size: f32,
-    /// Height of the header Import / sort buttons.
-    pub bin_btn_h: f32,
-    /// Font size of the header buttons.
-    pub bin_btn_text_size: f32,
-    /// Side length of the square waveform tile.
-    pub bin_tile_sz: f32,
-    /// Font size of the tile's waveform icon.
-    pub bin_tile_icon_size: f32,
-    /// Font size of the item name.
-    pub bin_name_size: f32,
-    /// Font size of the monospace meta line.
-    pub bin_meta_size: f32,
-    /// Fill of the usage pill.
-    pub bin_pill_fill: egui::Color32,
-    /// Height of the usage pill.
-    pub bin_pill_h: f32,
-    /// Corner radius of the usage pill.
-    pub bin_pill_rounding: f32,
-    /// Font size of the usage pill text.
-    pub bin_pill_text_size: f32,
-    /// Height of the dashed drop zone.
-    pub bin_drop_h: f32,
-    /// Font size of the drop zone text.
-    pub bin_drop_text_size: f32,
-    /// Height of the preview progress bar in a bin row.
-    pub bin_progress_h: f32,
-    /// Width taken from the panel before the inline rename field.
-    pub bin_rename_pad: f32,
-    /// Minimum width of the inline rename field.
-    pub bin_rename_min_w: f32,
-    /// Color of offline bin item names.
-    pub bin_offline: egui::Color32,
-
     // ---- Errors / dialogs ----
     /// Error text color inside dialogs.
     pub error: egui::Color32,
@@ -236,10 +192,6 @@ pub struct Theme {
     // ---- Spacing ----
     /// Extra-small spacing (2).
     pub space_xs: f32,
-    /// Small spacing (4).
-    pub space_sm: f32,
-    /// Medium spacing (8).
-    pub space_md: f32,
     /// Large spacing (16).
     pub space_lg: f32,
     /// Vertical grid spacing inside dialogs.
@@ -247,8 +199,6 @@ pub struct Theme {
     // ---- Shared shapes ----
     /// Small corner radius for filled rects.
     pub corner_r: f32,
-    /// Smallest corner radius (handles, accent bars).
-    pub corner_xs: f32,
     /// The 1 px hairline stroke width.
     pub hairline: f32,
 
@@ -492,7 +442,6 @@ impl Default for Theme {
             // The ruler and the track lanes have no dedicated tokens yet;
             // these are the closest surfaces. Phase 11 restyles them.
             ruler_bg: tokens::color::BG_PANEL,
-            border: tokens::color::STROKE_HAIRLINE,
             control_border: tokens::color::STROKE_HAIRLINE,
             control_fill: tokens::color::BG_CONTROL,
             control_hover: tokens::color::BG_HOVER,
@@ -571,37 +520,14 @@ impl Default for Theme {
             clip_light_off: egui::Color32::from_rgb(0x3A, 0x22, 0x24),
 
             // Bin panel
-            bin_row_h: 52.0,
-            bin_row_gap: 2.0,
-            bin_row_rounding: 6.0,
-            bin_header_size: 10.5,
-            bin_btn_h: 26.0,
-            bin_btn_text_size: 12.0,
-            bin_tile_sz: 30.0,
-            bin_tile_icon_size: 16.0,
-            bin_name_size: 12.5,
-            bin_meta_size: 10.5,
-            bin_pill_fill: egui::Color32::from_rgb(0x26, 0x2A, 0x31),
-            bin_pill_h: 18.0,
-            bin_pill_rounding: 9.0,
-            bin_pill_text_size: 10.5,
-            bin_drop_h: 44.0,
-            bin_drop_text_size: 10.5,
-            bin_progress_h: 2.0,
-            bin_rename_pad: 40.0,
-            bin_rename_min_w: 60.0,
-            bin_offline: egui::Color32::from_rgb(210, 100, 100),
             // Errors / dialogs
             error: egui::Color32::from_rgb(225, 105, 105),
             error_soft: egui::Color32::from_rgb(235, 140, 140),
             // Spacing: 4/8 px grid, from the ui-kit space scale.
             space_xs: tokens::space::SCALE_4,
-            space_sm: tokens::space::SCALE_4,
-            space_md: tokens::space::WINDOW_GAP,
             space_lg: tokens::space::SCALE_16,
             // Shared shapes
             corner_r: 2.0,
-            corner_xs: 1.0,
             hairline: 1.0,
             // Accent, text roles & dialogs, from the ui-kit tokens.
             accent: tokens::accent::ACCENT,
@@ -818,7 +744,6 @@ mod tests {
         assert_eq!(t.meter_yellow, tokens::color::SEM_METER_WARN);
         assert_eq!(t.meter_green, tokens::color::SEM_METER_OK);
         assert_eq!(t.space_xs, tokens::space::SCALE_4);
-        assert_eq!(t.space_md, tokens::space::WINDOW_GAP);
         assert_eq!(t.accent, tokens::accent::ACCENT, "one accent for selection, lit toggles, range lines and focus");
         assert_eq!(t.accent_soft, accent_alpha(0x2E));
         assert_eq!(t.unsaved_dot_d, 6.0);

@@ -244,8 +244,8 @@ mod tests {
         };
         let (save, dont, cancel) = (button("Save"), button("Don't Save"), button("Cancel"));
         let tol = 0.6;
-        assert!((dont.left() - save.right() - THEME.space_md).abs() < tol);
-        assert!((cancel.left() - dont.right() - THEME.space_md).abs() < tol);
+        assert!((dont.left() - save.right() - ui_kit::tokens::space::SCALE_8).abs() < tol);
+        assert!((cancel.left() - dont.right() - ui_kit::tokens::space::SCALE_8).abs() < tol);
         let line = out.footer_line().expect("footer divider");
         assert!((cancel.right() - line.right()).abs() < tol, "Cancel ends {} short of the content edge", line.right() - cancel.right());
     }

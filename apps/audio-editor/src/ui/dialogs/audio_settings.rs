@@ -278,7 +278,7 @@ mod tests {
         assert!((pad_left - pad_right).abs() < TOL, "{pad_left} vs {pad_right}");
         let (ok, cancel) = (button(&out, "OK"), button(&out, "Cancel"));
         assert!(ok.center().x < cancel.center().x, "OK then Cancel");
-        assert!((cancel.left() - ok.right() - THEME.space_md).abs() < TOL, "gap is {}", cancel.left() - ok.right());
+        assert!((cancel.left() - ok.right() - ui_kit::tokens::space::SCALE_8).abs() < TOL, "gap is {}", cancel.left() - ok.right());
         assert!((cancel.right() - line.right()).abs() < TOL);
 
         // Everything sits inside the card, top to bottom.

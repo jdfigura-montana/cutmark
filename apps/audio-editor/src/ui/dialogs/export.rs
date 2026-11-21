@@ -472,7 +472,11 @@ mod tests {
         // Footer buttons: 8 px apart, the last one flush with the content.
         let export_button = out.filled_rect_at(footer_export.center()).expect("footer Export button");
         let cancel_button = out.filled_rect_at(cancel.center()).expect("footer Cancel button");
-        assert!((cancel_button.left() - export_button.right() - THEME.space_md).abs() < tol, "gap is {}", cancel_button.left() - export_button.right());
+        assert!(
+            (cancel_button.left() - export_button.right() - ui_kit::tokens::space::SCALE_8).abs() < tol,
+            "gap is {}",
+            cancel_button.left() - export_button.right()
+        );
         assert!((cancel_button.right() - line.right()).abs() < tol, "Cancel ends {} short of the content edge", line.right() - cancel_button.right());
 
         // The Browse button is flush with the content's right edge too.

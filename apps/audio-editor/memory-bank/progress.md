@@ -1,3 +1,6 @@
+## Task S1 phase 12a (2026-11-21)
+- Media panel restyled: ui-kit panel, 44 header with Sort (glass menu) and Import icon buttons, list rows with 28 tile and duration, glass context menu, empty state with Import button. bin_panel.rs off the theme shim. Tests 697 (was 692). Open for JD eyes: left panel frame in app.rs changed to ground + 8 px gap; row details (usage, rate, format) moved to a tooltip; no board image for this panel, so tile fill (bg.control) is my reading.
+
 ## Task S1 R4 (2026-11-21)
 - Start screen rebuilt to rev 3 (hero + recent panels, title bar File menu, Delete key, footer hints). Tests 692 (was 679), check.ps1 green. Release exe not rebuilt (app was running). Open for JD eyes: no board image was readable, so tile/card colors, band placement and the selected-tile look are my reading of the spec; no View or Help menu (nothing for them to hold).
 

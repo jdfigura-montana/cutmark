@@ -1,15 +1,41 @@
-//! ui::bin_panel: the Media Bin panel (docs/ui-target.png look).
+//! ui::bin_panel: the Media panel (ui-kit panel, 44 tall header, list rows).
 
 use eframe::egui;
-use egui_phosphor::fill;
+use ui_kit::icons::regular;
+use ui_kit::tokens::{color, radius, size, space, typography};
 use uuid::Uuid;
 
 use crate::editor::Editor;
 use crate::editor::action::Action;
 use crate::model::media::MediaItem;
 use crate::ui::dialogs::{self, FooterButton};
-use crate::ui::theme::{THEME, Theme};
 use crate::ui::timeline::interaction::MediaDrag;
+
+/// Side of the icon tile at the left of a row.
+const TILE: f32 = 28.0;
+/// Size of the waveform glyph inside the tile.
+const TILE_ICON: f32 = 16.0;
+/// Left padding of the header title from the panel's inner edge; with the
+/// panel's own 8px padding the title sits 14px from the panel edge (spec
+/// "Panel header").
+const HEADER_PAD: f32 = 6.0;
+/// Gap between two rows.
+const ROW_GAP: f32 = 2.0;
+/// Height of the preview progress bar along the bottom of a row.
+const PROGRESS_H: f32 = 2.0;
+/// Height of the dashed drop zone at the bottom of the panel.
+const DROP_H: f32 = 44.0;
+/// Dash and gap length of the drop zone outline.
+const DASH: f32 = 6.0;
+/// Gap length of the drop zone outline.
+const DASH_GAP: f32 = 4.0;
+/// Width of the Remove from Project confirmation, the same as the other
+/// confirmation dialogs.
+const CONFIRM_W: f32 = 420.0;
+/// The drop hint, also the empty state message.
+const DROP_HINT: &str = "Drop WAV or MP3 files here";
+/// The 1 px hairline stroke width.
+const HAIRLINE: f32 = 1.0;
 
 /// Sort order of the bin list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -54,13 +80,6 @@ impl BinPanel {
     pub fn show(&mut self, ui: &mut egui::Ui, editor: &mut Editor) -> Vec<String> {
         let mut messages = Vec::new();
 
-        // 1 px border on the right edge of the panel.
-        let outer = ui.max_rect();
-        ui.painter().line_segment(
-            [egui::pos2(outer.right() - 0.5, outer.top()), egui::pos2(outer.right() - 0.5, outer.bottom())],
-            egui::Stroke::new(THEME.hairline, THEME.border),
-        );
-
         // A Reveal in Bin request from another panel: select and scroll to it.
         let reveal_request = ui.ctx().data_mut(|d| d.remove_temp::<Uuid>(egui::Id::new(REVEAL_KEY)));
         if let Some(id) = reveal_request {
@@ -75,173 +94,99 @@ impl BinPanel {
             self.confirm_remove = None;
         }
 
-        self.header(ui, editor, &mut messages);
-        ui.add_space(THEME.space_md);
-
-        // The scroll area leaves room for the fixed drop zone (10 px above
-        // it, 44 px tall, 10 px off the panel bottom).
-        let scroll_h = (ui.available_height() - 10.0 - THEME.bin_drop_h - 10.0).max(80.0);
-        egui::ScrollArea::vertical().max_height(scroll_h).auto_shrink([false, false]).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = THEME.bin_row_gap;
-            for item in sorted_items(&editor.project.media, self.sort) {
-                self.show_item(ui, editor, &item, &mut messages);
-            }
-            for (label, frac) in editor.pending_jobs() {
-                ui.add_space(THEME.space_sm);
-                ui.label(&label);
-                ui.add(egui::ProgressBar::new(frac).show_percentage());
-            }
+        ui_kit::panel(ui, |ui| {
+            // The panel fills the area the app gives it.
+            ui.set_min_size(ui.available_size());
+            self.header(ui, editor, &mut messages);
+            ui.add_space(space::SCALE_8);
+            self.list(ui, editor, &mut messages);
         });
-
-        drop_zone(ui);
 
         self.show_remove_confirm(ui.ctx(), editor, &mut messages);
         messages
     }
 
-    /// Header row: MEDIA caption, Import button and the sort button.
+    /// Header row (44 tall): the "Media" title, then the Sort and Import icon
+    /// buttons on the right and a hairline along the bottom.
     fn header(&mut self, ui: &mut egui::Ui, editor: &mut Editor, messages: &mut Vec<String>) {
-        ui.horizontal(|ui| {
-            // 10 px from the panel edge; the caption sits centered against
-            // the button height.
-            ui.add_space(10.0);
-            ui.set_min_height(THEME.bin_btn_h);
-            ui.add(egui::Label::new(egui::RichText::new("MEDIA").font(Theme::semibold(THEME.bin_header_size)).color(THEME.text_muted)));
+        let recording = editor.is_recording();
+        let row = egui::vec2(ui.available_width(), size::PANEL_TOOLBAR_HEIGHT);
+        let inner = ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = space::SCALE_4;
+            ui.add_space(HEADER_PAD);
+            ui.add(
+                egui::Label::new(egui::RichText::new("Media").font(ui_kit::fonts::semibold(typography::BODY_SIZE)).color(color::TEXT_PRIMARY))
+                    .selectable(false),
+            );
+            // Added right to left, so on screen the Sort button sits left of
+            // the Import button.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = THEME.space_sm;
-
-                let sort_label = egui::RichText::new(format!(
-                    "{} {}",
+                ui.add_enabled_ui(!recording, |ui| {
+                    if ui_kit::icon_button(ui, regular::DOWNLOAD_SIMPLE, "Import (Ctrl+I)").clicked() {
+                        messages.extend(pick_and_import(editor));
+                    }
+                });
+                let sort_tooltip = format!(
+                    "Sort: {}",
                     match self.sort {
-                        BinSort::DateAdded => "Date",
+                        BinSort::DateAdded => "Date added",
                         BinSort::Name => "Name",
-                    },
-                    fill::CARET_DOWN
-                ))
-                .size(THEME.bin_btn_text_size);
-                let sort_button = ui.add(egui::Button::new(sort_label).min_size(egui::vec2(0.0, THEME.bin_btn_h)));
-                egui::Popup::menu(&sort_button).show(|ui| {
+                    }
+                );
+                let sort_button = ui_kit::icon_button(ui, regular::ARROWS_DOWN_UP, &sort_tooltip);
+                show_glass(egui::Popup::menu(&sort_button).gap(space::SCALE_4), &sort_button, |ui| {
                     ui.selectable_value(&mut self.sort, BinSort::DateAdded, "Date added");
                     ui.selectable_value(&mut self.sort, BinSort::Name, "Name");
                 });
-
-                let import_label = egui::RichText::new(format!("{} Import", fill::DOWNLOAD)).size(THEME.bin_btn_text_size);
-                if ui.add_enabled(!editor.is_recording(), egui::Button::new(import_label).min_size(egui::vec2(0.0, THEME.bin_btn_h))).clicked() {
-                    messages.extend(pick_and_import(editor));
-                }
             });
         });
+        // The hairline runs edge to edge of the panel, through its padding.
+        let rect = inner.response.rect;
+        ui.painter().hline(rect.x_range().expand(space::PANEL_PADDING), rect.bottom(), egui::Stroke::new(HAIRLINE, color::STROKE_HAIRLINE));
     }
 
-    /// Draws one bin item row with its interactions.
+    /// The item list with the drop zone under it, or the empty state when
+    /// there is nothing to list.
+    fn list(&mut self, ui: &mut egui::Ui, editor: &mut Editor, messages: &mut Vec<String>) {
+        if editor.project.media.is_empty() && !editor.has_pending_jobs() {
+            empty_state(ui, editor, messages);
+            return;
+        }
+        // The scroll area leaves room for the fixed drop zone under it.
+        let scroll_h = (ui.available_height() - space::SCALE_8 - DROP_H).max(80.0);
+        egui::ScrollArea::vertical().max_height(scroll_h).auto_shrink([false, false]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = ROW_GAP;
+            for item in sorted_items(&editor.project.media, self.sort) {
+                self.show_item(ui, editor, &item, messages);
+            }
+            for (label, frac) in editor.pending_jobs() {
+                ui.add_space(space::SCALE_4);
+                ui.label(egui::RichText::new(&label).font(egui::FontId::proportional(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY));
+                ui.add(egui::ProgressBar::new(frac).show_percentage());
+            }
+        });
+        drop_zone(ui);
+    }
+
+    /// Draws one bin item as a list row with its interactions.
     fn show_item(&mut self, ui: &mut egui::Ui, editor: &mut Editor, item: &MediaItem, messages: &mut Vec<String>) {
         let offline = editor.is_media_offline(item.id);
         let recording = editor.is_recording();
         let usage = editor.media_usage(item.id);
-        let selected = self.selected == Some(item.id);
         let previewing_this = editor.previewing() == Some(item.id);
+        let renaming = self.renaming == Some(item.id);
 
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), size::LIST_ROW_HEIGHT), egui::Sense::hover());
         // Reveal in Bin: scroll the requested item into view.
         if self.reveal == Some(item.id) {
-            ui.scroll_to_cursor(Some(egui::Align::Center));
+            ui.scroll_to_rect(rect, Some(egui::Align::Center));
             self.reveal = None;
         }
 
-        // The usage pill sits on the row's right edge; the name stops short of it.
-        let pill_w = pill_width(ui, usage_text(usage));
-        let row_w = ui.available_width();
-        let name_max_w = (row_w - THEME.space_md - THEME.bin_tile_sz - THEME.space_md - pill_w - THEME.space_sm - THEME.space_md).max(40.0);
-
-        // Row background: control fill while hovered or selected.
-        let row_rect = egui::Rect::from_min_size(ui.next_widget_position(), egui::vec2(row_w, THEME.bin_row_h));
-        // Center of the NAME text line, for the usage pill; falls back to the
-        // first content line when the rename field replaces the name.
-        let mut name_line_center = row_rect.top() + THEME.space_md + THEME.bin_tile_sz.max(THEME.bin_name_size) * 0.5;
-        let active = selected || ui.rect_contains_pointer(row_rect);
-
-        let inner = egui::Frame::new()
-            .fill(if active { THEME.control_fill } else { egui::Color32::TRANSPARENT })
-            .corner_radius(THEME.bin_row_rounding)
-            .inner_margin(THEME.space_md)
-            .show(ui, |ui| {
-                ui.set_min_size(egui::vec2(row_w - 2.0 * THEME.space_md, THEME.bin_row_h - 2.0 * THEME.space_md));
-                ui.horizontal(|ui| {
-                    // 30x30 tile with the waveform icon.
-                    let (tile_rect, _) = ui.allocate_exact_size(egui::vec2(THEME.bin_tile_sz, THEME.bin_tile_sz), egui::Sense::hover());
-                    let painter = ui.painter();
-                    painter.rect(
-                        tile_rect,
-                        THEME.control_rounding,
-                        THEME.control_fill,
-                        egui::Stroke::new(THEME.hairline, THEME.control_border),
-                        egui::StrokeKind::Inside,
-                    );
-                    // The phosphor glyph lives in the proportional family
-                    // (egui-phosphor only adds itself there), so use it here
-                    // like the header buttons do.
-                    painter.text(
-                        tile_rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        fill::WAVEFORM,
-                        egui::FontId::proportional(THEME.bin_tile_icon_size),
-                        THEME.text_normal,
-                    );
-
-                    ui.add_space(THEME.space_md);
-                    ui.vertical(|ui| {
-                        if self.renaming == Some(item.id) {
-                            self.rename_field(ui, editor, item.id, messages);
-                        } else {
-                            // The name stops short of the usage pill.
-                            ui.scope(|ui| {
-                                ui.set_max_width(name_max_w);
-                                let mut name = item.display_name.clone();
-                                if offline {
-                                    name.push_str(" (offline)");
-                                }
-                                let text = egui::RichText::new(name).size(THEME.bin_name_size);
-                                let text = if offline { text.color(THEME.bin_offline) } else { text.color(THEME.text_primary) };
-                                let name_response = ui.add(egui::Label::new(text).sense(egui::Sense::click()).truncate());
-                                if name_response.clicked() {
-                                    self.selected = Some(item.id);
-                                }
-                                if name_response.double_clicked() && !recording {
-                                    self.begin_rename(item);
-                                }
-                                name_line_center = name_response.rect.center().y;
-                            });
-                            ui.add_space(THEME.space_xs);
-                            // The meta line spans the full row width under
-                            // the name, out to the row's right padding.
-                            let meta = egui::RichText::new(meta_line(editor, item)).font(Theme::mono(THEME.bin_meta_size)).color(THEME.text_muted);
-                            ui.add(egui::Label::new(meta).truncate());
-                        }
-                    });
-                });
-            });
-        let row = inner.response.rect;
-
-        // Usage pill on the right edge of the row, centered on the NAME line
-        // only so it never touches the meta line below it.
-        let pill_galley = pill_galley(ui, usage_text(usage));
-        draw_pill(ui.painter(), row, pill_galley, name_line_center);
-
-        // Thin progress bar along the row bottom while this item previews.
-        if previewing_this {
-            let frac = editor.preview_progress();
-            let y = row.bottom() - THEME.space_md;
-            let bar = egui::Rect::from_min_max(
-                egui::pos2(row.left() + THEME.space_md, y),
-                egui::pos2(row.left() + THEME.space_md + (row.width() - 2.0 * THEME.space_md) * frac, y + THEME.bin_progress_h),
-            );
-            ui.painter().rect_filled(bar, THEME.corner_xs, THEME.accent);
-        }
-
-        let row_response = ui.interact(
-            inner.response.rect,
-            egui::Id::new(("bin_row", item.id)),
-            if offline || recording { egui::Sense::click() } else { egui::Sense::click_and_drag() },
-        );
+        // The row's own interaction sits under its contents, so the rename
+        // field above it keeps the pointer.
+        let row_response =
+            ui.interact(rect, egui::Id::new(("bin_row", item.id)), if offline || recording { egui::Sense::click() } else { egui::Sense::click_and_drag() });
         // Online rows are drag sources for the timeline; offline ones are not,
         // and nothing is dragged to the timeline while a take is recorded.
         if !offline && !recording && row_response.drag_started() {
@@ -250,7 +195,29 @@ impl BinPanel {
         if row_response.clicked() {
             self.selected = Some(item.id);
         }
-        egui::Popup::context_menu(&row_response).style(crate::ui::theme::menu_item_style as fn(&mut egui::Style)).show(|ui| {
+        if row_response.double_clicked() && !recording && !renaming {
+            self.begin_rename(item);
+        }
+
+        if ui.is_rect_visible(rect) {
+            self.paint_row(ui, editor, item, rect, &row_response, offline);
+        }
+        if renaming {
+            let field = egui::Rect::from_center_size(
+                egui::pos2(rect.center().x + (TILE + space::SCALE_8) / 2.0, rect.center().y),
+                egui::vec2(rect.width() - TILE - space::SCALE_8 - 2.0 * space::SCALE_6, size::PANEL_BUTTON_HEIGHT),
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(field).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+                self.rename_field(ui, editor, item.id, messages);
+            });
+        } else {
+            // The details the row no longer shows: format, rate, channels and
+            // how many clips use the item.
+            let tip = format!("{}\n{}", meta_line(editor, item), usage_text(usage));
+            let _ = row_response.clone().on_hover_text(tip);
+        }
+
+        show_glass(egui::Popup::context_menu(&row_response), &row_response, |ui| {
             // Preview, Relink, Rename and Remove are off while recording.
             if !offline && ui.add_enabled(!recording, egui::Button::new(if previewing_this { "Stop Preview" } else { "Preview" })).clicked() {
                 if previewing_this {
@@ -285,20 +252,88 @@ impl BinPanel {
         });
     }
 
+    /// Paints a row: state fill, icon tile, name (unless it is being
+    /// renamed), the duration on the right and the preview progress bar.
+    fn paint_row(&self, ui: &egui::Ui, editor: &Editor, item: &MediaItem, rect: egui::Rect, response: &egui::Response, offline: bool) {
+        let selected = self.selected == Some(item.id);
+        let painter = ui.painter();
+        let fill = if selected {
+            Some(color::BG_ROW_SELECTED)
+        } else if response.hovered() {
+            Some(color::BG_GROUP)
+        } else {
+            None
+        };
+        if let Some(fill) = fill {
+            painter.rect_filled(rect, radius::SEGMENT, fill);
+        }
+
+        // The 28 icon tile with the waveform glyph.
+        let tile = egui::Rect::from_min_size(egui::pos2(rect.left() + space::SCALE_6, rect.center().y - TILE / 2.0), egui::Vec2::splat(TILE));
+        painter.rect_filled(tile, radius::SEGMENT, color::BG_CONTROL);
+        let glyph = painter.layout_no_wrap(regular::WAVEFORM.to_owned(), ui_kit::fonts::icon_regular(TILE_ICON), color::TEXT_SECONDARY);
+        painter.galley(tile.center() - glyph.size() / 2.0, glyph, color::TEXT_SECONDARY);
+
+        // The duration, right aligned in type.value text.tertiary.
+        let duration =
+            painter.layout_no_wrap(duration_text(editor.project.sample_rate, item.length), ui_kit::fonts::mono(typography::VALUE_SIZE), color::TEXT_TERTIARY);
+        let duration_left = rect.right() - space::SCALE_8 - duration.size().x;
+        painter.galley(egui::pos2(duration_left, rect.center().y - duration.size().y / 2.0), duration, color::TEXT_TERTIARY);
+
+        // The name, cut with an ellipsis before the duration.
+        if self.renaming != Some(item.id) {
+            let name_x = tile.right() + space::SCALE_8;
+            let mut name = item.display_name.clone();
+            if offline {
+                name.push_str(" (offline)");
+            }
+            // No offline token exists in the design language; the red of the
+            // record meaning marks a file that is gone.
+            let name_color = if offline {
+                color::SEM_RECORD
+            } else if selected {
+                color::TEXT_PRIMARY
+            } else {
+                color::TEXT_SECONDARY
+            };
+            let mut job = egui::text::LayoutJob::single_section(name, egui::TextFormat::simple(ui_kit::fonts::medium(typography::BODY_SIZE), name_color));
+            job.wrap = egui::text::TextWrapping {
+                max_width: (duration_left - space::SCALE_8 - name_x).max(0.0),
+                max_rows: 1,
+                break_anywhere: true,
+                overflow_character: Some('\u{2026}'),
+            };
+            let galley = painter.layout_job(job);
+            painter.galley(egui::pos2(name_x, rect.center().y - galley.size().y / 2.0), galley, name_color);
+        }
+
+        // Thin progress bar along the row bottom while this item previews.
+        if editor.previewing() == Some(item.id) {
+            let inset = space::SCALE_6;
+            let y = rect.bottom() - PROGRESS_H - 1.0;
+            let width = (rect.width() - 2.0 * inset) * editor.preview_progress();
+            let bar = egui::Rect::from_min_size(egui::pos2(rect.left() + inset, y), egui::vec2(width, PROGRESS_H));
+            painter.rect_filled(bar, 0.0, ui_kit::Theme::get(ui.ctx()).accent.accent);
+        }
+        if response.has_focus() {
+            ui_kit::focus_ring(ui, rect, radius::SEGMENT.into());
+        }
+    }
+
     /// Starts an inline rename of the given item.
     fn begin_rename(&mut self, item: &MediaItem) {
         self.renaming = Some(item.id);
         self.rename_text = item.display_name.clone();
         self.rename_focused_once = false;
     }
+
     /// Draws the inline rename text field and applies or cancels it.
     fn rename_field(&mut self, ui: &mut egui::Ui, editor: &mut Editor, id: Uuid, messages: &mut Vec<String>) {
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.renaming = None;
             return;
         }
-        let width = (ui.available_width() - THEME.bin_rename_pad).max(THEME.bin_rename_min_w);
-        let response = ui.add(egui::TextEdit::singleline(&mut self.rename_text).desired_width(width));
+        let response = ui_kit::text_field(ui, &mut self.rename_text, "Name");
         if !self.rename_focused_once {
             response.request_focus();
             if response.has_focus() {
@@ -330,9 +365,9 @@ impl BinPanel {
         let mut remove = false;
         let mut cancel = false;
         let response = dialogs::modal("bin_remove_confirm").show(ctx, |ui| {
-            dialogs::card_width(ui, THEME.dialog_w);
+            dialogs::card_width(ui, CONFIRM_W);
             dialogs::title(ui, "Remove from Project");
-            ui.add_space(THEME.space_xs);
+            ui.add_space(space::SCALE_4);
             dialogs::description(ui, &format!("Remove \"{name}\"? This item is used by {usage} clips. Removing it also removes those clips."));
             dialogs::before_form(ui);
             dialogs::footer(ui, |ui| {
@@ -364,75 +399,46 @@ impl BinPanel {
     }
 }
 
-/// The dashed drop zone anchored to the bottom of the panel, 10 px in from
-/// the panel's left, right and bottom edges, 44 px tall.
-fn drop_zone(ui: &mut egui::Ui) {
-    let margin = 10.0;
+/// Shows `popup` as a ui-kit glass popover: the glass frame with 6px padding,
+/// plus the top highlight once the popover has had its sizing pass.
+fn show_glass<R>(popup: egui::Popup<'_>, response: &egui::Response, add_contents: impl FnOnce(&mut egui::Ui) -> R) {
+    let ctx = response.ctx.clone();
+    let was_shown = ctx.read_response(egui::Popup::default_response_id(response)).is_some();
+    let frame = ui_kit::glass_frame(&ctx, radius::GROUP).inner_margin(egui::Margin::same(space::SCALE_6 as i8));
+    let shown = popup.frame(frame).show(add_contents);
+    // The first frame of a popover is an invisible sizing pass.
+    if let (Some(shown), true) = (shown, was_shown) {
+        ui_kit::paint_glass_highlight(&ctx.layer_painter(shown.response.layer_id), shown.response.rect, radius::GROUP);
+    }
+}
+
+/// The empty bin: the drop hint centered in `type.caption` `text.tertiary`
+/// with the Import action as a normal button under it.
+fn empty_state(ui: &mut egui::Ui, editor: &mut Editor, messages: &mut Vec<String>) {
+    let area = ui.available_rect_before_wrap();
+    ui.allocate_rect(area, egui::Sense::hover());
+    let hint = ui.painter().layout_no_wrap(DROP_HINT.to_owned(), egui::FontId::proportional(typography::CAPTION_SIZE), color::TEXT_TERTIARY);
+    let label = ui.painter().layout_no_wrap("Import".to_owned(), ui_kit::fonts::medium(typography::BODY_SIZE), color::TEXT_PRIMARY);
+    let button_size = egui::vec2(label.size().x + 2.0 * space::SCALE_16, size::PANEL_BUTTON_HEIGHT);
+    let total = hint.size().y + space::SCALE_12 + button_size.y;
+    let top = area.center().y - total / 2.0;
+    let hint_height = hint.size().y;
+    ui.painter().galley(egui::pos2(area.center().x - hint.size().x / 2.0, top), hint, color::TEXT_TERTIARY);
+    let button_rect = egui::Rect::from_center_size(egui::pos2(area.center().x, top + hint_height + space::SCALE_12 + button_size.y / 2.0), button_size);
+    let enabled = !editor.is_recording();
+    if ui.put(button_rect, egui::Button::new("Import")).clicked() && enabled {
+        messages.extend(pick_and_import(editor));
+    }
+}
+
+/// The dashed drop zone anchored to the bottom of the panel, 44 tall.
+fn drop_zone(ui: &egui::Ui) {
     let outer = ui.max_rect();
-    let rect = egui::Rect::from_min_max(
-        egui::pos2(outer.left() + margin, outer.bottom() - margin - THEME.bin_drop_h),
-        egui::pos2(outer.right() - margin, outer.bottom() - margin),
-    );
-    // Advance the cursor below the zone so later widgets cannot land on it.
-    let pad = (rect.top() - ui.cursor().top()).max(0.0);
-    ui.allocate_exact_size(egui::vec2(1.0, pad), egui::Sense::hover());
-    ui.allocate_exact_size(egui::vec2(rect.width(), rect.height()), egui::Sense::hover());
-    let painter = ui.painter();
-    dashed_rect(painter, rect, egui::Stroke::new(THEME.hairline, THEME.control_border));
-    painter.text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        "Drop WAV or MP3 files here",
-        egui::FontId::proportional(THEME.bin_drop_text_size),
-        THEME.text_faint,
-    );
-}
-
-/// Draws a complete dashed 1 px rectangle: all four sides drawn end to end
-/// so no corner gaps are left.
-fn dashed_rect(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
-    dashed_line(painter, rect.left_top(), rect.right_top(), stroke);
-    dashed_line(painter, rect.left_bottom(), rect.right_bottom(), stroke);
-    dashed_line(painter, rect.left_top(), rect.left_bottom(), stroke);
-    dashed_line(painter, rect.right_top(), rect.right_bottom(), stroke);
-}
-
-/// Draws a dashed line segment.
-fn dashed_line(painter: &egui::Painter, a: egui::Pos2, b: egui::Pos2, stroke: egui::Stroke) {
-    let length = b.distance(a);
-    if length <= 0.0 {
-        return;
-    }
-    let dir = (b - a) / length;
-    let mut d = 0.0;
-    while d < length {
-        let end = (d + THEME.ghost_dash).min(length);
-        painter.line_segment([a + dir * d, a + dir * end], stroke);
-        d += THEME.ghost_dash + THEME.ghost_gap;
-    }
-}
-
-/// Measured width of the usage pill (text plus its side padding).
-fn pill_width(ui: &egui::Ui, text: String) -> f32 {
-    pill_galley(ui, text).size().x + 12.0
-}
-
-/// The usage pill text, pre-laid-out for measuring and drawing.
-fn pill_galley(ui: &egui::Ui, text: String) -> std::sync::Arc<egui::Galley> {
-    ui.painter().layout_no_wrap(text, egui::FontId::proportional(THEME.bin_pill_text_size), THEME.text_normal)
-}
-
-/// Draws the usage pill centered vertically on the given line (the row's
-/// NAME line) at the row's right edge.
-fn draw_pill(painter: &egui::Painter, row: egui::Rect, galley: std::sync::Arc<egui::Galley>, line_center_y: f32) {
-    let pill_w = galley.size().x + 12.0;
-    let pill_h = THEME.bin_pill_h;
-    let pill = egui::Rect::from_min_max(
-        egui::pos2(row.right() - THEME.space_md - pill_w, line_center_y - pill_h * 0.5),
-        egui::pos2(row.right() - THEME.space_md, line_center_y + pill_h * 0.5),
-    );
-    painter.rect_filled(pill, THEME.bin_pill_rounding, THEME.bin_pill_fill);
-    painter.galley(pill.left_top() + egui::vec2(6.0, (pill_h - galley.size().y) * 0.5), galley, THEME.text_normal);
+    let rect = egui::Rect::from_min_max(egui::pos2(outer.left(), outer.bottom() - DROP_H), outer.right_bottom());
+    let outline = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom(), rect.left_top()];
+    let stroke = egui::Stroke::new(HAIRLINE, color::STROKE_SEPARATOR_STRONG);
+    ui.painter().extend(egui::Shape::dashed_line(&outline, stroke, DASH, DASH_GAP));
+    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, DROP_HINT, egui::FontId::proportional(typography::CAPTION_SIZE), color::TEXT_TERTIARY);
 }
 
 /// Opens the import file picker (WAV and MP3) and starts one import job per file.
@@ -473,16 +479,25 @@ fn sorted_items(items: &[MediaItem], sort: BinSort) -> Vec<MediaItem> {
     items
 }
 
-/// The monospace meta line: time, rate, channels and format separated by
-/// middle dots (`\u{B7}`), e.g. `0:06.200 48k St MP3` with dots between.
-fn meta_line(editor: &Editor, item: &MediaItem) -> String {
-    let rate = editor.project.sample_rate;
-    let total_ms = item.length * 1000 / u64::from(rate);
+/// The length as `m:ss.mmm` at the project sample rate.
+fn duration_text(rate: u32, length: u64) -> String {
+    let total_ms = length * 1000 / u64::from(rate);
     let min = total_ms / 60_000;
     let sec = (total_ms % 60_000) / 1000;
     let ms = total_ms % 1000;
+    format!("{min}:{sec:02}.{ms:03}")
+}
+
+/// The meta line: time, rate, channels and format separated by middle dots
+/// (`\u{B7}`), e.g. `0:06.200 48k St MP3` with dots between.
+fn meta_line(editor: &Editor, item: &MediaItem) -> String {
     let channels = if item.channels <= 1 { "Mo" } else { "St" };
-    format!("{min}:{sec:02}.{ms:03} \u{B7} {}k \u{B7} {channels} \u{B7} {}", item.original_rate / 1000, media_format(&item.file_name))
+    format!(
+        "{} \u{B7} {}k \u{B7} {channels} \u{B7} {}",
+        duration_text(editor.project.sample_rate, item.length),
+        item.original_rate / 1000,
+        media_format(&item.file_name)
+    )
 }
 
 /// The original container format, taken from the file extension.
@@ -505,9 +520,33 @@ fn usage_text(usage: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::test_util::Headless;
 
     fn item(name: &str) -> MediaItem {
         MediaItem { id: Uuid::new_v4(), display_name: name.to_string(), file_name: format!("{name}.wav"), original_rate: 44_100, channels: 1, length: 48_000 }
+    }
+
+    fn test_editor() -> Editor {
+        Editor::with_project(
+            crate::model::project::Project::new("Test".to_string(), 48_000, crate::model::project::BitDepth::Int24),
+            crate::model::project::ViewState::default(),
+            crate::io::paths::ProjectPaths { root: std::path::PathBuf::from("unused") },
+        )
+    }
+
+    fn with_items(names: &[&str]) -> Editor {
+        let mut editor = test_editor();
+        let project = std::sync::Arc::make_mut(&mut editor.project);
+        project.media.extend(names.iter().map(|name| item(name)));
+        editor
+    }
+
+    /// Runs one frame of the panel on a 1280 x 800 screen.
+    fn frame(h: &mut Headless, panel: &mut BinPanel, editor: &mut Editor) -> crate::ui::test_util::Out {
+        h.frame(Vec::new(), |ui| {
+            ui.set_max_width(236.0);
+            let _ = panel.show(ui, editor);
+        })
     }
 
     #[test]
@@ -541,11 +580,7 @@ mod tests {
 
     #[test]
     fn meta_line_separates_with_real_middle_dots() {
-        let editor = Editor::with_project(
-            crate::model::project::Project::new("Test".to_string(), 48_000, crate::model::project::BitDepth::Int24),
-            crate::model::project::ViewState::default(),
-            crate::io::paths::ProjectPaths { root: std::path::PathBuf::from("unused") },
-        );
+        let editor = test_editor();
         let line = meta_line(&editor, &item("tone"));
         assert_eq!(line, "0:01.000 \u{B7} 44k \u{B7} Mo \u{B7} WAV");
         // UTF-8 for U+00B7 is C2 B7; the double-encoded mojibake starts C3 82.
@@ -565,5 +600,79 @@ mod tests {
             (imported.len(), relinked.len(), editor.take_is_live())
         });
         assert_eq!(result, (0, 0, true));
+    }
+
+    #[test]
+    fn header_has_the_media_title_and_the_sort_and_import_buttons() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let (mut panel, mut editor) = (BinPanel::default(), with_items(&["tone"]));
+        let out = frame(&mut h, &mut panel, &mut editor);
+        let title = out.texts().into_iter().find(|t| t.text == "Media").expect("the title");
+        assert_eq!(title.color, color::TEXT_PRIMARY);
+        let sort = out.text_rect(regular::ARROWS_DOWN_UP).expect("the Sort button");
+        let import = out.text_rect(regular::DOWNLOAD_SIMPLE).expect("the Import button");
+        assert!(title.rect.right() < sort.left() && sort.right() < import.left(), "title, then Sort, then Import");
+        assert!((sort.center().y - title.rect.center().y).abs() < 1.0, "one header row");
+    }
+
+    #[test]
+    fn rows_show_the_name_and_the_duration_on_the_right() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let (mut panel, mut editor) = (BinPanel::default(), with_items(&["tone", "hum"]));
+        let out = frame(&mut h, &mut panel, &mut editor);
+        let texts = out.texts();
+        let name = texts.iter().find(|t| t.text == "tone").expect("the name");
+        let duration = texts.iter().find(|t| t.text == "0:01.000").expect("the duration");
+        assert_eq!(duration.color, color::TEXT_TERTIARY);
+        assert!(duration.rect.left() > name.rect.right(), "the duration is right of the name");
+        assert!(out.text_rect(regular::WAVEFORM).is_some(), "the tile glyph");
+        assert!(out.text_rect(DROP_HINT).is_some(), "the drop zone stays under the list");
+        assert!(out.text_rect("Import").is_none(), "no empty state button");
+    }
+
+    #[test]
+    fn a_long_name_is_cut_before_the_duration() {
+        let long = "a_very_long_recording_name_that_cannot_fit_in_a_narrow_panel_at_all";
+        let fits = crate::ui::test_util::within_secs(30, move || {
+            let mut h = Headless::new(1280.0, 800.0);
+            let (mut panel, mut editor) = (BinPanel::default(), with_items(&[long]));
+            let out = frame(&mut h, &mut panel, &mut editor);
+            let texts = out.texts();
+            let name = texts.iter().find(|t| t.text.starts_with("a_very")).expect("the name");
+            let duration = texts.iter().find(|t| t.text == "0:01.000").expect("the duration");
+            name.rect.right() < duration.rect.left()
+        });
+        assert!(fits, "the cut name stops before the duration");
+    }
+
+    #[test]
+    fn clicking_a_row_selects_it() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let (mut panel, mut editor) = (BinPanel::default(), with_items(&["tone", "hum"]));
+        let out = frame(&mut h, &mut panel, &mut editor);
+        let target = out.text_rect("hum").expect("the second row").center();
+        let _ = h.click(target, |ui| {
+            ui.set_max_width(236.0);
+            let _ = panel.show(ui, &mut editor);
+        });
+        let out = frame(&mut h, &mut panel, &mut editor);
+        let hum = out.text_rect("hum").expect("the row").center();
+        let row = out.filled_rect_at(hum).expect("a row fill");
+        assert_eq!(row.height(), size::LIST_ROW_HEIGHT);
+        let selected = out.rects().into_iter().any(|r| r.fill == color::BG_ROW_SELECTED && r.rect == row);
+        assert!(selected, "the clicked row has the selected fill");
+    }
+
+    #[test]
+    fn the_empty_bin_shows_the_hint_once_and_an_import_button() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let (mut panel, mut editor) = (BinPanel::default(), test_editor());
+        let out = frame(&mut h, &mut panel, &mut editor);
+        let hints: Vec<_> = out.texts().into_iter().filter(|t| t.text == DROP_HINT).collect();
+        assert_eq!(hints.len(), 1, "no second hint in a drop zone");
+        assert_eq!(hints[0].color, color::TEXT_TERTIARY);
+        let button = out.text_rect("Import").expect("the Import button");
+        assert!(button.top() > hints[0].rect.bottom(), "the button sits under the hint");
+        assert!((button.center().x - hints[0].rect.center().x).abs() < 1.0, "both centered");
     }
 }
