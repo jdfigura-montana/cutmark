@@ -6,7 +6,7 @@
 
 use std::ops::RangeInclusive;
 
-use crate::config::{AnchorCorner, LayoutKind, PipConfig};
+use crate::config::{AnchorCorner, LayoutKind, PipConfig, PipShape};
 use crate::profiles::ProfileStore;
 
 /// The corners in the order the picker lists them.
@@ -88,7 +88,15 @@ fn pip_controls(ui: &mut egui::Ui, pip: &mut PipConfig) -> bool {
         ui.label("Border color");
         changed |= ui.color_edit_button_srgb(&mut pip.border_color).changed();
         ui.end_row();
-        changed |= slider_row(ui, "Corner radius", &mut pip.radius_px, 0.0..=100.0, " px");
+        ui.label("Shape");
+        ui.horizontal(|ui| {
+            changed |= ui.selectable_value(&mut pip.shape, PipShape::Rectangle, "Rectangle").changed();
+            changed |= ui.selectable_value(&mut pip.shape, PipShape::Circle, "Circle").changed();
+        });
+        ui.end_row();
+        if pip.shape == PipShape::Rectangle {
+            changed |= slider_row(ui, "Corner radius", &mut pip.radius_px, 0.0..=100.0, " px");
+        }
     });
     changed
 }

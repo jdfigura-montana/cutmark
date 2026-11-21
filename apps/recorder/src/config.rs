@@ -459,6 +459,26 @@ impl From<AnchorCorner> for capture::Corner {
     }
 }
 
+/// The shape of the picture in picture camera.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PipShape {
+    /// A rectangle, with optional rounded corners.
+    #[default]
+    Rectangle,
+    /// A circle cut from the middle of the cropped camera.
+    Circle,
+}
+
+impl From<PipShape> for capture::PipShape {
+    fn from(shape: PipShape) -> Self {
+        match shape {
+            PipShape::Rectangle => Self::Rectangle,
+            PipShape::Circle => Self::Circle,
+        }
+    }
+}
+
 /// The camera's place and look in the picture in picture layout, saved in a profile.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -483,8 +503,10 @@ pub struct PipConfig {
     pub border_px: f32,
     /// Border colour as red, green and blue.
     pub border_color: [u8; 3],
-    /// Corner radius in output pixels; 0 for square corners.
+    /// Corner radius in output pixels; 0 for square corners. Ignored for a circle.
     pub radius_px: f32,
+    /// The shape of the camera picture; profile files without one use a rectangle.
+    pub shape: PipShape,
 }
 
 impl Default for PipConfig {
@@ -502,6 +524,7 @@ impl Default for PipConfig {
             border_px: pip.border_px,
             border_color: pip.border_color,
             radius_px: pip.radius_px,
+            shape: PipShape::Rectangle,
         }
     }
 }
@@ -520,6 +543,7 @@ impl From<&PipConfig> for capture::PipSettings {
             border_px: config.border_px,
             border_color: config.border_color,
             radius_px: config.radius_px,
+            shape: config.shape.into(),
         }
     }
 }

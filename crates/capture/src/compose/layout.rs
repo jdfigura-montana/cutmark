@@ -59,6 +59,16 @@ impl RectF {
     }
 }
 
+/// The shape of the camera picture in the picture in picture layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PipShape {
+    /// A rectangle that follows the cropped camera's aspect ratio, with optional rounded corners.
+    #[default]
+    Rectangle,
+    /// A circle cut from the largest centred square of the cropped camera.
+    Circle,
+}
+
 /// How the camera looks in the picture in picture layout.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PipSettings {
@@ -78,12 +88,14 @@ pub struct PipSettings {
     pub crop_top_pct: f32,
     /// How much of the camera's bottom is cut off, in percent.
     pub crop_bottom_pct: f32,
-    /// Border width in output pixels, drawn inside the camera rectangle; 0 for none.
+    /// Border width in output pixels, drawn inside the camera rectangle, or as a ring outside the circle; 0 for none.
     pub border_px: f32,
     /// Border colour as red, green and blue.
     pub border_color: [u8; 3],
-    /// Corner radius in output pixels; 0 for square corners.
+    /// Corner radius in output pixels; 0 for square corners. Ignored for a circle.
     pub radius_px: f32,
+    /// The shape of the camera picture.
+    pub shape: PipShape,
 }
 
 impl Default for PipSettings {
@@ -100,6 +112,7 @@ impl Default for PipSettings {
             border_px: 0.0,
             border_color: [255, 255, 255],
             radius_px: 12.0,
+            shape: PipShape::Rectangle,
         }
     }
 }
@@ -162,18 +175,39 @@ pub fn cam_crop(pip: &PipSettings) -> RectF {
 ///
 /// The width is the scale percentage of the output width; the height follows the cropped camera's
 /// aspect ratio. A picture that would not fit is shrunk, and one that sticks out is moved back in.
+///
+/// For a circle the destination is a square as wide as the scale percentage of the output width (at most
+/// the output height), and the source is the largest centred square inside the cropped camera region.
 pub fn pip_placement(cam_w: u32, cam_h: u32, pip: &PipSettings, out_w: u32, out_h: u32) -> CamPlacement {
-    let src = cam_crop(pip);
+    let crop = cam_crop(pip);
     let out_wf = out_w as f32;
     let out_hf = out_h as f32;
-    let crop_w = (cam_w as f32 * src.width()).max(1.0);
-    let crop_h = (cam_h as f32 * src.height()).max(1.0);
+    let cam_wf = (cam_w as f32).max(1.0);
+    let cam_hf = (cam_h as f32).max(1.0);
+    let crop_w = (cam_wf * crop.width()).max(1.0);
+    let crop_h = (cam_hf * crop.height()).max(1.0);
     let mut width = (out_wf * finite(pip.scale_pct).clamp(1.0, 100.0) / 100.0).max(1.0);
     let mut height = width * crop_h / crop_w;
-    if height > out_hf {
-        height = out_hf;
-        width = height * crop_w / crop_h;
-    }
+    let src = match pip.shape {
+        PipShape::Rectangle => {
+            if height > out_hf {
+                height = out_hf;
+                width = height * crop_w / crop_h;
+            }
+            crop
+        }
+        PipShape::Circle => {
+            let diameter = width.min(out_wf.min(out_hf).max(1.0));
+            width = diameter;
+            height = diameter;
+            let side = crop_w.min(crop_h);
+            let half_u = side / cam_wf / 2.0;
+            let half_v = side / cam_hf / 2.0;
+            let centre_u = (crop.left + crop.right) / 2.0;
+            let centre_v = (crop.top + crop.bottom) / 2.0;
+            RectF::new(centre_u - half_u, centre_v - half_v, centre_u + half_u, centre_v + half_v)
+        }
+    };
     let width = width.round().clamp(1.0, out_wf.max(1.0));
     let height = height.round().clamp(1.0, out_hf.max(1.0));
     let offset_x = out_wf * finite(pip.offset_x_pct) / 100.0;
@@ -311,6 +345,54 @@ mod tests {
         let pip = PipSettings { offset_x_pct: 90.0, offset_y_pct: 90.0, ..PipSettings::default() };
         let placed = pip_placement(1920, 1080, &pip, 1920, 1080).dst;
         assert!(placed.left >= 0.0 && placed.top >= 0.0 && placed.right <= 1920.0 && placed.bottom <= 1080.0);
+    }
+
+    fn circle(scale_pct: f32) -> PipSettings {
+        PipSettings { shape: PipShape::Circle, scale_pct, radius_px: 40.0, border_px: 6.0, ..PipSettings::default() }
+    }
+
+    fn assert_close(actual: RectF, expected: RectF) {
+        let pairs = [(actual.left, expected.left), (actual.top, expected.top), (actual.right, expected.right), (actual.bottom, expected.bottom)];
+        for (a, e) in pairs {
+            assert!((a - e).abs() < 1e-5, "{actual:?} vs {expected:?}");
+        }
+    }
+
+    #[test]
+    fn a_circle_at_1080p_is_a_square_cut_from_the_middle_of_the_camera() {
+        let placed = pip_placement(1920, 1080, &circle(25.0), 1920, 1080);
+        // The diameter is 25 percent of 1920; the largest centred square of a 1920x1080 camera is 1080 wide.
+        assert_eq!(placed.dst, rect(1402.0, 578.0, 1882.0, 1058.0));
+        assert_close(placed.src, rect(0.21875, 0.0, 0.78125, 1.0));
+    }
+
+    #[test]
+    fn a_circle_at_1440p_scales_with_the_output() {
+        let placed = pip_placement(1920, 1080, &circle(25.0), 2560, 1440);
+        assert_eq!(placed.dst, rect(1869.0, 771.0, 2509.0, 1411.0));
+        assert_close(placed.src, rect(0.21875, 0.0, 0.78125, 1.0));
+    }
+
+    #[test]
+    fn a_circle_takes_its_square_from_inside_the_crop() {
+        // Cutting 25 percent from each side leaves 960x1080, so the square is 960 wide and 44.4 percent
+        // of the height either side of the middle.
+        let pip = PipSettings { crop_left_pct: 25.0, crop_right_pct: 25.0, ..circle(25.0) };
+        let placed = pip_placement(1920, 1080, &pip, 1920, 1080);
+        assert_eq!(placed.dst, rect(1402.0, 578.0, 1882.0, 1058.0));
+        assert_close(placed.src, rect(0.25, 0.5 - 480.0 / 1080.0, 0.75, 0.5 + 480.0 / 1080.0));
+        // Cutting 10 percent from the top and bottom leaves 1920x864, so the square is 864 wide.
+        let pip = PipSettings { crop_top_pct: 10.0, crop_bottom_pct: 10.0, ..circle(25.0) };
+        let placed = pip_placement(1920, 1080, &pip, 2560, 1440);
+        assert_eq!(placed.dst, rect(1869.0, 771.0, 2509.0, 1411.0));
+        assert_close(placed.src, rect(0.5 - 432.0 / 1920.0, 0.1, 0.5 + 432.0 / 1920.0, 0.9));
+    }
+
+    #[test]
+    fn a_circle_never_grows_past_the_frame_height() {
+        let placed = pip_placement(1920, 1080, &circle(100.0), 1920, 1080).dst;
+        assert_eq!((placed.width(), placed.height()), (1080.0, 1080.0));
+        assert!(placed.left >= 0.0 && placed.right <= 1920.0);
     }
 
     #[test]

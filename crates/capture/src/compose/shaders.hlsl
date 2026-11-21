@@ -9,7 +9,7 @@ cbuffer Params : register(b0)
     float4 dst_rect;
     // Left, top, right and bottom of the part of the source texture that is shown, 0 to 1.
     float4 src_uv;
-    // Border colour in rgb; alpha is unused.
+    // Border colour in rgb; alpha is 1 when the camera is a circle and 0 for a rounded rectangle.
     float4 border_color;
     // x: corner radius in pixels, y: border width in pixels, z: output width, w: output height.
     float4 shape;
@@ -30,13 +30,15 @@ struct VsOut
     float2 px : TEXCOORD0;
 };
 
-// Draws the rectangle, one pixel larger on every side so the anti-aliased edge has room.
+// Draws the rectangle, one pixel larger on every side so the anti-aliased edge has room. A circle's
+// border ring lies outside the rectangle, so the quad also grows by the border width.
 // Use Draw(4, 0) with a triangle strip.
 VsOut vs_main(uint id : SV_VertexID)
 {
     float2 corner = float2((float)(id & 1u), (float)(id >> 1u));
-    float2 lo = dst_rect.xy - 1.0;
-    float2 hi = dst_rect.zw + 1.0;
+    float grow = 1.0 + (border_color.w > 0.5 ? shape.y : 0.0);
+    float2 lo = dst_rect.xy - grow;
+    float2 hi = dst_rect.zw + grow;
     float2 px = lerp(lo, hi, corner);
     VsOut o;
     o.px = px;
@@ -81,9 +83,21 @@ float4 ps_nv12(VsOut i) : SV_Target
     float cr = (c.y - yuv_range.z) * yuv_range.w;
     float3 rgb = saturate(float3(luma + yuv_coef.x * cr, luma - yuv_coef.y * cb - yuv_coef.z * cr, luma + yuv_coef.w * cb));
 
+    float border = shape.y;
+    if (border_color.w > 0.5)
+    {
+        // A circle: the picture fills the circle and the border is a ring outside it.
+        float2 centre = (dst_rect.xy + dst_rect.zw) * 0.5;
+        float radius = (dst_rect.z - dst_rect.x) * 0.5;
+        float dc = length(i.px - centre) - radius;
+        float picture = saturate(0.5 - dc);
+        float ring = saturate(0.5 - (dc - border));
+        float3 ring_colour = lerp(border_color.rgb, rgb, picture);
+        return float4(ring_colour * ring, ring);
+    }
+
     float d = rect_distance(i.px, shape.x);
     float outer = saturate(0.5 - d);
-    float border = shape.y;
     float inner = border > 0.0 ? saturate(0.5 - (d + border)) : 1.0;
     float3 colour = lerp(border_color.rgb, rgb, inner);
     return float4(colour * outer, outer);

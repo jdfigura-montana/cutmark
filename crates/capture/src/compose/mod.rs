@@ -7,7 +7,7 @@
 
 mod layout;
 
-pub use layout::{CamPlacement, Corner, Layout, PipSettings, Placement, RectF, cam_crop, fit_rect, pip_placement, place};
+pub use layout::{CamPlacement, Corner, Layout, PipSettings, PipShape, Placement, RectF, cam_crop, fit_rect, pip_placement, place};
 
 use crate::{CamFrame, CaptureError, Gpu, with_context};
 use windows::Win32::Graphics::Direct3D::Fxc::{D3DCOMPILE_ENABLE_STRICTNESS, D3DCOMPILE_OPTIMIZATION_LEVEL3, D3DCompile};
@@ -337,14 +337,16 @@ impl Compositor {
         }
     }
 
-    /// Draws the camera into its rectangle with the crop, the rounded corners and the border.
+    /// Draws the camera into its rectangle with the crop, the rounded corners and the border, or as a circle with a ring.
     fn draw_nv12(&self, cam: &CamPlacement, pip: &PipSettings, views: &[ID3D11ShaderResourceView; 2]) {
         let (coef, range) = self.cam_color.shader_constants();
         let [red, green, blue] = pip.border_color;
+        let circle = pip.shape == PipShape::Circle;
         let params = Params {
             dst_rect: [cam.dst.left, cam.dst.top, cam.dst.right, cam.dst.bottom],
             src_uv: [cam.src.left, cam.src.top, cam.src.right, cam.src.bottom],
-            border_color: [f32::from(red) / 255.0, f32::from(green) / 255.0, f32::from(blue) / 255.0, 1.0],
+            // The alpha slot tells the shader the shape: 1 for a circle, 0 for a rounded rectangle.
+            border_color: [f32::from(red) / 255.0, f32::from(green) / 255.0, f32::from(blue) / 255.0, if circle { 1.0 } else { 0.0 }],
             shape: [pip.radius_px.max(0.0), pip.border_px.max(0.0), self.out_w as f32, self.out_h as f32],
             yuv_coef: coef,
             yuv_range: range,
