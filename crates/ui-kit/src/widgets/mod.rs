@@ -15,6 +15,7 @@ pub mod icon_button;
 pub mod inspector;
 pub mod list_row;
 pub mod main_toolbar;
+pub mod menu_bar;
 pub mod panel;
 pub mod primary_button;
 pub mod scroll_thumb;
@@ -25,6 +26,7 @@ pub mod status_bar;
 pub mod switch;
 pub mod text_field;
 pub mod timeline;
+pub mod title_block;
 pub mod toast;
 pub mod track_header;
 pub mod track_row;
@@ -41,6 +43,7 @@ pub use icon_button::icon_button;
 pub use inspector::{inspector_group, inspector_header, inspector_row};
 pub use list_row::list_row;
 pub use main_toolbar::{MainToolbar, main_toolbar};
+pub use menu_bar::{Menu, MenuBarOutput, menu_bar};
 pub use panel::panel;
 pub use primary_button::primary_button;
 pub use scroll_thumb::scroll_thumb;
@@ -54,9 +57,10 @@ pub use timeline::{
     ClipKind, ClipLook, MarkerKind, marker_color, paint_clip, paint_marker, paint_marquee, paint_pending_band, paint_playhead, paint_ruler, paint_snap_line,
     paint_waveform, waveform_color,
 };
+pub use title_block::{Title, title_block};
 pub use toast::{set_toast_time, show_toasts, toast};
 pub use track_header::{Toggle, ToggleKind, track_header};
-pub use track_row::paint_track_row;
+pub use track_row::{paint_track_area_empty, paint_track_header_column, paint_track_row};
 pub use transport::{DeckState, PlayKind, deck_button, play_button, timecode, transport_deck};
 
 use egui::CornerRadius;

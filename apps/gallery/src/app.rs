@@ -7,7 +7,7 @@ use eframe::egui;
 use ui_kit::fonts;
 use ui_kit::icons::regular;
 use ui_kit::tokens::{color, size, space, typography};
-use ui_kit::{Theme, appearance, dialog};
+use ui_kit::{Menu, Theme, Title, appearance, dialog};
 
 use crate::core_page;
 use crate::media;
@@ -15,6 +15,9 @@ use crate::media;
 /// The ui-kit version shown in the toolbar caption. Every suite package
 /// shares the workspace version, so this tracks ui-kit's value.
 const UI_KIT_VERSION: &str = "0.1.0";
+
+/// The app mark's side (spec rev 3 "Title bar": 18).
+const APP_MARK_SIZE: f32 = 18.0;
 
 /// The pages of the toolbar segmented control.
 const PAGES: &[&str] = &["Core", "Media"];
@@ -67,21 +70,24 @@ impl eframe::App for Gallery {
 }
 
 impl Gallery {
-    /// The main toolbar: app mark, document caption, page switch, actions.
-    /// It is the top panel, so the page starts below the 52px bar.
+    /// The main toolbar, which is the 44px title bar: app mark and the File and
+    /// View menus on the left, the document title in the center, the page
+    /// switch and the actions on the right.
     fn show_toolbar(&mut self, ui: &mut egui::Ui) {
         let page = std::cell::Cell::new(self.page);
         let appearance_open = std::cell::Cell::new(self.appearance_open);
         egui::Panel::top("gallery-toolbar").exact_size(size::TOOLBAR_MAIN_HEIGHT).frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
             ui_kit::main_toolbar(
                 ui,
-                left_zone,
+                |ui| left_zone(ui, &page, &appearance_open),
+                |ui| {
+                    let caption = format!("ui-kit {UI_KIT_VERSION}");
+                    ui_kit::title_block(ui, &Title::Document { name: "Gallery", unsaved: false, caption: Some(&caption) });
+                },
                 |ui| {
                     let mut selected = page.get();
                     ui_kit::segmented(ui, "gallery-pages", &mut selected, PAGES);
                     page.set(selected);
-                },
-                |ui| {
                     ui.add_space(space::SCALE_6);
                     if ui_kit::icon_button(ui, regular::PALETTE, "Appearance").clicked() {
                         appearance_open.set(true);
@@ -90,7 +96,6 @@ impl Gallery {
                     if ui_kit::primary_button(ui, "Toast").clicked() {
                         ui_kit::toast(ui.ctx(), "Toast from the gallery");
                     }
-                    ui.add_space(space::SCALE_4);
                 },
             );
         });
@@ -157,27 +162,47 @@ impl Gallery {
     }
 }
 
-/// The left zone: the app mark placeholder and the document caption. The
-/// document name and its caption line are a two-line block (type.headline
-/// over type.caption), vertically centered in the 52px bar, never clipped.
-fn left_zone(ui: &mut egui::Ui) {
+/// The left zone: the app mark placeholder, then the menu bar with a File and
+/// a View menu of sample items.
+fn left_zone(ui: &mut egui::Ui, page: &std::cell::Cell<usize>, appearance_open: &std::cell::Cell<bool>) {
     app_mark(ui);
-    ui.add_space(space::SCALE_4);
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = space::SCALE_2;
-        ui.label(egui::RichText::new("Gallery").font(fonts::semibold(typography::HEADLINE_SIZE)).color(color::TEXT_PRIMARY));
-        ui.label(egui::RichText::new(format!("ui-kit {UI_KIT_VERSION}")).font(fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY));
-    });
+    ui.add_space(space::SCALE_8);
+    let mut menus = [
+        Menu::new("File", |ui| {
+            if ui.add(egui::Button::new("Show toast").shortcut_text("Ctrl+T")).clicked() {
+                ui_kit::toast(ui.ctx(), "Toast from the File menu");
+                ui.close();
+            }
+            if ui.button("Appearance...").clicked() {
+                appearance_open.set(true);
+                ui.close();
+            }
+            ui.separator();
+            if ui.add(egui::Button::new("Quit").shortcut_text("Alt+F4")).clicked() {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }),
+        Menu::new("View", |ui| {
+            for (index, name) in PAGES.iter().enumerate() {
+                if ui.selectable_label(page.get() == index, format!("{name} page")).clicked() {
+                    page.set(index);
+                    ui.close();
+                }
+            }
+        }),
+    ];
+    ui_kit::menu_bar(ui, &mut menus);
 }
 
 /// Draws the app mark placeholder: an accent circle with a notch cut from its
 /// top right (spec "Open questions" item 1: placeholder until a real logo).
 fn app_mark(ui: &mut egui::Ui) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(APP_MARK_SIZE, APP_MARK_SIZE), egui::Sense::hover());
     let c = rect.center();
+    let radius = APP_MARK_SIZE / 2.0;
     let painter = ui.painter();
-    painter.circle_filled(c, 9.0, Theme::get(ui.ctx()).accent.accent);
-    painter.rect_filled(egui::Rect::from_min_size(egui::pos2(c.x, c.y - 9.0), egui::vec2(9.0, 9.0)), 0.0, color::BG_GROUND);
+    painter.circle_filled(c, radius, Theme::get(ui.ctx()).accent.accent);
+    painter.rect_filled(egui::Rect::from_min_size(egui::pos2(c.x, c.y - radius), egui::vec2(radius, radius)), 0.0, color::BG_GROUND);
 }
 
 /// The sample dialog's footer: Cancel, then the primary Close at the bottom

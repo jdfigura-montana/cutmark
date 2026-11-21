@@ -1,7 +1,7 @@
 //! kittest tests for egui widget ID hygiene and the main toolbar's zones:
 //! duplicated widgets must never raise the red "First use / Second use of
 //! widget ID" overlays, the right zone must read content then caption
-//! buttons, and the left zone's two-line block must fit the 52px bar.
+//! buttons, and the left zone must fit the 44px bar.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -153,10 +153,10 @@ fn the_right_zone_reads_content_then_sits_at_the_window_edge() {
     assert!(share.right() <= zone.right() + 0.5, "the primary button must end inside the right zone");
 }
 
-/// The left zone's two-line block (type.headline over type.caption) fits the
-/// 52px bar and stays vertically centered, never clipped.
+/// The left zone (app mark and menu bar) fits the 44px bar and stays
+/// vertically centered.
 #[test]
-fn the_left_two_line_block_fits_the_bar_centered() {
+fn the_left_zone_fits_the_bar_centered() {
     let left = Rc::new(Cell::new(Rect::NOTHING));
     let bar = Rc::new(Cell::new(Rect::NOTHING));
     let left_watch = left.clone();
@@ -165,11 +165,9 @@ fn the_left_two_line_block_fits_the_bar_centered() {
         let toolbar = ui_kit::main_toolbar(
             ui,
             |ui| {
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = ui_kit::tokens::space::SCALE_2;
-                    ui.label(egui::RichText::new("Gallery").font(ui_kit::fonts::semibold(ui_kit::tokens::typography::HEADLINE_SIZE)));
-                    ui.label(egui::RichText::new("ui-kit 0.1.0").font(egui::FontId::proportional(ui_kit::tokens::typography::CAPTION_SIZE)));
-                });
+                ui.add_space(ui_kit::tokens::space::SCALE_4);
+                let mut menus = [ui_kit::Menu::new("File", |_| {}), ui_kit::Menu::new("View", |_| {})];
+                ui_kit::menu_bar(ui, &mut menus);
             },
             |ui| {
                 let mut m = 0;
@@ -186,9 +184,10 @@ fn the_left_two_line_block_fits_the_bar_centered() {
 
     let left = left.get();
     let bar = bar.get();
-    assert!(left.height() <= bar.height(), "the two-line block must fit the 52px bar, got {} in {}", left.height(), bar.height());
+    assert!((bar.height() - ui_kit::tokens::size::TOOLBAR_MAIN_HEIGHT).abs() < 1e-3, "the bar must be the 44px token height, got {}", bar.height());
+    assert!(left.height() <= bar.height(), "the left zone must fit the bar, got {} in {}", left.height(), bar.height());
     let drift = left.center().y - bar.center().y;
-    assert!(drift.abs() <= 1.0, "the two-line block must be vertically centered, off by {drift}px");
+    assert!(drift.abs() <= 1.0, "the left zone must be vertically centered, off by {drift}px");
 }
 
 /// The toolbar keeps every zone inside the bar's bounds: nothing may be laid

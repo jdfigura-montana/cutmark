@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use ui_kit::tokens;
 
 /// Every token named in the Design Language spec's tables.
-const SPEC_TOKENS: [&str; 48] = [
+const SPEC_TOKENS: [&str; 54] = [
     // Color: surfaces
     "bg.ground",
     "bg.panel",
@@ -19,10 +19,16 @@ const SPEC_TOKENS: [&str; 48] = [
     "bg.selected",
     "bg.row.selected",
     "bg.track.selected",
+    "bg.track.header",
+    "bg.track.header.selected",
     "bg.track.alt",
+    "bg.track.empty",
     "bg.clip",
     "stroke.hairline",
     "stroke.separator",
+    "stroke.separator.strong",
+    "stroke.track",
+    "stroke.track.header",
     "stroke.clip",
     // Color: text
     "text.primary",
@@ -97,8 +103,18 @@ fn spot_checks_match_the_spec() {
     assert_eq!(tokens::accent::ACCENT, Color32::from_rgb(0x5B, 0x9D, 0xFF));
     assert_eq!(tokens::color::SEM_METER_CLIP, Color32::from_rgb(0xFF, 0x45, 0x3A));
     assert!((tokens::radius::PANEL - 18.0).abs() < f32::EPSILON);
-    // rgba(255,255,255,.015) premultiplied: 0.015 * 255 rounds to 4.
-    assert_eq!(tokens::color::BG_TRACK_ALT.a(), 4);
+    // rgba(255,255,255,.025) premultiplied: 0.025 * 255 rounds to 6.
+    assert_eq!(tokens::color::BG_TRACK_ALT.a(), 6);
+    assert_eq!(tokens::color::BG_TRACK_HEADER, Color32::from_rgb(0x1B, 0x1B, 0x1E));
+    assert_eq!(tokens::color::BG_TRACK_HEADER_SELECTED, Color32::from_rgb(0x26, 0x26, 0x2A));
+    assert_eq!(tokens::color::BG_TRACK_EMPTY, Color32::from_rgb(0x11, 0x11, 0x13));
+    // rgba(255,255,255,.10) premultiplied: alpha 26 (0.10 * 255 = 25.5 rounds up).
+    assert_eq!(tokens::color::STROKE_SEPARATOR_STRONG.a(), 26);
+    assert_eq!(tokens::color::STROKE_TRACK.a(), 18);
+    assert_eq!(tokens::color::STROKE_TRACK_HEADER.a(), 20);
+    // Rev 3: the title bar is 44 tall and the caption buttons are 46 x 44.
+    assert!((tokens::size::TOOLBAR_MAIN_HEIGHT - 44.0).abs() < f32::EPSILON);
+    assert!((tokens::size::CAPTION_BUTTON_HEIGHT - 44.0).abs() < f32::EPSILON);
 }
 
 #[test]

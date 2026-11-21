@@ -5,6 +5,7 @@ use egui::{Color32, CornerRadius, Galley, Pos2, Rect, Response, Sense, Ui, UiBui
 use crate::fonts;
 use crate::meter;
 use crate::tokens::{color, space, typography};
+use crate::widgets::track_row::paint_row_separator;
 
 /// Side of a toggle square (spec "Track header": 24 x 24).
 const TOGGLE_SIDE: f32 = 24.0;
@@ -65,11 +66,12 @@ pub fn track_header(ui: &mut Ui, number: usize, name: &str, selected: bool, togg
     }
     let painter = ui.painter();
     let pad = space::SCALE_2;
-    if selected {
-        // The selected header shares its row's `bg.track.selected`, so the
-        // selection spans the header column too (spec "Track row").
-        painter.rect_filled(rect, CornerRadius::ZERO, color::BG_TRACK_SELECTED);
-    }
+    // The header paints its own column fill (`bg.track.header`, or
+    // `bg.track.header.selected` when selected) so it reads right on its own;
+    // over `paint_track_header_column` it is the same opaque color. Every
+    // header ends in a `stroke.track` line like its row.
+    painter.rect_filled(rect, CornerRadius::ZERO, if selected { color::BG_TRACK_HEADER_SELECTED } else { color::BG_TRACK_HEADER });
+    paint_row_separator(painter, rect);
     let number_color = if selected { color::TEXT_PRIMARY } else { color::TEXT_TERTIARY };
     let number_galley = painter.layout_no_wrap(number.to_string(), fonts::mono(typography::VALUE_SIZE), number_color);
     let name_galley = painter.layout_no_wrap(name.to_owned(), fonts::semibold(typography::HEADLINE_SIZE), color::TEXT_PRIMARY);

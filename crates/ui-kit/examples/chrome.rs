@@ -1,19 +1,24 @@
-//! The custom window chrome with the real main toolbar (S1 phase 7b): the
-//! 52px toolbar is the title bar, the caption buttons work, and
-//! `main_toolbar` publishes the chrome regions itself, so no manual
-//! `chrome::publish` call is needed. Run with:
-//! `cargo run -p ui-kit --example chrome`.
+//! The custom window chrome with the real main toolbar (S1 phase 7b, rev 3
+//! layout): the 44px toolbar is the title bar, with a menu bar on the left,
+//! the document title in the center, and the actions, a separator and the
+//! caption buttons on the right. The caption buttons work, and `main_toolbar`
+//! publishes the chrome regions itself, so no manual `chrome::publish` call is
+//! needed. Run with: `cargo run -p ui-kit --example chrome`.
 //!
 //! Hand-check list (Windows 11): the toolbar drags, double-click on it
 //! maximizes and restores, dragging to a screen edge snaps, every edge and
 //! corner resizes, Win+Left/Right/Up work, hovering the maximize button
 //! shows the Snap Layouts flyout, corners are round; minimize, maximize and
-//! close work; clicking the segmented control or the primary button never
-//! drags the window; another window on top dims the toolbar text.
+//! close work; clicking a menu title, the segmented control or the primary
+//! button never drags the window; clicking a menu title opens its menu and
+//! hovering the other title switches menus; another window on top dims the
+//! toolbar text.
 
 use eframe::egui;
-use egui_phosphor::variants::regular;
-use ui_kit::{Theme, fonts, tokens};
+use ui_kit::{Menu, Theme, Title, tokens};
+
+/// The app mark's side (spec rev 3 "Title bar": 18).
+const APP_MARK_SIZE: f32 = 18.0;
 
 /// The demo app: draws the main toolbar and a status line.
 struct ChromeDemo {
@@ -24,25 +29,35 @@ struct ChromeDemo {
 /// Draws the app mark placeholder: an accent circle with a notch cut from its
 /// top right (spec "Open questions" item 1: placeholder until a real logo).
 fn app_mark(ui: &mut egui::Ui) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(APP_MARK_SIZE, APP_MARK_SIZE), egui::Sense::hover());
     let c = rect.center();
+    let radius = APP_MARK_SIZE / 2.0;
     let painter = ui.painter();
-    painter.circle_filled(c, 9.0, Theme::get(ui.ctx()).accent.accent);
-    painter.rect_filled(egui::Rect::from_min_size(egui::pos2(c.x, c.y - 9.0), egui::vec2(9.0, 9.0)), 0.0, tokens::color::BG_GROUND);
+    painter.circle_filled(c, radius, Theme::get(ui.ctx()).accent.accent);
+    painter.rect_filled(egui::Rect::from_min_size(egui::pos2(c.x, c.y - radius), egui::vec2(radius, radius)), 0.0, tokens::color::BG_GROUND);
 }
 
-/// Draws the left zone: app mark, document name with its caption line, Undo
-/// and Redo.
+/// Draws the left zone: the app mark, then a File and an Edit menu.
 fn left_zone(ui: &mut egui::Ui) {
     app_mark(ui);
-    ui.add_space(tokens::space::SCALE_4);
-    ui.vertical(|ui| {
-        ui.label(egui::RichText::new("Interview take 3").font(fonts::semibold(tokens::typography::BODY_SIZE)));
-        ui.label(egui::RichText::new("Saved \u{b7} WAV").font(fonts::medium(tokens::typography::CAPTION_SIZE)));
-    });
-    ui.add_space(tokens::space::SCALE_6);
-    ui_kit::icon_button(ui, regular::ARROW_COUNTER_CLOCKWISE, "Undo");
-    ui_kit::icon_button(ui, regular::ARROW_CLOCKWISE, "Redo");
+    ui.add_space(tokens::space::SCALE_8);
+    let mut menus = [
+        Menu::new("File", |ui| {
+            for item in ["New", "Open...", "Save"] {
+                if ui.button(item).clicked() {
+                    ui.close();
+                }
+            }
+        }),
+        Menu::new("Edit", |ui| {
+            for item in ["Undo", "Redo"] {
+                if ui.button(item).clicked() {
+                    ui.close();
+                }
+            }
+        }),
+    ];
+    ui_kit::menu_bar(ui, &mut menus);
 }
 
 impl eframe::App for ChromeDemo {
@@ -56,12 +71,13 @@ impl eframe::App for ChromeDemo {
         ui_kit::main_toolbar(
             ui,
             left_zone,
+            |ui| {
+                ui_kit::title_block(ui, &Title::Document { name: "Interview take 3", unsaved: true, caption: Some("48 kHz \u{b7} 24-bit \u{b7} 4 tracks") });
+            },
             move |ui| {
                 let mut m = mode.get();
                 ui_kit::segmented(ui, "chrome-modes", &mut m, &["Edit", "Mix"]);
                 mode.set(m);
-            },
-            |ui| {
                 ui.add_space(tokens::space::SCALE_6);
                 ui_kit::primary_button(ui, "Export");
             },
