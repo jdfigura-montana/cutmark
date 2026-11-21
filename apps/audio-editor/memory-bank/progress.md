@@ -1,3 +1,6 @@
+## Task S1 phase 11c (2026-11-21)
+Transport deck, percent zoom readout, wave scale slider, Add track row; toolbar.rs deleted. Tests 672 (was 669): record and play/stop tests rewritten for the deck, +deck jump test, +add row and wave slider test, +timecode split test. Open for JD eyes: deck width and fade, no Loop button (no loop feature), end button kept after Record.
+
 ## Task S1 phase 11b fixes (2026-11-21)
 Header layout by height (one row below the two-row threshold, all toggles visible from 40 px), Vol/Pan labels and values, toggle and grip tooltips, SliderKind::Bipolar for pan, clip lights clear only on a meter click. Tests: cutmark-audio 669 (was 665), ui-kit widgets +2. Dropped the " dB" unit from the slider value text for width (the tooltip keeps it).
 

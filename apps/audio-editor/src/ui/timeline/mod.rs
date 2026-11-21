@@ -6,12 +6,14 @@ use ui_kit::tokens::{color, size, space, typography};
 use uuid::Uuid;
 
 use crate::editor::Editor;
+use crate::editor::message::Message;
 use crate::editor::transport::TransportState;
 use crate::ui::theme::THEME;
 use crate::ui::widgets::meter;
 use crate::util::time::seconds_to_samples;
 
 pub mod clip_view;
+pub mod deck;
 pub mod interaction;
 pub mod lane;
 pub mod ruler;
@@ -129,8 +131,12 @@ pub fn tick_step(spp: f64, rate: u32, min_px: f32) -> u64 {
 
 /// Width of the zoom slider in the panel toolbar, in points.
 const ZOOM_SLIDER_W: f32 = 140.0;
-/// Width reserved for the zoom readout (twelve mono characters), in points.
-const ZOOM_READOUT_W: f32 = 92.0;
+/// Width of the waveform height slider in the panel toolbar, in points.
+const WAVE_SLIDER_W: f32 = 90.0;
+/// Width reserved for the zoom readout ("100%"), in points.
+const ZOOM_READOUT_W: f32 = 56.0;
+/// Waveform height slider range: log2 of the 1x to 16x display scale.
+const WAVE_LOG2_RANGE: std::ops::RangeInclusive<f32> = 0.0..=4.0;
 
 /// Zoom slider position for a samples-per-pixel value: the negated log2, so
 /// the right end is the most zoomed in. Out-of-range input clamps first.
@@ -149,15 +155,16 @@ fn zoom_slider_range() -> std::ops::RangeInclusive<f32> {
     zoom_to_slider(MAX_SPP)..=zoom_to_slider(MIN_SPP)
 }
 
-/// The zoom readout: pixels per second of audio.
-fn zoom_readout(spp: f64, rate: u32) -> String {
-    let px_per_s = f64::from(rate) / spp;
-    if px_per_s >= 100.0 {
-        format!("{px_per_s:.0} px/s")
-    } else if px_per_s >= 10.0 {
-        format!("{px_per_s:.1} px/s")
+/// The zoom readout: the zoom relative to Fit as a percent (Fit is 100%,
+/// zoomed in reads higher). `fit_spp` is the samples-per-pixel Fit would set.
+fn zoom_readout(spp: f64, fit_spp: f64) -> String {
+    let percent = fit_spp / spp * 100.0;
+    if percent >= 10.0 {
+        format!("{percent:.0}%")
+    } else if percent >= 1.0 {
+        format!("{percent:.1}%")
     } else {
-        format!("{px_per_s:.2} px/s")
+        format!("{percent:.2}%")
     }
 }
 
@@ -177,7 +184,7 @@ fn content_length(editor: &Editor) -> u64 {
 /// Draws the whole timeline into the remaining center space and handles its
 /// input (zoom, scroll, playhead clicks). Not a ScrollArea: everything is
 /// painted by hand over one allocated rect.
-pub fn show(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction, meters: &mut meter::MeterState) -> Vec<String> {
+pub fn show(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction, meters: &mut meter::MeterState) -> Vec<Message> {
     // The timeline owns horizontal zoom; egui's own keyboard and Ctrl+wheel
     // UI zoom must not fire here.
     ui.ctx().options_mut(|o| o.zoom_with_keyboard = false);
@@ -186,15 +193,19 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction, m
     // ruler, headers and lanes in the rest.
     let mut messages = Vec::new();
     ui_kit::panel(ui, |ui| {
+        let content_rect = ui.max_rect();
         let lane_width = ui.available_width() - THEME.header_col_w;
         panel_toolbar(ui, editor, lane_width);
-        messages = show_frame(ui, editor, view_menu, meters);
+        messages.extend(show_frame(ui, editor, view_menu, meters).into_iter().map(Message::media));
+        // The transport deck floats over the panel's content area.
+        messages.extend(deck::show(ui, editor, content_rect, ruler::is_scrubbing(ui.ctx())));
     });
     messages
 }
 
 /// The panel toolbar row (44 tall): the Ripple and Snap chips on the left, the
-/// zoom slider, its readout and the Fit button on the right. The chips read
+/// waveform height slider, the zoom slider, its readout and the Fit button on
+/// the right. The chips read
 /// the editor's view state every frame, so they stay in sync with the View
 /// menu and the R and N keys. Zoom stays live while a take is recorded; the
 /// chips do not.
@@ -214,7 +225,8 @@ fn panel_toolbar(ui: &mut egui::Ui, editor: &mut Editor, lane_width: f32) {
             }
         });
 
-        // Added right to left, so on screen it reads slider, readout, Fit.
+        // Added right to left, so on screen it reads waveform icon and slider,
+        // zoom slider, readout, Fit.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui_kit::icon_button(ui, regular::ARROWS_OUT_LINE_HORIZONTAL, "Zoom to fit (\\)").clicked() {
                 apply_fit(editor, lane_width);
@@ -224,7 +236,7 @@ fn panel_toolbar(ui: &mut egui::Ui, editor: &mut Editor, lane_width: f32) {
             ui.painter().text(
                 readout.left_center(),
                 egui::Align2::LEFT_CENTER,
-                zoom_readout(spp, editor.project.sample_rate),
+                zoom_readout(spp, zoom_to_fit(content_length(editor), editor.project.sample_rate, lane_width).0),
                 ui_kit::fonts::mono(typography::VALUE_SIZE),
                 color::TEXT_SECONDARY,
             );
@@ -237,8 +249,33 @@ fn panel_toolbar(ui: &mut egui::Ui, editor: &mut Editor, lane_width: f32) {
                 let (new_spp, scroll_x) = zoom_at(spp, editor.view.scroll_x, slider_to_zoom(value) / spp, lane_width / 2.0);
                 editor.set_view_x(new_spp, clamp_scroll_x(editor, new_spp, lane_width, scroll_x));
             }
+            wave_scale_slider(ui, editor);
         });
     });
+}
+
+/// The waveform height control on the right of the panel toolbar: a Phosphor
+/// waveform icon and a 90 px zoom-style slider over the 1x to 16x display
+/// scale (edited as log2). Double-click resets to 1x; Alt+wheel on the lanes
+/// still scales too. Display only, never changes the audio. Called in a
+/// right-to-left layout, so the slider lands left of the zoom slider with the
+/// icon to its left.
+fn wave_scale_slider(ui: &mut egui::Ui, editor: &mut Editor) {
+    let shown = editor.wave_scale().log2();
+    let mut value = shown;
+    let mut reset = false;
+    ui.allocate_ui(egui::vec2(WAVE_SLIDER_W, size::SEGMENT_HEIGHT), |ui| {
+        let resp = ui_kit::slider(ui, &mut value, WAVE_LOG2_RANGE, ui_kit::SliderKind::Zoom).on_hover_text("Waveform height");
+        reset = resp.double_clicked();
+    });
+    if reset {
+        editor.set_wave_scale(1.0);
+    } else if (value - shown).abs() > 1e-4 {
+        editor.set_wave_scale(value.exp2());
+    }
+    let (icon, _) = ui.allocate_exact_size(egui::vec2(size::ICON_BUTTON / 2.0, size::SEGMENT_HEIGHT), egui::Sense::hover());
+    let font = ui_kit::fonts::icon_regular(typography::HEADLINE_SIZE);
+    ui.painter().text(icon.center(), egui::Align2::CENTER_CENTER, regular::WAVEFORM, font, color::TEXT_SECONDARY);
 }
 
 /// The ruler, header column, lanes and scrollbar in the space the panel
@@ -255,7 +292,7 @@ fn show_frame(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction,
     let lane_rect = egui::Rect::from_min_max(egui::pos2(lane_left, ruler_rect.bottom()), egui::pos2(lane_right, avail.bottom() - THEME.scrollbar_h));
     let scroll_rect = egui::Rect::from_min_max(egui::pos2(lane_left, lane_rect.bottom()), egui::pos2(lane_right, avail.bottom()));
 
-    let content_h: f32 = editor.project.tracks.iter().map(|t| t.height).sum();
+    let content_h: f32 = editor.project.tracks.iter().map(|t| t.height).sum::<f32>() + track_header::ADD_ROW_H;
     let max_scroll_y = (content_h - lane_rect.height()).max(0.0);
 
     // Old project files may carry an out-of-range zoom (or 0); fit instead.
@@ -278,7 +315,10 @@ fn show_frame(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction,
     // While a take is recorded the mouse only zooms and scrolls: the ruler,
     // the lanes, the clips and the bin drag ignore it (no seek, no scrub, no
     // selection, no edits).
-    let recording = editor.is_recording();
+    // A press on the transport deck belongs to the deck, not to what lies
+    // under it: the pointer handlers skip that frame's press.
+    let deck_press = ui.input(|i| i.pointer.primary_pressed()) && ui.input(|i| i.pointer.latest_pos()).is_some_and(|p| deck::covers(ui.ctx(), p));
+    let recording = editor.is_recording() || deck_press;
     let marker_g = Geom { lane_left, lane_width, spp: editor.view.samples_per_pixel, scroll_x: editor.view.scroll_x };
     let ruler_taken = !recording && ruler::handle_markers(ui, editor, &marker_g, ruler_rect);
     handle_input(ui, editor, lane_left, lane_width, max_scroll_y, &resp);
@@ -741,11 +781,13 @@ mod tests {
     }
 
     #[test]
-    fn zoom_readout_reads_pixels_per_second() {
-        assert_eq!(zoom_readout(480.0, 48_000), "100 px/s");
-        assert_eq!(zoom_readout(1.0, 48_000), "48000 px/s");
-        assert_eq!(zoom_readout(4_800.0, 48_000), "10.0 px/s");
-        assert_eq!(zoom_readout(48_000.0, 48_000), "1.00 px/s");
+    fn zoom_readout_reads_percent_of_fit() {
+        assert_eq!(zoom_readout(480.0, 480.0), "100%", "Fit is 100%");
+        assert_eq!(zoom_readout(240.0, 480.0), "200%", "zoomed in reads higher");
+        assert_eq!(zoom_readout(1_920.0, 480.0), "25%");
+        assert_eq!(zoom_readout(4_800.0, 480.0), "10%");
+        assert_eq!(zoom_readout(9_600.0, 480.0), "5.0%");
+        assert_eq!(zoom_readout(480_000.0, 480.0), "0.10%");
     }
 
     #[test]

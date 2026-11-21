@@ -10,5 +10,4 @@ pub mod status_bar;
 pub mod test_util;
 pub mod theme;
 pub mod timeline;
-pub mod toolbar;
 pub mod widgets;

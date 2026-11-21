@@ -18,7 +18,6 @@ use crate::ui::start_screen::StartScreen;
 use crate::ui::status_bar;
 use crate::ui::theme::THEME;
 use crate::ui::timeline::{self, ViewMenuAction};
-use crate::ui::toolbar;
 use crate::ui::widgets::meter::MeterState;
 use ui_kit::icons;
 use ui_kit::tokens::{color, size, space};
@@ -33,8 +32,6 @@ pub const APP_SHORT_NAME: &str = "Cutmark Audio";
 
 /// Height of the 52px main toolbar (the window's title bar).
 const TOP_BAR_H: f32 = size::TOOLBAR_MAIN_HEIGHT;
-/// Height of the toolbar panel with the transport and edit tools.
-const TOOLBAR_H: f32 = 48.0;
 /// Height of the bottom status bar panel.
 const STATUS_BAR_H: f32 = size::STATUS_BAR_HEIGHT;
 
@@ -423,13 +420,6 @@ impl App {
             msgs.extend(media_messages(bin_panel::pick_and_import(editor)));
             action = ProjectMenuAction::None;
         }
-        egui::Panel::top("toolbar")
-            .exact_size(TOOLBAR_H)
-            .frame(egui::Frame::new().fill(THEME.panel_bg).inner_margin(egui::Margin { left: 8, ..Default::default() }))
-            .show(ui, |ui| {
-                msgs.extend(toolbar::show(ui, editor));
-            });
-
         // Bottom: status bar.
         egui::Panel::bottom("status_bar")
             .exact_size(STATUS_BAR_H)
@@ -457,7 +447,7 @@ impl App {
         egui::CentralPanel::default().frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin::same(space::WINDOW_GAP as i8))).show(
             ui,
             |ui| {
-                msgs.extend(media_messages(timeline::show(ui, editor, view_action, meters)));
+                msgs.extend(timeline::show(ui, editor, view_action, meters));
             },
         );
 
@@ -1155,41 +1145,44 @@ mod tests {
 
         start_take(&mut rig, 24_000);
         let out = rig.frame();
-        // Toolbar: the record position 1.5 s; status bar: elapsed 0.5 s.
-        assert!(out.text_rect("00:00:01.500").is_some(), "toolbar timecode");
+        // Deck: the record position 1.5 s (fraction in its own run); status
+        // bar: elapsed 0.5 s.
+        assert!(out.text_rect("00:00:01").is_some() && out.text_rect(".500").is_some(), "deck timecode");
         let rec = out.texts().into_iter().find(|t| t.text.starts_with("Rec ")).expect("the Rec readout");
         assert_eq!(rec.text, "Rec 00:00:00.500", "the elapsed time");
         assert_eq!(rec.color, ui_kit::tokens::color::TEXT_TERTIARY, "the component's caption color");
         assert!(out.text_rect("Playhead 00:00:01.000").is_none(), "Rec replaces Playhead");
     }
 
-    /// The toolbar's glyphs (above y = 80), left to right.
+    /// The transport deck's glyphs (it floats near the window bottom), left to
+    /// right.
     fn toolbar_glyphs(out: &Out, glyph: &str) -> Vec<crate::ui::test_util::TextItem> {
-        let mut found: Vec<_> = out.texts().into_iter().filter(|t| t.text == glyph && t.rect.center().y < 80.0).collect();
+        let mut found: Vec<_> = out.texts().into_iter().filter(|t| t.text == glyph && t.rect.center().y > 600.0).collect();
         found.sort_by(|a, b| a.rect.center().x.total_cmp(&b.rect.center().x));
         found
     }
 
-    /// The red disc of the Record button: a filled circle of its diameter.
-    fn record_disc(out: &Out) -> Option<egui::epaint::CircleShape> {
-        out.circles().into_iter().find(|c| c.fill == THEME.record_red && (c.radius * 2.0 - THEME.record_btn_d).abs() < 0.01)
+    /// The Record capsule: the 56 x 44 `sem.record` pill of the deck.
+    fn record_capsule(out: &Out) -> Option<egui::epaint::RectShape> {
+        out.rects().into_iter().find(|r| r.fill == color::SEM_RECORD && r.rect.size() == egui::vec2(56.0, 44.0) && r.rect.center().y > 600.0)
     }
 
     #[test]
-    fn the_record_button_toggles_the_take_and_is_red_while_recording() {
+    fn the_record_button_toggles_the_take_and_shows_stop_while_recording() {
         let mut rig = recording_rig();
         for _ in 0..3 {
             let _ = rig.frame();
         }
         let out = rig.frame();
         let glyphs = toolbar_glyphs(&out, egui_phosphor::fill::RECORD);
-        assert_eq!(glyphs.len(), 1, "one Record button in the toolbar");
-        assert_eq!(glyphs[0].color, THEME.record_red, "red glyph when idle");
-        assert!(record_disc(&out).is_none(), "no red fill when idle");
-        // After Stop in the transport group, before End.
+        assert_eq!(glyphs.len(), 1, "one Record button in the deck");
+        assert_eq!(glyphs[0].color, egui::Color32::WHITE, "white glyph on the red capsule");
+        assert!(record_capsule(&out).is_some(), "the capsule is always sem.record");
+        // After Stop in the deck, before the end button.
         let stop = toolbar_glyphs(&out, egui_phosphor::fill::STOP);
         let end = toolbar_glyphs(&out, egui_phosphor::fill::SKIP_FORWARD);
-        assert!(stop.last().unwrap().rect.center().x < glyphs[0].rect.center().x);
+        assert_eq!(stop.len(), 1, "only the Stop button shows Stop when idle");
+        assert!(stop[0].rect.center().x < glyphs[0].rect.center().x);
         assert!(glyphs[0].rect.center().x < end[0].rect.center().x);
 
         // Click: the take starts.
@@ -1199,13 +1192,10 @@ mod tests {
         assert!(rig.editor().take_is_live(), "the button started the take");
         crate::ui::test_util::feed_take(rig.editor_mut(), 4_800, 0.5, 4_800);
         let out = rig.frame();
-        let disc = record_disc(&out).expect("record_red fill while recording");
-        let glyph = &toolbar_glyphs(&out, egui_phosphor::fill::RECORD)[0];
-        assert_eq!(glyph.color, THEME.on_record_glyph, "white glyph");
-        assert!((disc.center - glyph.rect.center()).length() < 1.5);
-        // While recording the Play slot shows Stop.
+        assert!(toolbar_glyphs(&out, egui_phosphor::fill::RECORD).is_empty(), "the capsule shows Stop while recording");
+        // The Stop button and the capsule both show Stop; Play stays Play.
         assert_eq!(toolbar_glyphs(&out, egui_phosphor::fill::STOP).len(), 2);
-        assert!(toolbar_glyphs(&out, egui_phosphor::fill::PLAY).is_empty());
+        assert_eq!(toolbar_glyphs(&out, egui_phosphor::fill::PLAY).len(), 1);
 
         // Click again: the take ends and is kept.
         let app = &mut rig.app;
@@ -1214,25 +1204,73 @@ mod tests {
         frames_until(&mut rig, "the take to be placed", |r| !r.editor().is_recording());
         assert!(bin_names(&rig).contains(&"Take 1".to_string()));
         let out = rig.frame();
-        assert!(record_disc(&out).is_none(), "red fill is gone");
+        assert_eq!(toolbar_glyphs(&out, egui_phosphor::fill::RECORD).len(), 1, "Record again");
     }
 
     #[test]
-    fn the_play_and_stop_buttons_keep_the_take_while_recording() {
-        for slot in [0, 1] {
+    fn the_play_stop_and_record_buttons_keep_the_take_while_recording() {
+        // Slots: Play, the Stop button, the Record capsule (showing Stop).
+        for slot in [0, 1, 2] {
             let mut rig = recording_rig();
             start_take(&mut rig, 4_800);
             let out = rig.frame();
-            // Play (showing Stop) and Stop are the two STOP glyphs.
-            let stops = toolbar_glyphs(&out, egui_phosphor::fill::STOP);
-            assert_eq!(stops.len(), 2);
-            let at = stops[slot].rect.center();
+            let at = match slot {
+                0 => toolbar_glyphs(&out, egui_phosphor::fill::PLAY)[0].rect.center(),
+                n => toolbar_glyphs(&out, egui_phosphor::fill::STOP)[n - 1].rect.center(),
+            };
             let app = &mut rig.app;
             let _ = rig.h.click(at, |ui| app.run(ui));
             assert!(!rig.editor().take_is_live(), "slot {slot} ended the take");
             frames_until(&mut rig, "the take to be placed", |r| !r.editor().is_recording());
             assert!(bin_names(&rig).contains(&"Take 1".to_string()), "slot {slot}");
         }
+    }
+
+    #[test]
+    fn the_deck_jumps_and_plays_and_leaves_the_lanes_beneath_alone() {
+        let mut rig = recording_rig();
+        for _ in 0..3 {
+            let _ = rig.frame();
+        }
+        rig.editor_mut().view.playhead = 48_000;
+        let out = rig.frame();
+        // Back to start is the first deck glyph, forward the last.
+        let back = toolbar_glyphs(&out, egui_phosphor::fill::SKIP_BACK)[0].rect.center();
+        let forward = toolbar_glyphs(&out, egui_phosphor::fill::SKIP_FORWARD)[0].rect.center();
+        let app = &mut rig.app;
+        let _ = rig.h.click(back, |ui| app.run(ui));
+        assert_eq!(rig.editor().view.playhead, 0, "back to start");
+        let app = &mut rig.app;
+        let _ = rig.h.click(forward, |ui| app.run(ui));
+        assert_eq!(rig.editor().view.playhead, 480_000, "forward to the end");
+        assert_eq!(rig.editor().selection(), &crate::editor::selection::Selection::None, "a press on the deck selects nothing under it");
+    }
+
+    #[test]
+    fn the_add_track_row_adds_a_track_and_the_wave_slider_scales_the_waveforms() {
+        let mut rig = recording_rig();
+        for _ in 0..3 {
+            let _ = rig.frame();
+        }
+        let out = rig.frame();
+        let add = out.text_rect("+ Add track").expect("the add row under the headers");
+        let tracks = rig.editor().project.tracks.len();
+        let app = &mut rig.app;
+        let _ = rig.h.click(add.center(), |ui| app.run(ui));
+        assert_eq!(rig.editor().project.tracks.len(), tracks + 1, "Add track");
+
+        // The waveform icon sits left of its 90 px slider; the slider's right
+        // end is the 16x scale.
+        let icon = out
+            .texts()
+            .into_iter()
+            .find(|t| t.text == egui_phosphor::regular::WAVEFORM && t.rect.center().x > 600.0)
+            .map(|t| t.rect)
+            .expect("the waveform icon in the panel toolbar");
+        assert_eq!(rig.editor().wave_scale(), 1.0);
+        let app = &mut rig.app;
+        let _ = rig.h.click(egui::pos2(icon.right() + 8.0 + 88.0, icon.center().y), |ui| app.run(ui));
+        assert!(rig.editor().wave_scale() > 8.0, "the slider end raises the scale: {}", rig.editor().wave_scale());
     }
 
     /// Drags the primary button from `from` to `to` over a few frames of the

@@ -29,6 +29,8 @@ const GRIP_W: f32 = 14.0;
 const TOGGLE_ROW_H: f32 = 24.0;
 /// Height of the compact meter of ui-kit's track header (spec "Meter": 6 px).
 const METER_H: f32 = 6.0;
+/// Height of the "+ Add track" row under the last track header.
+pub const ADD_ROW_H: f32 = 32.0;
 /// Side of a toggle square, as in ui-kit's track header.
 const TOGGLE_SIDE: f32 = 24.0;
 /// Gap between neighbouring toggles, as in ui-kit's track header.
@@ -355,6 +357,24 @@ pub fn show(
                 [egui::pos2(rect.left(), rect.bottom()), egui::pos2(lane_rect.right(), rect.bottom())],
                 egui::Stroke::new(THEME.hairline, THEME.border),
             );
+        }
+    }
+
+    // "+ Add track" row under the last header (same action and shortcut as
+    // before: Ctrl+Shift+T); off while a take is recorded.
+    let add_rect = egui::Rect::from_min_size(egui::pos2(header_rect.left(), y), egui::vec2(header_rect.width(), ADD_ROW_H)).intersect(header_rect);
+    if add_rect.height() > 0.0 {
+        let add = ui.interact(add_rect, egui::Id::new("track_add_row"), egui::Sense::click()).on_hover_text("Add a new track (Ctrl+Shift+T)");
+        let text_color = if add.hovered() && !locked { color::TEXT_SECONDARY } else { color::TEXT_TERTIARY };
+        painter.text(
+            egui::pos2(add_rect.left() + space::SCALE_8, add_rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            "+ Add track",
+            ui_kit::fonts::medium(typography::BODY_SIZE),
+            text_color,
+        );
+        if add.clicked() && !locked {
+            let _ = editor.apply(Action::AddTrack { index: None, name: None });
         }
     }
 

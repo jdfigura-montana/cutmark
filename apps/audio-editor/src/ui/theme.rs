@@ -48,8 +48,6 @@ pub struct Theme {
     pub slider_fill: egui::Color32,
     /// Thumb color of an egui slider.
     pub slider_thumb: egui::Color32,
-    /// Green of the transport play icon.
-    pub play_green: egui::Color32,
 
     // ---- Clip visuals ----
     /// Height of the clip header strip (name + gain row).
@@ -160,13 +158,6 @@ pub struct Theme {
     pub compact_track_h: f32,
     /// Background of an armed record-arm button.
     pub record_red: egui::Color32,
-    /// Glyph color on a `record_red` fill (an armed Arm button, the Record
-    /// button while recording).
-    pub on_record_glyph: egui::Color32,
-    /// Diameter of the round toolbar Record button.
-    pub record_btn_d: f32,
-    /// Font size of the glyph on the toolbar Record button.
-    pub record_btn_glyph: f32,
     /// Alpha of a clip body fill (the track color, translucent).
     pub clip_body_alpha: u8,
     /// Alpha of a clip header strip fill.
@@ -512,7 +503,6 @@ impl Default for Theme {
             slider_track: tokens::color::BG_SELECTED,
             slider_fill: tokens::accent::ACCENT,
             slider_thumb: tokens::color::TEXT_PRIMARY,
-            play_green: tokens::accent::ACCENT,
             // Clip visuals
             header_strip_h: 18.0,
             trim_edge_w: 6.0,
@@ -568,9 +558,6 @@ impl Default for Theme {
             track_slider_thumb: 12.0,
             compact_track_h: 64.0,
             record_red: tokens::color::SEM_RECORD,
-            on_record_glyph: egui::Color32::WHITE,
-            record_btn_d: 28.0,
-            record_btn_glyph: 16.0,
             clip_body_alpha: 0x22,
             clip_header_alpha: 0x66,
             clip_name_pin: 16.0,
@@ -829,8 +816,6 @@ mod tests {
         assert_eq!(t.accent_soft, accent_alpha(0x2E));
         assert_eq!(t.unsaved_dot_d, 6.0);
         assert_eq!(t.record_red, tokens::color::SEM_RECORD);
-        assert_eq!(t.on_record_glyph, egui::Color32::WHITE);
-        assert_eq!((t.record_btn_d, t.record_btn_glyph), (28.0, 16.0));
         assert_eq!((t.clip_body_alpha, t.clip_header_alpha), (0x22, 0x66));
         assert_eq!(t.menu_right_pad, 8.0);
         assert_eq!(t.app_bg, tokens::color::BG_GROUND);
