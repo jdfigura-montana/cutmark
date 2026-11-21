@@ -20,8 +20,9 @@ pub struct MainToolbar {
     /// The center zone (the mode switch), centered on the window itself
     /// (spec "Layout rules" item 3).
     pub center: Rect,
-    /// The right zone: icon buttons, the primary button and the caption
-    /// buttons.
+    /// The right zone: the app content (icon buttons, then the primary
+    /// button). The caption buttons sit between it and the window edge;
+    /// nothing is drawn to the right of the close button.
     pub right: Rect,
     /// The minimize button rect, when the custom chrome drew the buttons.
     pub minimize: Option<Rect>,
@@ -36,16 +37,21 @@ pub struct MainToolbar {
 
 /// The main toolbar: a 52px `bg.ground` strip with a left zone at the left
 /// edge, a right zone at the right edge, and the center zone centered on the
-/// window, not on the space between the side zones. The caption buttons join
-/// at the far right and the chrome regions (caption drag areas, maximize
+/// window, not on the space between the side zones. Every zone is vertically
+/// centered in the bar, so the left zone's two-line block (type.headline over
+/// type.caption) is never clipped. In the right zone the app content (icon
+/// buttons, then the primary button) reads left to right and the caption
+/// buttons join at the far right, so nothing is ever drawn to the right of
+/// the close button; the chrome regions (caption drag areas, maximize
 /// button) are published every frame, so the toolbar is the title bar
 /// (spec "Window chrome").
 ///
 /// When the window is not focused, toolbar text drops to `text.tertiary`;
 /// the primary button keeps its color, because it paints its own accent text.
 ///
-/// The center closure runs twice per frame (once to measure it); keep it to
-/// drawing the mode switch.
+/// The left, center and right closures run twice per frame (once in an
+/// invisible sizing pass to measure them); keep them to drawing their
+/// widgets.
 ///
 /// Usage:
 ///
@@ -54,9 +60,9 @@ pub struct MainToolbar {
 /// ```
 pub fn main_toolbar<L, C, R>(ui: &mut Ui, left: L, center: C, right: R) -> MainToolbar
 where
-    L: FnOnce(&mut Ui),
+    L: Fn(&mut Ui),
     C: Fn(&mut Ui),
-    R: FnOnce(&mut Ui),
+    R: Fn(&mut Ui),
 {
     let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::TOOLBAR_MAIN_HEIGHT), Sense::hover());
     if ui.is_rect_visible(bar) {
@@ -66,28 +72,63 @@ where
     // chrome", "Both"). The primary button keeps its color: it lays its own
     // accent-colored galley, which an override does not touch.
     let unfocused = ui.ctx().input(|i| i.viewport().focused) == Some(false);
-    let mut left_ui = ui.new_child(UiBuilder::new().max_rect(bar).layout(Layout::left_to_right(Align::Center)));
+    // The left zone is measured in an invisible sizing pass under its own id
+    // scope (the measuring run creates no live widget ids), then drawn in a
+    // bar-centered slice, so the document name's two-line block is vertically
+    // centered in the 52px bar and never clipped.
+    let left_height = ui
+        .push_id("measure-left", |ui| {
+            let mut measure_ui = ui.new_child(UiBuilder::new().sizing_pass().invisible().max_rect(bar).layout(Layout::left_to_right(Align::Min)));
+            left(&mut measure_ui);
+            measure_ui.min_rect().height()
+        })
+        .inner
+        .min(bar.height());
+    let left_rect = Rect::from_min_max(pos2(bar.left(), bar.center().y - left_height / 2.0), pos2(bar.right(), bar.center().y + left_height / 2.0));
+    let mut left_ui = ui.new_child(UiBuilder::new().max_rect(left_rect).layout(Layout::left_to_right(Align::Center)));
     if unfocused {
         left_ui.style_mut().visuals.override_text_color = Some(color::TEXT_TERTIARY);
     }
     left(&mut left_ui);
-    let mut right_ui = ui.new_child(UiBuilder::new().max_rect(bar).layout(Layout::right_to_left(Align::Center)));
+    // The caption buttons join at the far right, only with the custom chrome
+    // (spec "Window chrome": the window has no native title bar). They are
+    // drawn first in a right-to-left child, so the close button is the
+    // rightmost thing in the window.
+    let mut buttons_ui = ui.new_child(UiBuilder::new().max_rect(bar).layout(Layout::right_to_left(Align::Center)));
+    let buttons = if chrome::is_custom() { caption_buttons::caption_buttons(&mut buttons_ui) } else { None };
+    let buttons_width = if buttons.is_some() { 3.0 * size::CAPTION_BUTTON_WIDTH } else { 0.0 };
+    // The right zone is measured in an invisible sizing pass under its own id
+    // scope, so the measuring run creates no live widget ids (egui reports
+    // reused ids as red overlays), then drawn left to right so the content
+    // reads left to right and ends where the caption buttons begin.
+    let content_width = ui
+        .push_id("measure-right", |ui| {
+            let mut measure_ui = ui.new_child(UiBuilder::new().sizing_pass().invisible().max_rect(bar).layout(Layout::left_to_right(Align::Center)));
+            right(&mut measure_ui);
+            measure_ui.min_rect().width()
+        })
+        .inner
+        .min(bar.width() - buttons_width);
+    let content_rect = Rect::from_min_max(pos2(bar.right() - buttons_width - content_width, bar.top()), pos2(bar.right() - buttons_width, bar.bottom()));
+    let mut right_ui = ui.new_child(UiBuilder::new().max_rect(content_rect).layout(Layout::left_to_right(Align::Center)));
     if unfocused {
         right_ui.style_mut().visuals.override_text_color = Some(color::TEXT_TERTIARY);
     }
     right(&mut right_ui);
     let right_content = right_ui.min_rect();
-    // The caption buttons join at the far right, only with the custom chrome
-    // (spec "Window chrome": the window has no native title bar).
-    let buttons = if chrome::is_custom() { caption_buttons::caption_buttons(&mut right_ui) } else { None };
-    // The center zone is measured in an invisible, disabled pass so it can be
-    // centered on the window itself (spec "Layout rules" item 3); egui has no
-    // centering layout for a horizontal run. The disabled widgets of the
-    // measuring pass take no pointer events, and the real zone is registered
-    // after them, on top.
-    let mut measure_ui = ui.new_child(UiBuilder::new().invisible().disabled().max_rect(bar).layout(Layout::left_to_right(Align::Center)));
-    center(&mut measure_ui);
-    let width = measure_ui.min_rect().width().min(bar.width());
+    // The center zone is measured in an invisible sizing pass under its own
+    // id scope so it can be centered on the window itself (spec "Layout
+    // rules" item 3); egui has no centering layout for a horizontal run. The
+    // measuring run creates no live widget ids; the real zone is registered
+    // after the side zones, on top.
+    let measured_width = ui
+        .push_id("measure", |ui| {
+            let mut measure_ui = ui.new_child(UiBuilder::new().sizing_pass().invisible().max_rect(bar).layout(Layout::left_to_right(Align::Center)));
+            center(&mut measure_ui);
+            measure_ui.min_rect().width()
+        })
+        .inner;
+    let width = measured_width.min(bar.width());
     let center_rect = Rect::from_center_size(bar.center(), vec2(width, bar.height()));
     let mut center_ui = ui.new_child(UiBuilder::new().max_rect(center_rect).layout(Layout::left_to_right(Align::Center)));
     if unfocused {

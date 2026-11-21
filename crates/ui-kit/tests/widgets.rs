@@ -81,7 +81,7 @@ fn clicking_the_second_segment_selects_it() {
     let state = selected.clone();
     let mut harness = new_harness(move |ui| {
         let mut value = state.get();
-        ui_kit::segmented(ui, &mut value, &["Video", "Audio"]);
+        ui_kit::segmented(ui, "test-segments", &mut value, &["Video", "Audio"]);
         state.set(value);
     });
     harness.run();
@@ -100,7 +100,7 @@ fn right_arrow_moves_the_selection_when_focused() {
     let state = selected.clone();
     let mut harness = new_harness(move |ui| {
         let mut value = state.get();
-        ui_kit::segmented(ui, &mut value, &["Video", "Audio"]);
+        ui_kit::segmented(ui, "test-segments", &mut value, &["Video", "Audio"]);
         state.set(value);
     });
     harness.run();
@@ -251,7 +251,7 @@ fn the_main_toolbar_centers_the_center_zone_on_the_window() {
             },
             |ui| {
                 let mut m = mode_state.get();
-                ui_kit::segmented(ui, &mut m, &["Edit", "Mix"]);
+                ui_kit::segmented(ui, "toolbar-modes", &mut m, &["Edit", "Mix"]);
                 mode_state.set(m);
             },
             |ui| {

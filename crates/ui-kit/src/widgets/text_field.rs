@@ -16,7 +16,7 @@ pub(crate) fn field(ui: &mut Ui, text: &mut String, hint: &str, icon: Option<&st
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 if let Some(icon) = icon {
-                    ui.label(egui::RichText::new(icon).font(fonts::medium(typography::BODY_SIZE)).color(color::TEXT_TERTIARY));
+                    ui.label(egui::RichText::new(icon).font(fonts::icon_regular(typography::BODY_SIZE)).color(color::TEXT_TERTIARY));
                 }
                 ui.scope(|ui| {
                     // egui takes the hint color from `weak_text_color`

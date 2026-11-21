@@ -2,7 +2,7 @@
 //! capsule at the bottom center of the content area with the timecode and the
 //! transport buttons, draggable sideways, fading while scrubbing near it.
 
-use egui::{Align2, Color32, Context, Id, InnerResponse, Margin, Order, Pos2, Rect, Response, Sense, Ui, UiBuilder, WidgetInfo, WidgetType, vec2};
+use egui::{Align2, Color32, Context, Id, InnerResponse, Margin, Order, Pos2, Rect, Response, Sense, Ui, UiBuilder, WidgetInfo, WidgetType, pos2, vec2};
 
 use crate::Theme;
 use crate::fonts;
@@ -93,7 +93,8 @@ pub fn transport_deck<R>(ui: &Ui, content_rect: Rect, id: Id, scrubbing: bool, a
     let mut state = DeckState::load(ctx, id);
     let opacity = deck_opacity(ctx, id.with("fade"), state.last_rect, ctx.pointer_latest_pos(), scrubbing, theme.reduce_motion);
 
-    let area = egui::Area::new(id).order(Order::Foreground).anchor(Align2::CENTER_BOTTOM, vec2(state.offset, -space::SCALE_16)).show(ctx, |ui| {
+    let anchor = pos2(content_rect.center().x + state.offset, content_rect.bottom() - space::SCALE_16);
+    let area = egui::Area::new(id).order(Order::Foreground).pivot(Align2::CENTER_BOTTOM).fixed_pos(anchor).show(ctx, |ui| {
         ui.set_opacity(opacity);
         glass::glass_frame(ctx, capsule_radius(size::TRANSPORT_DECK_HEIGHT))
             .inner_margin(Margin::same(space::SCALE_6 as i8))
@@ -135,7 +136,7 @@ pub fn deck_button(ui: &mut Ui, icon: &str, tooltip: &str) -> Response {
             ui.painter().circle_filled(rect.center(), side / 2.0, color::BG_HOVER);
         }
         let galley =
-            ui.painter().layout_no_wrap(icon.to_owned(), fonts::medium(DECK_ICON_SIZE), if hovered { color::TEXT_PRIMARY } else { color::TEXT_SECONDARY });
+            ui.painter().layout_no_wrap(icon.to_owned(), fonts::icon_fill(DECK_ICON_SIZE), if hovered { color::TEXT_PRIMARY } else { color::TEXT_SECONDARY });
         ui.painter().galley(rect.center() - galley.size() / 2.0, galley, Color32::PLACEHOLDER);
     }
     if response.has_focus() {
@@ -165,7 +166,7 @@ pub fn play_button(ui: &mut Ui, playing: bool, kind: PlayKind) -> Response {
     let theme = Theme::get(ui.ctx());
     let (icon, label, fill, glyph) = match kind {
         PlayKind::Play => (
-            if playing { egui_phosphor::variants::fill::PAUSE } else { egui_phosphor::variants::fill::PLAY },
+            if playing { crate::icons::fill::PAUSE } else { crate::icons::fill::PLAY },
             if playing { "Pause" } else { "Play" },
             if response.is_pointer_button_down_on() {
                 theme.accent.pressed
@@ -177,7 +178,7 @@ pub fn play_button(ui: &mut Ui, playing: bool, kind: PlayKind) -> Response {
             theme.accent.on,
         ),
         PlayKind::Record => (
-            if playing { egui_phosphor::variants::fill::STOP } else { egui_phosphor::variants::fill::RECORD },
+            if playing { crate::icons::fill::STOP } else { crate::icons::fill::RECORD },
             if playing { "Stop" } else { "Record" },
             color::SEM_RECORD,
             Color32::WHITE,
@@ -186,7 +187,7 @@ pub fn play_button(ui: &mut Ui, playing: bool, kind: PlayKind) -> Response {
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, label));
     if ui.is_rect_visible(rect) {
         ui.painter().rect_filled(rect, capsule_radius(height), fill);
-        let galley = ui.painter().layout_no_wrap(icon.to_owned(), fonts::medium(DECK_ICON_SIZE), glyph);
+        let galley = ui.painter().layout_no_wrap(icon.to_owned(), fonts::icon_fill(DECK_ICON_SIZE), glyph);
         ui.painter().galley(rect.center() - galley.size() / 2.0, galley, Color32::PLACEHOLDER);
     }
     if response.has_focus() {

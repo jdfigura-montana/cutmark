@@ -1,6 +1,6 @@
 //! The segmented control (spec "Components": row "Segmented control").
 
-use egui::{Color32, Key, Pos2, Rect, Response, Sense, Ui, WidgetInfo, WidgetType, vec2};
+use egui::{Color32, Id, Key, Pos2, Rect, Response, Sense, Ui, WidgetInfo, WidgetType, vec2};
 
 use crate::fonts;
 use crate::tokens::{color, radius, size, space, typography};
@@ -18,13 +18,19 @@ const SEGMENT_SHADOW_OFFSET: f32 = 1.0;
 /// padding 3, the selected segment `bg.selected` with a 1px shadow and
 /// `radius.segment`, 28 tall. Arrow keys move the selection when focused.
 ///
+/// `id_salt` must be unique per control on the page: the segments' ids are
+/// derived from it, and several controls with the same labels must never
+/// share ids (egui reports reused ids as red "First use / Second use of
+/// widget ID" overlays).
+///
 /// Usage:
 ///
 /// ```ignore
 /// let mut mode = 0;
-/// ui_kit::segmented(ui, &mut mode, &["Edit", "Mix"]);
+/// ui_kit::segmented(ui, "modes", &mut mode, &["Edit", "Mix"]);
 /// ```
-pub fn segmented(ui: &mut Ui, selected: &mut usize, labels: &[&str]) -> Response {
+pub fn segmented(ui: &mut Ui, id_salt: impl Into<Id>, selected: &mut usize, labels: &[&str]) -> Response {
+    let id_salt = id_salt.into();
     let font = fonts::medium(typography::BODY_SIZE);
     let galleys: Vec<_> = labels.iter().map(|label| ui.painter().layout_no_wrap((*label).to_owned(), font.clone(), Color32::PLACEHOLDER)).collect();
     let segment_widths: Vec<f32> = galleys.iter().map(|galley| galley.size().x + 2.0 * SEGMENT_PADDING).collect();
@@ -43,7 +49,7 @@ pub fn segmented(ui: &mut Ui, selected: &mut usize, labels: &[&str]) -> Response
         let segment_rect = Rect::from_min_size(Pos2::new(x, rect.top() + TRACK_PADDING), vec2(segment_widths[index], height));
         x += segment_widths[index];
         let is_selected = index == *selected;
-        let segment = ui.interact(segment_rect, ui.id().with("segmented_segment").with(index), Sense::click());
+        let segment = ui.interact(segment_rect, ui.id().with(id_salt).with("segmented_segment").with(index), Sense::click());
         segment.widget_info(|| WidgetInfo::selected(WidgetType::SelectableLabel, true, is_selected, labels[index]));
         if segment.clicked() {
             *selected = index;

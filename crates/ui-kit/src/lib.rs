@@ -1,11 +1,11 @@
 //! ui-kit: the Cutmark suite's base theme.
 //!
 //! The design tokens ([`tokens`]), one shared compatibility palette
-//! ([`palette`]), one shared font set ([`fonts`]) and one [`apply`] call that
-//! installs the fonts plus the egui `Style` and `Visuals` built from the
-//! tokens and the runtime [`Theme`], so every app in the suite (the
-//! Recorder, and the audio editor once it moves onto this crate) gets the
-//! Glass Deck look.
+//! ([`palette`]), one shared font set ([`fonts`]), the Phosphor icon glyphs
+//! ([`icons`]) and one [`apply`] call that installs the fonts plus the egui
+//! `Style` and `Visuals` built from the tokens and the runtime [`Theme`], so
+//! every app in the suite (the Recorder, and the audio editor once it moves
+//! onto this crate) gets the Glass Deck look.
 //!
 //! The crate sets no renderer: apps choose the eframe renderer themselves.
 //!
@@ -18,6 +18,7 @@ pub mod accent;
 pub mod appearance;
 pub mod chrome;
 pub mod fonts;
+pub mod icons;
 pub mod meter;
 pub mod palette;
 pub mod theme;

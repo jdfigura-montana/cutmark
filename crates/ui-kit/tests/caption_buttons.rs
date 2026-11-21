@@ -38,7 +38,7 @@ fn toolbar_harness() -> (Harness<'static>, Rc<RefCell<Option<ui_kit::MainToolbar
             },
             |ui| {
                 let mut mode = 0usize;
-                ui_kit::segmented(ui, &mut mode, &["Edit", "Mix"]);
+                ui_kit::segmented(ui, "caption-modes", &mut mode, &["Edit", "Mix"]);
             },
             |ui| {
                 ui_kit::primary_button(ui, "Export");

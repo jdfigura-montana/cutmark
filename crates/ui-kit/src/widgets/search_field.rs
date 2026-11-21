@@ -15,5 +15,5 @@ use crate::widgets::text_field::field;
 /// ui_kit::search_field(ui, &mut query, "Search takes");
 /// ```
 pub fn search_field(ui: &mut Ui, text: &mut String, hint: &str) -> Response {
-    field(ui, text, hint, Some(egui_phosphor::variants::fill::MAGNIFYING_GLASS))
+    field(ui, text, hint, Some(crate::icons::regular::MAGNIFYING_GLASS))
 }

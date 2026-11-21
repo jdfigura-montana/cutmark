@@ -58,7 +58,7 @@ impl eframe::App for ChromeDemo {
             left_zone,
             move |ui| {
                 let mut m = mode.get();
-                ui_kit::segmented(ui, &mut m, &["Edit", "Mix"]);
+                ui_kit::segmented(ui, "chrome-modes", &mut m, &["Edit", "Mix"]);
                 mode.set(m);
             },
             |ui| {

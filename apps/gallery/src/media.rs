@@ -6,8 +6,8 @@
 //! and the same transport deck again in two small panels for the glass demo.
 
 use eframe::egui::{self, Pos2, Rect};
-use egui_phosphor::variants::fill;
 use ui_kit::fonts;
+use ui_kit::icons::{fill, regular};
 use ui_kit::tokens::{color, radius, size, space, typography};
 use ui_kit::{
     ClipKind, ClipLook, MarkerKind, PlayKind, SliderKind, Theme, Toggle, ToggleKind, chip, deck_button, fader, icon_button, level_meter, paint_clip,
@@ -333,14 +333,14 @@ fn deck_contents(ui: &mut egui::Ui, state: &mut MediaState) {
 /// slider and the Fit button on the right (still reading left to right).
 fn show_toolbar(ui: &mut egui::Ui, state: &mut MediaState, rect: egui::Rect) {
     let mut left = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
-    segmented(&mut left, &mut state.tool, &TOOLS);
+    segmented(&mut left, "media-tools", &mut state.tool, &TOOLS);
     chip(&mut left, &mut state.snap, "Snap");
     chip(&mut left, &mut state.ripple, "Ripple");
     let fit_rect = Rect::from_min_max(Pos2::new(rect.right() - FIT_BUTTON, rect.top()), Pos2::new(rect.right(), rect.bottom()));
     let zoom_rect =
         Rect::from_min_max(Pos2::new(fit_rect.left() - space::SCALE_4 - ZOOM_WIDTH, rect.top()), Pos2::new(fit_rect.left() - space::SCALE_4, rect.bottom()));
     let mut fit = ui.new_child(egui::UiBuilder::new().max_rect(fit_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
-    if icon_button(&mut fit, fill::FRAME_CORNERS, "Zoom to fit").clicked() {
+    if icon_button(&mut fit, regular::FRAME_CORNERS, "Zoom to fit").clicked() {
         state.zoom = 1.0;
     }
     let mut zoom = ui.new_child(egui::UiBuilder::new().max_rect(zoom_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));

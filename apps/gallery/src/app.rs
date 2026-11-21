@@ -4,8 +4,8 @@
 //! "Status bar").
 
 use eframe::egui;
-use egui_phosphor::variants::fill;
 use ui_kit::fonts;
+use ui_kit::icons::regular;
 use ui_kit::tokens::{color, size, space, typography};
 use ui_kit::{Theme, appearance, dialog};
 
@@ -51,6 +51,8 @@ impl Default for Gallery {
 
 impl eframe::App for Gallery {
     /// Draws the whole gallery: toolbar, page, status bar, dialogs, toasts.
+    /// The toolbar is the top panel, the status bar the bottom panel, so the
+    /// page's scroll area ends above the status bar and nothing overlaps.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // The appearance file feeds the theme; toasts draw on top of everything.
         appearance::poll(ui.ctx());
@@ -58,62 +60,68 @@ impl eframe::App for Gallery {
         ui.painter().rect_filled(ui.max_rect(), 0.0, color::BG_GROUND);
 
         self.show_toolbar(ui);
-        self.show_page(ui);
         self.show_status_bar(ui);
+        self.show_page(ui);
         self.show_dialogs(ui);
     }
 }
 
 impl Gallery {
     /// The main toolbar: app mark, document caption, page switch, actions.
+    /// It is the top panel, so the page starts below the 52px bar.
     fn show_toolbar(&mut self, ui: &mut egui::Ui) {
         let page = std::cell::Cell::new(self.page);
         let appearance_open = std::cell::Cell::new(self.appearance_open);
-        ui_kit::main_toolbar(
-            ui,
-            left_zone,
-            |ui| {
-                let mut selected = page.get();
-                ui_kit::segmented(ui, &mut selected, PAGES);
-                page.set(selected);
-            },
-            |ui| {
-                ui.add_space(space::SCALE_6);
-                if ui_kit::icon_button(ui, fill::PALETTE, "Appearance").clicked() {
-                    appearance_open.set(true);
-                }
-                ui.add_space(space::SCALE_4);
-                if ui_kit::primary_button(ui, "Toast").clicked() {
-                    ui_kit::toast(ui.ctx(), "Toast from the gallery");
-                }
-            },
-        );
+        egui::Panel::top("gallery-toolbar").exact_size(size::TOOLBAR_MAIN_HEIGHT).frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
+            ui_kit::main_toolbar(
+                ui,
+                left_zone,
+                |ui| {
+                    let mut selected = page.get();
+                    ui_kit::segmented(ui, "gallery-pages", &mut selected, PAGES);
+                    page.set(selected);
+                },
+                |ui| {
+                    ui.add_space(space::SCALE_6);
+                    if ui_kit::icon_button(ui, regular::PALETTE, "Appearance").clicked() {
+                        appearance_open.set(true);
+                    }
+                    ui.add_space(space::SCALE_4);
+                    if ui_kit::primary_button(ui, "Toast").clicked() {
+                        ui_kit::toast(ui.ctx(), "Toast from the gallery");
+                    }
+                    ui.add_space(space::SCALE_4);
+                },
+            );
+        });
         self.page = page.get();
         self.appearance_open = appearance_open.get();
     }
 
     /// The scroll area of the current page, with the window padding and the
-    /// panel gap from the tokens.
+    /// panel gap from the tokens. It is the central panel: it ends above the
+    /// status bar panel and sits inside the 8px window padding.
     fn show_page(&mut self, ui: &mut egui::Ui) {
-        let available = ui.available_rect_before_wrap();
         let gap = space::WINDOW_GAP as i8;
         let page = self.page;
         let modal_open = self.modal_open();
-        let mut content = ui.new_child(egui::UiBuilder::new().max_rect(available));
-        egui::ScrollArea::vertical().auto_shrink(false).id_salt(if page == 0 { "gallery-core" } else { "gallery-media" }).show(&mut content, |ui| {
-            egui::Frame::new().inner_margin(egui::Margin { left: gap, right: gap, top: gap, bottom: gap }).show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = space::WINDOW_GAP;
-                if page == 0 {
-                    core_page::show(ui, &mut self.core, modal_open);
-                } else {
-                    media::show(ui, &mut self.media);
-                }
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
+            egui::ScrollArea::vertical().auto_shrink(false).id_salt(if page == 0 { "gallery-core" } else { "gallery-media" }).show(ui, |ui| {
+                egui::Frame::new().inner_margin(egui::Margin { left: gap, right: gap, top: gap, bottom: gap }).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = space::WINDOW_GAP;
+                    if page == 0 {
+                        core_page::show(ui, &mut self.core, modal_open);
+                    } else {
+                        media::show(ui, &mut self.media);
+                    }
+                });
             });
         });
     }
 
     /// The status bar pinned to the bottom of the window: the live accent
-    /// hex and the glass and reduce motion switches.
+    /// hex and the glass and reduce motion switches. It is the bottom panel,
+    /// so the page's scroll area ends above it.
     fn show_status_bar(&mut self, ui: &mut egui::Ui) {
         let theme = Theme::get(ui.ctx());
         let items = [
@@ -122,11 +130,9 @@ impl Gallery {
             format!("reduce motion {}", if theme.reduce_motion { "on" } else { "off" }),
         ];
         let items: Vec<&str> = items.iter().map(String::as_str).collect();
-        let available = ui.available_rect_before_wrap();
-        let status_top = available.bottom() - size::STATUS_BAR_HEIGHT;
-        let status_rect = egui::Rect::from_min_max(egui::pos2(available.left(), status_top), available.max);
-        let mut status_ui = ui.new_child(egui::UiBuilder::new().max_rect(status_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
-        ui_kit::status_bar(&mut status_ui, &items);
+        egui::Panel::bottom("gallery-status-bar").exact_size(size::STATUS_BAR_HEIGHT).frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
+            ui_kit::status_bar(ui, &items);
+        });
     }
 
     /// The sample dialog (opened from the Core page) and the appearance dialog.
@@ -151,11 +157,14 @@ impl Gallery {
     }
 }
 
-/// The left zone: the app mark placeholder and the document caption.
+/// The left zone: the app mark placeholder and the document caption. The
+/// document name and its caption line are a two-line block (type.headline
+/// over type.caption), vertically centered in the 52px bar, never clipped.
 fn left_zone(ui: &mut egui::Ui) {
     app_mark(ui);
     ui.add_space(space::SCALE_4);
     ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = space::SCALE_2;
         ui.label(egui::RichText::new("Gallery").font(fonts::semibold(typography::HEADLINE_SIZE)).color(color::TEXT_PRIMARY));
         ui.label(egui::RichText::new(format!("ui-kit {UI_KIT_VERSION}")).font(fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY));
     });

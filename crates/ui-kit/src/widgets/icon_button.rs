@@ -1,4 +1,7 @@
 //! The icon button (spec "Components": row "Icon button").
+//!
+//! The icon is a line icon from [`crate::icons::regular`], laid out in the
+//! phosphor regular family (`fonts::icon_regular`).
 
 use egui::{Color32, Response, Sense, Ui, WidgetInfo, WidgetType, vec2};
 
@@ -10,13 +13,13 @@ use crate::widgets::{capsule_radius, focus};
 /// in `text.secondary` (`text.primary` hovered). The tooltip doubles as the
 /// accessible label and is required (spec "Icon button").
 ///
-/// The icon string is a phosphor glyph, for example
-/// `egui_phosphor::variants::fill::GEAR_SIX`.
+/// The icon string is a phosphor regular (line) glyph, for example
+/// `ui_kit::icons::regular::GEAR_SIX`.
 ///
 /// Usage:
 ///
 /// ```ignore
-/// if ui_kit::icon_button(ui, egui_phosphor::variants::fill::GEAR_SIX, "Settings").clicked() {
+/// if ui_kit::icon_button(ui, ui_kit::icons::regular::GEAR_SIX, "Settings").clicked() {
 ///     open_settings();
 /// }
 /// ```
@@ -34,7 +37,7 @@ pub fn icon_button(ui: &mut Ui, icon: &str, tooltip: &str) -> Response {
         // for an icon inside the 32px circle (spec "Icons").
         let galley = ui.painter().layout_no_wrap(
             icon.to_owned(),
-            fonts::medium(typography::HEADLINE_SIZE),
+            fonts::icon_regular(typography::HEADLINE_SIZE),
             if hovered { color::TEXT_PRIMARY } else { color::TEXT_SECONDARY },
         );
         ui.painter().galley(rect.center() - galley.size() / 2.0, galley, Color32::PLACEHOLDER);

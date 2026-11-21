@@ -8,8 +8,8 @@
 //! a slow rotation (paused after the first click or while a modal is open).
 
 use eframe::egui;
-use egui_phosphor::variants::fill;
 use ui_kit::fonts;
+use ui_kit::icons::regular;
 use ui_kit::tokens::{color, size, space, typography};
 use ui_kit::{
     SliderKind, Theme, chip, icon_button, inspector_group, inspector_header, inspector_row, list_row, panel, primary_button, scroll_thumb, search_field,
@@ -20,6 +20,19 @@ use ui_kit::{
 const FIELD_WIDTH: f32 = 220.0;
 /// Width of the demo sliders.
 const SLIDER_WIDTH: f32 = 240.0;
+/// Width of the demo list rows.
+const LIST_ROW_WIDTH: f32 = 260.0;
+/// Width of the demo status bar.
+const STATUS_WIDTH: f32 = 280.0;
+/// Width of the inspector panel.
+const INSPECTOR_WIDTH: f32 = 340.0;
+/// Width the color panel wraps its swatches at.
+const COLOR_WIDTH: f32 = 520.0;
+/// Natural width of the widest Core page panel (the five-cell button and
+/// field rows). The page wraps panels into as many columns of this width as
+/// fit (up to three), so every panel keeps its natural width and no row
+/// overflows (8px gaps from the tokens).
+const GRID_COLUMN_WIDTH: f32 = 700.0;
 /// Height of the demo scrollbar thumbs.
 const THUMB_HEIGHT: f32 = 120.0;
 /// Side of a color swatch.
@@ -113,27 +126,52 @@ impl CoreState {
     }
 }
 
-/// Draws the whole Core page: one panel per component.
+/// Draws the whole Core page: one panel per component, arranged in a
+/// wrapping grid (three columns when the width allows, else two, 8px gaps);
+/// each panel keeps its natural width up to its column width.
 pub fn show(ui: &mut egui::Ui, state: &mut CoreState, modal_open: bool) {
     if !state.focus_paused && ui.input(|i| i.pointer.any_click()) {
         state.focus_paused = true;
     }
-    primary_button_panel(ui, state, modal_open);
-    icon_button_panel(ui, state, modal_open);
-    segmented_panel(ui, state, modal_open);
-    chip_panel(ui, state, modal_open);
-    switch_panel(ui, state, modal_open);
-    slider_panel(ui, state, modal_open);
-    text_field_panel(ui, state, modal_open);
-    search_field_panel(ui, state, modal_open);
-    list_row_panel(ui, state, modal_open);
-    inspector_panel(ui, state);
-    status_bar_panel(ui);
-    scroll_thumb_panel(ui);
-    dialog_panel(ui, state);
-    type_panel(ui);
-    color_panel(ui);
+    let columns = ((ui.available_width() + space::WINDOW_GAP) / (GRID_COLUMN_WIDTH + space::WINDOW_GAP)).floor().clamp(1.0, 3.0) as usize;
+    let column_width = (ui.available_width() - (columns - 1) as f32 * space::WINDOW_GAP) / columns as f32;
+    // One row of panels at a time: each panel sits in its own vertical scope
+    // (an explicit layout, so no grid placer leaks into the panel frames) and
+    // keeps its natural width up to the column width.
+    for row in PANELS.chunks(columns) {
+        ui.horizontal(|ui| {
+            for panel_fn in row {
+                ui.vertical(|ui| {
+                    ui.set_max_width(column_width);
+                    panel_fn(ui, state, modal_open);
+                });
+            }
+        });
+    }
 }
+
+/// One Core page panel as a plain function pointer, so the panel list can be
+/// chunked into grid rows.
+type PanelFn = fn(&mut egui::Ui, &mut CoreState, bool);
+
+/// Every Core page panel, in grid order.
+const PANELS: &[PanelFn] = &[
+    |ui, state, modal_open| primary_button_panel(ui, state, modal_open),
+    |ui, state, modal_open| icon_button_panel(ui, state, modal_open),
+    |ui, state, modal_open| segmented_panel(ui, state, modal_open),
+    |ui, state, modal_open| chip_panel(ui, state, modal_open),
+    |ui, state, modal_open| switch_panel(ui, state, modal_open),
+    |ui, state, modal_open| slider_panel(ui, state, modal_open),
+    |ui, state, modal_open| text_field_panel(ui, state, modal_open),
+    |ui, state, modal_open| search_field_panel(ui, state, modal_open),
+    |ui, state, modal_open| list_row_panel(ui, state, modal_open),
+    |ui, state, _modal_open| inspector_panel(ui, state),
+    |ui, _state, _modal_open| status_bar_panel(ui),
+    |ui, _state, _modal_open| scroll_thumb_panel(ui),
+    |ui, state, _modal_open| dialog_panel(ui, state),
+    |ui, _state, _modal_open| type_panel(ui),
+    |ui, _state, _modal_open| color_panel(ui),
+];
 
 /// Requests focus for the demo copy that currently owns the focus rotation
 /// slot, so every focusable component shows its focus ring in turn.
@@ -168,7 +206,7 @@ fn state_cell(ui: &mut egui::Ui, caption: &str, add: impl FnOnce(&mut egui::Ui))
 /// The primary button: idle, hover, press, focused, disabled.
 fn primary_button_panel(ui: &mut egui::Ui, state: &mut CoreState, modal_open: bool) {
     demo_panel(ui, "Primary button", |ui| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             state_cell(ui, "idle", |ui| {
                 primary_button(ui, "Export");
             });
@@ -194,52 +232,54 @@ fn primary_button_panel(ui: &mut egui::Ui, state: &mut CoreState, modal_open: bo
 /// The icon button: idle, hover, press, focused, disabled.
 fn icon_button_panel(ui: &mut egui::Ui, state: &mut CoreState, modal_open: bool) {
     demo_panel(ui, "Icon button", |ui| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             state_cell(ui, "idle", |ui| {
-                icon_button(ui, fill::GEAR_SIX, "Settings");
+                icon_button(ui, regular::GEAR_SIX, "Settings");
             });
             state_cell(ui, "hover me", |ui| {
-                icon_button(ui, fill::GEAR_SIX, "Settings");
+                icon_button(ui, regular::GEAR_SIX, "Settings");
             });
             state_cell(ui, "press me", |ui| {
-                icon_button(ui, fill::GEAR_SIX, "Settings");
+                icon_button(ui, regular::GEAR_SIX, "Settings");
             });
             state_cell(ui, "focused", |ui| {
-                let response = icon_button(ui, fill::GEAR_SIX, "Settings");
+                let response = icon_button(ui, regular::GEAR_SIX, "Settings");
                 maybe_focus(ui, state, modal_open, FOCUS_ICON, response);
             });
             state_cell(ui, "disabled", |ui| {
                 ui.add_enabled_ui(false, |ui| {
-                    icon_button(ui, fill::GEAR_SIX, "Settings");
+                    icon_button(ui, regular::GEAR_SIX, "Settings");
                 });
             });
         });
     });
 }
 
-/// The segmented control: 2, 3 and 4 segments, focused and disabled.
+/// The segmented control: 2, 3 and 4 segments, focused and disabled. Each
+/// copy carries its own id_salt: several controls with the same labels must
+/// never share widget ids.
 fn segmented_panel(ui: &mut egui::Ui, state: &mut CoreState, modal_open: bool) {
     demo_panel(ui, "Segmented control", |ui| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             state_cell(ui, "2 segments", |ui| {
-                segmented(ui, &mut state.segments2, &["Edit", "Mix"]);
+                segmented(ui, "core-segments-2", &mut state.segments2, &["Edit", "Mix"]);
             });
             state_cell(ui, "3 segments", |ui| {
-                segmented(ui, &mut state.segments3, &["Edit", "Mix", "Master"]);
+                segmented(ui, "core-segments-3", &mut state.segments3, &["Edit", "Mix", "Master"]);
             });
             state_cell(ui, "4 segments", |ui| {
-                segmented(ui, &mut state.segments4, &["Cut", "Fade", "Slip", "Roll"]);
+                segmented(ui, "core-segments-4", &mut state.segments4, &["Cut", "Fade", "Slip", "Roll"]);
             });
         });
         ui.add_space(space::SCALE_4);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             state_cell(ui, "focused", |ui| {
-                let response = segmented(ui, &mut state.segments3, &["Edit", "Mix", "Master"]);
+                let response = segmented(ui, "core-segments-3-focused", &mut state.segments3, &["Edit", "Mix", "Master"]);
                 maybe_focus(ui, state, modal_open, FOCUS_SEGMENTED, response);
             });
             state_cell(ui, "disabled", |ui| {
                 ui.add_enabled_ui(false, |ui| {
-                    segmented(ui, &mut state.segments3, &["Edit", "Mix", "Master"]);
+                    segmented(ui, "core-segments-3-disabled", &mut state.segments3, &["Edit", "Mix", "Master"]);
                 });
             });
         });
@@ -249,7 +289,7 @@ fn segmented_panel(ui: &mut egui::Ui, state: &mut CoreState, modal_open: bool) {
 /// The chip: off, on, hover, press, focused, disabled.
 fn chip_panel(ui: &mut egui::Ui, state: &mut CoreState, modal_open: bool) {
     demo_panel(ui, "Chip", |ui| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             state_cell(ui, "idle", |ui| {
                 chip(ui, &mut state.chip, "Snap");
             });
@@ -278,7 +318,7 @@ fn chip_panel(ui: &mut egui::Ui, state: &mut CoreState, modal_open: bool) {
 /// The switch: off, on, focused, disabled.
 fn switch_panel(ui: &mut egui::Ui, state: &mut CoreState, modal_open: bool) {
     demo_panel(ui, "Switch", |ui| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             state_cell(ui, "idle", |ui| {
                 switch(ui, &mut state.switch);
             });
@@ -301,7 +341,7 @@ fn switch_panel(ui: &mut egui::Ui, state: &mut CoreState, modal_open: bool) {
 /// The slider: Accent and Zoom fills, focused and disabled.
 fn slider_panel(ui: &mut egui::Ui, state: &mut CoreState, modal_open: bool) {
     demo_panel(ui, "Slider", |ui| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             state_cell(ui, "accent", |ui| {
                 ui.set_max_width(SLIDER_WIDTH);
                 slider(ui, &mut state.slider_accent, 0.0..=1.0, SliderKind::Accent);
@@ -312,7 +352,7 @@ fn slider_panel(ui: &mut egui::Ui, state: &mut CoreState, modal_open: bool) {
             });
         });
         ui.add_space(space::SCALE_4);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             state_cell(ui, "focused", |ui| {
                 ui.set_max_width(SLIDER_WIDTH);
                 let response = slider(ui, &mut state.slider_accent, 0.0..=1.0, SliderKind::Accent);
@@ -331,7 +371,7 @@ fn slider_panel(ui: &mut egui::Ui, state: &mut CoreState, modal_open: bool) {
 /// The text field: idle, focused, disabled.
 fn text_field_panel(ui: &mut egui::Ui, state: &mut CoreState, modal_open: bool) {
     demo_panel(ui, "Text field", |ui| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             state_cell(ui, "idle", |ui| {
                 ui.set_max_width(FIELD_WIDTH);
                 text_field(ui, &mut state.field_text, "Project name");
@@ -354,7 +394,7 @@ fn text_field_panel(ui: &mut egui::Ui, state: &mut CoreState, modal_open: bool) 
 /// The search field: idle, focused, disabled.
 fn search_field_panel(ui: &mut egui::Ui, state: &mut CoreState, modal_open: bool) {
     demo_panel(ui, "Search field", |ui| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             state_cell(ui, "idle", |ui| {
                 ui.set_max_width(FIELD_WIDTH);
                 search_field(ui, &mut state.search_text, "Search takes");
@@ -378,6 +418,7 @@ fn search_field_panel(ui: &mut egui::Ui, state: &mut CoreState, modal_open: bool
 /// disabled.
 fn list_row_panel(ui: &mut egui::Ui, state: &mut CoreState, modal_open: bool) {
     demo_panel(ui, "List row", |ui| {
+        ui.set_max_width(LIST_ROW_WIDTH);
         ui.spacing_mut().item_spacing.y = space::SCALE_2;
         state_cell(ui, "idle", |ui| {
             list_row(ui, false, None, "Take 1", None);
@@ -403,6 +444,7 @@ fn list_row_panel(ui: &mut egui::Ui, state: &mut CoreState, modal_open: bool) {
 /// The inspector: header over a group of four rows.
 fn inspector_panel(ui: &mut egui::Ui, state: &mut CoreState) {
     demo_panel(ui, "Inspector", |ui| {
+        ui.set_max_width(INSPECTOR_WIDTH);
         inspector_header(ui, "Interview take 3", "Clip \u{b7} audio");
         ui.add_space(space::SCALE_4);
         inspector_group(ui, |ui| {
@@ -434,7 +476,7 @@ fn inspector_panel(ui: &mut egui::Ui, state: &mut CoreState) {
                 ui,
                 "Mode",
                 |ui| {
-                    segmented(ui, &mut state.inspector_mode, &["A", "B"]);
+                    segmented(ui, "core-inspector-mode", &mut state.inspector_mode, &["A", "B"]);
                 },
                 Some("A"),
             );
@@ -445,6 +487,7 @@ fn inspector_panel(ui: &mut egui::Ui, state: &mut CoreState) {
 /// The status bar: the caption items over the window background.
 fn status_bar_panel(ui: &mut egui::Ui) {
     demo_panel(ui, "Status bar", |ui| {
+        ui.set_max_width(STATUS_WIDTH);
         status_bar(ui, &["Ready", "48 kHz", "24 bit"]);
     });
 }
@@ -452,7 +495,7 @@ fn status_bar_panel(ui: &mut egui::Ui) {
 /// The scrollbar thumb: idle and forced hovered.
 fn scroll_thumb_panel(ui: &mut egui::Ui) {
     demo_panel(ui, "Scroll thumb", |ui| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             state_cell(ui, "idle", |ui| {
                 thumb(ui, false);
             });
@@ -546,6 +589,7 @@ const COLOR_TOKENS: &[(&str, egui::Color32)] = &[
 /// tokens live from the theme.
 fn color_panel(ui: &mut egui::Ui) {
     demo_panel(ui, "Color", |ui| {
+        ui.set_max_width(COLOR_WIDTH);
         ui.label(
             egui::RichText::new("Surfaces, text, meaning, markers, glass and chrome").font(fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY),
         );
