@@ -49,6 +49,8 @@ pub enum CommandKind {
         /// Whether the temp files are kept after the report is built.
         keep_files: bool,
     },
+    /// Record 12 seconds with screen flashes into a temp folder and measure the camera's delay, only while idle.
+    SyncTest,
 }
 
 /// One command and the QPC time it was issued, taken when the hotkey, tray item or button fired.

@@ -758,7 +758,7 @@ impl eframe::App for RecorderApp {
                 self.show_preview(ui);
                 ui.add_space(8.0);
 
-                webcam_ui::show(ui, &mut self.webcam, &mut self.profile_store, active);
+                webcam_ui::show(ui, &mut self.webcam, &mut self.profile_store, active, &state, &self.controller.sender());
                 ui.add_space(8.0);
 
                 marks_ui::show(ui, &state.recent_marks);

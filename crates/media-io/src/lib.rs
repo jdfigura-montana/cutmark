@@ -22,6 +22,9 @@ pub mod encode;
 pub mod mux;
 
 #[cfg(windows)]
+pub mod sync;
+
+#[cfg(windows)]
 pub use amf::AmfEncoder;
 
 #[cfg(windows)]
@@ -32,6 +35,9 @@ pub use encode::{Codec, EncodedPacket, Encoder, EncoderConfig, Preset, RateContr
 
 #[cfg(windows)]
 pub use mux::{Container, MuxSummary, MuxThread, Muxer};
+
+#[cfg(windows)]
+pub use sync::{SyncError, SyncReport, measure_offset};
 
 #[cfg(windows)]
 pub use hw::{D3d11Device, D3d11FramePool, HwFrame, MediaError};

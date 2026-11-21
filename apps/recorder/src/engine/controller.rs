@@ -24,6 +24,7 @@ use crate::config::{AudioCodecChoice, Profile, Settings, TrackKind};
 use crate::countdown::CountdownHandle;
 use crate::label_popup::PopupHandle;
 use crate::profiles;
+use crate::sync_flash::SyncFlashHandle;
 use crate::takes::{self, TakePaths};
 
 /// How many recent commands the state keeps.
@@ -79,6 +80,33 @@ const PREFLIGHT_MEDIA_MS: u64 = 5000;
 
 /// The longest a pre-flight may run on the wall clock before it is stopped anyway, in case no frames arrive.
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How much media a sync test records before it stops itself, in milliseconds.
+const SYNC_MEDIA_MS: u64 = 12_000;
+
+/// The longest a sync test may run on the wall clock before it is stopped anyway, in case no frames arrive.
+const SYNC_TIMEOUT: Duration = Duration::from_secs(40);
+
+/// When the screen flashes during a sync test, in milliseconds after it starts.
+const SYNC_FLASH_TIMES_MS: [u64; 5] = [2000, 4000, 6000, 8000, 10_000];
+
+/// How long each flash of a sync test lasts, in milliseconds.
+const SYNC_FLASH_MS: u32 = 100;
+
+/// What the window shows while the sync test is measuring the files it recorded.
+pub const SYNC_MEASURING: &str = "Measuring";
+
+/// What the window shows while the sync test records and flashes.
+pub const SYNC_RECORDING: &str = "Recording and flashing";
+
+/// How far a running sync test has got.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SyncProgress {
+    /// What the window shows next to the progress bar.
+    pub status: &'static str,
+    /// The share of the 12 seconds recorded so far, from 0 to 1.
+    pub progress: f32,
+}
 
 /// How far a running pre-flight has got.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -204,6 +232,10 @@ pub struct ControllerState {
     pub preflight: Option<PreflightProgress>,
     /// The result of the last finished pre-flight, kept until the next one starts.
     pub preflight_result: Option<PreflightResult>,
+    /// How far the running sync test has got, or none while no sync test runs; the phase stays idle.
+    pub sync_test: Option<SyncProgress>,
+    /// The result of the last finished sync test, or why it failed, kept until the next one starts.
+    pub sync_result: Option<Result<media_io::SyncReport, String>>,
 }
 
 /// A function the controller calls with the state after every change, while it holds the state lock.
@@ -422,6 +454,8 @@ impl Controller {
             last_idle_check: None,
             countdown: None,
             overlay,
+            flash: SyncFlashHandle::start(),
+            measuring: None,
         };
         let handle = match std::thread::Builder::new().name("controller".to_owned()).spawn(move || worker.run()) {
             Ok(handle) => Some(handle),
@@ -509,6 +543,18 @@ struct ActiveTake {
     monitor: Monitor,
     /// Set when this take is a pre-flight test, which has its own folder, progress and verdict.
     preflight: Option<PreflightRun>,
+    /// Set when this take is a camera sync test, which has its own folder, flashes and measurement.
+    sync: Option<SyncRun>,
+}
+
+/// What a running sync test needs: its temp folder, its main file, and how many flashes it has fired.
+struct SyncRun {
+    folder: PathBuf,
+    main_file: PathBuf,
+    /// When the session had started, for the flash times and the wall-clock limit.
+    began: Instant,
+    /// How many of the flashes were already shown.
+    flashed: usize,
 }
 
 /// What a running pre-flight needs to finish: its temp folder and whether to keep it.
@@ -558,6 +604,10 @@ struct Worker {
     countdown: Option<CountdownRun>,
     /// The overlay that shows the countdown, and the Esc hotkey that cancels it.
     overlay: CountdownHandle,
+    /// The white window the sync test flashes the screen with.
+    flash: SyncFlashHandle,
+    /// Receives the sync test's report from the thread that measures it.
+    measuring: Option<Receiver<Result<media_io::SyncReport, String>>>,
 }
 
 /// The callback the countdown overlay calls on Esc: it queues a start/stop command that carries the Escape intent.
@@ -642,7 +692,8 @@ fn countdown_verdict(counting: bool, kind: &CommandKind, intent: Option<&ApiInte
         | CommandKind::Mark(_)
         | CommandKind::LabeledMark { .. }
         | CommandKind::SetProfile(_)
-        | CommandKind::Preflight { .. } => Verdict::Ignore,
+        | CommandKind::Preflight { .. }
+        | CommandKind::SyncTest => Verdict::Ignore,
         CommandKind::Mute { .. } | CommandKind::GetStatus => Verdict::Pass,
     }
 }
@@ -659,9 +710,12 @@ impl Worker {
             self.poll_countdown();
             if self.is_preflight() {
                 self.poll_preflight();
+            } else if self.is_sync() {
+                self.poll_sync();
             } else {
                 self.poll_stats();
             }
+            self.poll_measuring();
             self.poll_idle_disk();
         }
         self.cancel_countdown();
@@ -699,7 +753,7 @@ impl Worker {
     /// A file error becomes a warning banner and the recording carries on.
     fn script_position(&mut self, position: &PositionMsg) {
         let Some(active) = &mut self.active else { return };
-        if active.preflight.is_some() {
+        if active.preflight.is_some() || active.sync.is_some() {
             return;
         }
         let ms = active.session.marks_mut().map_or(0, |marks| marks.clock_ms(position.qpc));
@@ -759,8 +813,14 @@ impl Worker {
             log::info!("command ignored: {kind:?} does nothing during a pre-flight");
             return;
         }
+        // A sync test listens to the same few commands as a pre-flight.
+        if self.is_sync() && !matches!(kind, CommandKind::StartStop | CommandKind::Mute { .. } | CommandKind::GetStatus) {
+            log::info!("command ignored: {kind:?} does nothing during a sync test");
+            return;
+        }
         match kind {
             CommandKind::StartStop if self.is_preflight() => self.cancel_preflight(),
+            CommandKind::StartStop if self.is_sync() => self.cancel_sync(),
             CommandKind::StartStop => match (self.active.is_some(), &intent) {
                 (true, Some(ApiIntent::Start)) => log::info!("start ignored: a take is already running"),
                 (false, Some(ApiIntent::Stop)) => log::info!("stop ignored: no take is running"),
@@ -782,6 +842,7 @@ impl Worker {
             },
             CommandKind::SetProfile(name) => self.set_profile(name),
             CommandKind::Preflight { keep_files } => self.start_preflight(*keep_files),
+            CommandKind::SyncTest => self.start_sync(),
             CommandKind::Mark(kind) => self.add_mark(*kind, press),
             CommandKind::LabeledMark { category, label } => {
                 let source = if intent == Some(ApiIntent::Mark) { ::marks::Source::Api } else { ::marks::Source::Hotkey };
@@ -901,6 +962,7 @@ impl Worker {
             tracker,
             monitor: Monitor::default(),
             preflight: None,
+            sync: None,
         });
         // A camera file the profile asked for but the take could not have is a banner; the recording carries on.
         if let Some(notice) = cam_notice {
@@ -998,6 +1060,7 @@ impl Worker {
             tracker,
             monitor: Monitor::default(),
             preflight: Some(PreflightRun { folder, keep_files, began: Instant::now() }),
+            sync: None,
         });
         self.update(|state| state.preflight = Some(PreflightProgress { status: preflight::RUNNING, progress: 0.0 }));
         Ok(())
@@ -1068,10 +1131,180 @@ impl Worker {
         self.update(|state| state.preflight = None);
     }
 
+    /// Whether the running take is a camera sync test.
+    fn is_sync(&self) -> bool {
+        self.active.as_ref().is_some_and(|active| active.sync.is_some())
+    }
+
+    /// Starts a sync test, only while idle; on failure shows a red banner and stays idle.
+    fn start_sync(&mut self) {
+        if self.active.is_some() || self.countdown.is_some() || self.measuring.is_some() {
+            log::info!("sync test ignored: a take, a countdown or a measurement is running");
+            return;
+        }
+        self.update(|state| {
+            state.error = None;
+            state.sync_result = None;
+        });
+        if let Err(err) = self.start_sync_inner() {
+            log::error!("could not start the sync test: {err}");
+            self.update(|state| state.error = Some(format!("The sync test could not start: {err}")));
+        }
+    }
+
+    /// Records into a fresh folder under the temp folder with the camera file on and its offset at zero.
+    ///
+    /// Like a pre-flight it has no countdown, take number, marks or script; the flashes come from [`Worker::poll_sync`].
+    fn start_sync_inner(&mut self) -> Result<(), StartError> {
+        let mut profile = profiles::find(&self.settings.active_profile).unwrap_or_else(Profile::tutorial_av1_1440p60);
+        match profile.webcam.as_mut() {
+            // The test measures the camera as it is, so any offset already saved must not move the files.
+            Some(webcam) if webcam.iso => webcam.offset_ms = 0,
+            _ => return Err(StartError::Take("turn on the webcam and its camera file in the profile first".to_owned())),
+        }
+        let now = chrono::Local::now();
+        let folder = std::env::temp_dir().join("Cutmark").join("synctest").join(now.format("%Y-%m-%d_%H-%M-%S").to_string());
+        std::fs::create_dir_all(&folder).map_err(|err| StartError::Take(format!("could not create {}: {err}", folder.display())))?;
+        let base_name = "synctest".to_owned();
+        let extension = format!("{:?}", profile.container).to_lowercase();
+        let output_file = folder.join(format!("{base_name}.{extension}"));
+        let fps = profile.fps;
+        let (tracks, missing) = track_specs(&self.settings);
+        if !missing.is_empty() {
+            log::warn!("sync test without these audio devices: {}", missing.join(", "));
+        }
+        let script = TakeScript::new(&folder, &base_name, now);
+        let started = Instant::now();
+        let tracker = StatsTracker::new(folder.clone(), started);
+        let cfg = self.session_config(profile, output_file.clone(), folder.clone(), base_name, tracks);
+        let session = match RecordingSession::start(cfg) {
+            Ok(session) => session,
+            Err(err) => {
+                remove_folder(&folder);
+                return Err(StartError::Session { file: output_file.display().to_string(), reason: err.to_string() });
+            }
+        };
+        if let Some(notice) = session.cam_notice().map(str::to_owned) {
+            if let Err(err) = session.stop() {
+                log::warn!("the sync test did not stop cleanly: {err}");
+            }
+            remove_folder(&folder);
+            return Err(StartError::Take(notice));
+        }
+        let marks_warning = session.marks_warning();
+        self.active = Some(ActiveTake {
+            session,
+            marks_warning,
+            script,
+            paused: false,
+            last_poll: None,
+            last_mbps: 0.0,
+            started,
+            fps,
+            tracker,
+            monitor: Monitor::default(),
+            preflight: None,
+            sync: Some(SyncRun { folder, main_file: output_file, began: Instant::now(), flashed: 0 }),
+        });
+        self.update(|state| state.sync_test = Some(SyncProgress { status: SYNC_RECORDING, progress: 0.0 }));
+        Ok(())
+    }
+
+    /// Fires the flashes when they are due, publishes the progress, and finishes the test after 12 seconds of media time.
+    fn poll_sync(&mut self) {
+        let Some(active) = &mut self.active else { return };
+        let Some(run) = &mut active.sync else { return };
+        let elapsed_ms = u64::try_from(run.began.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if SYNC_FLASH_TIMES_MS.get(run.flashed).is_some_and(|due| elapsed_ms >= *due) {
+            run.flashed += 1;
+            self.flash.flash(SYNC_FLASH_MS);
+        }
+        let media_ms = active.session.stats().frames.saturating_mul(1000) / u64::from(active.fps.max(1));
+        if media_ms >= SYNC_MEDIA_MS || run.began.elapsed() >= SYNC_TIMEOUT {
+            self.finish_sync();
+            return;
+        }
+        let progress = media_ms as f32 / SYNC_MEDIA_MS as f32;
+        self.update_quietly(|state| state.sync_test = Some(SyncProgress { status: SYNC_RECORDING, progress }));
+    }
+
+    /// Stops the sync test's session and measures its two files on a worker thread, which deletes the folder when done.
+    fn finish_sync(&mut self) {
+        if !self.is_sync() {
+            return;
+        }
+        let Some(active) = self.active.take() else { return };
+        let Some(run) = active.sync else { return };
+        let stopped = active.session.stop();
+        self.last_idle_check = None;
+        let failure = match (stopped, find_cam_file(&run.folder, &run.main_file)) {
+            (Err(err), _) => Some(format!("The sync test failed on stop: {err}")),
+            (Ok(_), None) => Some("The sync test did not write a camera file.".to_owned()),
+            (Ok(_), Some(cam)) => {
+                let (tx, rx) = mpsc::channel();
+                let (folder, main) = (run.folder.clone(), run.main_file.clone());
+                let spawned = std::thread::Builder::new().name("sync-measure".to_owned()).spawn(move || {
+                    let result = media_io::measure_offset(&main, &cam).map_err(|err| err.to_string());
+                    remove_folder(&folder);
+                    // The controller may have ended while the files were measured, and then nobody wants the result.
+                    let _ = tx.send(result);
+                });
+                match spawned {
+                    Ok(_) => {
+                        self.measuring = Some(rx);
+                        self.update(|state| state.sync_test = Some(SyncProgress { status: SYNC_MEASURING, progress: 1.0 }));
+                        return;
+                    }
+                    Err(err) => Some(format!("The sync test could not start its measurement: {err}")),
+                }
+            }
+        };
+        remove_folder(&run.folder);
+        self.update(|state| {
+            state.sync_test = None;
+            state.error = failure;
+        });
+    }
+
+    /// Publishes the report once the measuring thread has one.
+    fn poll_measuring(&mut self) {
+        let Some(receiver) = &self.measuring else { return };
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err("the measurement ended without a result".to_owned()),
+        };
+        self.measuring = None;
+        self.update(|state| {
+            state.sync_test = None;
+            state.sync_result = Some(result);
+        });
+    }
+
+    /// Stops the sync test's session and deletes its temp folder; there is no report.
+    fn cancel_sync(&mut self) {
+        if !self.is_sync() {
+            return;
+        }
+        let Some(active) = self.active.take() else { return };
+        let Some(run) = active.sync else { return };
+        if let Err(err) = active.session.stop() {
+            log::warn!("the cancelled sync test did not stop cleanly: {err}");
+        }
+        remove_folder(&run.folder);
+        self.last_idle_check = None;
+        log::info!("sync test cancelled");
+        self.update(|state| state.sync_test = None);
+    }
+
     /// Stops the running take, keeps its summary for the window and returns to idle.
     fn stop_take(&mut self) {
         if self.is_preflight() {
             self.cancel_preflight();
+            return;
+        }
+        if self.is_sync() {
+            self.cancel_sync();
             return;
         }
         if self.active.is_none() {
@@ -1558,6 +1791,15 @@ fn remove_folder(folder: &Path) {
     }
 }
 
+/// The camera file a sync test wrote: the one video file in its folder that is not the main file.
+fn find_cam_file(folder: &Path, main_file: &Path) -> Option<PathBuf> {
+    const VIDEO_EXTENSIONS: [&str; 4] = ["mp4", "mkv", "mov", "webm"];
+    std::fs::read_dir(folder).ok()?.filter_map(Result::ok).map(|entry| entry.path()).find(|path| {
+        path != main_file
+            && path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| VIDEO_EXTENSIONS.iter().any(|known| ext.eq_ignore_ascii_case(known)))
+    })
+}
+
 /// Builds a spec for every enabled track in the settings, resolving each device, and names the tracks whose device is missing.
 fn track_specs(settings: &Settings) -> (Vec<TrackSpec>, Vec<String>) {
     let mut specs = Vec::new();
@@ -1739,6 +1981,7 @@ mod tests {
             CommandKind::LabeledMark { category: ::marks::MarkType::Note, label: None },
             CommandKind::SetProfile("Any".to_owned()),
             CommandKind::Preflight { keep_files: false },
+            CommandKind::SyncTest,
         ];
         for kind in &ignored {
             assert_eq!(countdown_verdict(true, kind, None), Verdict::Ignore, "{kind:?}");

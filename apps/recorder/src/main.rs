@@ -17,6 +17,7 @@ mod profile_ui;
 mod profiles;
 mod recovery;
 mod status_ui;
+mod sync_flash;
 mod takes;
 mod tracks_ui;
 mod tray;

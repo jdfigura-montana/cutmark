@@ -1,9 +1,14 @@
 //! The Webcam section of the window: camera, mode, live camera picture and the camera controls.
 
-use capture::CameraFormat;
-use egui::{Button, Checkbox, ComboBox, Grid, Slider, Ui};
+use std::time::Duration;
 
-use crate::config::ControlSetting;
+use capture::CameraFormat;
+use egui::{Button, Checkbox, Color32, ComboBox, Grid, ProgressBar, Slider, Ui};
+use media_io::SyncReport;
+
+use crate::config::{ControlSetting, WebcamSettings};
+use crate::engine::bus::{BusSender, Command, CommandKind};
+use crate::engine::controller::{ControllerState, Phase};
 use crate::profiles::ProfileStore;
 use crate::webcam::WebcamHost;
 
@@ -13,8 +18,19 @@ const PREVIEW_MAX_WIDTH: f32 = 360.0;
 /// The width of the control sliders, in points.
 const SLIDER_WIDTH: f32 = 220.0;
 
+/// The color of the "Within 1 frame" verdict.
+const SYNC_GOOD: Color32 = Color32::from_rgb(0x5C, 0xB8, 0x5C);
+
+/// The color of the "Off by N frames" verdict and of a failed sync test.
+const SYNC_WARN: Color32 = Color32::from_rgb(0xE6, 0xB4, 0x3C);
+
+/// How often the window redraws while a sync test runs, so its progress moves.
+const SYNC_REPAINT: Duration = Duration::from_millis(100);
+
 /// Draws the Webcam section. Everything except the camera controls is read-only while recording.
-pub fn show(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore, recording: bool) {
+///
+/// The controller `state` and the command `bus` drive the camera sync test at the bottom of the section.
+pub fn show(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore, recording: bool, state: &ControllerState, bus: &BusSender) {
     ui.heading("Webcam");
     let mut enabled = host.settings(store).is_some();
     if ui.add_enabled(!recording, Checkbox::new(&mut enabled, "Enable")).changed() {
@@ -38,6 +54,8 @@ pub fn show(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore, record
     });
     ui.add_space(4.0);
     controls(ui, host, store);
+    ui.add_space(4.0);
+    sync_test(ui, host, store, state, bus);
 }
 
 /// The camera dropdown with its Refresh button.
@@ -129,6 +147,72 @@ fn controls(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore) {
     });
 }
 
+/// The Sync test button with its hint, the progress while it runs, and the result with the button that applies it.
+fn sync_test(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, state: &ControllerState, bus: &BusSender) {
+    ui.label("Camera sync");
+    let iso = host.settings(store).is_some_and(|settings| settings.iso);
+    let idle = state.phase == Phase::Idle && state.preflight.is_none() && state.sync_test.is_none();
+    ui.horizontal(|ui| {
+        if ui.add_enabled(idle && iso, Button::new("Sync test (12 s)")).clicked() {
+            let command = Command::new(CommandKind::SyncTest, capture::qpc_now());
+            if bus.send(command).is_err() {
+                log::warn!("the sync test was not started because the controller has ended");
+            }
+        }
+        ui.weak("Face the camera; dim the room if it fails.");
+    });
+    if !iso {
+        ui.weak("Turn on the camera file to run the sync test.");
+    }
+    if let Some(run) = &state.sync_test {
+        ui.add(ProgressBar::new(run.progress).text(run.status));
+        ui.ctx().request_repaint_after(SYNC_REPAINT);
+    }
+    match &state.sync_result {
+        Some(Ok(report)) => sync_result(ui, host, store, report, &state.active_profile),
+        Some(Err(message)) => {
+            ui.colored_label(SYNC_WARN, message);
+        }
+        None => {}
+    }
+}
+
+/// The measured offset, the verdict, and the button that saves the opposite offset to the profile.
+fn sync_result(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, report: &SyncReport, profile: &str) {
+    ui.label(format!(
+        "Median offset {:+.0} ms ({:+.1} frames), spread {:.0} ms over {} flashes",
+        report.median_ms,
+        report.median_frames,
+        report.spread_ms,
+        report.offsets_ms.len()
+    ));
+    if report.within_one_frame() {
+        ui.colored_label(SYNC_GOOD, "Within 1 frame");
+    } else {
+        let frames = report.frames_off();
+        ui.colored_label(SYNC_WARN, format!("Off by {frames} frame{}", if frames == 1 { "" } else { "s" }));
+    }
+    ui.horizontal(|ui| {
+        if ui.button("Apply as camera offset").clicked() {
+            let offset = applied_offset(report.median_ms);
+            store.edit(profile, |profile| {
+                if let Some(settings) = &mut profile.webcam {
+                    settings.offset_ms = offset;
+                }
+            });
+            store.flush();
+        }
+        if let Some(settings) = host.settings(store) {
+            ui.weak(format!("Camera offset is {} ms", settings.offset_ms));
+        }
+    });
+}
+
+/// The offset that cancels a measured median: its opposite, rounded, and limited to the range the window allows.
+fn applied_offset(median_ms: f64) -> i32 {
+    WebcamSettings { offset_ms: (-median_ms).round() as i32, ..WebcamSettings::default() }.offset_clamped()
+}
+
 /// A frame rate without trailing zeros: 30, 29.97, 59.94.
 fn fps_text(fps: f64) -> String {
     let text = format!("{fps:.2}");
@@ -153,6 +237,15 @@ mod tests {
         assert_eq!(fps_text(59.94), "59.94");
         assert_eq!(fps_text(7.5), "7.5");
         assert_eq!(fps_text(0.0), "0");
+    }
+
+    #[test]
+    fn the_applied_offset_is_the_opposite_of_the_median_within_the_limit() {
+        assert_eq!(applied_offset(83.4), -83);
+        assert_eq!(applied_offset(-120.0), 120);
+        assert_eq!(applied_offset(0.4), 0);
+        assert_eq!(applied_offset(900.0), -500);
+        assert_eq!(applied_offset(-900.0), 500);
     }
 
     #[test]
