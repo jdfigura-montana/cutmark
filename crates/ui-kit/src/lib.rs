@@ -27,8 +27,9 @@ pub mod widgets;
 pub use meter::level_meter;
 pub use theme::Theme;
 pub use widgets::{
-    CaptionRects, MainToolbar, SliderKind, caption_buttons, chip, focus_ring, icon_button, inspector_group, inspector_header, inspector_row, list_row,
-    main_toolbar, panel, primary_button, scroll_thumb, search_field, segmented, slider, status_bar, switch, text_field,
+    CaptionRects, DeckState, MainToolbar, PlayKind, SliderKind, caption_buttons, chip, deck_button, dialog, focus_ring, glass_frame, icon_button,
+    inspector_group, inspector_header, inspector_row, list_row, main_toolbar, paint_glass_highlight, panel, play_button, primary_button, scroll_thumb,
+    search_field, segmented, set_toast_time, show_toasts, slider, status_bar, switch, text_field, timecode, toast, transport_deck,
 };
 
 use tokens::{color, radius, size, space, typography};
@@ -45,6 +46,9 @@ const SCROLL_DORMANT_OPACITY: f32 = 0.4;
 const SCROLL_ACTIVE_OPACITY: f32 = 0.7;
 /// Minimum length of the scrollbar handle.
 const SCROLL_HANDLE_MIN_LENGTH: f32 = 24.0;
+/// Height of a menu and menu bar row (spec "Components": "Menus and
+/// popovers": 32px rows). egui sizes menu items from `interact_size.y`.
+const MENU_ROW_HEIGHT: f32 = 32.0;
 
 /// Sets the fonts and the egui `Style` and `Visuals` once at startup.
 ///
@@ -58,18 +62,19 @@ pub fn apply(ctx: &egui::Context) {
     ctx.set_fonts(fonts::definitions());
     // The appearance file feeds the runtime theme before anything reads it.
     Theme::set(ctx, appearance::load());
-    let accent = Theme::get(ctx).accent.accent;
+    let theme = Theme::get(ctx);
+    let accent = theme.accent.accent;
     let mut v = egui::Visuals::dark();
 
-    // Surfaces from the surface tokens; popups cast the glass shadow.
+    // Surfaces from the surface tokens; menus and popovers follow the glass
+    // switch (spec "Menus and popovers" and "Elevation and glass").
     v.panel_fill = color::BG_PANEL;
-    v.window_fill = color::BG_PANEL;
+    apply_glass(&mut v, theme.glass);
     v.extreme_bg_color = color::BG_CONTROL; // recessed surfaces (fader slot, etc.)
     v.faint_bg_color = color::BG_TRACK_ALT; // alternate row shade
     v.window_stroke = egui::Stroke::new(HAIRLINE, color::STROKE_HAIRLINE);
     v.window_corner_radius = radius::GROUP.into();
     v.menu_corner_radius = radius::GROUP.into();
-    v.popup_shadow = egui::Shadow { offset: [0, 10], blur: 30, spread: 0, color: color::GLASS_SHADOW };
 
     // One accent for selection, focus and links.
     apply_accent(&mut v, accent);
@@ -117,7 +122,9 @@ pub fn apply(ctx: &egui::Context) {
         style.spacing.button_padding = egui::vec2(space::SCALE_12, space::SCALE_6);
         style.spacing.menu_margin = egui::Margin::same(space::SCALE_6 as i8);
         style.spacing.window_margin = egui::Margin::same(space::SCALE_8 as i8);
-        style.spacing.interact_size.y = size::SEGMENT_HEIGHT;
+        // egui sizes menu items and the menu bar from this minimum, so it sets
+        // the 32px menu rows (spec "Menus and popovers").
+        style.spacing.interact_size.y = MENU_ROW_HEIGHT;
 
         let scroll = &mut style.spacing.scroll;
         scroll.floating = true;
@@ -135,11 +142,15 @@ pub fn apply(ctx: &egui::Context) {
     ctx.set_visuals(v);
 }
 
-/// Re-applies the accent-dependent parts of the `Visuals` from the runtime
-/// [`Theme`]. [`appearance::poll`] calls this when it loads a new theme.
+/// Re-applies the theme-dependent parts of the `Visuals` from the runtime
+/// [`Theme`]: the accent and the glass popup look. [`appearance::poll`] calls
+/// this when it loads a new theme.
 pub fn refresh(ctx: &egui::Context) {
-    let accent = Theme::get(ctx).accent.accent;
-    ctx.all_styles_mut(|style| apply_accent(&mut style.visuals, accent));
+    let theme = Theme::get(ctx);
+    ctx.all_styles_mut(|style| {
+        apply_accent(&mut style.visuals, theme.accent.accent);
+        apply_glass(&mut style.visuals, theme.glass);
+    });
 }
 
 /// Writes the accent into selection (35% alpha fill, 2px stroke) and links.
@@ -147,6 +158,15 @@ fn apply_accent(v: &mut egui::Visuals, accent: egui::Color32) {
     v.selection.bg_fill = accent.gamma_multiply(SELECTION_BG_ALPHA);
     v.selection.stroke = egui::Stroke::new(SELECTION_STROKE, accent);
     v.hyperlink_color = accent;
+}
+
+/// Writes the glass-dependent popup look (spec "Menus and popovers",
+/// "Elevation and glass"): menus and popovers take the glass fill and the
+/// glass shadow when the glass switch is on, and the solid `bg.group`
+/// fallback with no shadow when it is off.
+fn apply_glass(v: &mut egui::Visuals, glass: bool) {
+    v.window_fill = if glass { color::GLASS_FILL } else { color::BG_GROUP };
+    v.popup_shadow = if glass { widgets::glass::glass_shadow() } else { egui::Shadow::NONE };
 }
 
 #[cfg(test)]
@@ -191,5 +211,24 @@ mod tests {
         assert_eq!(visuals.selection.stroke.color, violet.accent, "selection stroke follows Violet after refresh");
         assert_eq!(visuals.selection.bg_fill, violet.accent.gamma_multiply(0.35), "selection fill is the accent at 35% alpha");
         assert_eq!(visuals.hyperlink_color, violet.accent);
+    }
+
+    /// Menus and popovers take the glass fill and shadow with glass on and
+    /// the solid `bg.group` fallback with no shadow once the glass switch
+    /// flips off (apply() then refresh()).
+    #[test]
+    fn menus_and_popovers_follow_the_glass_switch() {
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        let visuals = &ctx.style_of(ctx.theme()).visuals;
+        assert_eq!(visuals.window_fill, tokens::color::GLASS_FILL, "menus and popovers use the glass fill");
+        assert_eq!(visuals.popup_shadow.color, tokens::color::GLASS_SHADOW, "popups cast the glass shadow");
+        assert_eq!(visuals.menu_corner_radius.nw, tokens::radius::GROUP as u8, "menu corners use radius.group");
+
+        Theme::set(&ctx, Theme { glass: false, ..Theme::default() });
+        refresh(&ctx);
+        let visuals = &ctx.style_of(ctx.theme()).visuals;
+        assert_eq!(visuals.window_fill, tokens::color::BG_GROUP, "the solid fallback applies after refresh");
+        assert_eq!(visuals.popup_shadow, egui::Shadow::NONE, "no shadow on the solid fallback");
     }
 }

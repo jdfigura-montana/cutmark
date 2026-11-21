@@ -6,7 +6,9 @@
 
 pub mod caption_buttons;
 pub mod chip;
+pub mod dialog;
 pub mod focus;
+pub mod glass;
 pub mod icon_button;
 pub mod inspector;
 pub mod list_row;
@@ -20,10 +22,14 @@ pub mod slider;
 pub mod status_bar;
 pub mod switch;
 pub mod text_field;
+pub mod toast;
+pub mod transport;
 
 pub use caption_buttons::{CaptionRects, caption_buttons};
 pub use chip::chip;
+pub use dialog::dialog;
 pub use focus::focus_ring;
+pub use glass::{glass_frame, paint_glass_highlight};
 pub use icon_button::icon_button;
 pub use inspector::{inspector_group, inspector_header, inspector_row};
 pub use list_row::list_row;
@@ -37,6 +43,8 @@ pub use slider::{SliderKind, slider};
 pub use status_bar::status_bar;
 pub use switch::switch;
 pub use text_field::text_field;
+pub use toast::{set_toast_time, show_toasts, toast};
+pub use transport::{DeckState, PlayKind, deck_button, play_button, timecode, transport_deck};
 
 use egui::CornerRadius;
 
