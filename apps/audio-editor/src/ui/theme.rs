@@ -124,7 +124,7 @@ pub struct Theme {
     pub wave_dot_r: f32,
 
     // ---- Timeline frame ----
-    /// Height of the ruler strip.
+    /// Height of the ruler strip (the ui-kit ruler token).
     pub ruler_h: f32,
     /// Width of the track header column.
     pub header_col_w: f32,
@@ -132,34 +132,10 @@ pub struct Theme {
     pub scrollbar_h: f32,
     /// Minimum scrollbar thumb width.
     pub scrollbar_thumb_min: f32,
-    /// Major ruler tick length.
-    pub ruler_tick_h: f32,
-    /// Minor ruler tick length.
-    pub ruler_minor_tick_h: f32,
-    /// Color of the ruler ticks.
-    pub ruler_tick_color: egui::Color32,
-    /// Horizontal padding of the ruler timecode labels.
-    pub ruler_label_pad_x: f32,
-    /// Vertical padding of the ruler timecode labels.
-    pub ruler_label_pad_y: f32,
-    /// Font size of the ruler timecode labels.
-    pub ruler_label_size: f32,
     /// Minimum width in points a ruler tick must have to be drawn.
     pub ruler_min_tick_px: f32,
-    /// Marker triangle color.
-    pub marker_color: egui::Color32,
-    /// Half width of the marker triangle.
+    /// Half width of a marker hit area on the ruler.
     pub marker_tri_w: f32,
-    /// Height of the marker triangle above the ruler bottom.
-    pub marker_tri_h: f32,
-    /// Playhead line and triangle color.
-    pub playhead_color: egui::Color32,
-    /// Playhead line width.
-    pub playhead_width: f32,
-    /// Half width of the playhead triangle.
-    pub playhead_tri_w: f32,
-    /// Height of the playhead triangle below the ruler top.
-    pub playhead_tri_h: f32,
 
     // ---- Interaction ----
     /// Snap distance in points (the "8 px snap distance").
@@ -643,24 +619,12 @@ impl Default for Theme {
             wave_width: 1.0,
             wave_dot_r: 1.5,
             // Timeline frame
-            ruler_h: 30.0,
+            ruler_h: tokens::size::RULER_HEIGHT,
             header_col_w: 208.0,
             scrollbar_h: 12.0,
             scrollbar_thumb_min: 20.0,
-            ruler_tick_h: 9.0,
-            ruler_minor_tick_h: 5.0,
-            ruler_tick_color: egui::Color32::from_rgb(0x3A, 0x40, 0x4A),
-            ruler_label_pad_x: 4.0,
-            ruler_label_pad_y: 3.0,
-            ruler_label_size: 10.5,
             ruler_min_tick_px: 60.0,
-            marker_color: egui::Color32::from_rgb(0xE8, 0xB4, 0x4C),
             marker_tri_w: 5.0,
-            marker_tri_h: 8.0,
-            playhead_color: egui::Color32::from_rgb(0xFF, 0x6B, 0x5C),
-            playhead_width: 1.5,
-            playhead_tri_w: 5.0,
-            playhead_tri_h: 10.0,
             // Interaction
             snap_px: 8.0,
             drag_start_px: 3.0,
@@ -958,7 +922,7 @@ mod tests {
         assert_eq!(t.trim_edge_w, 6.0);
         assert_eq!(t.snap_px, 8.0);
         assert_eq!(t.fade_handle_sz, 8.0);
-        assert_eq!(t.ruler_h, 30.0);
+        assert_eq!(t.ruler_h, tokens::size::RULER_HEIGHT);
         assert_eq!(t.new_track_h, 96.0);
         assert_eq!(t.meter_red, tokens::color::SEM_METER_CLIP);
         assert_eq!(t.meter_yellow, tokens::color::SEM_METER_WARN);
@@ -969,8 +933,6 @@ mod tests {
         assert_eq!(t.accent_soft, accent_alpha(0x2E));
         assert_eq!(t.selection_border, t.accent);
         assert_eq!(t.snap_line_color, t.accent);
-        assert_eq!(t.playhead_color, egui::Color32::from_rgb(0xFF, 0x6B, 0x5C));
-        assert_eq!(t.marker_color, egui::Color32::from_rgb(0xE8, 0xB4, 0x4C));
         assert_eq!(t.unsaved_dot_d, 6.0);
         assert_eq!(t.record_red, tokens::color::SEM_RECORD);
         assert_eq!(t.on_record_glyph, egui::Color32::WHITE);

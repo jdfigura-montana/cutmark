@@ -8,12 +8,18 @@ use crate::editor::action::Action;
 use crate::editor::snap;
 use crate::model::marker::Marker;
 
-use crate::ui::theme::{THEME, Theme};
+use ui_kit::MarkerKind;
+use ui_kit::widgets;
+
+use crate::ui::theme::THEME;
 
 use super::{Geom, tick_step};
 
 /// Key under which the marker interaction state is carried between frames.
 const MARKER_STATE_KEY: &str = "timeline_marker_state";
+
+/// Opacity of the faint line under an unselected marker.
+const MARKER_LINE_ALPHA: f32 = 0.35;
 
 /// Extra grab area on each side of a marker triangle, in points.
 const MARKER_GRAB_PX: f32 = 5.0;
@@ -79,12 +85,6 @@ fn marker_hit(markers: &[Marker], g: &Geom, ruler_rect: egui::Rect, p: egui::Pos
             (p.x - x).abs() <= THEME.marker_tri_w + MARKER_GRAB_PX
         })
         .map(|m| m.id)
-}
-
-/// Lightens a color towards white by `t` (0..1), for the selected marker.
-fn brighten(color: egui::Color32, t: f32) -> egui::Color32 {
-    let mix = |c: u8| c + ((255 - i32::from(c)) as f32 * t) as u8;
-    egui::Color32::from_rgb(mix(color.r()), mix(color.g()), mix(color.b()))
 }
 
 /// Handles all marker mouse input on the ruler.
@@ -324,8 +324,14 @@ pub fn draw_marker_menu(ui: &egui::Ui, editor: &mut Editor) {
     save_marker_state(ui.ctx(), &state);
 }
 
-/// Draws the ruler strip, its ticks and labels, marker triangles with faint
-/// lines down through the lane area.
+/// The ui-kit marker kind of every marker. The model keeps position-only
+/// markers the user adds, so they are all plain user markers.
+const MARKER_KIND: MarkerKind = MarkerKind::User;
+
+/// Draws the ruler strip through ui-kit's `paint_ruler`: ticks and time
+/// labels at the adaptive step, and the markers as dots in the strip under the
+/// labels. Each marker also gets a faint vertical line down through the lane
+/// area, and the selected one a full line from the ruler top.
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
     painter: &egui::Painter,
@@ -346,10 +352,9 @@ pub fn draw(
     let minor = step / 5;
     let minor_px = minor as f64 / g.spp;
     let show_minor = minor_px >= 8.0;
-    let stroke = egui::Stroke::new(THEME.hairline, THEME.ruler_tick_color);
-    let text = THEME.text_muted;
     let over_hour = project_length / u64::from(rate) > 3600;
 
+    let mut ticks: Vec<(f32, Option<String>)> = Vec::new();
     let mut m = first;
     while m <= end {
         let x = g.sample_to_x(m);
@@ -357,15 +362,7 @@ pub fn draw(
             if x > ruler_rect.right() + 1.0 {
                 break;
             }
-            painter.line_segment([egui::pos2(x, ruler_rect.bottom() - THEME.ruler_tick_h), egui::pos2(x, ruler_rect.bottom())], stroke);
-            let tc = ruler_label(step, m, rate, over_hour);
-            painter.text(
-                egui::pos2(x + THEME.ruler_label_pad_x, ruler_rect.top() + THEME.ruler_label_pad_y),
-                egui::Align2::LEFT_TOP,
-                tc,
-                Theme::mono(THEME.ruler_label_size),
-                text,
-            );
+            ticks.push((x, Some(ruler_label(step, m, rate, over_hour))));
             if show_minor {
                 for k in 1..5u64 {
                     let sub = m.checked_add(minor * k);
@@ -374,37 +371,32 @@ pub fn draw(
                     if mx > ruler_rect.right() {
                         break;
                     }
-                    painter.line_segment([egui::pos2(mx, ruler_rect.bottom() - THEME.ruler_minor_tick_h), egui::pos2(mx, ruler_rect.bottom())], stroke);
+                    ticks.push((mx, None));
                 }
             }
         }
         m += step;
     }
 
-    // Markers: a small downward triangle on the ruler and a faint vertical
-    // line down through the lane area. The selected marker draws brighter.
+    // Markers: the lines come first so the dots paint over them.
+    let line_color = widgets::marker_color(MARKER_KIND);
+    let mut dots: Vec<(f32, MarkerKind)> = Vec::new();
     for marker in markers {
         let x = g.sample_to_x(marker.position);
         if x < g.lane_left - 1.0 || x > ruler_rect.right() + 1.0 {
             continue;
         }
-        let is_selected = Some(marker.id) == selected;
-        let marker_color = if is_selected { brighten(THEME.marker_color, 0.55) } else { THEME.marker_color };
-        let line_color = if is_selected { brighten(THEME.marker_color, 0.45) } else { THEME.marker_color };
-        painter.add(egui::Shape::convex_polygon(
-            vec![
-                egui::pos2(x - THEME.marker_tri_w, ruler_rect.bottom() - THEME.marker_tri_h),
-                egui::pos2(x + THEME.marker_tri_w, ruler_rect.bottom() - THEME.marker_tri_h),
-                egui::pos2(x, ruler_rect.bottom()),
-            ],
-            marker_color,
-            egui::Stroke::NONE,
-        ));
-        painter.line_segment(
-            [egui::pos2(x, ruler_rect.bottom()), egui::pos2(x, lane_rect.bottom())],
-            egui::Stroke::new(THEME.hairline, line_color.gamma_multiply(0.35)),
-        );
+        if Some(marker.id) == selected {
+            painter.line_segment([egui::pos2(x, ruler_rect.top()), egui::pos2(x, lane_rect.bottom())], egui::Stroke::new(THEME.hairline, line_color));
+        } else {
+            painter.line_segment(
+                [egui::pos2(x, ruler_rect.bottom()), egui::pos2(x, lane_rect.bottom())],
+                egui::Stroke::new(THEME.hairline, line_color.gamma_multiply(MARKER_LINE_ALPHA)),
+            );
+        }
+        dots.push((x, MARKER_KIND));
     }
+    ui_kit::paint_ruler(painter, ruler_rect, &ticks, &dots);
 }
 
 /// Adaptive ruler label for a tick at `samples`, formatted for `step_secs`.

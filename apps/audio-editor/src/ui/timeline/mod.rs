@@ -1,6 +1,8 @@
 //! ui::timeline: the central timeline view (ruler, lanes, playhead, zoom, scroll).
 
 use eframe::egui;
+use ui_kit::icons::regular;
+use ui_kit::tokens::{color, size, space, typography};
 use uuid::Uuid;
 
 use crate::editor::Editor;
@@ -125,6 +127,40 @@ pub fn tick_step(spp: f64, rate: u32, min_px: f32) -> u64 {
     seconds_to_samples(TICK_STEPS[TICK_STEPS.len() - 1], rate)
 }
 
+/// Width of the zoom slider in the panel toolbar, in points.
+const ZOOM_SLIDER_W: f32 = 140.0;
+/// Width reserved for the zoom readout (twelve mono characters), in points.
+const ZOOM_READOUT_W: f32 = 92.0;
+
+/// Zoom slider position for a samples-per-pixel value: the negated log2, so
+/// the right end is the most zoomed in. Out-of-range input clamps first.
+fn zoom_to_slider(spp: f64) -> f32 {
+    -(spp.clamp(MIN_SPP, MAX_SPP).log2()) as f32
+}
+
+/// Samples-per-pixel for a zoom slider position (the inverse of
+/// [`zoom_to_slider`]).
+fn slider_to_zoom(value: f32) -> f64 {
+    (-f64::from(value)).exp2().clamp(MIN_SPP, MAX_SPP)
+}
+
+/// The zoom slider's range: the most zoomed out to the most zoomed in.
+fn zoom_slider_range() -> std::ops::RangeInclusive<f32> {
+    zoom_to_slider(MAX_SPP)..=zoom_to_slider(MIN_SPP)
+}
+
+/// The zoom readout: pixels per second of audio.
+fn zoom_readout(spp: f64, rate: u32) -> String {
+    let px_per_s = f64::from(rate) / spp;
+    if px_per_s >= 100.0 {
+        format!("{px_per_s:.0} px/s")
+    } else if px_per_s >= 10.0 {
+        format!("{px_per_s:.1} px/s")
+    } else {
+        format!("{px_per_s:.2} px/s")
+    }
+}
+
 /// Total scrollable span in samples: the larger of project length and visible
 /// width, plus 10 percent extra.
 fn scroll_extent(project_length: u64, visible: u64) -> u64 {
@@ -146,6 +182,68 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction, m
     // UI zoom must not fire here.
     ui.ctx().options_mut(|o| o.zoom_with_keyboard = false);
 
+    // The timeline sits in a ui-kit panel: the panel toolbar row on top, the
+    // ruler, headers and lanes in the rest.
+    let mut messages = Vec::new();
+    ui_kit::panel(ui, |ui| {
+        let lane_width = ui.available_width() - THEME.header_col_w;
+        panel_toolbar(ui, editor, lane_width);
+        messages = show_frame(ui, editor, view_menu, meters);
+    });
+    messages
+}
+
+/// The panel toolbar row (44 tall): the Ripple and Snap chips on the left, the
+/// zoom slider, its readout and the Fit button on the right. The chips read
+/// the editor's view state every frame, so they stay in sync with the View
+/// menu and the R and N keys. Zoom stays live while a take is recorded; the
+/// chips do not.
+fn panel_toolbar(ui: &mut egui::Ui, editor: &mut Editor, lane_width: f32) {
+    let recording = editor.is_recording();
+    let row = egui::vec2(ui.available_width(), size::PANEL_TOOLBAR_HEIGHT);
+    ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = space::SCALE_8;
+        ui.add_enabled_ui(!recording, |ui| {
+            let mut ripple = editor.view.ripple;
+            if ui_kit::chip(ui, &mut ripple, "Ripple").on_hover_text("Ripple edit (R)").clicked() {
+                editor.toggle_ripple();
+            }
+            let mut snap = editor.view.snap;
+            if ui_kit::chip(ui, &mut snap, "Snap").on_hover_text("Snapping (N)").clicked() {
+                editor.toggle_snap();
+            }
+        });
+
+        // Added right to left, so on screen it reads slider, readout, Fit.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui_kit::icon_button(ui, regular::ARROWS_OUT_LINE_HORIZONTAL, "Zoom to fit (\\)").clicked() {
+                apply_fit(editor, lane_width);
+            }
+            let spp = editor.view.samples_per_pixel;
+            let (readout, _) = ui.allocate_exact_size(egui::vec2(ZOOM_READOUT_W, size::SEGMENT_HEIGHT), egui::Sense::hover());
+            ui.painter().text(
+                readout.left_center(),
+                egui::Align2::LEFT_CENTER,
+                zoom_readout(spp, editor.project.sample_rate),
+                ui_kit::fonts::mono(typography::VALUE_SIZE),
+                color::TEXT_SECONDARY,
+            );
+            let shown = zoom_to_slider(spp);
+            let mut value = shown;
+            ui.allocate_ui(egui::vec2(ZOOM_SLIDER_W, size::SEGMENT_HEIGHT), |ui| {
+                ui_kit::slider(ui, &mut value, zoom_slider_range(), ui_kit::SliderKind::Zoom);
+            });
+            if (value - shown).abs() > 1e-4 {
+                let (new_spp, scroll_x) = zoom_at(spp, editor.view.scroll_x, slider_to_zoom(value) / spp, lane_width / 2.0);
+                editor.set_view_x(new_spp, clamp_scroll_x(editor, new_spp, lane_width, scroll_x));
+            }
+        });
+    });
+}
+
+/// The ruler, header column, lanes and scrollbar in the space the panel
+/// toolbar left over, with all their input.
+fn show_frame(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction, meters: &mut meter::MeterState) -> Vec<String> {
     let avail = ui.available_rect_before_wrap();
     let resp = ui.allocate_rect(avail, egui::Sense::click());
 
@@ -414,18 +512,13 @@ fn draw(
         }
     }
 
-    // Playhead: a line through ruler and lanes with a handle in the ruler.
-    let playhead_color = THEME.playhead_color;
+    // Playhead: the ui-kit component, a line through ruler and lanes with a
+    // rounded head in the ruler. Clipped to the lane columns so the head never
+    // spills over the header column.
     let ph_x = g.sample_to_x(view.playhead);
     if ph_x >= g.lane_left - 1.0 && ph_x <= lane_rect.right() + 1.0 {
-        painter
-            .line_segment([egui::pos2(ph_x, ruler_rect.top()), egui::pos2(ph_x, lane_rect.bottom())], egui::Stroke::new(THEME.playhead_width, playhead_color));
-        let tri = vec![
-            egui::pos2(ph_x - THEME.playhead_tri_w, ruler_rect.top() + THEME.hairline),
-            egui::pos2(ph_x + THEME.playhead_tri_w, ruler_rect.top() + THEME.hairline),
-            egui::pos2(ph_x, ruler_rect.top() + THEME.playhead_tri_h),
-        ];
-        painter.add(egui::Shape::convex_polygon(tri, playhead_color, egui::Stroke::NONE));
+        let clip = egui::Rect::from_min_max(egui::pos2(g.lane_left, ruler_rect.top()), egui::pos2(lane_rect.right(), lane_rect.bottom()));
+        ui_kit::paint_playhead(&painter.with_clip_rect(clip), ruler_rect, lane_rect, ph_x, &ui_kit::Theme::get(ui.ctx()));
     }
 
     // Horizontal scrollbar: trough plus draggable thumb.
@@ -638,5 +731,50 @@ mod tests {
         let (spp, scroll_x) = zoom_to_fit(1_000, 48_000, 0.0);
         assert_eq!(spp, MAX_SPP);
         assert_eq!(scroll_x, 0);
+    }
+
+    #[test]
+    fn zoom_slider_maps_the_zoom_limits_to_its_ends_and_back() {
+        let range = zoom_slider_range();
+        assert_eq!(*range.start(), zoom_to_slider(MAX_SPP), "zoomed out is the left end");
+        assert_eq!(*range.end(), zoom_to_slider(MIN_SPP), "zoomed in is the right end");
+        for spp in [MIN_SPP, 0.5, 1.0, 480.0, 1_050.0, MAX_SPP] {
+            assert!((slider_to_zoom(zoom_to_slider(spp)) / spp - 1.0).abs() < 1e-5, "round trip at {spp}");
+        }
+        // A bad saved zoom clamps instead of producing infinity.
+        assert_eq!(zoom_to_slider(0.0), *range.end());
+    }
+
+    #[test]
+    fn zoom_readout_reads_pixels_per_second() {
+        assert_eq!(zoom_readout(480.0, 48_000), "100 px/s");
+        assert_eq!(zoom_readout(1.0, 48_000), "48000 px/s");
+        assert_eq!(zoom_readout(4_800.0, 48_000), "10.0 px/s");
+        assert_eq!(zoom_readout(48_000.0, 48_000), "1.00 px/s");
+    }
+
+    #[test]
+    fn panel_toolbar_chips_toggle_ripple_and_snap() {
+        let (mut editor, _dir) = crate::ui::test_util::armed_editor(&[&[(0, 48_000)]], "chips");
+        let mut meters = meter::MeterState::default();
+        let mut rig = crate::ui::test_util::Headless::new(1400.0, 700.0);
+        let mut run = |rig: &mut crate::ui::test_util::Headless, editor: &mut Editor, click: Option<egui::Pos2>| {
+            let mut draw = |ui: &mut egui::Ui| {
+                show(ui, editor, ViewMenuAction::None, &mut meters);
+            };
+            match click {
+                Some(pos) => rig.click(pos, &mut draw),
+                None => rig.frame(Vec::new(), &mut draw),
+            }
+        };
+        let out = run(&mut rig, &mut editor, None);
+        let ripple_at = out.text_rect("Ripple").expect("the Ripple chip").center();
+        let snap_at = out.text_rect("Snap").expect("the Snap chip").center();
+        let (ripple, snap) = (editor.view.ripple, editor.view.snap);
+        let _ = run(&mut rig, &mut editor, Some(ripple_at));
+        assert_eq!(editor.view.ripple, !ripple, "the Ripple chip toggles ripple");
+        assert_eq!(editor.view.snap, snap, "and only ripple");
+        let _ = run(&mut rig, &mut editor, Some(snap_at));
+        assert_eq!(editor.view.snap, !snap, "the Snap chip toggles snap");
     }
 }

@@ -452,10 +452,14 @@ impl App {
             },
         );
 
-        // Center: timeline, filling the remainder.
-        egui::CentralPanel::default().show(ui, |ui| {
-            msgs.extend(media_messages(timeline::show(ui, editor, view_action, meters)));
-        });
+        // Center: the timeline panel on the ground, 8px window padding all
+        // round, filling the remainder.
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin::same(space::WINDOW_GAP as i8))).show(
+            ui,
+            |ui| {
+                msgs.extend(media_messages(timeline::show(ui, editor, view_action, meters)));
+            },
+        );
 
         // Files dropped anywhere on the window go to the importer.
         let dropped: Vec<PathBuf> = ui.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());

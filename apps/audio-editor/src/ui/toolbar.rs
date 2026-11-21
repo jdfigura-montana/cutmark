@@ -1,5 +1,6 @@
-//! ui::toolbar: the toolbar with transport buttons, timecode, toggles, Add
-//! Track and the wave-scale slider.
+//! ui::toolbar: the toolbar with transport buttons, timecode, Add Track and
+//! the wave-scale slider. The editing toggles and the zoom controls live in
+//! the timeline panel toolbar (ui::timeline).
 
 use eframe::egui;
 use egui_phosphor::fill;
@@ -25,14 +26,14 @@ const TIMECODE_SIZE: f32 = 17.0;
 /// (a Record click that could not start).
 ///
 /// Left to right: the recessed transport group (Home, Play, Pause, Stop,
-/// Record, End), the recessed timecode box, then the Ripple and Snap toggles
-/// and the Add Track button. Right aligned: the "WAVE SCALE" caption, its
+/// Record, End), the recessed timecode box, then the Add Track button. Right
+/// aligned: the "WAVE SCALE" caption, its
 /// slider and its value, a logarithmic vertical waveform scale from 1x to 16x
 /// (double-click resets to 1x, display only, never changes the audio).
 ///
 /// While a take is recorded the Play and Stop buttons end it, Home, Pause and
-/// End are disabled, the timecode shows the record position and the editing
-/// toggles are disabled.
+/// End are disabled, the timecode shows the record position and Add Track is
+/// disabled.
 pub fn show(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<Message> {
     let mut messages = Vec::new();
     let recording = editor.is_recording();
@@ -40,11 +41,6 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor) -> Vec<Message> {
         messages.extend(transport_group(ui, editor));
         ui.add_space(GROUP_GAP);
         timecode_box(ui, editor);
-        ui.add_space(GROUP_GAP);
-        divider(ui);
-        toggle_button(ui, "Ripple", fill::SCISSORS, editor.view.ripple, "Ripple edit (R)", !recording, || editor.toggle_ripple());
-        divider(ui);
-        toggle_button(ui, "Snap", fill::MAGNET, editor.view.snap, "Snapping (N)", !recording, || editor.toggle_snap());
         ui.add_space(GROUP_GAP);
         if ui.add_enabled(!recording, egui::Button::new(format!("{} Add Track", fill::PLUS))).on_hover_text("Add a new track (Ctrl+Shift+T)").clicked() {
             let _ = editor.apply(Action::AddTrack { index: None, name: None });
@@ -169,23 +165,4 @@ fn timecode_box(ui: &mut egui::Ui, editor: &Editor) {
         .show(ui, |ui| {
             ui.label(egui::RichText::new(timecode).font(Theme::mono(TIMECODE_SIZE)).color(THEME.text_primary));
         });
-}
-
-/// A 1 px vertical divider between toolbar groups.
-fn divider(ui: &mut egui::Ui) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, 24.0), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 0.0, THEME.control_border);
-}
-
-/// An icon + text toggle button: lit with accent_soft fill, an accent border
-/// and accent icon while on. Calls `toggle` when clicked.
-fn toggle_button(ui: &mut egui::Ui, name: &str, icon: &str, on: bool, tooltip: &str, enabled: bool, toggle: impl FnOnce()) {
-    let icon_color = if on { THEME.accent } else { THEME.text_normal };
-    let mut button = egui::Button::new((egui::RichText::new(icon).color(icon_color), egui::RichText::new(format!(" {name}"))));
-    if on {
-        button = button.fill(THEME.accent_soft).stroke(egui::Stroke::new(THEME.hairline, THEME.accent));
-    }
-    if ui.add_enabled(enabled, button).on_hover_text(tooltip).clicked() {
-        toggle();
-    }
 }
