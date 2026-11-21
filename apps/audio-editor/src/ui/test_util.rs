@@ -78,7 +78,8 @@ impl Headless {
     /// one frame so the theme fonts are loaded.
     pub fn new(width: f32, height: f32) -> Self {
         let ctx = egui::Context::default();
-        crate::ui::theme::apply(&ctx);
+        // The ui-kit theme: the same `apply` the app binary runs.
+        ui_kit::apply(&ctx);
         let mut headless = Headless { ctx, size: egui::vec2(width, height), time: 0.0, modifiers: Modifiers::NONE, reported: Modifiers::NONE };
         headless.frame(Vec::new(), |_| {});
         headless

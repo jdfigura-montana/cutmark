@@ -211,11 +211,12 @@ pub fn footer_button(ui: &mut egui::Ui, label: &str, kind: FooterButton, enabled
     .inner
 }
 
-/// The width [`footer_button`] gets for `label`: the text plus the button
-/// padding on both sides.
-pub fn footer_button_width(ui: &egui::Ui, label: &str) -> f32 {
-    let text = ui.painter().layout_no_wrap(label.to_string(), egui::FontId::proportional(THEME.dialog_label_size), THEME.text_normal);
-    (text.size().x + 2.0 * ui.spacing().button_padding.x).max(ui.spacing().interact_size.x)
+/// The width [`footer_button`] gets for `label`: measured in an invisible
+/// sizing pass, so the estimate matches what the real button allocates (egui
+/// sizes buttons through its atom layout, not raw text width plus padding).
+pub fn footer_button_width(ui: &mut egui::Ui, label: &str) -> f32 {
+    let mut measure = ui.new_child(egui::UiBuilder::new().invisible().sizing_pass());
+    footer_button(&mut measure, label, FooterButton::Cancel, true).rect.width()
 }
 
 /// A row control made of a flexible part and a "Browse..." button flush with

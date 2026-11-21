@@ -1,32 +1,19 @@
 //! ui::theme: the single source for every visual constant (colors, sizes,
 //! fonts and spacing) and the egui Style/Visuals applied once at startup.
+//!
+//! Shim during S1. Each UI file moves to ui_kit directly in phases 11 to 13;
+//! this module is deleted in phase 13.
 
 use std::sync::LazyLock;
 
 use eframe::egui;
+use ui_kit::tokens;
 
-/// The single accent color: selection, lit toggles, range lines and focus.
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x4C, 0x9B, 0xE8);
+/// Named family holding the Inter Medium face (ui-kit's medium weight step).
+const MEDIUM_FAMILY: &str = ui_kit::fonts::MEDIUM_FAMILY;
 
-/// Named family holding the IBM Plex Sans Medium face.
-const MEDIUM_FAMILY: &str = "PlexMedium";
-
-/// The named egui font family holding the IBM Plex Sans SemiBold face.
-const SEMIBOLD_FAMILY: &str = "PlexSemiBold";
-
-/// The font-data key egui-phosphor registers its icon font under.
-const PHOSPHOR_FONT: &str = "phosphor";
-
-/// IBM Plex Sans Regular (SIL OFL 1.1, see assets/fonts/LICENSE-IBMPlex.txt).
-const PLEX_REGULAR: &[u8] = include_bytes!("../../assets/fonts/IBMPlexSans-Regular.ttf");
-/// IBM Plex Sans Medium (SIL OFL 1.1, see assets/fonts/LICENSE-IBMPlex.txt).
-const PLEX_MEDIUM: &[u8] = include_bytes!("../../assets/fonts/IBMPlexSans-Medium.ttf");
-/// IBM Plex Sans SemiBold (SIL OFL 1.1, see assets/fonts/LICENSE-IBMPlex.txt).
-const PLEX_SEMIBOLD: &[u8] = include_bytes!("../../assets/fonts/IBMPlexSans-SemiBold.ttf");
-/// JetBrains Mono Regular (SIL OFL 1.1, see assets/fonts/OFL-JetBrainsMono.txt).
-const JB_MONO_REGULAR: &[u8] = include_bytes!("../../assets/fonts/JetBrainsMono-Regular.ttf");
-/// JetBrains Mono Medium (SIL OFL 1.1, see assets/fonts/OFL-JetBrainsMono.txt).
-const JB_MONO_MEDIUM: &[u8] = include_bytes!("../../assets/fonts/JetBrainsMono-Medium.ttf");
+/// The named egui font family holding the Inter SemiBold face.
+const SEMIBOLD_FAMILY: &str = ui_kit::fonts::SEMIBOLD_FAMILY;
 
 /// The eight UI-only track colors, cycled by track index.
 const TRACK_COLORS: [egui::Color32; 8] = [
@@ -556,23 +543,25 @@ impl Theme {
 impl Default for Theme {
     fn default() -> Theme {
         Theme {
-            // Surfaces
-            app_bg: egui::Color32::from_rgb(0x16, 0x18, 0x1C),
-            panel_bg: egui::Color32::from_rgb(0x1A, 0x1D, 0x22),
-            bar_bg: egui::Color32::from_rgb(0x12, 0x14, 0x18),
-            recessed_a: egui::Color32::from_rgb(0x0E, 0x10, 0x13),
-            ruler_bg: egui::Color32::from_rgb(0x16, 0x19, 0x1D),
-            lane_a: egui::Color32::from_rgb(0x1B, 0x1E, 0x23),
-            lane_b: egui::Color32::from_rgb(0x1E, 0x21, 0x27),
-            border: egui::Color32::from_rgb(0x23, 0x27, 0x2E),
-            control_border: egui::Color32::from_rgb(0x2B, 0x30, 0x38),
-            control_fill: egui::Color32::from_rgb(0x22, 0x26, 0x2D),
-            control_hover: egui::Color32::from_rgb(0x2B, 0x30, 0x38),
-            control_rounding: 6.0,
-            slider_track: egui::Color32::from_rgb(0x2B, 0x30, 0x38),
-            slider_fill: egui::Color32::from_rgb(0x5A, 0x61, 0x6D),
-            slider_thumb: egui::Color32::from_rgb(0xD7, 0xDA, 0xE0),
-            play_green: egui::Color32::from_rgb(0x5C, 0xC4, 0x6E),
+            // Surfaces, from the ui-kit tokens (the ui_kit::palette mapping).
+            app_bg: tokens::color::BG_GROUND,
+            panel_bg: tokens::color::BG_PANEL,
+            bar_bg: tokens::color::BG_GROUND,
+            recessed_a: tokens::color::BG_CONTROL,
+            // The ruler and the track lanes have no dedicated tokens yet;
+            // these are the closest surfaces. Phase 11 restyles them.
+            ruler_bg: tokens::color::BG_PANEL,
+            lane_a: tokens::color::BG_TRACK_SELECTED,
+            lane_b: tokens::color::BG_TRACK_ALT,
+            border: tokens::color::STROKE_HAIRLINE,
+            control_border: tokens::color::STROKE_HAIRLINE,
+            control_fill: tokens::color::BG_CONTROL,
+            control_hover: tokens::color::BG_HOVER,
+            control_rounding: tokens::radius::SEGMENT,
+            slider_track: tokens::color::BG_SELECTED,
+            slider_fill: tokens::accent::ACCENT,
+            slider_thumb: tokens::color::TEXT_PRIMARY,
+            play_green: tokens::accent::ACCENT,
             // Clip visuals
             header_strip_h: 18.0,
             trim_edge_w: 6.0,
@@ -582,21 +571,21 @@ impl Default for Theme {
             gain_text_w: 56.0,
             clip_text_pad: 4.0,
             clip_radius: 5.0,
-            clip_text_color: egui::Color32::from_rgb(0xF2, 0xF4, 0xF7),
+            clip_text_color: tokens::color::TEXT_PRIMARY,
             clip_name_size: 11.0,
             clip_gain_size: 10.0,
             clip_margin: 2.0,
             thin_clip_w: 3.0,
             selection_border_w: 2.0,
-            selection_border: ACCENT,
+            selection_border: tokens::accent::ACCENT,
             offline_body: egui::Color32::from_rgba_unmultiplied(150, 62, 62, 220),
             offline_header: egui::Color32::from_rgba_unmultiplied(110, 42, 42, 230),
             offline_text: egui::Color32::WHITE,
-            gain_line: egui::Color32::from_rgb(0xF2, 0xF4, 0xF7),
-            gain_curve: egui::Color32::from_rgba_unmultiplied(0xF2, 0xF4, 0xF7, 178),
+            gain_line: tokens::color::TEXT_PRIMARY,
+            gain_curve: text_alpha(178),
             fade_shade: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 90),
-            fade_handle_fill: egui::Color32::from_rgb(0xE6, 0xE9, 0xEE),
-            fade_handle_hover: ACCENT,
+            fade_handle_fill: tokens::color::TEXT_PRIMARY,
+            fade_handle_hover: tokens::accent::ACCENT,
             fade_handle_stroke: egui::Color32::from_rgb(18, 20, 23),
             // Waveform
             wave_width: 1.0,
@@ -624,16 +613,16 @@ impl Default for Theme {
             snap_px: 8.0,
             drag_start_px: 3.0,
             boundary_grab_px: 4.0,
-            snap_line_color: ACCENT,
+            snap_line_color: tokens::accent::ACCENT,
             snap_line_w: 2.0,
-            range_line: ACCENT,
+            range_line: tokens::accent::ACCENT,
             range_line_w: 1.0,
-            insert_line_color: egui::Color32::from_rgba_unmultiplied(0x4C, 0x9B, 0xE8, 230),
+            insert_line_color: accent_alpha(230),
             insert_line_w: 2.0,
-            reorder_line_color: ACCENT,
+            reorder_line_color: tokens::accent::ACCENT,
             reorder_line_w: 2.0,
-            ghost_fill: egui::Color32::from_rgba_unmultiplied(0x4C, 0x9B, 0xE8, 90),
-            ghost_stroke: egui::Color32::from_rgba_unmultiplied(0x4C, 0x9B, 0xE8, 220),
+            ghost_fill: accent_alpha(90),
+            ghost_stroke: accent_alpha(220),
             ghost_dash: 6.0,
             ghost_gap: 4.0,
             new_track_h: 96.0,
@@ -663,8 +652,8 @@ impl Default for Theme {
             track_name_size: 12.5,
             toggle_size: 10.0,
             mute_color: egui::Color32::from_rgb(0xE0, 0xA9, 0x3A),
-            solo_color: egui::Color32::from_rgb(0x5C, 0xC4, 0x6E),
-            record_red: egui::Color32::from_rgb(0xE5, 0x54, 0x4B),
+            solo_color: tokens::color::SEM_SUCCESS,
+            record_red: tokens::color::SEM_RECORD,
             arm_glyph_size: 12.0,
             on_record_glyph: egui::Color32::WHITE,
             record_btn_d: 28.0,
@@ -676,12 +665,12 @@ impl Default for Theme {
             clip_name_min_w: 8.0,
             wave_lane_pad: 1.0,
             // Meters
-            meter_bar_bg: egui::Color32::from_rgb(0x10, 0x12, 0x16),
-            meter_red: egui::Color32::from_rgb(0xE5, 0x54, 0x4B),
-            meter_yellow: egui::Color32::from_rgb(0xE3, 0xC0, 0x4A),
-            meter_green: egui::Color32::from_rgb(0x3D, 0xBE, 0x6B),
+            meter_bar_bg: tokens::color::BG_GROUND,
+            meter_red: tokens::color::SEM_METER_CLIP,
+            meter_yellow: tokens::color::SEM_METER_WARN,
+            meter_green: tokens::color::SEM_METER_OK,
             meter_hold: egui::Color32::from_rgb(230, 234, 240),
-            clip_light_on: egui::Color32::from_rgb(0xE5, 0x54, 0x4B),
+            clip_light_on: tokens::color::SEM_METER_CLIP,
             clip_light_off: egui::Color32::from_rgb(0x3A, 0x22, 0x24),
 
             // Bin panel
@@ -708,30 +697,32 @@ impl Default for Theme {
             // Errors / dialogs
             error: egui::Color32::from_rgb(225, 105, 105),
             error_soft: egui::Color32::from_rgb(235, 140, 140),
-            // Spacing: 4/8 px grid.
-            space_xs: 4.0,
-            space_sm: 4.0,
-            space_md: 8.0,
-            space_lg: 16.0,
+            // Spacing: 4/8 px grid, from the ui-kit space scale.
+            space_xs: tokens::space::SCALE_4,
+            space_sm: tokens::space::SCALE_4,
+            space_md: tokens::space::WINDOW_GAP,
+            space_lg: tokens::space::SCALE_16,
             // Shared shapes
             corner_r: 2.0,
             corner_round: 3.0,
             corner_xs: 1.0,
             hairline: 1.0,
-            // Accent, text roles & dialogs
-            accent: ACCENT,
-            accent_soft: egui::Color32::from_rgba_unmultiplied(0x4C, 0x9B, 0xE8, 0x2E),
-            text_primary: egui::Color32::from_rgb(0xE6, 0xE9, 0xEE),
-            text_normal: egui::Color32::from_rgb(0xC9, 0xCE, 0xD6),
-            text_muted: egui::Color32::from_rgb(0x8A, 0x90, 0x9A),
-            text_faint: egui::Color32::from_rgb(0x6E, 0x75, 0x81),
-            hover_overlay: egui::Color32::from_rgba_unmultiplied(0x4C, 0x9B, 0xE8, 0x2E),
+            // Accent, text roles & dialogs, from the ui-kit tokens.
+            accent: tokens::accent::ACCENT,
+            accent_soft: accent_alpha(0x2E),
+            text_primary: tokens::color::TEXT_PRIMARY,
+            text_normal: tokens::color::TEXT_SECONDARY,
+            text_muted: tokens::color::TEXT_TERTIARY,
+            text_faint: tokens::color::TEXT_DISABLED,
+            hover_overlay: accent_alpha(0x2E),
             dialog_w: 420.0,
             export_dialog_w: 480.0,
             modal_shade: egui::Color32::from_black_alpha(140),
-            card_radius: 10.0,
+            card_radius: tokens::radius::GROUP,
             card_pad: 20.0,
             card_shadow: egui::Shadow { offset: [0, 4], blur: 16, spread: 0, color: egui::Color32::from_black_alpha(90) },
+            // Menus keep their pre-restyle popup look until phase 13 turns
+            // them into ui-kit glass popovers; no token matches these yet.
             menu_radius: 8.0,
             menu_pad: 6.0,
             menu_item_radius: 5.0,
@@ -748,10 +739,10 @@ impl Default for Theme {
             dialog_title_size: 15.0,
             dialog_desc_size: 12.0,
             dialog_label_size: 12.5,
-            destructive: egui::Color32::from_rgb(0xE5, 0x54, 0x4B),
-            accent_hover: egui::Color32::from_rgb(0x60, 0xAA, 0xEC),
+            destructive: tokens::color::SEM_RECORD,
+            accent_hover: tokens::accent::HOVER,
             // Start screen
-            status_bar_h: 26.0,
+            status_bar_h: tokens::size::STATUS_BAR_HEIGHT,
             start_card_w: 1000.0,
             start_card_h: 600.0,
             start_card_margin: 48.0,
@@ -804,105 +795,18 @@ impl Default for Theme {
 /// The shared theme instance every ui module reads.
 pub static THEME: LazyLock<Theme> = LazyLock::new(Theme::default);
 
-/// Builds the font set: IBM Plex Sans (Proportional), JetBrains Mono
-/// (Monospace), the named "PlexMedium"/"PlexSemiBold" families, and the
-/// phosphor icon font as a glyph fallback for EVERY family, so an icon
-/// renders wherever it is mixed into text.
-fn font_definitions() -> egui::FontDefinitions {
-    let mut fonts = egui::FontDefinitions::default();
-    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Fill);
-    for (key, bytes) in [
-        ("IBMPlexSans-Regular", PLEX_REGULAR),
-        ("IBMPlexSans-Medium", PLEX_MEDIUM),
-        ("IBMPlexSans-SemiBold", PLEX_SEMIBOLD),
-        ("JetBrainsMono-Regular", JB_MONO_REGULAR),
-        ("JetBrainsMono-Medium", JB_MONO_MEDIUM),
-    ] {
-        fonts.font_data.insert(key.into(), egui::FontData::from_static(bytes).into());
-    }
-    // IBM Plex Sans is the proportional face, JetBrains Mono the monospace
-    // face; phosphor stays in every family list as the glyph fallback.
-    {
-        let proportional = fonts.families.entry(egui::FontFamily::Proportional).or_default();
-        proportional.insert(0, "IBMPlexSans-Medium".into());
-        proportional.insert(0, "IBMPlexSans-Regular".into());
-        let monospace = fonts.families.entry(egui::FontFamily::Monospace).or_default();
-        monospace.insert(0, "JetBrainsMono-Medium".into());
-        monospace.insert(0, "JetBrainsMono-Regular".into());
-        monospace.push(PHOSPHOR_FONT.into());
-    }
-    fonts.families.insert(egui::FontFamily::Name(MEDIUM_FAMILY.into()), vec!["IBMPlexSans-Medium".into(), "IBMPlexSans-Regular".into(), PHOSPHOR_FONT.into()]);
-    fonts
-        .families
-        .insert(egui::FontFamily::Name(SEMIBOLD_FAMILY.into()), vec!["IBMPlexSans-SemiBold".into(), "IBMPlexSans-Medium".into(), PHOSPHOR_FONT.into()]);
-    fonts
+/// `tokens::accent::ACCENT` at `alpha`: the alpha-composited accent colors
+/// (soft highlights, hover overlay, insert line, ghost clip). Computed at
+/// runtime because the alpha variants have no token of their own.
+fn accent_alpha(alpha: u8) -> egui::Color32 {
+    let a = tokens::accent::ACCENT;
+    egui::Color32::from_rgba_unmultiplied(a.r(), a.g(), a.b(), alpha)
 }
 
-/// Sets the egui Style/Visuals once at startup (called from `main`).
-///
-/// Owns the whole look: the dark palette surfaces, a single accent color for
-/// selection/lit toggles/range lines/focus, IBM Plex Sans (Proportional) and
-/// JetBrains Mono (Monospace) with a named "PlexSemiBold" family for headings
-/// and track names, the phosphor icon font, and 4/8 px default spacing.
-pub fn apply(ctx: &egui::Context) {
-    ctx.set_fonts(font_definitions());
-    let t = &*THEME;
-    let mut v = egui::Visuals::dark();
-
-    // Surfaces from the palette.
-    v.panel_fill = t.panel_bg;
-    v.window_fill = t.panel_bg;
-    v.extreme_bg_color = t.recessed_a; // recessed surfaces (fader slot, etc.)
-    v.faint_bg_color = t.lane_b; // odd lane shade
-    v.window_stroke = egui::Stroke::new(t.hairline, t.control_border);
-    v.window_corner_radius = t.menu_radius.into();
-    v.menu_corner_radius = t.menu_radius.into();
-    v.popup_shadow = t.menu_shadow;
-
-    // One accent for selection, focus and links.
-    v.selection.stroke = egui::Stroke::new(t.hairline, t.accent);
-    v.selection.bg_fill = t.accent;
-    v.hyperlink_color = t.accent;
-
-    // Widgets: every state takes its fills from the control tokens, its
-    // strokes from the border tokens and its text from the text tokens.
-    let text = t.text_normal;
-    v.override_text_color = Some(text);
-    for w in [&mut v.widgets.noninteractive, &mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
-        w.corner_radius = t.control_rounding.into();
-    }
-    v.widgets.noninteractive.bg_fill = t.panel_bg;
-    v.widgets.noninteractive.weak_bg_fill = t.panel_bg;
-    v.widgets.noninteractive.bg_stroke = egui::Stroke::new(t.hairline, t.border);
-    v.widgets.noninteractive.fg_stroke = egui::Stroke::new(t.hairline, t.text_muted);
-    v.widgets.inactive.bg_fill = t.control_fill;
-    v.widgets.inactive.weak_bg_fill = t.control_fill;
-    v.widgets.inactive.bg_stroke = egui::Stroke::new(t.hairline, t.control_border);
-    v.widgets.inactive.fg_stroke = egui::Stroke::new(t.hairline, t.text_normal);
-    v.widgets.hovered.bg_fill = t.control_hover;
-    v.widgets.hovered.weak_bg_fill = t.control_hover;
-    v.widgets.hovered.bg_stroke = egui::Stroke::new(t.hairline, t.control_border);
-    v.widgets.hovered.fg_stroke = egui::Stroke::new(t.hairline, t.text_normal);
-    v.widgets.active.bg_fill = t.control_hover;
-    v.widgets.active.weak_bg_fill = t.control_hover;
-    v.widgets.active.bg_stroke = egui::Stroke::new(t.hairline, t.control_border);
-    v.widgets.active.fg_stroke = egui::Stroke::new(t.hairline, t.text_primary);
-    v.widgets.open.bg_fill = t.control_fill;
-    v.widgets.open.weak_bg_fill = t.control_fill;
-    v.widgets.open.bg_stroke = egui::Stroke::new(t.hairline, t.control_border);
-    v.widgets.open.fg_stroke = egui::Stroke::new(t.hairline, t.text_normal);
-
-    // 4/8 px spacing grid; headings use the SemiBold face.
-    ctx.all_styles_mut(|style| {
-        style.spacing.item_spacing = egui::vec2(t.space_md, t.space_sm);
-        style.spacing.button_padding = egui::vec2(t.space_md, t.space_sm);
-        style.spacing.menu_margin = egui::Margin::same(t.menu_pad as i8);
-        style.spacing.window_margin = t.space_md.into();
-        let heading_size = style.text_styles.get(&egui::TextStyle::Heading).map(|font| font.size).unwrap_or(18.0);
-        style.text_styles.insert(egui::TextStyle::Heading, egui::FontId::new(heading_size, egui::FontFamily::Name(SEMIBOLD_FAMILY.into())));
-    });
-
-    ctx.set_visuals(v);
+/// `tokens::color::TEXT_PRIMARY` at `alpha` (the gain curve line).
+fn text_alpha(alpha: u8) -> egui::Color32 {
+    let a = tokens::color::TEXT_PRIMARY;
+    egui::Color32::from_rgba_unmultiplied(a.r(), a.g(), a.b(), alpha)
 }
 
 /// The menu popup frame: panel_bg fill, 1 px control_border, radius 8,
@@ -933,65 +837,67 @@ pub fn menu_item_style(style: &mut egui::Style) {
     style.visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(t.hairline, t.text_faint);
 }
 
-/// Debug-only helper window (toggled with F12) that shows `ctx.style_ui`.
-///
-/// The toggle lives in egui temp storage; F12 flips it. Release builds
-/// compile this to nothing.
-#[cfg(debug_assertions)]
-pub fn debug_window(ctx: &egui::Context) {
-    const KEY: &str = "theme_debug_window_open";
-    if ctx.input(|i| i.key_pressed(egui::Key::F12)) {
-        ctx.data_mut(|d| {
-            let open = d.get_temp::<bool>(egui::Id::new(KEY)).unwrap_or(false);
-            d.insert_temp(egui::Id::new(KEY), !open);
-        });
-    }
-    let open = ctx.data(|d| d.get_temp::<bool>(egui::Id::new(KEY)).unwrap_or(false));
-    if !open {
-        return;
-    }
-    egui::Window::new("Style (F12)").default_width(420.0).show(ctx, |ui| {
-        ctx.style_ui(ui, ctx.theme());
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The phosphor icon glyphs resolve, and both cuts sit in the fallback
+    /// list of every font family THEME draws with, under the ui-kit font set
+    /// `ui_kit::apply` installs.
+    ///
+    /// `Fonts::has_glyph` only checks the FIRST face of a family, so the
+    /// fallback membership is asserted structurally; real text layout walks
+    /// the fallbacks and renders the icons.
     #[test]
-    fn phosphor_icons_resolve_in_every_family() {
+    fn icons_resolve_in_every_theme_family() {
         use eframe::egui::epaint::text::{Fonts, TextOptions};
-        let mut fonts = Fonts::new(TextOptions::default(), font_definitions());
-        // Without the phosphor face, the icons must NOT resolve: this proves
-        // phosphor itself (and not an egui default font) owns the glyphs.
-        let mut bare = font_definitions();
-        for keys in bare.families.values_mut() {
-            keys.retain(|key| key != PHOSPHOR_FONT);
-        }
-        let mut bare_fonts = Fonts::new(TextOptions::default(), bare);
+        let defs = ui_kit::fonts::definitions();
         let families = [
             egui::FontFamily::Proportional,
             egui::FontFamily::Monospace,
             egui::FontFamily::Name(MEDIUM_FAMILY.into()),
             egui::FontFamily::Name(SEMIBOLD_FAMILY.into()),
         ];
+        // Both phosphor cuts are in every family's fallback list (the
+        // tofu-icons regression this test guards).
         for family in &families {
-            let id = egui::FontId::new(16.0, family.clone());
-            for (name, icon) in [
-                ("FOLDER_OPEN", egui_phosphor::fill::FOLDER_OPEN),
-                ("FILE_AUDIO", egui_phosphor::fill::FILE_AUDIO),
-                ("PLUS", egui_phosphor::fill::PLUS),
-                ("X", egui_phosphor::fill::X),
-                ("WAVEFORM", egui_phosphor::fill::WAVEFORM),
-            ] {
-                let c = icon.chars().next().unwrap();
-                assert!(!bare_fonts.has_glyph(&id, c), "{name} (U+{:04X}) resolves WITHOUT phosphor in {family:?}: the probe is blind", c as u32);
-                assert!(fonts.has_glyph(&id, c), "{name} (U+{:04X}) missing in family {family:?}", c as u32);
+            let keys = defs.families.get(family).expect("every THEME family is defined");
+            for cut in [ui_kit::fonts::PHOSPHOR_REGULAR_FONT, ui_kit::fonts::PHOSPHOR_FILL_FONT] {
+                assert!(keys.iter().any(|key| key == cut), "phosphor cut {cut} missing from {family:?}");
+            }
+        }
+        let mut fonts = Fonts::new(TextOptions::default(), defs);
+        // Strip every icon-capable face: the phosphor cuts AND egui's own
+        // icon font defaults. What is left holds text only, so the icons
+        // must NOT resolve: this proves the probe is not blind.
+        let mut bare = ui_kit::fonts::definitions();
+        for keys in bare.families.values_mut() {
+            keys.retain(|key| key.starts_with("Inter-") || key.starts_with("JetBrainsMono-") || key == "Ubuntu-Light" || key == "NotoSans-Regular");
+        }
+        let mut bare_fonts = Fonts::new(TextOptions::default(), bare);
+        for (name, icon) in [
+            ("FOLDER_OPEN", ui_kit::icons::fill::FOLDER_OPEN),
+            ("FILE_AUDIO", ui_kit::icons::fill::FILE_AUDIO),
+            ("PLUS", ui_kit::icons::fill::PLUS),
+            ("X", ui_kit::icons::fill::X),
+            ("WAVEFORM", ui_kit::icons::fill::WAVEFORM),
+        ] {
+            let c = icon.chars().next().unwrap();
+            // The glyphs live in the phosphor font: both dedicated cut
+            // families (holding that cut alone) resolve them.
+            for cut in [ui_kit::fonts::PHOSPHOR_REGULAR_FONT, ui_kit::fonts::PHOSPHOR_FILL_FONT] {
+                let id = egui::FontId::new(16.0, egui::FontFamily::Name(cut.into()));
+                assert!(fonts.has_glyph(&id, c), "{name} (U+{:04X}) missing from the {cut} family", c as u32);
+            }
+            // The text-only set has none of them.
+            for family in &families {
+                let id = egui::FontId::new(16.0, family.clone());
+                assert!(!bare_fonts.has_glyph(&id, c), "{name} (U+{:04X}) resolves WITHOUT an icon font in {family:?}: the probe is blind", c as u32);
             }
         }
     }
 
+    /// THEME takes its values from the ui-kit tokens (the S1 shim contract).
     #[test]
     fn theme_holds_the_spec_values() {
         let t = Theme::default();
@@ -1001,29 +907,30 @@ mod tests {
         assert_eq!(t.fade_handle_sz, 8.0);
         assert_eq!(t.ruler_h, 30.0);
         assert_eq!(t.new_track_h, 96.0);
-        assert_eq!(t.meter_red, egui::Color32::from_rgb(0xE5, 0x54, 0x4B));
-        assert_eq!(t.meter_yellow, egui::Color32::from_rgb(0xE3, 0xC0, 0x4A));
-        assert_eq!(t.meter_green, egui::Color32::from_rgb(0x3D, 0xBE, 0x6B));
-        assert_eq!(t.space_xs, 4.0);
-        assert_eq!(t.space_md, 8.0);
-        assert_eq!(t.accent, egui::Color32::from_rgb(0x4C, 0x9B, 0xE8), "one accent for selection, lit toggles, range lines and focus");
-        assert_eq!(t.accent_soft, egui::Color32::from_rgba_unmultiplied(0x4C, 0x9B, 0xE8, 0x2E));
+        assert_eq!(t.meter_red, tokens::color::SEM_METER_CLIP);
+        assert_eq!(t.meter_yellow, tokens::color::SEM_METER_WARN);
+        assert_eq!(t.meter_green, tokens::color::SEM_METER_OK);
+        assert_eq!(t.space_xs, tokens::space::SCALE_4);
+        assert_eq!(t.space_md, tokens::space::WINDOW_GAP);
+        assert_eq!(t.accent, tokens::accent::ACCENT, "one accent for selection, lit toggles, range lines and focus");
+        assert_eq!(t.accent_soft, accent_alpha(0x2E));
         assert_eq!(t.selection_border, t.accent);
         assert_eq!(t.snap_line_color, t.accent);
         assert_eq!(t.playhead_color, egui::Color32::from_rgb(0xFF, 0x6B, 0x5C));
         assert_eq!(t.marker_color, egui::Color32::from_rgb(0xE8, 0xB4, 0x4C));
         assert_eq!(t.unsaved_dot_d, 6.0);
-        assert_eq!(t.record_red, egui::Color32::from_rgb(0xE5, 0x54, 0x4B));
+        assert_eq!(t.record_red, tokens::color::SEM_RECORD);
         assert_eq!(t.on_record_glyph, egui::Color32::WHITE);
         assert_eq!((t.record_btn_d, t.record_btn_glyph), (28.0, 16.0));
         assert_eq!((t.clip_body_alpha, t.clip_header_alpha), (0x22, 0x66));
         assert_eq!((t.track_ms_w, t.track_ms_h, t.track_ms_gap), (22.0, 20.0, 4.0));
         assert_eq!(t.menu_right_pad, 8.0);
-        assert_eq!(t.app_bg, egui::Color32::from_rgb(0x16, 0x18, 0x1C));
-        assert_eq!(t.lane_a, egui::Color32::from_rgb(0x1B, 0x1E, 0x23));
-        assert_eq!(t.lane_b, egui::Color32::from_rgb(0x1E, 0x21, 0x27));
-        assert_eq!(t.control_rounding, 6.0);
-        assert_eq!(t.text_normal, egui::Color32::from_rgb(0xC9, 0xCE, 0xD6));
+        assert_eq!(t.app_bg, tokens::color::BG_GROUND);
+        assert_eq!(t.lane_a, tokens::color::BG_TRACK_SELECTED);
+        assert_eq!(t.lane_b, tokens::color::BG_TRACK_ALT);
+        assert_eq!(t.control_rounding, tokens::radius::SEGMENT);
+        assert_eq!(t.text_normal, tokens::color::TEXT_SECONDARY);
+        assert_eq!(t.status_bar_h, tokens::size::STATUS_BAR_HEIGHT);
     }
 
     #[test]

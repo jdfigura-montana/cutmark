@@ -20,13 +20,19 @@ use crate::ui::theme::THEME;
 use crate::ui::timeline::{self, ViewMenuAction};
 use crate::ui::toolbar;
 use crate::ui::widgets::meter::MeterState;
+use ui_kit::tokens::{color, size};
 
 /// The user-visible application name, used for the window title, the start
 /// screen heading and the installer.
 pub const APP_NAME: &str = "CutMark Audio Editor";
 
-/// Height of the top menu bar panel.
-const MENU_BAR_H: f32 = 30.0;
+/// Height of the 52px chrome top bar (the ui-kit main toolbar); phase 10b
+/// turns it into the real toolbar.
+const TOP_BAR_H: f32 = size::TOOLBAR_MAIN_HEIGHT;
+/// Widest the toolbar's left zone may get: the right-aligned project status
+/// inside the menu row must not swallow the caption-button drag space. Phase
+/// 10b moves the project name into the real toolbar and this goes away.
+const LEFT_ZONE_MAX_W: f32 = 560.0;
 /// Height of the toolbar panel.
 const TOOLBAR_H: f32 = 48.0;
 /// Height of the bottom status bar panel.
@@ -118,9 +124,10 @@ impl App {
     /// drive the real frame without an `eframe::Frame`.
     fn run(&mut self, ui: &mut egui::Ui) {
         self.update_title(ui);
-        // Debug-only F12 window showing the egui style.
-        #[cfg(debug_assertions)]
-        crate::ui::theme::debug_window(ui.ctx());
+        // The appearance file feeds the runtime theme (shared with the whole
+        // suite); toasts draw on top of everything.
+        ui_kit::appearance::poll(ui.ctx());
+        ui_kit::show_toasts(ui.ctx());
         // Work on the screen outside self so menu, editor and screen can be
         // borrowed separately within one frame.
         let mut screen = std::mem::replace(&mut self.screen, Screen::Start(StartScreen::default()));
@@ -137,6 +144,7 @@ impl App {
                 if !ui.ctx().egui_wants_keyboard_input() && !start.dialog_is_open() {
                     Self::handle_start_shortcuts(ui, start);
                 }
+                Self::show_start_bar(ui);
                 opened = start.show(ui, self.start_output.as_deref());
             }
             Screen::Editing(editor) => {
@@ -280,6 +288,15 @@ impl App {
         Some(pending)
     }
 
+    /// The 52px chrome bar on the start screen: no content yet (the real
+    /// toolbar comes in phase 10b), but it is the window's drag area and the
+    /// caption buttons' home, so the chrome never shows a bare title bar.
+    fn show_start_bar(ui: &mut egui::Ui) {
+        egui::Panel::top("start_bar").exact_size(TOP_BAR_H).frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
+            ui_kit::main_toolbar(ui, |_| {}, |_| {}, |_| {});
+        });
+    }
+
     /// Draws the editor layout, handles the menus and the editor shortcuts.
     /// `close_pending` is true while a close prompt is up.
     #[allow(clippy::too_many_arguments)]
@@ -349,16 +366,32 @@ impl App {
         }
 
         let mut msgs: Vec<Message> = Vec::new();
-        // Top: menu bar (one 30 px panel) with the Project, Edit, Markers,
-        // Process and View menus in a single row, then the toolbar row.
-        let mut action = ProjectMenuAction::None;
-        let mut view_action = ViewMenuAction::None;
-        egui::Panel::top("menu_bar")
-            .exact_size(MENU_BAR_H)
-            .frame(egui::Frame::new().fill(THEME.bar_bg).inner_margin(egui::Margin { left: 8, ..Default::default() }))
-            .show(ui, |ui| {
-                (action, view_action) = menu.show(ui, editor);
-            });
+        // Top: the 52px chrome bar (the ui-kit main toolbar, which is the
+        // window's drag area and the caption buttons' home) with the existing
+        // menu bar in its left zone. Phase 10b replaces this with the real
+        // toolbar (app mark, project name, Undo/Redo, Export, menu button).
+        let menu_cell = std::cell::RefCell::new(&mut *menu);
+        let editor_cell = std::cell::RefCell::new(&mut *editor);
+        let action_cell = std::cell::Cell::new(ProjectMenuAction::None);
+        let view_cell = std::cell::Cell::new(ViewMenuAction::None);
+        egui::Panel::top("app_bar").exact_size(TOP_BAR_H).frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
+            ui_kit::main_toolbar(
+                ui,
+                |ui| {
+                    // Cap the left zone so the right-aligned project
+                    // status inside the menu row cannot swallow the
+                    // caption-button drag space (see LEFT_ZONE_MAX_W).
+                    ui.set_max_width(ui.available_width().min(LEFT_ZONE_MAX_W));
+                    let (a, v) = menu_cell.borrow_mut().show(ui, &mut editor_cell.borrow_mut());
+                    action_cell.set(a);
+                    view_cell.set(v);
+                },
+                |_| {},
+                |_| {},
+            );
+        });
+        let mut action = action_cell.get();
+        let view_action = view_cell.get();
 
         if action == ProjectMenuAction::Import {
             msgs.extend(media_messages(bin_panel::pick_and_import(editor)));
