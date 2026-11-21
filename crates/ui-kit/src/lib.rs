@@ -27,8 +27,8 @@ pub mod widgets;
 pub use meter::level_meter;
 pub use theme::Theme;
 pub use widgets::{
-    MainToolbar, SliderKind, chip, focus_ring, icon_button, inspector_group, inspector_header, inspector_row, list_row, main_toolbar, panel, primary_button,
-    scroll_thumb, search_field, segmented, slider, status_bar, switch, text_field,
+    CaptionRects, MainToolbar, SliderKind, caption_buttons, chip, focus_ring, icon_button, inspector_group, inspector_header, inspector_row, list_row,
+    main_toolbar, panel, primary_button, scroll_thumb, search_field, segmented, slider, status_bar, switch, text_field,
 };
 
 use tokens::{color, radius, size, space, typography};

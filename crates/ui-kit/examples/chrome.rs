@@ -1,45 +1,79 @@
-//! Minimal window to hand-check the Win32 chrome (S1 phase 7a): a 52px
-//! caption bar with a placeholder maximize button, a label with the chrome
-//! state. Run with: `cargo run -p ui-kit --example chrome`.
+//! The custom window chrome with the real main toolbar (S1 phase 7b): the
+//! 52px toolbar is the title bar, the caption buttons work, and
+//! `main_toolbar` publishes the chrome regions itself, so no manual
+//! `chrome::publish` call is needed. Run with:
+//! `cargo run -p ui-kit --example chrome`.
 //!
-//! Hand-check list (Windows 11): the bar drags, double-click on it maximizes
-//! and restores, dragging to a screen edge snaps, every edge and corner
-//! resizes, Win+Left/Right/Up work, hovering the maximize rect shows the Snap
-//! Layouts flyout, corners are round.
+//! Hand-check list (Windows 11): the toolbar drags, double-click on it
+//! maximizes and restores, dragging to a screen edge snaps, every edge and
+//! corner resizes, Win+Left/Right/Up work, hovering the maximize button
+//! shows the Snap Layouts flyout, corners are round; minimize, maximize and
+//! close work; clicking the segmented control or the primary button never
+//! drags the window; another window on top dims the toolbar text.
 
 use eframe::egui;
-use ui_kit::tokens;
+use egui_phosphor::variants::regular;
+use ui_kit::{Theme, fonts, tokens};
 
-/// The caption bar height, from the design language.
-const BAR_HEIGHT: f32 = 52.0;
-/// The placeholder maximize button size, from the design language.
-const BUTTON_SIZE: f32 = 46.0;
+/// The demo app: draws the main toolbar and a status line.
+struct ChromeDemo {
+    /// The selected mode of the segmented control.
+    mode: std::rc::Rc<std::cell::Cell<usize>>,
+}
 
-/// The demo app: publishes the chrome regions and shows the state.
-#[derive(Default)]
-struct ChromeDemo {}
+/// Draws the app mark placeholder: an accent circle with a notch cut from its
+/// top right (spec "Open questions" item 1: placeholder until a real logo).
+fn app_mark(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+    let c = rect.center();
+    let painter = ui.painter();
+    painter.circle_filled(c, 9.0, Theme::get(ui.ctx()).accent.accent);
+    painter.rect_filled(egui::Rect::from_min_size(egui::pos2(c.x, c.y - 9.0), egui::vec2(9.0, 9.0)), 0.0, tokens::color::BG_GROUND);
+}
+
+/// Draws the left zone: app mark, document name with its caption line, Undo
+/// and Redo.
+fn left_zone(ui: &mut egui::Ui) {
+    app_mark(ui);
+    ui.add_space(tokens::space::SCALE_4);
+    ui.vertical(|ui| {
+        ui.label(egui::RichText::new("Interview take 3").font(fonts::semibold(tokens::typography::BODY_SIZE)));
+        ui.label(egui::RichText::new("Saved \u{b7} WAV").font(fonts::medium(tokens::typography::CAPTION_SIZE)));
+    });
+    ui.add_space(tokens::space::SCALE_6);
+    ui_kit::icon_button(ui, regular::ARROW_COUNTER_CLOCKWISE, "Undo");
+    ui_kit::icon_button(ui, regular::ARROW_CLOCKWISE, "Redo");
+}
 
 impl eframe::App for ChromeDemo {
-    /// Publishes the chrome regions and draws the bar and the status label.
+    /// Draws the main toolbar, which publishes the chrome regions, and a
+    /// status line under it.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let screen = ui.max_rect();
-        let width = screen.width();
-        let bar = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, BAR_HEIGHT));
-        let maximize = egui::Rect::from_min_size(egui::pos2(width - BUTTON_SIZE - 8.0, 3.0), egui::vec2(BUTTON_SIZE, BUTTON_SIZE));
-        ui_kit::chrome::publish(ui.ctx(), &ui_kit::chrome::Regions::new(vec![bar]).with_maximize_button(maximize));
-
-        let hover = ui_kit::chrome::is_maximized_button_hovered(ui.ctx());
-        let glyph = if hover { tokens::color::TEXT_PRIMARY } else { tokens::color::TEXT_SECONDARY };
-        let painter = ui.painter();
-        painter.rect_filled(screen, 0.0, tokens::color::BG_GROUND);
-        // Placeholder maximize glyph: a 1px square outline.
-        painter.rect_stroke(maximize.shrink(14.0), 0.0, egui::Stroke::new(1.0, glyph), egui::StrokeKind::Inside);
-        let status = format!(
-            "custom chrome: {} | maximize hovered: {} | drag the top bar, resize from any edge, hover the square for Snap Layouts",
-            ui_kit::chrome::is_custom(),
-            hover
+        ui.painter().rect_filled(ui.max_rect(), 0.0, tokens::color::BG_GROUND);
+        let mode = self.mode.clone();
+        // The toolbar publishes the chrome regions (caption drag areas plus
+        // the maximize button) every frame; nothing else is needed.
+        ui_kit::main_toolbar(
+            ui,
+            left_zone,
+            move |ui| {
+                let mut m = mode.get();
+                ui_kit::segmented(ui, &mut m, &["Edit", "Mix"]);
+                mode.set(m);
+            },
+            |ui| {
+                ui.add_space(tokens::space::SCALE_6);
+                ui_kit::primary_button(ui, "Export");
+            },
         );
-        ui.put(egui::Rect::from_min_size(egui::pos2(12.0, BAR_HEIGHT + 16.0), egui::vec2(width - 24.0, 24.0)), egui::Label::new(status));
+        let status = format!(
+            "custom chrome: {} \u{b7} drag the toolbar, double-click to maximize, snap from the edges, hover the square for Snap Layouts",
+            ui_kit::chrome::is_custom(),
+        );
+        ui.put(
+            egui::Rect::from_min_size(egui::pos2(12.0, tokens::size::TOOLBAR_MAIN_HEIGHT + 16.0), egui::vec2(ui.available_width() - 24.0, 24.0)),
+            egui::Label::new(status),
+        );
     }
 }
 
@@ -56,7 +90,7 @@ fn main() -> eframe::Result {
         Box::new(|cc| {
             ui_kit::apply(&cc.egui_ctx);
             ui_kit::chrome::install(cc);
-            Ok(Box::new(ChromeDemo::default()))
+            Ok(Box::new(ChromeDemo { mode: std::rc::Rc::new(std::cell::Cell::new(0)) }))
         }),
     )
 }

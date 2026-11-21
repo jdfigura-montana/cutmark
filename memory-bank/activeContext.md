@@ -1,11 +1,12 @@
 # Active Context
 
-Milestone: S1. Current phase: 7a (done). Branch: s1.
+Milestone: S1. Current phase: 7b (done). Branch: s1.
 
 ## What is built
 - ui-kit: tokens (generated from design/tokens.json), palette, fonts, theme, appearance file/poll, level meter, accent derivation, style lint.
 - S1 phase 6c: `crates/ui-kit/src/widgets/` with the first six components: panel, primary_button, icon_button, segmented, chip, switch. Shared helpers: `widgets::focus_ring` and `widgets::capsule_radius` (height / 2 rule). No app uses them yet.
 - S1 phase 7a: `crates/ui-kit/src/chrome/` (mod.rs OS-neutral API + pure hit_test; windows.rs the only `#![allow(unsafe_code)]` file). `chrome::viewport` keeps decorations on with min size 640 x 400; `chrome::install` subclasses the eframe window (WM_NCCALCSIZE caption removal, WM_NCHITTEST from `chrome::publish` regions, HTMAXBUTTON hover + click, DWM round corners, SPI_GETCLIENTAREAANIMATION drives `Theme::reduce_motion` at install and on WM_SETTINGCHANGE). Example: `cargo run -p ui-kit --example chrome`.
+- S1 phase 7b: real caption buttons in `widgets/caption_buttons.rs` (min/max/close, 46 x 52 from size tokens, 1px-line Segoe-style glyphs, BG_HOVER hover, close hover from new tokens `caption.close.hover`/`caption.close.glyph.hover`, actions via ViewportCommand Minimized(true)/Maximized(!)/Close, hidden in fullscreen, maximize hover from `chrome::is_maximized_button_hovered`). `main_toolbar` appends the buttons only when `chrome::is_custom()` and publishes `Regions` itself every frame: bar minus every interactive widget rect as caption, maximize rect separate; unfocused window sets `override_text_color` = TEXT_TERTIARY on the zone child Uis (primary button unaffected, paints its own accent galley). `MainToolbar` gained `minimize/maximize/close: Option<Rect>` and `caption: Vec<Rect>` (no longer Copy). Example chrome.rs uses the real toolbar (app mark, doc name, segmented center, Export primary).
 
 ## Decisions made while coding
 - Phase 7a keeps the native frame (decorations on) and removes only the caption, so resize borders, Aero Snap, Win+arrows and double-click maximize stay OS-owned. Subclass id 0x4355_544D; one chrome window per process: `hook` refuses a second window (logs, leaves it the native title bar, never overwrites SHARED); SHARED clears on WM_NCDESTROY so a later window can be hooked.
@@ -13,7 +14,9 @@ Milestone: S1. Current phase: 7a (done). Branch: s1.
 - eframe 0.36: `CreationContext` implements HasWindowHandle (HWND via raw_window_handle 0.6, added to workspace.dependencies); the App trait's required method is `fn ui(&mut self, ui: &mut Ui, frame)` (no update(ctx, frame)); CentralPanel::show takes &mut Ui.
 - Hit test is a pure function in chrome/mod.rs (point, size, maximized, HitRegions in physical px, dpi) -> Zone, unit-tested on all platforms; windows.rs only maps Zone to HT*.
 - Maximize button press handling: WM_NCLBUTTONDOWN sets a down flag, WM_NCLBUTTONUP over HTMAXBUTTON posts WM_SYSCOMMAND SC_MAXIMIZE/SC_RESTORE. Hover tracked via WM_NCMOUSEMOVE + TrackMouseEvent(TME_LEAVE|TME_NONCLIENT), requests repaint through the stored egui Context.
+- Phase 7b: the is_custom() gate for the caption buttons lives in main_toolbar, not in the caption_buttons widget, so kittest tests can drive the widget directly (is_custom() is always false in a harness). egui 0.36 ViewportCommand::Minimized takes a bool. Unfocused text dimming uses `override_text_color` on the toolbar's child Uis: egui Labels follow it, widgets that paint their own galleys (primary button, icon buttons) ignore it, which is exactly the spec split. New color tokens live in a new `color.chrome` subgroup of tokens.json; the generator flattens subgroups into CAPTION_* consts. Caption region carving: subtract holes from the bar with strips clamped to each piece (unclamped strips double-counted area, caught by the unit test); kittest overlap checks must use `intersect(..).is_positive()` because emath `intersects` counts edge-touching as intersecting.
+- kittest 0.36 observation pattern for viewport commands: after `Node::click()`, step and read `harness.output().viewport_output.get(&ViewportId::ROOT).commands` (same pattern video-ui uses).
 
 ## Next steps
-- Phase 7b/7c as prompted: caption button drawing (min/max/close glyphs, 46 x 52), inactive window state, then more widgets (phase 8).
-- Phase 7a's manual Windows 11 hand-check items (drag, snap, Snap Layouts flyout, resize, round corners) still need on-screen verification in the example; unit tests cover the hit-test math only.
+- Phase 7c/8 as prompted: more widgets (phase 8 media widgets), or further chrome polish.
+- On-screen hand-checks still need JD's eyes: phase 7a items (drag, snap, Snap Layouts flyout, resize, round corners) plus 7b items (buttons work, no drag on segmented/primary clicks, inactive dim, 100/150/200% scaling, two monitors) in `cargo run -p ui-kit --example chrome`; unit/kittest tests cover the geometry and commands only.

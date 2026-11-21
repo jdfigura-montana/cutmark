@@ -2,6 +2,8 @@
 /* Regenerate with: $env:UPDATE_TOKENS_CSS = "1"; cargo test -p ui-kit */
 :root {
     /* color */
+    --color-caption-close-glyph-hover: #FFFFFF;
+    --color-caption-close-hover: #C42B1C;
     --color-glass-fill: rgba(34,34,38,.82);
     --color-glass-rim: rgba(255,255,255,.07);
     --color-glass-shadow: rgba(0,0,0,.5);

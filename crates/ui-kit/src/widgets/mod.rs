@@ -4,6 +4,7 @@
 //!
 //! Shared helpers: [`focus::focus_ring`] and [`capsule_radius`].
 
+pub mod caption_buttons;
 pub mod chip;
 pub mod focus;
 pub mod icon_button;
@@ -20,6 +21,7 @@ pub mod status_bar;
 pub mod switch;
 pub mod text_field;
 
+pub use caption_buttons::{CaptionRects, caption_buttons};
 pub use chip::chip;
 pub use focus::focus_ring;
 pub use icon_button::icon_button;
