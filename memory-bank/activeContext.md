@@ -1,6 +1,6 @@
 # Active Context
 
-Milestone: S1. Current phase: 8b (done). Branch: s1.
+Milestone: S1. Current phase: 9a (done). Branch: s1.
 
 ## What is built
 - ui-kit: tokens (generated from design/tokens.json), palette, fonts, theme, appearance file/poll, level meter (horizontal + vertical + stereo vertical), accent derivation, style lint.
@@ -23,5 +23,7 @@ Milestone: S1. Current phase: 8b (done). Branch: s1.
 - Phase 8b gotchas: kittest 0.36's default step_dt is 0.25 s and egui's double-click window is 0.3 s, so a double-click test must queue both press+release pairs into ONE pass (push 4 PointerButton events, then run); stepping between clicks lands 0.5 s apart and only counts as single clicks. `response.double_clicked()` is evaluated on the release frame (CLICKED flag + `pointer.button_double_clicked`), so checking it before the clicked/drag branch works. egui 0.36 `WidgetType` has no `ListItem` variant (use `SelectableLabel`); `Harness` default viewport is large enough for full-height widgets. Track-header hover uses `ui.rect_contains_pointer`, not `response.hovered()`: the visible toggles take the pointer and would otherwise hide themselves again.
 
 ## Next steps
+- Phase 9a on-screen hand-checks need JD's eyes: cargo run -p cutmark-gallery; every Core panel renders, accent changes in Appearance recolor live, toolbar right-zone order (icon button, Toast primary) matches the chrome example.
+- ui-kit open question found while building the gallery: main_toolbar draws the app's right-zone closure BEFORE the caption buttons in a right-to-left child, so the closure content lands rightmost; if on-screen review shows the caption buttons misplaced, fix belongs in ui-kit, not the gallery.
 - Phase 8b leftovers as prompted: remaining media widgets (clip, playhead, marker, pending band) / apps adopting these widgets.
 - On-screen hand-checks still need JD's eyes: phase 7a items (drag, snap, Snap Layouts flyout, resize, round corners), 7b items (buttons work, no drag on segmented/primary clicks, inactive dim, 100/150/200% scaling, two monitors) in `cargo run -p ui-kit --example chrome`, 8a items (menus 32 rows + glass, dialog footer at bottom right, deck drag/fade, toasts) once an app hosts them, and the 8b meters/fader live in the Recorder (speak into a mic or play audio; unit/kittest tests cover the geometry and interactions only).

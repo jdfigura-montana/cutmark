@@ -1468,6 +1468,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cutmark-gallery"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui-phosphor",
+ "ui-kit",
+]
+
+[[package]]
 name = "cutmark-hotkeys"
 version = "0.1.0"
 dependencies = [
