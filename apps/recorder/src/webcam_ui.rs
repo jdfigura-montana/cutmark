@@ -179,18 +179,17 @@ fn sync_test(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, state: &C
 
 /// The measured offset, the verdict, and the button that saves the opposite offset to the profile.
 fn sync_result(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, report: &SyncReport, profile: &str) {
-    ui.label(format!(
-        "Median offset {:+.0} ms ({:+.1} frames), spread {:.0} ms over {} flashes",
-        report.median_ms,
-        report.median_frames,
-        report.spread_ms,
-        report.offsets_ms.len()
-    ));
-    if report.within_one_frame() {
-        ui.colored_label(SYNC_GOOD, "Within 1 frame");
-    } else {
-        let frames = report.frames_off();
-        ui.colored_label(SYNC_WARN, format!("Off by {frames} frame{}", if frames == 1 { "" } else { "s" }));
+    ui.label(format!("Measured offset {:+.0} ms (spread {:.0} ms over {} flashes)", report.median_ms, report.spread_ms, report.offsets_ms.len()));
+    // The test records with the offset at zero, so what the current offset leaves over is the raw median plus that offset.
+    let residual_ms = report.median_ms + f64::from(host.settings(store).map_or(0, |settings| settings.offset_ms));
+    ui.label(format!("Residual with current offset: {residual_ms:+.0} ms"));
+    match frames_off(residual_ms, report.main_fps) {
+        None => {
+            ui.colored_label(SYNC_GOOD, "Within 1 frame");
+        }
+        Some(frames) => {
+            ui.colored_label(SYNC_WARN, format!("Off by {frames} frame{}", if frames == 1 { "" } else { "s" }));
+        }
     }
     ui.horizontal(|ui| {
         if ui.button("Apply as camera offset").clicked() {
@@ -206,6 +205,12 @@ fn sync_result(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, report:
             ui.weak(format!("Camera offset is {} ms", settings.offset_ms));
         }
     });
+}
+
+/// How many whole frames a residual is off by, or none when it is within one frame either way.
+fn frames_off(residual_ms: f64, fps: f64) -> Option<u32> {
+    let frames = residual_ms * fps / 1000.0;
+    (frames.abs() > 1.0).then(|| frames.abs().round() as u32)
 }
 
 /// The offset that cancels a measured median: its opposite, rounded, and limited to the range the window allows.
@@ -246,6 +251,14 @@ mod tests {
         assert_eq!(applied_offset(0.4), 0);
         assert_eq!(applied_offset(900.0), -500);
         assert_eq!(applied_offset(-900.0), 500);
+    }
+
+    #[test]
+    fn the_residual_is_judged_in_frames_at_the_main_rate() {
+        assert_eq!(frames_off(15.0, 60.0), None);
+        assert_eq!(frames_off(-16.0, 60.0), None);
+        assert_eq!(frames_off(100.0, 60.0), Some(6));
+        assert_eq!(frames_off(-70.0, 30.0), Some(2));
     }
 
     #[test]
