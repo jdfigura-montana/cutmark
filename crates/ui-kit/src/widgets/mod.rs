@@ -23,6 +23,7 @@ pub mod slider;
 pub mod status_bar;
 pub mod switch;
 pub mod text_field;
+pub mod timeline;
 pub mod toast;
 pub mod track_header;
 pub mod track_row;
@@ -47,6 +48,10 @@ pub use slider::{SliderKind, slider};
 pub use status_bar::status_bar;
 pub use switch::switch;
 pub use text_field::text_field;
+pub use timeline::{
+    ClipKind, ClipLook, MarkerKind, marker_color, paint_clip, paint_marker, paint_marquee, paint_pending_band, paint_playhead, paint_ruler, paint_snap_line,
+    paint_waveform, waveform_color,
+};
 pub use toast::{set_toast_time, show_toasts, toast};
 pub use track_header::{Toggle, ToggleKind, track_header};
 pub use track_row::paint_track_row;
