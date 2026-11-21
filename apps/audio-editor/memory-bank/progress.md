@@ -1,3 +1,6 @@
+## Task S1 phase 11b (2026-11-21)
+Track headers, lanes, clips, waveforms, interaction visuals, scrollbar DONE (details in activeContext). Tests 665 (was 663): -1 track_color test (concept deleted), +3 (lane shading, muted/selected clip fills, volume slider gesture). No marquee gesture exists in the app, so paint_marquee is unused (the inventory's "marquee dashed rect" is the new-track drop row, kept dashed). Open for JD's eyes: header at 40 to 54 px height clips the ui-kit toggles; sliders only show when they fit (about 86 px and up, was 64); clip name/gain pinning; glass look of the clip menu and gain edit.
+
 ## Task S1 phase 11a (2026-11-21)
 Timeline panel, panel toolbar, ruler, markers, playhead DONE (details in activeContext). Tests 663 (was 660): zoom slider mapping, zoom readout, chip click test. No edit tools exist in the app, so item 2's segmented control was not built. Open: wave scale slider still in toolbar.rs (old fader widget), left for 11c with the transport deck.
 

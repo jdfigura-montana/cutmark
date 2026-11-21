@@ -1107,7 +1107,9 @@ mod tests {
         start_take(&mut rig, 24_000);
         let out = rig.frame();
 
-        let lane_left = out.rects().into_iter().filter(|r| r.fill == THEME.lane_a).map(|r| r.rect.left()).fold(f32::INFINITY, f32::min);
+        // The shaded rows of the header column and the lanes: the lanes sit to the right.
+        let lane_left =
+            out.rects().into_iter().filter(|r| r.fill == ui_kit::tokens::color::BG_TRACK_ALT).map(|r| r.rect.left()).fold(f32::NEG_INFINITY, f32::max);
         let live = live_clip_rect(&out).expect("the live clip is painted");
         assert!((live.left() - (lane_left + 200.0)).abs() < 0.01, "starts at the record start: {} vs {}", live.left(), lane_left + 200.0);
         assert!((live.width() - 240.0).abs() < 0.01, "24,000 frames at 100 spp: {}", live.width());
@@ -1268,8 +1270,15 @@ mod tests {
         }
         for (r, expect_range) in [(&mut idle, true), (&mut rig, false)] {
             let out = r.frame();
-            // Track 2 is empty and has the alternate lane shade.
-            let lane = out.rects().into_iter().filter(|rect| rect.fill == THEME.lane_b).map(|rect| rect.rect).next().expect("a lane");
+            // Track 2 is empty and has the alternate row shade: the widest of the
+            // shaded rects is its lane (the header column paints the same shade).
+            let lane = out
+                .rects()
+                .into_iter()
+                .filter(|rect| rect.fill == ui_kit::tokens::color::BG_TRACK_ALT)
+                .map(|rect| rect.rect)
+                .max_by(|a, b| a.width().total_cmp(&b.width()))
+                .expect("a lane");
             let y = lane.center().y;
             drag(r, egui::pos2(lane.left() + 200.0, y), egui::pos2(lane.left() + 400.0, y));
             let selected = !matches!(r.editor().selection(), crate::editor::selection::Selection::None);

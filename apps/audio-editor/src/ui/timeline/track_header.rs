@@ -1,20 +1,33 @@
 //! ui::timeline::track_header: the per-track header column on the timeline's
-//! left: reorder grip, inline rename, context menu and bottom-edge resize,
-//! plus volume, pan, mute and solo controls and a stereo meter.
+//! left: the ui-kit track header (number, name, M, S and R toggles, compact
+//! meter) plus reorder grip, inline rename, context menu, bottom-edge resize
+//! and the volume and pan sliders.
 
 use std::collections::HashMap;
+use std::ops::RangeInclusive;
 
 use eframe::egui;
+use ui_kit::icons::regular;
+use ui_kit::tokens::{color, size, space, typography};
+use ui_kit::{SliderKind, Toggle, ToggleKind};
 use uuid::Uuid;
 
 use crate::editor::Editor;
 use crate::editor::action::Action;
-use crate::ui::theme::{THEME, Theme};
+use crate::ui::theme::THEME;
 use crate::ui::widgets::fader;
 use crate::ui::widgets::meter;
 
 /// Key under which the interaction state is carried between frames.
 const STATE_KEY: &str = "track_header_state";
+/// Width of the reorder grip at the right end of the name row.
+const GRIP_W: f32 = 14.0;
+/// Height of the toggle row of ui-kit's track header (spec "Track header":
+/// 24 x 24 toggles). The slider row sits below the header content, so this
+/// mirrors that layout.
+const TOGGLE_ROW_H: f32 = 24.0;
+/// Height of the compact meter of ui-kit's track header (spec "Meter": 6 px).
+const METER_H: f32 = 6.0;
 
 /// Snapshot of one track's header-relevant data for one frame.
 struct HeaderTrack {
@@ -47,11 +60,12 @@ struct State {
 
 /// Draws the header column: one header per track, scrolled with the lanes.
 ///
-/// Each header has a reorder grip on the left, the track name (double-click
-/// to rename inline), M, S and Arm buttons, a volume fader and pan slider
-/// (from 64 px of height up), a stereo meter on the right edge, a context menu
-/// and a 4 px resize strip at the bottom. `lane_rect` is only used to span the
-/// reorder insertion line across the full timeline width.
+/// Each header is a ui-kit track header (number, name, M, S and R toggles,
+/// compact level meter) with a reorder grip at the right end of the name row
+/// (double-click the name to rename inline), a volume and a pan slider side
+/// by side below it when they fit, a context menu and a 4 px resize strip at
+/// the bottom. `lane_rect` is only used to span the reorder insertion line
+/// across the full timeline width.
 pub fn show(
     ui: &mut egui::Ui,
     editor: &mut Editor,
@@ -97,6 +111,7 @@ pub fn show(
             armed: armed_track == Some(t.id),
         })
         .collect();
+    let selected_tracks = super::range_tracks(editor);
 
     // State referring to deleted tracks goes away.
     if let Some((id, _)) = state.renaming
@@ -111,10 +126,7 @@ pub fn show(
     }
 
     let painter = ui.painter_at(header_rect);
-    painter.rect_filled(header_rect, 0.0, THEME.panel_bg);
-
-    // A 4 px left stripe in each track's color identifies the track row.
-    let stripe_w = THEME.space_sm;
+    let ctrl = ui.input(|i| i.modifiers.ctrl);
 
     let mut y = header_rect.top() - scroll_y;
     for (index, ht) in tracks.iter().enumerate() {
@@ -124,70 +136,47 @@ pub fn show(
             continue;
         }
 
-        // 4 px left stripe in the track color.
-        painter.rect_filled(egui::Rect::from_min_max(rect.left_top(), egui::pos2(rect.left() + stripe_w, rect.bottom())), 0.0, THEME.track_color(index));
+        // Row background across the header column (the lanes paint their own).
+        let selected = selected_tracks.contains(&ht.id);
+        ui_kit::paint_track_row(&painter, rect, index, selected);
 
-        // Layout: 9 px vertical padding, 10 px after the stripe, 8 px right;
-        // meter bars hug the inner right edge, controls fill the rest.
-        let compact = rect.height() < THEME.compact_track_h;
-        let inner = egui::Rect::from_min_max(
-            egui::pos2(rect.left() + stripe_w + THEME.track_pad_l, rect.top() + THEME.track_pad_v),
-            egui::pos2(rect.right() - THEME.track_pad_r, rect.bottom() - THEME.track_pad_v),
-        );
+        // Geometry of the ui-kit header's content, mirrored for the controls
+        // that sit on it: the first row (number and name), then the toggles,
+        // the meter and, when they fit, the slider row.
+        let pad = space::SCALE_2;
+        let number_galley = painter.layout_no_wrap((index + 1).to_string(), ui_kit::fonts::mono(typography::VALUE_SIZE), color::TEXT_TERTIARY);
+        let name_galley = painter.layout_no_wrap(ht.name.clone(), ui_kit::fonts::semibold(typography::HEADLINE_SIZE), color::TEXT_PRIMARY);
+        let row_h = name_galley.size().y.max(number_galley.size().y);
+        let first_row = egui::Rect::from_min_size(egui::pos2(rect.left() + pad, rect.top() + pad), egui::vec2(rect.width() - 2.0 * pad, row_h));
+        let grip_rect = egui::Rect::from_min_max(egui::pos2(first_row.right() - GRIP_W, first_row.top()), first_row.right_bottom());
+        let name_rect =
+            egui::Rect::from_min_max(egui::pos2(first_row.left() + number_galley.size().x + space::SCALE_8, first_row.top()), grip_rect.left_bottom());
+        let slider_h = size::SEGMENT_HEIGHT;
+        let slider_top = first_row.bottom() + pad + TOGGLE_ROW_H + pad + METER_H + pad;
+        let show_sliders = rect.height() >= THEME.compact_track_h && slider_top + slider_h + THEME.track_resize_h <= rect.bottom();
+        let renaming_here = state.renaming.as_ref().is_some_and(|(rid, _)| *rid == ht.id);
 
-        // Meter bars: two 4 px bars, 2 px gap, taking the rightmost 10 px of
-        // the inner rect. The 4 px clip lights sit above them, inside the top
-        // padding band.
-        let bars_w = 2.0 * THEME.track_meter_bar_w + THEME.track_meter_gap;
-        let bars_top = inner.top() + THEME.track_clip_light + THEME.track_meter_gap;
-        let meter_rect = egui::Rect::from_min_max(egui::pos2(inner.right() - bars_w, bars_top), egui::pos2(inner.right(), inner.bottom()));
-        // Everything to the left of the meters stops a 6 px gap before them,
-        // so no control or value text can ever reach the meter bars.
-        let ctrl_right = inner.right() - bars_w - 6.0;
+        // The ui-kit header: the toggles edit local copies, applied below as
+        // the same editor actions the old buttons ran. The name is left to the
+        // inline editor while it is open.
+        let mut mute = ht.mute;
+        let mut solo = ht.solo;
+        let mut armed = ht.armed;
+        let reading = {
+            let channels = meters.entry(ht.id).or_default();
+            (channels[0].peak_db.max(channels[1].peak_db), channels[0].clip || channels[1].clip)
+        };
+        let mut header_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).id_salt(("track_header_ui", ht.id)));
+        header_ui.set_clip_rect(rect.intersect(header_rect));
+        let host = {
+            let mut toggles = [
+                Toggle::visible("M", &mut mute),
+                Toggle::visible("S", &mut solo),
+                Toggle { label: "R", on: &mut armed, kind: ToggleKind::RecordArm, always_visible: true },
+            ];
+            ui_kit::track_header(&mut header_ui, index + 1, if renaming_here { "" } else { &ht.name }, selected, &mut toggles, Some(reading))
+        };
 
-        // Row 1: drag handle, name, then M, S and Arm buttons, left to right.
-        let row1 = egui::Rect::from_min_max(egui::pos2(inner.left(), inner.top()), egui::pos2(ctrl_right, inner.top() + THEME.track_ms_h));
-        let arm_rect = egui::Rect::from_min_size(egui::pos2(row1.right() - THEME.track_ms_w, row1.top()), egui::vec2(THEME.track_ms_w, THEME.track_ms_h));
-        let s_rect = egui::Rect::from_min_size(
-            egui::pos2(arm_rect.left() - THEME.track_ms_gap - THEME.track_ms_w, row1.top()),
-            egui::vec2(THEME.track_ms_w, THEME.track_ms_h),
-        );
-        let m_rect = egui::Rect::from_min_size(
-            egui::pos2(s_rect.left() - THEME.track_ms_gap - THEME.track_ms_w, row1.top()),
-            egui::vec2(THEME.track_ms_w, THEME.track_ms_h),
-        );
-        let grip_w = 14.0_f32.min(THEME.track_pad_l + stripe_w);
-        let grip_rect = egui::Rect::from_min_size(egui::pos2(inner.left(), row1.top()), egui::vec2(grip_w, row1.height()));
-        let name_rect = egui::Rect::from_min_max(egui::pos2(grip_rect.right() + 2.0, row1.top()), egui::pos2(m_rect.left() - 4.0, row1.bottom()));
-
-        // Rows 2 and 3: VOL and PAN with fixed label and value columns. The
-        // two slider rows share the space under row 1 evenly, 20 px at the
-        // default 96 px header height.
-        let row_h = (((inner.height() - row1.height() - 2.0 * THEME.track_row_gap) * 0.5).floor()).clamp(10.0, THEME.track_ms_h);
-        let vol_row = egui::Rect::from_min_max(
-            egui::pos2(inner.left(), row1.bottom() + THEME.track_row_gap),
-            egui::pos2(ctrl_right, row1.bottom() + THEME.track_row_gap + row_h),
-        );
-        let pan_row = egui::Rect::from_min_max(
-            egui::pos2(inner.left(), vol_row.bottom() + THEME.track_row_gap),
-            egui::pos2(ctrl_right, vol_row.bottom() + THEME.track_row_gap + row_h),
-        );
-        let label_col = THEME.track_label_col_w;
-        let value_col = THEME.track_value_col_w;
-        // The slider track starts 6 px after the label column and ends 6 px
-        // before the value column, so the thumb never overlaps either text.
-        let vol_rect = egui::Rect::from_min_max(
-            egui::pos2(vol_row.left() + label_col + 6.0, vol_row.top()),
-            egui::pos2(vol_row.right() - value_col - 6.0, vol_row.bottom()),
-        );
-        let pan_rect = egui::Rect::from_min_max(
-            egui::pos2(pan_row.left() + label_col + 6.0, pan_row.top()),
-            egui::pos2(pan_row.right() - value_col - 6.0, pan_row.bottom()),
-        );
-
-        // Reorder by dragging the grip; the phosphor dots show on hover.
-        let grip = ui.interact(grip_rect, egui::Id::new(("track_grip", ht.id)), egui::Sense::drag());
-        let grip = grip.on_hover_cursor(egui::CursorIcon::Grab);
         // Resize strip at the bottom edge.
         let resize_rect = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - THEME.track_resize_h), egui::pos2(rect.right(), rect.bottom()));
         let resize = ui.interact(resize_rect, egui::Id::new(("track_resize", ht.id)), egui::Sense::drag());
@@ -199,19 +188,21 @@ pub fn show(
             }
         }
 
-        // Host for the context menu; Ctrl+click toggles the track in or out
-        // of the current range selection, unless the click hit a control.
-        let host = ui.interact(rect, egui::Id::new(("track_host", ht.id)), egui::Sense::click());
-        if host.clicked() && ui.input(|i| i.modifiers.ctrl) {
-            let over_controls = host.interact_pointer_pos().is_some_and(|p| {
-                meter_rect.contains(p)
-                    || m_rect.contains(p)
-                    || s_rect.contains(p)
-                    || arm_rect.contains(p)
-                    || (!compact && (vol_rect.contains(p) || pan_rect.contains(p)))
-            });
-            if !over_controls {
+        // Reorder by dragging the grip; the phosphor dots show on hover.
+        let grip = ui.interact(grip_rect, egui::Id::new(("track_grip", ht.id)), egui::Sense::drag());
+        let grip = grip.on_hover_cursor(egui::CursorIcon::Grab);
+
+        // The header itself is the host for the context menu; Ctrl+click
+        // toggles the track in or out of the current range selection (the
+        // toggles, sliders, name and grip sit on top and take their own
+        // clicks). A plain click clears the track's meter clip lights.
+        if host.clicked() {
+            if ctrl {
                 editor.toggle_range_track(ht.id);
+            } else {
+                for channel in meters.entry(ht.id).or_default().iter_mut() {
+                    channel.clear_clip();
+                }
             }
         }
         context_menu(editor, &host, &mut state, ht.id, index, &ht.name, locked);
@@ -223,9 +214,9 @@ pub fn show(
             painter.text(
                 grip_rect.center(),
                 egui::Align2::CENTER_CENTER,
-                egui_phosphor::fill::DOTS_SIX_VERTICAL,
-                egui::FontId::proportional(14.0),
-                THEME.text_faint,
+                regular::DOTS_SIX_VERTICAL,
+                ui_kit::fonts::icon_regular(typography::BODY_SIZE),
+                color::TEXT_TERTIARY,
             );
         }
 
@@ -249,13 +240,18 @@ pub fn show(
         } else if grip.drag_started() && !locked {
             state.reorder = Some((ht.id, index));
         }
-        // Name: inline rename on double-click, plain label otherwise.
+        // Name: inline rename on double-click; the ui-kit header draws the
+        // name otherwise.
         let name_resp = ui.interact(name_rect, egui::Id::new(("track_name", ht.id)), egui::Sense::click());
         if let Some((rid, text)) = state.renaming.as_mut()
             && *rid == ht.id
         {
-            let edit = egui::TextEdit::singleline(text).desired_rows(1).desired_width(name_rect.width()).frame(egui::Frame::NONE);
-            let resp = ui.put(name_rect.shrink2(egui::vec2(THEME.space_sm, THEME.space_xs)), edit);
+            let edit = egui::TextEdit::singleline(text)
+                .desired_rows(1)
+                .desired_width(name_rect.width())
+                .font(ui_kit::fonts::semibold(typography::HEADLINE_SIZE))
+                .frame(egui::Frame::NONE);
+            let resp = ui.put(name_rect, edit);
             if !resp.has_focus() && !resp.lost_focus() {
                 resp.request_focus();
             }
@@ -268,81 +264,48 @@ pub fn show(
             }
         } else if name_resp.double_clicked() && !locked {
             state.renaming = Some((ht.id, ht.name.clone()));
-        } else {
-            // Name in the track color text; faint while the track is muted.
-            // Clipped so long names truncate instead of overlapping the
-            // M and S buttons.
-            let name_color = if ht.mute { THEME.text_faint } else { THEME.text_primary };
-            painter.with_clip_rect(name_rect).text(
-                egui::pos2(name_rect.left(), name_rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                &ht.name,
-                Theme::semibold(THEME.track_name_size),
-                name_color,
-            );
         }
 
-        // Mute and solo toggles; Ctrl+click solo is exclusive.
-        if toggle_button(ui, m_rect, egui::Id::new(("track_mute", ht.id)), "M", ht.mute) && !locked {
-            let _ = editor.apply(Action::SetTrackMute { id: ht.id, mute: !ht.mute });
-        }
-        if toggle_button(ui, s_rect, egui::Id::new(("track_solo", ht.id)), "S", ht.solo) && !locked {
-            if ui.input(|i| i.modifiers.ctrl) {
-                let _ = editor.apply(Action::SoloExclusive { id: ht.id });
-            } else {
-                let _ = editor.apply(Action::SetTrackSolo { id: ht.id, solo: !ht.solo });
+        // Mute, solo and arm; Ctrl+click solo is exclusive.
+        if !locked {
+            if mute != ht.mute {
+                let _ = editor.apply(Action::SetTrackMute { id: ht.id, mute });
             }
-        }
-        // Arm for recording; Ctrl+click is a plain click here.
-        if arm_button(ui, arm_rect, egui::Id::new(("track_arm", ht.id)), ht.armed) && !locked {
-            editor.toggle_arm(ht.id);
+            if solo != ht.solo {
+                if ctrl {
+                    let _ = editor.apply(Action::SoloExclusive { id: ht.id });
+                } else {
+                    let _ = editor.apply(Action::SetTrackSolo { id: ht.id, solo });
+                }
+            }
+            if armed != ht.armed {
+                editor.toggle_arm(ht.id);
+            }
         }
 
-        // Volume and pan rows, 64 px of header height and up. Each drag is
-        // one gesture: begin, preview every frame, end on release. The value
-        // sits in its own fixed column, so nothing overlaps the thumb.
-        if !compact {
-            painter.text(
-                egui::pos2(vol_row.left(), vol_row.center().y),
-                egui::Align2::LEFT_CENTER,
-                "VOL",
-                egui::FontId::proportional(THEME.track_label_size),
-                THEME.text_faint,
+        // Volume and pan, side by side below the header content when they
+        // fit. Each drag is one gesture: begin, preview every frame, end on
+        // release.
+        if show_sliders {
+            let gap = space::SCALE_8;
+            let slot_w = (rect.width() - 2.0 * pad - gap) / 2.0;
+            let vol_slot = egui::Rect::from_min_size(egui::pos2(rect.left() + pad, slider_top), egui::vec2(slot_w, slider_h));
+            let pan_slot = vol_slot.translate(egui::vec2(slot_w + gap, 0.0));
+            let tip = format!("Volume {}", fader::db_text(ht.volume_db));
+            gesture_slider(
+                ui,
+                editor,
+                locked,
+                ("track_volume", ht.id),
+                vol_slot,
+                ht.volume_db,
+                -60.0..=12.0,
+                |db| Action::SetTrackVolume { id: ht.id, db },
+                tip,
             );
-            painter.text(
-                egui::pos2(pan_row.left(), pan_row.center().y),
-                egui::Align2::LEFT_CENTER,
-                "PAN",
-                egui::FontId::proportional(THEME.track_label_size),
-                THEME.text_faint,
-            );
-            let out = fader::slider_bare(ui, egui::Id::new(("track_volume", ht.id)), vol_rect, ht.volume_db, (-60.0, 12.0), false);
-            if !locked {
-                apply_outcome(editor, &out, |db| Action::SetTrackVolume { id: ht.id, db }, 0.0);
-            }
-            painter.text(
-                egui::pos2(vol_row.right(), vol_row.center().y),
-                egui::Align2::RIGHT_CENTER,
-                format!("{:+.1} dB", ht.volume_db.max(-60.0)),
-                Theme::mono(THEME.track_value_size),
-                THEME.text_normal,
-            );
-            let out = fader::slider_bare(ui, egui::Id::new(("track_pan", ht.id)), pan_rect, ht.pan, (-1.0, 1.0), true);
-            if !locked {
-                apply_outcome(editor, &out, |p| Action::SetTrackPan { id: ht.id, pan: p }, 0.0);
-            }
-            painter.text(
-                egui::pos2(pan_row.right(), pan_row.center().y),
-                egui::Align2::RIGHT_CENTER,
-                fader::pan_text(ht.pan),
-                Theme::mono(THEME.track_value_size),
-                THEME.text_normal,
-            );
+            let tip = format!("Pan {}", fader::pan_text(ht.pan));
+            gesture_slider(ui, editor, locked, ("track_pan", ht.id), pan_slot, ht.pan, -1.0..=1.0, |pan| Action::SetTrackPan { id: ht.id, pan }, tip);
         }
-
-        // Compact meter bars down the inner right edge; click clears clips.
-        let channels = meters.entry(ht.id).or_default();
-        meter::header_meter(ui, egui::Id::new(("track_meter", ht.id)), meter_rect, channels);
 
         // 1 px border-colored separator under the header, across the lane.
         if rect.bottom() <= lane_rect.bottom() {
@@ -398,69 +361,44 @@ fn context_menu(editor: &mut Editor, resp: &egui::Response, state: &mut State, i
     });
 }
 
-/// Draws a small M / S toggle button; returns true when clicked this frame.
-fn toggle_button(ui: &mut egui::Ui, rect: egui::Rect, id: egui::Id, label: &str, active: bool) -> bool {
-    let painter = ui.painter_at(rect);
-    let resp = ui.interact(rect, id, egui::Sense::click());
-    let visuals = ui.visuals().clone();
-    let (bg, fg) = if active {
-        let bg = if label == "S" { THEME.solo_color } else { THEME.mute_color };
-        (bg, THEME.app_bg)
-    } else if resp.hovered() {
-        // Hover highlight on the toggle.
-        (visuals.widgets.hovered.bg_fill, visuals.strong_text_color())
-    } else {
-        (THEME.control_fill, THEME.text_muted)
-    };
-    painter.rect_filled(rect, THEME.track_ms_radius, bg);
-    painter.rect_stroke(rect, THEME.track_ms_radius, egui::Stroke::new(THEME.hairline, THEME.control_border), egui::StrokeKind::Inside);
-    painter.text(rect.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(THEME.toggle_size), fg);
-    resp.clicked()
-}
-
-/// Draws the round Arm button (a record glyph); returns true when clicked this
-/// frame. Off it looks like M / S off; armed it is `record_red` with a white
-/// glyph.
-fn arm_button(ui: &mut egui::Ui, rect: egui::Rect, id: egui::Id, armed: bool) -> bool {
-    let painter = ui.painter_at(rect);
-    let resp = ui.interact(rect, id, egui::Sense::click());
-    let (bg, fg) = if armed {
-        (THEME.record_red, THEME.on_record_glyph)
-    } else if resp.hovered() {
-        (ui.visuals().widgets.hovered.bg_fill, ui.visuals().strong_text_color())
-    } else {
-        (THEME.control_fill, THEME.text_muted)
-    };
-    // A pill as tall as the button: round, and the same 22x20 slot as M / S.
-    let radius = rect.height() * 0.5;
-    painter.rect_filled(rect, radius, bg);
-    if !armed {
-        painter.rect_stroke(rect, radius, egui::Stroke::new(THEME.hairline, THEME.control_border), egui::StrokeKind::Inside);
-    }
-    painter.text(rect.center(), egui::Align2::CENTER_CENTER, egui_phosphor::fill::RECORD, egui::FontId::proportional(THEME.arm_glyph_size), fg);
-    let clicked = resp.clicked();
-    resp.on_hover_text("Arm for recording");
-    clicked
-}
-
-/// Applies one slider outcome to the editor as a gesture on `make(v)`.
+/// One header slider through ui-kit's slider, run as an editor gesture on
+/// `make(v)`.
 ///
-/// Double-click resets to `default`; a drag is one undo step; Esc cancels.
-fn apply_outcome(editor: &mut Editor, out: &fader::SliderOutcome, make: impl Fn(f32) -> Action, default: f32) {
-    if out.reset {
-        let _ = editor.apply(make(default));
+/// Double-click resets to 0; a drag is one undo step; Esc cancels. A plain
+/// click changes nothing: the slider shows the track's value again on the
+/// next frame. While `locked` the slider draws but applies nothing.
+#[allow(clippy::too_many_arguments)]
+fn gesture_slider(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    locked: bool,
+    id_salt: (&str, Uuid),
+    slot: egui::Rect,
+    value: f32,
+    range: RangeInclusive<f32>,
+    make: impl Fn(f32) -> Action,
+    tip: String,
+) {
+    let mut shown = value;
+    let mut slot_ui = ui.new_child(egui::UiBuilder::new().max_rect(slot).id_salt(id_salt));
+    let resp = ui_kit::slider(&mut slot_ui, &mut shown, range, SliderKind::Accent).on_hover_text(tip);
+    if locked {
         return;
     }
-    if out.started {
+    if resp.double_clicked() {
+        let _ = editor.apply(make(0.0));
+        return;
+    }
+    if resp.drag_started() {
         editor.begin_gesture();
     }
-    if let Some(v) = out.value {
-        let _ = editor.preview(make(v));
+    if resp.dragged() {
+        let _ = editor.preview(make(shown));
     }
-    if out.ended {
+    if resp.drag_stopped() {
         editor.end_gesture();
     }
-    if out.cancelled {
+    if resp.dragged() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         editor.cancel_gesture();
     }
 }
@@ -492,6 +430,10 @@ mod tests {
 
     /// Slack for float rounding when comparing painted positions.
     const TOL: f32 = 0.6;
+    /// Side of a ui-kit toggle square.
+    const TOGGLE_SIDE: f32 = 24.0;
+    /// Gap between ui-kit toggles.
+    const TOGGLE_GAP: f32 = 4.0;
 
     /// An editor over `count` empty tracks (no input device is ever opened).
     fn editor(count: usize) -> Editor {
@@ -504,15 +446,22 @@ mod tests {
         (egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(208.0, 600.0)), egui::Rect::from_min_size(egui::pos2(208.0, 0.0), egui::vec2(900.0, 600.0)))
     }
 
-    /// Centers of the painted record glyphs: one Arm button per track, top to
-    /// bottom.
+    /// Centers of the painted "R" labels: one record-arm toggle per track, top
+    /// to bottom.
     fn arm_centers(out: &Out) -> Vec<egui::Pos2> {
-        out.texts().into_iter().filter(|t| t.text == egui_phosphor::fill::RECORD).map(|t| t.rect.center()).collect()
+        let mut found: Vec<_> = out.texts().into_iter().filter(|t| t.text == "R").map(|t| t.rect.center()).collect();
+        found.sort_by(|a, b| a.y.total_cmp(&b.y));
+        found
     }
 
-    /// The painted red arm pills (22x20, `record_red`).
+    /// The painted armed toggles (24x24, `sem.record`).
     fn red_pills(out: &Out) -> Vec<egui::Rect> {
-        out.rects().into_iter().filter(|r| r.fill == THEME.record_red && r.rect.size() == egui::vec2(22.0, 20.0)).map(|r| r.rect).collect()
+        out.rects().into_iter().filter(|r| r.fill == color::SEM_RECORD && r.rect.size() == egui::vec2(TOGGLE_SIDE, TOGGLE_SIDE)).map(|r| r.rect).collect()
+    }
+
+    /// The white knobs of the volume and pan sliders.
+    fn slider_knobs(out: &Out) -> usize {
+        out.circles().into_iter().filter(|c| c.fill == egui::Color32::WHITE).count()
     }
 
     #[test]
@@ -528,7 +477,7 @@ mod tests {
 
         let out = h.frame(Vec::new(), |ui| draw(ui, &mut editor));
         let centers = arm_centers(&out);
-        assert_eq!(centers.len(), 2, "one Arm button per track");
+        assert_eq!(centers.len(), 2, "one record-arm toggle per track");
         assert!(red_pills(&out).is_empty(), "nothing armed yet");
         assert_eq!(editor.armed_track(), None);
 
@@ -536,9 +485,9 @@ mod tests {
         let _ = h.click(centers[0], |ui| draw(ui, &mut editor));
         assert_eq!(editor.armed_track(), Some(a));
         let out = h.frame(Vec::new(), |ui| draw(ui, &mut editor));
-        assert_eq!(red_pills(&out).len(), 1, "one red Arm button");
-        let glyph = out.texts().into_iter().find(|t| t.text == egui_phosphor::fill::RECORD && t.rect.center() == centers[0]).expect("armed glyph");
-        assert_eq!(glyph.color, egui::Color32::WHITE, "armed = white glyph");
+        assert_eq!(red_pills(&out).len(), 1, "one red arm toggle");
+        let glyph = out.texts().into_iter().find(|t| t.text == "R" && t.rect.center() == centers[0]).expect("armed label");
+        assert_eq!(glyph.color, egui::Color32::WHITE, "armed = white label");
 
         // Arming the second moves the arm.
         let _ = h.click(centers[1], |ui| draw(ui, &mut editor));
@@ -566,43 +515,49 @@ mod tests {
         let out = h.frame(Vec::new(), |ui| {
             show(ui, &mut editor, header, lane, 0.0, &mut meters);
         });
-        let m = out.text_rect("M").expect("M button").center();
-        let s = out.text_rect("S").expect("S button").center();
+        let m = out.text_rect("M").expect("M toggle").center();
+        let s = out.text_rect("S").expect("S toggle").center();
         let arm = arm_centers(&out)[0];
-        let pitch = THEME.track_ms_w + THEME.track_ms_gap;
-        assert!(m.x < s.x && s.x < arm.x, "M, S, Arm left to right");
+        let pitch = TOGGLE_SIDE + TOGGLE_GAP;
+        assert!(m.x < s.x && s.x < arm.x, "M, S, R left to right");
         assert!((s.x - m.x - pitch).abs() < TOL, "M to S {}", s.x - m.x);
-        assert!((arm.x - s.x - pitch).abs() < TOL, "S to Arm {}", arm.x - s.x);
+        assert!((arm.x - s.x - pitch).abs() < TOL, "S to R {}", arm.x - s.x);
         assert!((m.y - arm.y).abs() < TOL && (m.y - s.y).abs() < TOL);
-        // The button is the same 22x20 as M and S, and round (a full-height pill).
-        let pill = out.rects().into_iter().find(|r| r.rect.contains(arm) && r.rect.size() == egui::vec2(22.0, 20.0)).expect("the Arm button background");
-        assert_eq!(pill.fill, THEME.control_fill, "off = control fill");
-        assert_eq!(pill.corner_radius.nw, (THEME.track_ms_h * 0.5) as u8);
-        // The off glyph is text_muted.
-        let glyph = out.texts().into_iter().find(|t| t.text == egui_phosphor::fill::RECORD).expect("record glyph");
-        assert_eq!(glyph.color, THEME.text_muted);
+        // The toggle is the same 24x24 rounded square as M and S.
+        let square =
+            out.rects().into_iter().find(|r| r.rect.contains(arm) && r.rect.size() == egui::vec2(TOGGLE_SIDE, TOGGLE_SIDE)).expect("the arm toggle background");
+        assert_eq!(square.fill, color::BG_CONTROL, "off = bg.control");
+        assert_eq!(square.corner_radius.nw, 6);
+        // The off label is text.tertiary.
+        let glyph = out.texts().into_iter().find(|t| t.text == "R").expect("R label");
+        assert_eq!(glyph.color, color::TEXT_TERTIARY);
     }
 
     #[test]
-    fn the_compact_header_keeps_m_s_and_arm() {
+    fn the_compact_header_keeps_the_toggles_and_drops_the_sliders() {
         let mut h = Headless::new(1280.0, 800.0);
         let mut editor = editor(1);
         let id = editor.project.tracks[0].id;
-        editor.set_track_height(id, 40.0);
-        assert!(editor.project.tracks[0].height < THEME.compact_track_h);
         let (header, lane) = rects();
         let mut meters = HashMap::new();
+        let out = h.frame(Vec::new(), |ui| {
+            show(ui, &mut editor, header, lane, 0.0, &mut meters);
+        });
+        assert_eq!(slider_knobs(&out), 2, "the default height shows the volume and pan sliders");
+
+        editor.set_track_height(id, 40.0);
+        assert!(editor.project.tracks[0].height < THEME.compact_track_h);
         let out = h.frame(Vec::new(), |ui| {
             show(ui, &mut editor, header, lane, 0.0, &mut meters);
         });
         assert!(out.text_rect("M").is_some());
         assert!(out.text_rect("S").is_some());
         assert_eq!(arm_centers(&out).len(), 1);
-        assert!(out.text_rect("VOL").is_none(), "compact has no VOL row");
+        assert_eq!(slider_knobs(&out), 0, "compact has no slider row");
     }
 
     #[test]
-    fn the_name_stays_left_of_the_buttons() {
+    fn the_name_sits_on_the_first_row_above_the_toggles() {
         let mut h = Headless::new(1280.0, 800.0);
         let mut editor = editor(1);
         let (header, lane) = rects();
@@ -610,14 +565,61 @@ mod tests {
         let out = h.frame(Vec::new(), |ui| {
             show(ui, &mut editor, header, lane, 0.0, &mut meters);
         });
+        let number = out.text_rect("1").expect("track number");
         let name = out.text_rect("Track 1").expect("track name");
-        let m = out.text_rect("M").expect("M button");
-        assert!(name.right() < m.left(), "name {name:?} left of M {m:?}");
+        let m = out.text_rect("M").expect("M toggle");
+        assert!(number.right() < name.left(), "number {number:?} left of name {name:?}");
+        assert!(name.bottom() <= m.top(), "name {name:?} above M {m:?}");
+    }
+
+    /// Pointer events for a left-button drag of `from` to `to` in four steps.
+    fn drag_events(from: egui::Pos2, to: egui::Pos2) -> Vec<Vec<egui::Event>> {
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let middle = from + (to - from) * 0.5;
+        vec![
+            vec![egui::Event::PointerMoved(from)],
+            vec![button(from, true)],
+            vec![egui::Event::PointerMoved(middle)],
+            vec![egui::Event::PointerMoved(to)],
+            vec![button(to, false)],
+        ]
+    }
+
+    #[test]
+    fn dragging_the_volume_slider_is_one_undo_step_and_double_click_resets() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let mut editor = editor(1);
+        let (header, lane) = rects();
+        let mut meters = HashMap::new();
+        let mut draw = |ui: &mut egui::Ui, editor: &mut Editor| {
+            show(ui, editor, header, lane, 0.0, &mut meters);
+        };
+        let out = h.frame(Vec::new(), |ui| draw(ui, &mut editor));
+        let knob = out.circles().into_iter().filter(|c| c.fill == egui::Color32::WHITE).map(|c| c.center).next().expect("the volume knob");
+
+        // The drag previews every frame and commits once on release.
+        for events in drag_events(knob, knob - egui::vec2(40.0, 0.0)) {
+            let _ = h.frame(events, |ui| draw(ui, &mut editor));
+        }
+        let dragged = editor.project.tracks[0].volume_db;
+        assert!(dragged < -1.0, "the slider moved the volume down: {dragged}");
+        assert!(editor.undo_label().is_some(), "the drag is an undo step");
+        assert!(editor.undo());
+        assert_eq!(editor.project.tracks[0].volume_db, 0.0, "one undo undoes the whole drag");
+        assert!(editor.undo_label().is_none(), "and it was one step");
+
+        // Double-click resets to 0 dB.
+        editor.apply(Action::SetTrackVolume { id: editor.project.tracks[0].id, db: -12.0 }).expect("set the volume");
+        let out = h.frame(Vec::new(), |ui| draw(ui, &mut editor));
+        let knob = out.circles().into_iter().filter(|c| c.fill == egui::Color32::WHITE).map(|c| c.center).next().expect("the volume knob");
+        let _ = h.click(knob, |ui| draw(ui, &mut editor));
+        let _ = h.click(knob, |ui| draw(ui, &mut editor));
+        assert_eq!(editor.project.tracks[0].volume_db, 0.0, "double-click resets the volume");
     }
 
     // ---- While a take is recorded ----
 
-    /// Centers of the painted "M" buttons, top to bottom.
+    /// Centers of the painted "M" toggles, top to bottom.
     fn m_centers(out: &Out) -> Vec<egui::Pos2> {
         let mut found: Vec<_> = out.texts().into_iter().filter(|t| t.text == "M").map(|t| t.rect.center()).collect();
         found.sort_by(|a, b| a.y.total_cmp(&b.y));

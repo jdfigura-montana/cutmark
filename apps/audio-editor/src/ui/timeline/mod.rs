@@ -454,21 +454,22 @@ fn draw(
 ) {
     let all = ruler_rect.union(header_rect).union(lane_rect).union(scroll_rect);
     let painter = ui.painter_at(all);
-    let visuals = ui.visuals().clone();
     let view = editor.view.clone();
 
-    // The timeline background behind ruler, headers, lanes and scrollbar.
-    painter.rect_filled(all, 0.0, THEME.app_bg);
+    // No background fill: the panel's `bg.panel` shows through the unshaded
+    // track rows, the header column and the scrollbar strip.
 
-    // Track lanes: alternating shades and separators (ui::timeline::lane),
-    // with the clips of each track drawn over its lane.
+    // Track lanes: track rows and separators (ui::timeline::lane), with the
+    // clips of each track drawn over its lane. A track is selected while the
+    // range selection covers it.
+    let selected_tracks = range_tracks(editor);
     let lane_painter = ui.painter_at(lane_rect);
     let mut y = lane_rect.top() - view.scroll_y;
     for (i, track) in editor.project.tracks.iter().enumerate() {
         let bottom = y + track.height;
         if bottom >= lane_rect.top() && y <= lane_rect.bottom() {
             let track_rect = egui::Rect::from_min_max(egui::pos2(g.lane_left, y), egui::pos2(lane_rect.right(), bottom));
-            lane::draw(&lane_painter, track_rect, i % 2 == 0, THEME.lane_a, THEME.lane_b, egui::Stroke::new(THEME.hairline, THEME.border));
+            lane::draw(&lane_painter, track_rect, i, selected_tracks.contains(&track.id), egui::Stroke::new(THEME.hairline, THEME.border));
             // Clips (no waveforms yet, ui::timeline::clip_view).
             let gain_active = interaction::gain_line_active(ui.ctx());
             for clip in &track.clips {
@@ -480,7 +481,7 @@ fn draw(
                     crate::editor::selection::Selection::Clips(ids) if ids.contains(&clip.id)
                 );
                 let hover = ui.input(|i| i.pointer.latest_pos()).and_then(|p| clip_view::hit_test(clip, clip_view::clip_rect(clip, g, track_rect), g.spp, p));
-                clip_view::draw(&lane_painter, clip, name, offline, loaded, g, track_rect, i, wave_scale, selected, hover, track.mute, gain_active);
+                clip_view::draw(&lane_painter, clip, name, offline, loaded, g, track_rect, wave_scale, selected, hover, track.mute, gain_active);
             }
             // The take being recorded grows over this track's clips.
             if let Some(take) = editor.recording_status()
@@ -521,23 +522,18 @@ fn draw(
         ui_kit::paint_playhead(&painter.with_clip_rect(clip), ruler_rect, lane_rect, ph_x, &ui_kit::Theme::get(ui.ctx()));
     }
 
-    // Horizontal scrollbar: trough plus draggable thumb.
-    painter.rect_filled(scroll_rect, THEME.corner_r, visuals.faint_bg_color);
+    // Horizontal scrollbar: the ui-kit thumb, no track fill. The thumb keeps
+    // its old hit area (the strip height by the thumb length); the 6 px
+    // capsule is painted centered in it.
     let frac = (visible as f32 / scroll_extent(content_length(editor), visible) as f32).min(1.0);
     let thumb_w = (scroll_rect.width() * frac).max(THEME.scrollbar_thumb_min);
     let scroll_max = max_scroll_x as f32;
     let thumb_x = g.lane_left + if scroll_max > 0.0 { (view.scroll_x as f32 / scroll_max) * (scroll_rect.width() - thumb_w) } else { 0.0 };
     let thumb_rect =
         egui::Rect::from_min_max(egui::pos2(thumb_x, scroll_rect.top() + THEME.hairline), egui::pos2(thumb_x + thumb_w, scroll_rect.bottom() - THEME.hairline));
-    let thumb_color = if thumb_held(ui, thumb_rect) {
-        visuals.widgets.active.bg_fill
-    } else if thumb_hover(ui, thumb_rect) {
-        visuals.widgets.hovered.bg_fill
-    } else {
-        visuals.widgets.inactive.bg_fill
-    };
-    painter.rect_filled(thumb_rect, THEME.corner_round, thumb_color);
     let thumb = ui.interact(thumb_rect, egui::Id::new("timeline_hscroll_thumb"), egui::Sense::click_and_drag());
+    let capsule = egui::Rect::from_center_size(thumb_rect.center(), egui::vec2(thumb_rect.width(), size::SCROLLBAR_THUMB_WIDTH));
+    ui_kit::scroll_thumb(&painter, capsule, thumb.hovered() || thumb.dragged());
     if thumb.dragged() {
         let d = thumb.drag_delta().x;
         if d != 0.0 {
@@ -556,14 +552,13 @@ fn media_info(editor: &Editor, media_id: Uuid) -> (&str, bool) {
     (name, editor.is_media_offline(media_id))
 }
 
-/// True while the pointer hovers the scrollbar thumb.
-fn thumb_hover(ui: &egui::Ui, thumb_rect: egui::Rect) -> bool {
-    ui.input(|i| i.pointer.latest_pos().is_some_and(|p| thumb_rect.contains(p)))
-}
-
-/// True while the primary button is down over the scrollbar thumb.
-fn thumb_held(ui: &egui::Ui, thumb_rect: egui::Rect) -> bool {
-    ui.input(|i| i.pointer.primary_down() && i.pointer.latest_pos().is_some_and(|p| thumb_rect.contains(p)))
+/// Ids of the tracks the range selection covers, empty for any other
+/// selection.
+pub(crate) fn range_tracks(editor: &Editor) -> Vec<Uuid> {
+    match editor.selection() {
+        crate::editor::selection::Selection::Range { tracks, .. } => tracks.clone(),
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]

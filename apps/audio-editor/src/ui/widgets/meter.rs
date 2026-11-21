@@ -4,7 +4,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
+use eframe::egui::{self, Color32, Pos2, Rect};
 use uuid::Uuid;
 
 use crate::ui::theme::THEME;
@@ -162,36 +162,6 @@ impl MeterState {
 pub fn db_y(area: Rect, db: f32) -> f32 {
     let t = ((db - FLOOR) / -FLOOR).clamp(0.0, 1.0);
     area.bottom() - t * area.height()
-}
-
-/// Draws the compact track-header meter: two thin bars with a 4 px clip light
-/// above each, lit by dB zone (green below -18, yellow to -6, red above).
-///
-/// Clicking the meter clears both clip lights. Returns true when clicked.
-pub fn header_meter(ui: &mut egui::Ui, id: egui::Id, rect: Rect, channels: &mut [ChannelBallistics; 2]) -> bool {
-    let painter = ui.painter_at(rect);
-    let resp = ui.interact(rect, id, egui::Sense::click());
-    let clicked = resp.clicked();
-    if clicked {
-        for ch in channels.iter_mut() {
-            ch.clear_clip();
-        }
-    }
-    let bar_w = THEME.track_meter_bar_w;
-    for (i, ch) in channels.iter().enumerate() {
-        let left = rect.left() + i as f32 * (bar_w + THEME.track_meter_gap);
-        let bar = Rect::from_min_max(Pos2::new(left, rect.top()), Pos2::new(left + bar_w, rect.bottom()));
-        painter.rect_filled(bar, 0.0, THEME.meter_bar_bg);
-        // Lit portion, split by the dB zone boundaries.
-        let lit = ch.rms_db().max(FLOOR);
-        fill_zone(&painter, bar, FLOOR, lit.min(-18.0), THEME.meter_green);
-        fill_zone(&painter, bar, -18.0, lit.min(-6.0), THEME.meter_yellow);
-        fill_zone(&painter, bar, -6.0, lit, THEME.meter_red);
-        // Clip light above the bar.
-        let light = Rect::from_min_size(Pos2::new(left, rect.top() - THEME.track_clip_light - THEME.track_meter_gap), Vec2::new(bar_w, THEME.track_clip_light));
-        painter.rect_filled(light, 0.0, if ch.clip { THEME.clip_light_on } else { THEME.clip_light_off });
-    }
-    clicked
 }
 
 /// Fills the part of `bar` between two dBFS values with `color`.

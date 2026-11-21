@@ -16,6 +16,10 @@ use crate::ui::theme::THEME;
 use super::Geom;
 use super::clip_view::{self, Zone};
 
+/// Opacity of the ghost clip shown while a bin item is dragged over the lanes
+/// (S1 spec, "timeline/interaction.rs visuals": the clip at 50%).
+const GHOST_OPACITY: f32 = 0.5;
+
 /// The drag payload set by the media bin: the dragged media item's id.
 #[derive(Clone, Copy)]
 pub struct MediaDrag {
@@ -91,6 +95,7 @@ pub fn draw_drop_ghost(ui: &egui::Ui, editor: &Editor, g: &Geom, lane_rect: egui
     };
     let ctrl = ui.input(|i| i.modifiers.ctrl);
     let painter = ui.painter_at(lane_rect);
+    let theme = ui_kit::Theme::get(ui.ctx());
     let start = g.x_to_sample(p.x);
     let left = g.sample_to_x(start);
     let right = g.sample_to_x(start + media.length);
@@ -102,7 +107,7 @@ pub fn draw_drop_ghost(ui: &egui::Ui, editor: &Editor, g: &Geom, lane_rect: egui
                 egui::pos2(left, top + THEME.clip_margin),
                 egui::pos2(right, top + editor.project.tracks[index].height - THEME.clip_margin),
             );
-            ghost_rect(&painter, rect);
+            ghost_clip(&painter, rect, &media.display_name, &theme);
         }
         DropTarget::NewTrack => {
             let count = editor.project.tracks.len();
@@ -111,7 +116,7 @@ pub fn draw_drop_ghost(ui: &egui::Ui, editor: &Editor, g: &Geom, lane_rect: egui
             painter.rect_filled(row, THEME.corner_r, THEME.ghost_fill);
             dashed_rect(&painter, row, egui::Stroke::new(THEME.hairline, THEME.ghost_stroke));
             let ghost = egui::Rect::from_min_max(egui::pos2(left, top + THEME.clip_margin), egui::pos2(right, top + THEME.new_track_h - THEME.clip_margin));
-            ghost_rect(&painter, ghost);
+            ghost_clip(&painter, ghost, &media.display_name, &theme);
         }
         DropTarget::None => {}
     }
@@ -124,10 +129,11 @@ pub fn draw_drop_ghost(ui: &egui::Ui, editor: &Editor, g: &Geom, lane_rect: egui
     }
 }
 
-/// Fills and strokes one ghost clip rect.
-fn ghost_rect(painter: &egui::Painter, rect: egui::Rect) {
-    painter.rect_filled(rect, THEME.corner_r, THEME.ghost_fill);
-    painter.rect_stroke(rect, THEME.corner_r, egui::Stroke::new(THEME.hairline, THEME.ghost_stroke), egui::StrokeKind::Inside);
+/// Paints the dragged ghost clip: the ui-kit audio clip at 50% opacity,
+/// labeled with the media name.
+fn ghost_clip(painter: &egui::Painter, rect: egui::Rect, name: &str, theme: &ui_kit::Theme) {
+    let look = ui_kit::ClipLook { opacity: GHOST_OPACITY, ..ui_kit::ClipLook::new(name, ui_kit::ClipKind::Audio) };
+    ui_kit::paint_clip(painter, rect, &look, theme);
 }
 
 /// Where a drop at window y would land, given the lane rect and vertical scroll.
@@ -390,6 +396,7 @@ pub fn draw_range(ui: &egui::Ui, editor: &Editor, g: &Geom, lane_rect: egui::Rec
         return;
     };
     let painter = ui.painter_at(lane_rect);
+    let theme = ui_kit::Theme::get(ui.ctx());
     let x0 = g.sample_to_x(*start).max(g.lane_left);
     let x1 = g.sample_to_x(*end).min(lane_rect.right());
     if x1 >= g.lane_left && x0 <= lane_rect.right() {
@@ -398,7 +405,7 @@ pub fn draw_range(ui: &egui::Ui, editor: &Editor, g: &Geom, lane_rect: egui::Rec
             let bottom = y + track.height;
             if tracks.contains(&track.id) && bottom >= lane_rect.top() && y <= lane_rect.bottom() {
                 let rect = egui::Rect::from_min_max(egui::pos2(x0, y.max(lane_rect.top())), egui::pos2(x1, bottom.min(lane_rect.bottom())));
-                painter.rect_filled(rect, 0.0, THEME.accent_soft);
+                painter.rect_filled(rect, 0.0, theme.accent.tint);
             }
             y = bottom;
         }
@@ -408,8 +415,7 @@ pub fn draw_range(ui: &egui::Ui, editor: &Editor, g: &Geom, lane_rect: egui::Rec
         }
     }
     if let Some(snap) = state.snap_line {
-        let x = g.sample_to_x(snap);
-        painter.line_segment([egui::pos2(x, lane_rect.top()), egui::pos2(x, lane_rect.bottom())], egui::Stroke::new(THEME.snap_line_w, THEME.snap_line_color));
+        ui_kit::paint_snap_line(&painter, g.sample_to_x(snap), lane_rect, &theme);
     }
 }
 
@@ -831,8 +837,7 @@ pub fn draw_clip_snap_line(ui: &egui::Ui, g: &Geom, lane_rect: egui::Rect) {
         return;
     };
     let painter = ui.painter_at(lane_rect);
-    let x = g.sample_to_x(snap);
-    painter.line_segment([egui::pos2(x, lane_rect.top()), egui::pos2(x, lane_rect.bottom())], egui::Stroke::new(THEME.snap_line_w, THEME.snap_line_color));
+    ui_kit::paint_snap_line(&painter, g.sample_to_x(snap), lane_rect, &ui_kit::Theme::get(ui.ctx()));
 }
 
 /// Draws the clip context menu and runs its actions.
@@ -873,7 +878,9 @@ pub fn draw_clip_menu(ui: &egui::Ui, editor: &mut Editor) -> Vec<String> {
 
     let mut close = false;
     let response = egui::Area::new(egui::Id::new("clip_context_menu")).order(egui::Order::Foreground).fixed_pos(menu.pos).show(ui.ctx(), |ui| {
-        crate::ui::theme::menu_frame().show(ui, |ui| {
+        // The glass menu: egui's menu frame reads the glass fill, rim radius
+        // and shadow `ui_kit::apply` put into the visuals.
+        egui::Frame::menu(ui.style()).show(ui, |ui| {
             crate::ui::theme::menu_item_style(ui.style_mut());
             ui.set_min_width(THEME.clip_menu_min_w);
             if ui.add_enabled(splittable, egui::Button::new("Split")).clicked() {
@@ -931,9 +938,9 @@ pub fn draw_gain_edit(ui: &egui::Ui, editor: &mut Editor) -> Vec<String> {
     let mut apply = None;
     let mut cancel = false;
     egui::Area::new(egui::Id::new("clip_gain_edit")).order(egui::Order::Foreground).fixed_pos(edit.pos).show(ui.ctx(), |ui| {
-        egui::Frame::popup(ui.style()).show(ui, |ui| {
-            let resp =
-                ui.add(egui::TextEdit::singleline(&mut edit.text).desired_width(THEME.gain_edit_w).font(egui::FontId::proportional(THEME.gain_edit_size)));
+        egui::Frame::menu(ui.style()).show(ui, |ui| {
+            ui.set_width(THEME.gain_edit_w);
+            let resp = ui_kit::text_field(ui, &mut edit.text, "dB");
             if !resp.has_focus() {
                 resp.request_focus();
             }

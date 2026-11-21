@@ -15,18 +15,6 @@ const MEDIUM_FAMILY: &str = ui_kit::fonts::MEDIUM_FAMILY;
 /// The named egui font family holding the Inter SemiBold face.
 const SEMIBOLD_FAMILY: &str = ui_kit::fonts::SEMIBOLD_FAMILY;
 
-/// The eight UI-only track colors, cycled by track index.
-const TRACK_COLORS: [egui::Color32; 8] = [
-    egui::Color32::from_rgb(0x4F, 0xB3, 0xA9),
-    egui::Color32::from_rgb(0x9C, 0x8C, 0xE0),
-    egui::Color32::from_rgb(0xD3, 0xA8, 0x6A),
-    egui::Color32::from_rgb(0xD9, 0x7A, 0x8C),
-    egui::Color32::from_rgb(0x7B, 0xC4, 0x7F),
-    egui::Color32::from_rgb(0x5F, 0xA8, 0xD3),
-    egui::Color32::from_rgb(0xC9, 0x8B, 0xC9),
-    egui::Color32::from_rgb(0xB8, 0xB8, 0x6A),
-];
-
 /// The application theme, constructed once and shared by every ui module.
 ///
 /// `apply` sets the egui Style/Visuals at startup; the fields are read
@@ -44,10 +32,6 @@ pub struct Theme {
     pub recessed_a: egui::Color32,
     /// Timecode ruler background.
     pub ruler_bg: egui::Color32,
-    /// Even track lane background.
-    pub lane_a: egui::Color32,
-    /// Odd track lane background.
-    pub lane_b: egui::Color32,
     /// General separator and window border color.
     pub border: egui::Color32,
     /// Border color of controls.
@@ -86,8 +70,6 @@ pub struct Theme {
     pub clip_radius: f32,
     /// Text color inside a clip header.
     pub clip_text_color: egui::Color32,
-    /// Font size of the clip name in the header strip.
-    pub clip_name_size: f32,
     /// Font size of the clip gain value in the header strip.
     pub clip_gain_size: f32,
     /// Vertical inset of a clip rect from its track lane edges.
@@ -96,12 +78,8 @@ pub struct Theme {
     pub thin_clip_w: f32,
     /// Border width of a selected clip.
     pub selection_border_w: f32,
-    /// Border color of a selected clip.
-    pub selection_border: egui::Color32,
     /// Fill of an offline clip's body.
     pub offline_body: egui::Color32,
-    /// Fill of an offline clip's header strip.
-    pub offline_header: egui::Color32,
     /// Text color inside an offline clip.
     pub offline_text: egui::Color32,
     /// Bright white line color of the clip gain line.
@@ -144,10 +122,6 @@ pub struct Theme {
     pub drag_start_px: f32,
     /// Grab distance of a range boundary line.
     pub boundary_grab_px: f32,
-    /// Bright vertical line drawn at the snap point while dragging.
-    pub snap_line_color: egui::Color32,
-    /// Width of the snap line.
-    pub snap_line_w: f32,
     /// Solid boundary lines of a range selection.
     pub range_line: egui::Color32,
     /// Width of the range boundary lines.
@@ -174,60 +148,18 @@ pub struct Theme {
     pub clip_menu_min_w: f32,
     /// Width of the inline gain edit field.
     pub gain_edit_w: f32,
-    /// Font size of the inline gain edit field.
-    pub gain_edit_size: f32,
 
     // ---- Track header ----
     /// Height of the resize strip at the header's bottom edge.
     pub track_resize_h: f32,
-    /// Vertical padding (top and bottom) inside one track header.
-    pub track_pad_v: f32,
-    /// Left padding inside one track header, after the color stripe.
-    pub track_pad_l: f32,
-    /// Right padding inside one track header.
-    pub track_pad_r: f32,
-    /// Vertical gap between the header's control rows.
-    pub track_row_gap: f32,
-    /// Width of an M / S toggle button.
-    pub track_ms_w: f32,
-    /// Height of an M / S toggle button.
-    pub track_ms_h: f32,
-    /// Gap between the M and S buttons.
-    pub track_ms_gap: f32,
-    /// Corner radius of an M / S toggle button.
-    pub track_ms_radius: f32,
-    /// Width of the VOL / PAN label column.
-    pub track_label_col_w: f32,
-    /// Width of the fixed, right-aligned value column.
-    pub track_value_col_w: f32,
-    /// Font size of the VOL / PAN labels.
-    pub track_label_size: f32,
-    /// Font size of the volume / pan value readouts.
-    pub track_value_size: f32,
     /// Thickness of the custom slider track.
     pub track_slider_track_w: f32,
     /// Diameter of the custom slider thumb.
     pub track_slider_thumb: f32,
-    /// Width of one meter bar in a track header.
-    pub track_meter_bar_w: f32,
-    /// Gap between the two meter bars.
-    pub track_meter_gap: f32,
-    /// Side of the square track clip light.
-    pub track_clip_light: f32,
-    /// Font size of the track name.
-    pub track_name_size: f32,
-    /// Font size of the M / S toggle labels.
-    pub toggle_size: f32,
     /// Header height below which the header uses the compact layout.
     pub compact_track_h: f32,
-    /// Background of an active mute button.
-    pub mute_color: egui::Color32,
-    /// Background of an active solo button.
-    pub solo_color: egui::Color32,
     /// Background of an armed record-arm button.
     pub record_red: egui::Color32,
-    /// Font size of the record glyph on the arm button.
-    pub arm_glyph_size: f32,
     /// Glyph color on a `record_red` fill (an armed Arm button, the Record
     /// button while recording).
     pub on_record_glyph: egui::Color32,
@@ -327,8 +259,6 @@ pub struct Theme {
     // ---- Shared shapes ----
     /// Small corner radius for filled rects.
     pub corner_r: f32,
-    /// Larger corner radius for thumbs and toggle buttons.
-    pub corner_round: f32,
     /// Smallest corner radius (handles, accent bars).
     pub corner_xs: f32,
     /// The 1 px hairline stroke width.
@@ -561,11 +491,6 @@ impl Theme {
     pub fn semibold(size: f32) -> egui::FontId {
         egui::FontId::new(size, egui::FontFamily::Name(SEMIBOLD_FAMILY.into()))
     }
-
-    /// The UI-only track color for a track index (cycles through 8 colors).
-    pub fn track_color(&self, index: usize) -> egui::Color32 {
-        TRACK_COLORS[index % TRACK_COLORS.len()]
-    }
 }
 
 impl Default for Theme {
@@ -579,8 +504,6 @@ impl Default for Theme {
             // The ruler and the track lanes have no dedicated tokens yet;
             // these are the closest surfaces. Phase 11 restyles them.
             ruler_bg: tokens::color::BG_PANEL,
-            lane_a: tokens::color::BG_TRACK_SELECTED,
-            lane_b: tokens::color::BG_TRACK_ALT,
             border: tokens::color::STROKE_HAIRLINE,
             control_border: tokens::color::STROKE_HAIRLINE,
             control_fill: tokens::color::BG_CONTROL,
@@ -600,14 +523,11 @@ impl Default for Theme {
             clip_text_pad: 4.0,
             clip_radius: 5.0,
             clip_text_color: tokens::color::TEXT_PRIMARY,
-            clip_name_size: 11.0,
             clip_gain_size: 10.0,
             clip_margin: 2.0,
             thin_clip_w: 3.0,
             selection_border_w: 2.0,
-            selection_border: tokens::accent::ACCENT,
             offline_body: egui::Color32::from_rgba_unmultiplied(150, 62, 62, 220),
-            offline_header: egui::Color32::from_rgba_unmultiplied(110, 42, 42, 230),
             offline_text: egui::Color32::WHITE,
             gain_line: tokens::color::TEXT_PRIMARY,
             gain_curve: text_alpha(178),
@@ -629,8 +549,6 @@ impl Default for Theme {
             snap_px: 8.0,
             drag_start_px: 3.0,
             boundary_grab_px: 4.0,
-            snap_line_color: tokens::accent::ACCENT,
-            snap_line_w: 2.0,
             range_line: tokens::accent::ACCENT,
             range_line_w: 1.0,
             insert_line_color: accent_alpha(230),
@@ -644,33 +562,12 @@ impl Default for Theme {
             new_track_h: 96.0,
             clip_menu_min_w: 150.0,
             gain_edit_w: 52.0,
-            gain_edit_size: 11.0,
             // Track header
             track_resize_h: 4.0,
-            track_pad_v: 9.0,
-            track_pad_l: 10.0,
-            track_pad_r: 8.0,
-            track_row_gap: 9.0,
-            track_ms_w: 22.0,
-            track_ms_h: 20.0,
-            track_ms_gap: 4.0,
-            track_ms_radius: 4.0,
-            track_label_col_w: 24.0,
-            track_value_col_w: 44.0,
-            track_label_size: 9.5,
-            track_value_size: 10.5,
             track_slider_track_w: 4.0,
             track_slider_thumb: 12.0,
-            track_meter_bar_w: 4.0,
-            track_meter_gap: 2.0,
-            track_clip_light: 4.0,
             compact_track_h: 64.0,
-            track_name_size: 12.5,
-            toggle_size: 10.0,
-            mute_color: egui::Color32::from_rgb(0xE0, 0xA9, 0x3A),
-            solo_color: tokens::color::SEM_SUCCESS,
             record_red: tokens::color::SEM_RECORD,
-            arm_glyph_size: 12.0,
             on_record_glyph: egui::Color32::WHITE,
             record_btn_d: 28.0,
             record_btn_glyph: 16.0,
@@ -720,7 +617,6 @@ impl Default for Theme {
             space_lg: tokens::space::SCALE_16,
             // Shared shapes
             corner_r: 2.0,
-            corner_round: 3.0,
             corner_xs: 1.0,
             hairline: 1.0,
             // Accent, text roles & dialogs, from the ui-kit tokens.
@@ -931,28 +827,15 @@ mod tests {
         assert_eq!(t.space_md, tokens::space::WINDOW_GAP);
         assert_eq!(t.accent, tokens::accent::ACCENT, "one accent for selection, lit toggles, range lines and focus");
         assert_eq!(t.accent_soft, accent_alpha(0x2E));
-        assert_eq!(t.selection_border, t.accent);
-        assert_eq!(t.snap_line_color, t.accent);
         assert_eq!(t.unsaved_dot_d, 6.0);
         assert_eq!(t.record_red, tokens::color::SEM_RECORD);
         assert_eq!(t.on_record_glyph, egui::Color32::WHITE);
         assert_eq!((t.record_btn_d, t.record_btn_glyph), (28.0, 16.0));
         assert_eq!((t.clip_body_alpha, t.clip_header_alpha), (0x22, 0x66));
-        assert_eq!((t.track_ms_w, t.track_ms_h, t.track_ms_gap), (22.0, 20.0, 4.0));
         assert_eq!(t.menu_right_pad, 8.0);
         assert_eq!(t.app_bg, tokens::color::BG_GROUND);
-        assert_eq!(t.lane_a, tokens::color::BG_TRACK_SELECTED);
-        assert_eq!(t.lane_b, tokens::color::BG_TRACK_ALT);
         assert_eq!(t.control_rounding, tokens::radius::SEGMENT);
         assert_eq!(t.text_normal, tokens::color::TEXT_SECONDARY);
         assert_eq!(t.status_bar_h, tokens::size::STATUS_BAR_HEIGHT);
-    }
-
-    #[test]
-    fn track_color_cycles_by_index() {
-        let t = Theme::default();
-        assert_eq!(t.track_color(0), t.track_color(8));
-        assert_eq!(t.track_color(3), t.track_color(11));
-        assert_ne!(t.track_color(0), t.track_color(1));
     }
 }

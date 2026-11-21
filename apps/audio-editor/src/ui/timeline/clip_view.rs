@@ -1,6 +1,7 @@
 //! ui::timeline::clip_view: drawing and hit-testing a single clip.
 
 use eframe::egui::{self, Stroke};
+use ui_kit::tokens::{color, radius, space, typography};
 
 use crate::editor::record::RecordStatus;
 use crate::io::import::Loaded;
@@ -141,17 +142,22 @@ pub fn hit_test(clip: &Clip, clip_rect: egui::Rect, spp: f64, pos: egui::Pos2) -
     if pos.y <= clip_rect.top() + THEME.header_strip_h.min(clip_rect.height()) { Some(Zone::Header) } else { Some(Zone::Body) }
 }
 
+/// Opacity of everything on a muted track (spec "Clip": 45%).
+const MUTED_OPACITY: f32 = 0.45;
+
 /// Draws one clip over its track lane.
 ///
-/// `track_rect` is the clip's track lane in window points; the clip body fills
-/// the lane minus 2 px at the top and bottom. Clips outside the visible sample
+/// `track_rect` is the clip's track lane in window points; the clip fills the
+/// lane minus 2 px at the top and bottom. Clips outside the visible sample
 /// range are skipped; clips narrower than 3 px draw as a single 1 px line.
-/// The clip takes its body, header and waveform color from the track color of
-/// `track_index`. Offline media gets a red fill and a "Media offline" label.
-/// `media` is the loaded audio for the clip's bin entry, `None` when offline
-/// or not loaded; its waveform fills the body below the header strip. Selected
-/// clips draw with a bright border. The clip gain line and the fade curves
-/// draw over the waveform; `hover` highlights the hovered handle.
+/// The clip body, rim and selected state come from ui-kit's `paint_clip`
+/// (audio kind); a muted track dims the whole clip. Offline media gets a red
+/// body and a "Media offline" label. `media` is the loaded audio for the
+/// clip's bin entry, `None` when offline or not loaded; its waveform fills
+/// the content area below the header strip. The clip name and gain text sit
+/// in the header strip, pinned to the visible edges when the clip runs off
+/// the lanes. The clip gain line and the fade curves draw over the waveform;
+/// `hover` highlights the hovered handle.
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
     painter: &egui::Painter,
@@ -161,7 +167,6 @@ pub fn draw(
     media: Option<&Loaded>,
     g: &Geom,
     track_rect: egui::Rect,
-    track_index: usize,
     wave_scale: f32,
     selected: bool,
     hover: Option<Zone>,
@@ -174,20 +179,17 @@ pub fn draw(
     }
     let rect = clip_rect(clip, g, track_rect);
 
-    // Clips on muted tracks draw at 45% opacity: every color below is
-    // alpha-scaled through this closure.
-    let scale = if muted { 0.45 } else { 1.0 };
+    // Everything the ui-kit clip does not paint is alpha-scaled through this
+    // closure on a muted track.
+    let scale = if muted { MUTED_OPACITY } else { 1.0 };
     let dim = |color: egui::Color32| color.gamma_multiply(scale);
-
-    // Track color of this clip: translucent body, stronger header strip and a
-    // solid waveform stroke.
-    let tc = dim(THEME.track_color(track_index));
-    let body_fill = egui::Color32::from_rgba_unmultiplied(tc.r(), tc.g(), tc.b(), (f32::from(THEME.clip_body_alpha) * scale) as u8);
-    let header_fill = egui::Color32::from_rgba_unmultiplied(tc.r(), tc.g(), tc.b(), (f32::from(THEME.clip_header_alpha) * scale) as u8);
 
     // Extremely narrow clip: a single 1 px line, no text.
     if rect.width() < THEME.thin_clip_w {
-        painter.line_segment([egui::pos2(rect.left(), rect.top()), egui::pos2(rect.left(), rect.bottom())], egui::Stroke::new(THEME.hairline, body_fill));
+        painter.line_segment(
+            [egui::pos2(rect.left(), rect.top()), egui::pos2(rect.left(), rect.bottom())],
+            egui::Stroke::new(THEME.hairline, dim(color::TEXT_TERTIARY)),
+        );
         return;
     }
 
@@ -195,12 +197,21 @@ pub fn draw(
     let header_rect = egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.min.y + header_h));
     let body = egui::Rect::from_min_max(egui::pos2(rect.min.x, header_rect.max.y), rect.max);
 
-    painter.rect_filled(body, THEME.clip_radius, if offline { dim(THEME.offline_body) } else { body_fill });
-    painter.rect_filled(header_rect, THEME.clip_radius, if offline { dim(THEME.offline_header) } else { header_fill });
+    // The ui-kit clip: body, rim, selected tint and the muted dimming. The
+    // name is drawn below (it pins and truncates), so the label is empty.
+    let theme = ui_kit::Theme::get(painter.ctx());
+    let look = ui_kit::ClipLook { selected, dimmed: muted, ..ui_kit::ClipLook::new("", ui_kit::ClipKind::Audio) };
+    let content = ui_kit::paint_clip(painter, rect, &look, &theme);
+    if offline {
+        let inset = rect.shrink(THEME.selection_border_w);
+        painter.rect_filled(inset, radius::CLIP_AUDIO - THEME.selection_border_w, dim(THEME.offline_body));
+    }
 
-    // Waveform in the body (below the header), for online, loaded media.
+    // Waveform in the content area (below the header strip), for online,
+    // loaded media.
     if !offline && let Some(loaded) = media {
-        super::waveform::draw(painter, clip, loaded, g, body, wave_scale, tc, muted);
+        let wave_rect = egui::Rect::from_min_max(egui::pos2(content.left(), body.top()), content.right_bottom());
+        super::waveform::draw(painter, clip, loaded, g, wave_rect, wave_scale, ui_kit::waveform_color(selected, &theme), muted);
     }
 
     // Clip gain line and fade curves, over the waveform.
@@ -208,30 +219,21 @@ pub fn draw(
         draw_gain_and_fades(painter, clip, g, rect, body, hover, muted, gain_active);
     }
 
-    // Unselected: 1 px inner border in the track color; selected: 2 px accent.
-    let border = if selected {
-        egui::Stroke::new(THEME.selection_border_w, dim(THEME.selection_border))
-    } else {
-        egui::Stroke::new(THEME.hairline, egui::Color32::from_rgba_unmultiplied(tc.r(), tc.g(), tc.b(), (0x55 as f32 * scale) as u8))
-    };
-    painter.rect_stroke(rect, THEME.clip_radius, border, egui::StrokeKind::Inside);
-
     // Header text: the name pinned to the visible left edge and the gain
     // pinned to the visible right edge when the clip runs off the lanes, so
     // both stay readable; the name truncates with an ellipsis before the gain.
-    let text_color = dim(if offline { THEME.offline_text } else { THEME.clip_text_color });
+    let text_color = dim(if offline { THEME.offline_text } else { color::TEXT_PRIMARY });
     let clipped = painter.with_clip_rect(rect);
     let gain_text = format!("{:+.1} dB", clip.gain_db);
-    let gain_font = Theme::mono(THEME.clip_gain_size);
-    let gain_galley = painter.layout_no_wrap(gain_text, gain_font, text_color);
+    let gain_galley = painter.layout_no_wrap(gain_text, ui_kit::fonts::mono(typography::VALUE_SIZE), text_color);
     // Visible right edge of the lanes: the gain pins here when the clip's
     // right edge is scrolled out of view.
     let lane_right = g.lane_left + g.lane_width;
-    let gain_right = if rect.right() > lane_right { lane_right - THEME.clip_text_pad } else { rect.right() - THEME.clip_text_pad };
+    let gain_right = if rect.right() > lane_right { lane_right - space::SCALE_8 } else { rect.right() - space::SCALE_8 };
     let gain_left = gain_right - gain_galley.size().x;
     // Visible left edge: the name pins here (16 px in) when the clip's left
     // edge is scrolled out of view.
-    let name_x = if rect.left() < g.lane_left { g.lane_left + THEME.clip_name_pin } else { rect.left() + THEME.clip_text_pad };
+    let name_x = if rect.left() < g.lane_left { g.lane_left + THEME.clip_name_pin } else { rect.left() + space::SCALE_8 };
     let name_max_w = gain_left - name_x - THEME.clip_name_gap;
     if name_max_w > THEME.clip_name_min_w {
         let name_galley = fit_galley(painter, media_name, clip_name_font(), text_color, name_max_w);
@@ -240,7 +242,7 @@ pub fn draw(
     // The gain value at the right of the header is the double-click target.
     clipped.galley(egui::pos2(gain_left, header_rect.center().y - gain_galley.size().y * 0.5), gain_galley, text_color);
     if offline {
-        clipped.text(body.center(), egui::Align2::CENTER_CENTER, "Media offline", egui::FontId::proportional(THEME.clip_name_size), dim(THEME.offline_text));
+        clipped.text(body.center(), egui::Align2::CENTER_CENTER, "Media offline", clip_name_font(), dim(THEME.offline_text));
     }
 }
 
@@ -294,7 +296,7 @@ pub fn draw_live(painter: &egui::Painter, status: &RecordStatus<'_>, rate: u32, 
 
 /// Font of the clip name in the header strip.
 fn clip_name_font() -> egui::FontId {
-    egui::FontId::proportional(THEME.clip_name_size)
+    ui_kit::fonts::medium(typography::MICRO_SIZE)
 }
 
 /// Lays out `text` in `font`; when it is wider than `max_w`, the longest
@@ -523,6 +525,28 @@ mod tests {
         assert_eq!(hit_test(&clip, rect, 100.0, egui::pos2(100.0, gy + THEME.gain_hit_px + 0.5)), Some(Zone::Body));
     }
 
+    #[test]
+    fn a_muted_track_dims_the_clip_and_a_selected_clip_takes_the_accent() {
+        let g = live_geom();
+        let lane = live_lane();
+        let clip = test_clip(0.0, 0, 0);
+        let theme = ui_kit::Theme::default();
+        let mut h = crate::ui::test_util::Headless::new(1280.0, 400.0);
+        let fills = |h: &mut crate::ui::test_util::Headless, selected: bool, muted: bool| {
+            h.frame(Vec::new(), |ui| {
+                draw(ui.painter(), &clip, "Take", false, None, &g, lane, 1.0, selected, None, muted, false);
+            })
+            .rects()
+            .into_iter()
+            .map(|r| r.fill)
+            .collect::<Vec<_>>()
+        };
+        assert!(fills(&mut h, false, false).contains(&color::BG_CLIP), "a plain clip is bg.clip");
+        let dimmed = color::BG_CLIP.gamma_multiply(MUTED_OPACITY);
+        assert!(fills(&mut h, false, true).contains(&dimmed), "a muted track dims the clip to 45%");
+        assert!(fills(&mut h, true, false).contains(&theme.accent.tint), "a selected clip is the accent tint");
+    }
+
     // ---- The live take ----
 
     /// A `Geom` at 100 samples per pixel from the start, 800 px of lane.
@@ -557,7 +581,7 @@ mod tests {
         let clip = test_clip(0.0, 0, 0);
         let out = h.frame(Vec::new(), |ui| {
             // A normal clip on another lane for comparison, then the take.
-            draw(ui.painter(), &clip, "Normal", false, None, &g, lane.translate(egui::vec2(0.0, 120.0)), 0, 1.0, false, None, false, false);
+            draw(ui.painter(), &clip, "Normal", false, None, &g, lane.translate(egui::vec2(0.0, 120.0)), 1.0, false, None, false, false);
             draw_live(ui.painter(), &status, 48_000, &g, lane, 1.0);
         });
         assert!(out.text_rect("Recording").is_some(), "header name");
@@ -575,9 +599,7 @@ mod tests {
         let fills: Vec<_> = out.rects().into_iter().map(|r| r.fill).collect();
         assert!(fills.contains(&live_body), "body {live_body:?}");
         assert!(fills.contains(&live_header), "header {live_header:?}");
-        let tc = THEME.track_color(0);
-        let normal_body = egui::Color32::from_rgba_unmultiplied(tc.r(), tc.g(), tc.b(), THEME.clip_body_alpha);
-        assert!(fills.contains(&normal_body), "the normal clip's body alpha");
+        assert!(fills.contains(&color::BG_CLIP), "the normal clip's ui-kit body");
     }
 
     #[test]
