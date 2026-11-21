@@ -25,6 +25,8 @@ pub struct Gallery {
     page: usize,
     /// The Core page's widget demo state.
     core: core_page::CoreState,
+    /// The Media page's demo state.
+    media: media::MediaState,
     /// True while the appearance dialog is open.
     appearance_open: bool,
 }
@@ -32,7 +34,7 @@ pub struct Gallery {
 impl Gallery {
     /// Fresh gallery: Core page, no dialogs open.
     pub fn new() -> Self {
-        Self { page: 0, core: core_page::CoreState::new(), appearance_open: false }
+        Self { page: 0, core: core_page::CoreState::new(), media: media::MediaState::new(), appearance_open: false }
     }
 
     /// True while any modal covers the page (pauses the focus rotation).
@@ -104,7 +106,7 @@ impl Gallery {
                 if page == 0 {
                     core_page::show(ui, &mut self.core, modal_open);
                 } else {
-                    media::show(ui);
+                    media::show(ui, &mut self.media);
                 }
             });
         });
