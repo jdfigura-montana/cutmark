@@ -13,30 +13,26 @@ use crate::ui::bin_panel::{self, BinPanel};
 use crate::ui::dialogs::confirm::{CloseChoice, CloseConfirmDialog, ConfirmDialog, ExportCloseChoice, ExportCloseDialog, RecordCloseChoice, RecordCloseDialog};
 use crate::ui::dialogs::export::{BANNER_SECONDS, ExportBanner};
 use crate::ui::master_strip;
-use crate::ui::menu::{ProjectMenu, ProjectMenuAction};
+use crate::ui::menu::{ProjectMenu, ProjectMenuAction, project_title};
 use crate::ui::start_screen::StartScreen;
 use crate::ui::status_bar;
 use crate::ui::theme::THEME;
 use crate::ui::timeline::{self, ViewMenuAction};
 use crate::ui::toolbar;
 use crate::ui::widgets::meter::MeterState;
-use ui_kit::tokens::{color, size};
+use ui_kit::icons;
+use ui_kit::tokens::{color, size, space};
 
 /// The user-visible application name, used for the window title, the start
 /// screen heading and the installer.
 pub const APP_NAME: &str = "CutMark Audio Editor";
 
-/// Height of the 52px chrome top bar (the ui-kit main toolbar); phase 10b
-/// turns it into the real toolbar.
+/// Height of the 52px main toolbar (the window's title bar).
 const TOP_BAR_H: f32 = size::TOOLBAR_MAIN_HEIGHT;
-/// Widest the toolbar's left zone may get: the right-aligned project status
-/// inside the menu row must not swallow the caption-button drag space. Phase
-/// 10b moves the project name into the real toolbar and this goes away.
-const LEFT_ZONE_MAX_W: f32 = 560.0;
-/// Height of the toolbar panel.
+/// Height of the toolbar panel with the transport and edit tools.
 const TOOLBAR_H: f32 = 48.0;
 /// Height of the bottom status bar panel.
-const STATUS_BAR_H: f32 = 26.0;
+const STATUS_BAR_H: f32 = size::STATUS_BAR_HEIGHT;
 
 /// Wraps plain panel messages (import, relink, bin and timeline edits) as
 /// "Media" messages for the messages dialog.
@@ -288,12 +284,29 @@ impl App {
         Some(pending)
     }
 
-    /// The 52px chrome bar on the start screen: no content yet (the real
-    /// toolbar comes in phase 10b), but it is the window's drag area and the
+    /// The 52px main toolbar on the start screen: empty zones (a start screen
+    /// has no project to name), but it is the window's drag area and the
     /// caption buttons' home, so the chrome never shows a bare title bar.
     fn show_start_bar(ui: &mut egui::Ui) {
         egui::Panel::top("start_bar").exact_size(TOP_BAR_H).frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
             ui_kit::main_toolbar(ui, |_| {}, |_| {}, |_| {});
+        });
+    }
+
+    /// The toolbar's Undo and Redo icon buttons, wired to the editor's undo
+    /// and redo and disabled while there is nothing to undo or redo.
+    fn toolbar_undo_redo(ui: &mut egui::Ui, editor: &std::cell::RefCell<&mut Editor>) {
+        let can_undo = editor.borrow().undo_label().is_some();
+        ui.add_enabled_ui(can_undo, |ui| {
+            if ui_kit::icon_button(ui, icons::regular::ARROW_COUNTER_CLOCKWISE, "Undo").clicked() {
+                let _ = editor.borrow_mut().undo();
+            }
+        });
+        let can_redo = editor.borrow().redo_label().is_some();
+        ui.add_enabled_ui(can_redo, |ui| {
+            if ui_kit::icon_button(ui, icons::regular::ARROW_CLOCKWISE, "Redo").clicked() {
+                let _ = editor.borrow_mut().redo();
+            }
         });
     }
 
@@ -366,32 +379,40 @@ impl App {
         }
 
         let mut msgs: Vec<Message> = Vec::new();
-        // Top: the 52px chrome bar (the ui-kit main toolbar, which is the
-        // window's drag area and the caption buttons' home) with the existing
-        // menu bar in its left zone. Phase 10b replaces this with the real
-        // toolbar (app mark, project name, Undo/Redo, Export, menu button).
+        // Top: the 52px main toolbar: app mark, project title, Undo and Redo
+        // in the left zone; the menu button and Export in the right zone; the
+        // center zone is empty in S1. It is also the window's drag area and
+        // the caption buttons' home.
         let menu_cell = std::cell::RefCell::new(&mut *menu);
         let editor_cell = std::cell::RefCell::new(&mut *editor);
-        let action_cell = std::cell::Cell::new(ProjectMenuAction::None);
-        let view_cell = std::cell::Cell::new(ViewMenuAction::None);
+        let menu_button = std::cell::RefCell::new(None);
         egui::Panel::top("app_bar").exact_size(TOP_BAR_H).frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
             ui_kit::main_toolbar(
                 ui,
                 |ui| {
-                    // Cap the left zone so the right-aligned project
-                    // status inside the menu row cannot swallow the
-                    // caption-button drag space (see LEFT_ZONE_MAX_W).
-                    ui.set_max_width(ui.available_width().min(LEFT_ZONE_MAX_W));
-                    let (a, v) = menu_cell.borrow_mut().show(ui, &mut editor_cell.borrow_mut());
-                    action_cell.set(a);
-                    view_cell.set(v);
+                    let editor = editor_cell.borrow();
+                    let caption = status_bar::format_caption(editor.project.sample_rate, editor.project.export_bit_depth);
+                    project_title(ui, &editor.project.name, editor.dirty, &caption);
+                    drop(editor);
+                    ui.add_space(space::SCALE_4);
+                    Self::toolbar_undo_redo(ui, &editor_cell);
                 },
                 |_| {},
-                |_| {},
+                |ui| {
+                    *menu_button.borrow_mut() = Some(ProjectMenu::button(ui));
+                    ui.add_space(space::SCALE_4);
+                    if ui_kit::primary_button(ui, "Export").clicked() {
+                        menu_cell.borrow_mut().open_export(&editor_cell.borrow());
+                    }
+                },
             );
         });
-        let mut action = action_cell.get();
-        let view_action = view_cell.get();
+        // The menu popover draws once per frame, outside the toolbar's
+        // measuring passes, anchored to the menu button's response.
+        let (mut action, view_action) = match menu_button.into_inner() {
+            Some(button) => menu.popover(ui, &button, editor),
+            None => (ProjectMenuAction::None, ViewMenuAction::None),
+        };
 
         if action == ProjectMenuAction::Import {
             msgs.extend(media_messages(bin_panel::pick_and_import(editor)));
@@ -1118,17 +1139,17 @@ mod tests {
             let _ = rig.frame();
             rig.frame()
         };
-        assert!(idle.text_rect("PLAYHEAD").is_some());
-        assert!(idle.text_rect("REC").is_none());
+        assert!(idle.text_rect("Playhead 00:00:01.000").is_some());
+        assert!(idle.texts().iter().all(|t| !t.text.starts_with("Rec ")));
 
         start_take(&mut rig, 24_000);
         let out = rig.frame();
         // Toolbar: the record position 1.5 s; status bar: elapsed 0.5 s.
         assert!(out.text_rect("00:00:01.500").is_some(), "toolbar timecode");
-        assert!(out.text_rect("00:00:00.500").is_some(), "elapsed time");
-        let rec = out.texts().into_iter().find(|t| t.text == "REC").expect("REC readout");
-        assert_eq!(rec.color, THEME.record_red);
-        assert!(out.text_rect("PLAYHEAD").is_none(), "REC replaces PLAYHEAD");
+        let rec = out.texts().into_iter().find(|t| t.text.starts_with("Rec ")).expect("the Rec readout");
+        assert_eq!(rec.text, "Rec 00:00:00.500", "the elapsed time");
+        assert_eq!(rec.color, ui_kit::tokens::color::TEXT_TERTIARY, "the component's caption color");
+        assert!(out.text_rect("Playhead 00:00:01.000").is_none(), "Rec replaces Playhead");
     }
 
     /// The toolbar's glyphs (above y = 80), left to right.
@@ -1352,5 +1373,60 @@ mod tests {
         }
         assert!(rig.editor().take_is_live(), "Esc cancelled the prompt only");
         assert!(rig.app.pending_close.is_none());
+    }
+
+    /// Clicks the toolbar icon button whose glyph is `icon`.
+    fn click_icon(rig: &mut Rig, icon: &str) -> Out {
+        let out = rig.frame();
+        let at = out.text_rect(icon).unwrap_or_else(|| panic!("no {icon} button in the toolbar")).center();
+        let app = &mut rig.app;
+        let _ = rig.h.click(at, |ui| app.run(ui));
+        rig.frame()
+    }
+
+    #[test]
+    fn undo_and_redo_work_from_the_toolbar_and_are_disabled_when_there_is_nothing() {
+        let mut rig = Rig::new();
+        // Nothing to undo: the Undo button is dead.
+        let _ = click_icon(&mut rig, ui_kit::icons::regular::ARROW_COUNTER_CLOCKWISE);
+        assert_eq!(rig.editor().project.markers.len(), 0, "a disabled Undo does nothing");
+
+        // M adds a marker (one undo step); Undo removes it, Redo brings it back.
+        tap(&mut rig, egui::Key::M);
+        assert_eq!(rig.editor().project.markers.len(), 1, "the marker was added");
+        let _ = click_icon(&mut rig, ui_kit::icons::regular::ARROW_COUNTER_CLOCKWISE);
+        assert_eq!(rig.editor().project.markers.len(), 0, "Undo removed the marker");
+        assert_eq!(rig.editor().undo_label(), None, "nothing left to undo");
+        let _ = click_icon(&mut rig, ui_kit::icons::regular::ARROW_CLOCKWISE);
+        assert_eq!(rig.editor().project.markers.len(), 1, "Redo restored the marker");
+        assert_eq!(rig.editor().redo_label(), None, "nothing left to redo");
+    }
+
+    #[test]
+    fn the_export_button_opens_the_export_dialog() {
+        let mut rig = Rig::new();
+        assert!(!rig.app.menu.export_dialog_open(), "closed to begin with");
+        let _ = rig.click("Export");
+        assert!(rig.app.menu.export_dialog_open(), "the toolbar Export opened the dialog");
+    }
+
+    #[test]
+    fn the_status_bar_reads_ripple_and_snap_in_sentence_case() {
+        let mut rig = Rig::new();
+        let out = rig.frame();
+        assert!(out.text_rect("48 kHz").is_some(), "the sample rate");
+        assert!(out.text_rect("24-bit").is_some(), "the bit depth");
+        assert!(out.text_rect("Snap on").is_some(), "snap defaults to on");
+        assert!(out.text_rect("Ripple on").is_none(), "ripple defaults to off");
+        assert!(out.text_rect("SNAP ON").is_none() && out.text_rect("RIPPLE OFF").is_none(), "the old all-caps readouts are gone");
+
+        tap(&mut rig, egui::Key::R);
+        let out = rig.frame();
+        assert!(out.text_rect("Ripple on").is_some(), "R turned ripple on");
+        assert!(out.text_rect("Snap on").is_some());
+        tap(&mut rig, egui::Key::N);
+        let out = rig.frame();
+        assert!(out.text_rect("Snap on").is_none(), "N turned snap off");
+        assert!(out.text_rect("Ripple on").is_some());
     }
 }

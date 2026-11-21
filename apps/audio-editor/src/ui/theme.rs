@@ -395,8 +395,14 @@ pub struct Theme {
     /// Soft shadow under a menu popup.
     pub menu_shadow: egui::Shadow,
     /// Padding between the menu bar's project readout and the window edge.
+    /// Unused since phase 10b (the readout became the toolbar's document
+    /// title); kept until the theme shim is deleted in phase 13.
+    #[allow(dead_code)]
     pub menu_right_pad: f32,
     /// Diameter of the painted "unsaved changes" dot in the menu bar.
+    /// Unused since phase 10b (the dot is 8 px of `space::SCALE_8` now);
+    /// kept until the theme shim is deleted in phase 13.
+    #[allow(dead_code)]
     pub unsaved_dot_d: f32,
     /// Height of a dialog text field / segmented control / footer button.
     pub field_h: f32,

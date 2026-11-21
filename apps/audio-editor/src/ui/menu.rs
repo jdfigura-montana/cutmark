@@ -1,4 +1,5 @@
-//! ui::menu: the top Project, Edit, Process and View menus.
+//! ui::menu: the toolbar's menu popover (Project, Edit, Markers, Process and
+//! View), the toolbar's document title and the dialogs the menus open.
 
 use eframe::egui;
 use uuid::Uuid;
@@ -9,8 +10,10 @@ use crate::ui::dialogs::confirm::ConfirmDialog;
 use crate::ui::dialogs::export::ExportDialog;
 use crate::ui::dialogs::project_settings::ProjectSettingsDialog;
 use crate::ui::dialogs::save_as::SaveAsDialog;
-use crate::ui::theme::{THEME, Theme};
+use crate::ui::theme::{THEME, menu_item_style};
 use crate::ui::timeline::ViewMenuAction;
+use ui_kit::fonts;
+use ui_kit::tokens::{color, space, typography};
 
 /// What the user chose in the Project menu this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,45 +38,51 @@ fn menu_sep(ui: &mut egui::Ui) {
     ui.add_space(4.0);
 }
 
-/// A menu item button with a right-aligned JetBrains Mono shortcut hint.
+/// A menu item button with a right-aligned type.value shortcut hint.
 fn item(label: impl Into<String>, hint: &str) -> egui::Button<'static> {
-    egui::Button::new(label.into()).right_text(egui::RichText::new(hint).font(Theme::mono(11.0)).color(THEME.text_faint))
+    egui::Button::new(label.into()).right_text(egui::RichText::new(hint).font(fonts::mono(typography::VALUE_SIZE)).color(color::TEXT_TERTIARY))
 }
 
-/// The right end of the menu bar: the project name and, while there are
-/// unsaved changes, a painted amber dot and "unsaved", reading left to right
-/// ("Test 2 (dot) unsaved") and ending `menu_right_pad` before the window
-/// edge. The dot is a painted circle, not a font glyph (the UI fonts have no
-/// U+25CF). A name too long for the bar is truncated instead of clipped.
-pub fn project_status(ui: &mut egui::Ui, name: &str, dirty: bool) {
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        ui.add_space(THEME.menu_right_pad);
+/// Diameter of the unsaved dot that follows the project name.
+const DOT_D: f32 = space::SCALE_8;
+/// Widest the project name is laid out; a longer name truncates with an
+/// ellipsis instead of pushing the toolbar's buttons into the caption
+/// buttons.
+const NAME_MAX_W: f32 = 240.0;
+
+/// The toolbar's document title: the app mark, the project name in
+/// type.headline with an 8 px `text.secondary` dot while there are unsaved
+/// changes, and the project format caption below it.
+pub fn project_title(ui: &mut egui::Ui, name: &str, dirty: bool, caption: &str) {
+    app_mark(ui);
+    ui.add_space(space::SCALE_4);
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = space::SCALE_2;
+        // The name and its dot share one measured rect, so the dot always
+        // follows the name's last glyph.
         let painter = ui.painter().clone();
-        let font = egui::FontId::proportional(THEME.clip_name_size);
-        let unsaved = dirty.then(|| painter.layout_no_wrap("unsaved".to_string(), font.clone(), THEME.text_muted));
-        let dot = if dirty { THEME.unsaved_dot_d } else { 0.0 };
-        let gap = THEME.space_sm;
-        let tail_w = unsaved.as_ref().map_or(0.0, |text| gap + dot + gap + text.size().x);
-        let mut job = egui::text::LayoutJob::simple_singleline(name.to_string(), font, THEME.text_muted);
-        job.wrap = egui::text::TextWrapping::truncate_at_width((ui.available_width() - tail_w).max(0.0));
-        let name_galley = painter.layout_job(job);
-        let height = unsaved.as_ref().map_or(0.0, |text| text.size().y).max(name_galley.size().y);
-        // One rect for the whole readout, painted left to right inside it.
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(name_galley.size().x + tail_w, height), egui::Sense::hover());
+        let mut job = egui::text::LayoutJob::simple_singleline(name.to_string(), fonts::semibold(typography::HEADLINE_SIZE), color::TEXT_PRIMARY);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(NAME_MAX_W);
+        let galley = painter.layout_job(job);
+        let dot = u8::from(dirty) as f32 * DOT_D;
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(galley.size().x + dot, galley.size().y), egui::Sense::hover());
         let mid = rect.center().y;
-        let mut x = rect.left();
-        let name_w = name_galley.size().x;
-        let name_pos = egui::pos2(x, mid - name_galley.size().y * 0.5);
-        painter.galley(name_pos, name_galley, THEME.text_muted);
-        x += name_w;
-        if let Some(text) = unsaved {
-            x += gap;
-            painter.circle_filled(egui::pos2(x + dot * 0.5, mid), dot * 0.5, THEME.marker_color);
-            x += dot + gap;
-            let text_pos = egui::pos2(x, mid - text.size().y * 0.5);
-            painter.galley(text_pos, text, THEME.text_muted);
+        painter.galley(egui::pos2(rect.left(), mid - galley.size().y * 0.5), galley, color::TEXT_PRIMARY);
+        if dirty {
+            painter.circle_filled(egui::pos2(rect.right() - DOT_D * 0.5, mid), DOT_D * 0.5, color::TEXT_SECONDARY);
         }
+        ui.label(egui::RichText::new(caption).font(fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY));
     });
+}
+
+/// Draws the app mark placeholder: an accent circle with a notch cut from its
+/// top right (spec "Open questions" item 1: placeholder until a real logo).
+fn app_mark(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+    let c = rect.center();
+    let painter = ui.painter();
+    painter.circle_filled(c, 9.0, ui_kit::Theme::get(ui.ctx()).accent.accent);
+    painter.rect_filled(egui::Rect::from_min_size(egui::pos2(c.x, c.y - 9.0), egui::vec2(9.0, 9.0)), 0.0, color::BG_GROUND);
 }
 
 /// The Project, Edit and View menus plus their modals (save error, Save As).
@@ -93,17 +102,25 @@ pub struct ProjectMenu {
 }
 
 impl ProjectMenu {
-    /// Shows the menus; returns the Project and View actions the user chose.
-    pub fn show(&mut self, ui: &mut egui::Ui, editor: &mut Editor) -> (ProjectMenuAction, ViewMenuAction) {
+    /// The toolbar's menu icon button; pass its response to
+    /// [`ProjectMenu::popover`].
+    pub fn button(ui: &mut egui::Ui) -> egui::Response {
+        ui_kit::icon_button(ui, ui_kit::icons::regular::LIST, "Menu")
+    }
+
+    /// The menu popover: every top-level menu (Project, Edit, Markers,
+    /// Process, View) as a submenu of one glass popup anchored to `button`,
+    /// with the same items, shortcuts and enabled states the menu bar had.
+    /// Shows the dialogs the items open; returns the Project and View
+    /// actions the user chose.
+    pub fn popover(&mut self, ui: &mut egui::Ui, button: &egui::Response, editor: &mut Editor) -> (ProjectMenuAction, ViewMenuAction) {
         let mut action = ProjectMenuAction::None;
         let mut view_action = ViewMenuAction::None;
         // While a take is recorded the Edit and Process menus, Import, Export,
         // Save As, both settings dialogs and every Markers item except Add
         // Marker are disabled; Save, New, Open, Close and View stay.
         let recording = editor.is_recording();
-        // One horizontal menu bar row: menus on the left, project status on
-        // the right.
-        egui::MenuBar::new().config(egui::containers::menu::MenuConfig::new().style(crate::ui::theme::menu_item_style as fn(&mut egui::Style))).ui(ui, |ui| {
+        egui::Popup::menu(button).style(menu_item_style as fn(&mut egui::Style)).show(|ui| {
             ui.menu_button("Project", |menu| {
                 if menu.add(item("New", "Ctrl+N")).clicked() {
                     action = ProjectMenuAction::New;
@@ -375,7 +392,6 @@ impl ProjectMenu {
                     menu.close();
                 }
             });
-            project_status(ui, &editor.project.name, editor.dirty);
         });
         let ctx = ui.ctx().clone();
         if let Some(dialog) = &mut self.save_as_dialog {
@@ -449,6 +465,14 @@ impl ProjectMenu {
             dialog.reopen();
         }
     }
+
+    /// True while the Export dialog exists. It is kept for the whole session
+    /// (so the last choices are remembered), so this stays true after the
+    /// first open. Test hook for the toolbar's Export button.
+    #[cfg(test)]
+    pub fn export_dialog_open(&self) -> bool {
+        self.export_dialog.is_some()
+    }
 }
 
 #[cfg(test)]
@@ -470,131 +494,142 @@ mod tests {
         editor
     }
 
-    /// The real menu bar, in the same 30 px panel the app uses.
-    fn menu_panel(ui: &mut egui::Ui, menu: &mut ProjectMenu, editor: &mut Editor) {
-        egui::Panel::top("menu_bar")
-            .exact_size(30.0)
-            .frame(egui::Frame::new().fill(THEME.bar_bg).inner_margin(egui::Margin { left: 8, ..Default::default() }))
-            .show(ui, |ui| {
-                let _ = menu.show(ui, editor);
-            });
+    /// The menu button in its 52px bar plus the popover, driven frame by
+    /// frame the way the app draws them: the button in the panel, the popover
+    /// after it, once per frame.
+    struct MenuRig<'a> {
+        /// The menu state with its dialogs.
+        menu: ProjectMenu,
+        /// The edited project.
+        editor: &'a mut Editor,
+        /// The menu button's response, redrawn every frame.
+        button: Option<egui::Response>,
+        /// The Project actions chosen so far.
+        actions: Vec<ProjectMenuAction>,
     }
 
-    /// One frame of a fresh menu bar.
-    fn menu_bar(h: &mut Headless, editor: &mut Editor) -> Out {
-        let mut menu = ProjectMenu::default();
-        h.frame(Vec::new(), |ui| menu_panel(ui, &mut menu, editor))
+    impl<'a> MenuRig<'a> {
+        fn new(editor: &'a mut Editor) -> Self {
+            Self { menu: ProjectMenu::default(), editor, button: None, actions: Vec::new() }
+        }
+
+        /// One frame: the bar with the menu button, then the popover.
+        fn ui(&mut self, ui: &mut egui::Ui) {
+            egui::Panel::top("menu_bar").exact_size(52.0).frame(egui::Frame::new().fill(THEME.bar_bg)).show(ui, |ui| {
+                self.button = Some(ProjectMenu::button(ui));
+            });
+            if let Some(button) = self.button.take() {
+                let (action, _) = self.menu.popover(ui, &button, self.editor);
+                if action != ProjectMenuAction::None {
+                    self.actions.push(action);
+                }
+            }
+        }
+
+        fn frame(&mut self, h: &mut Headless) -> Out {
+            h.frame(Vec::new(), |ui| self.ui(ui))
+        }
+
+        /// Clicks at `at` and returns the settled frame after the click.
+        fn click(&mut self, h: &mut Headless, at: egui::Pos2) -> Out {
+            let _ = h.click(at, |ui| self.ui(ui));
+            self.frame(h)
+        }
     }
 
     #[test]
     fn audio_settings_opens_from_the_project_menu_and_cancel_closes_it() {
         let mut h = Headless::new(1280.0, 800.0);
         let mut editor = editor("Test", false);
-        let mut menu = ProjectMenu::default();
-        let out = h.settle(|ui| menu_panel(ui, &mut menu, &mut editor));
+        let mut rig = MenuRig::new(&mut editor);
+        let out = rig.frame(&mut h);
         assert!(out.text_rect("Audio Settings").is_none());
 
-        // Project > Audio Settings...
+        // Menu button > Project > Audio Settings...
+        let icon = out.text_rect(ui_kit::icons::regular::LIST).expect("the menu button").center();
+        let out = rig.click(&mut h, icon);
         let project = out.text_rect("Project").expect("Project menu").center();
-        let _ = h.click(project, |ui| menu_panel(ui, &mut menu, &mut editor));
-        let out = h.settle(|ui| menu_panel(ui, &mut menu, &mut editor));
+        let out = rig.click(&mut h, project);
         let item = out.text_rect("Audio Settings...").expect("the menu item").center();
-        assert!(menu.audio_settings_dialog.is_none());
-        let _ = h.click(item, |ui| menu_panel(ui, &mut menu, &mut editor));
-        assert!(menu.audio_settings_dialog.is_some(), "the dialog opened");
-        let out = h.settle(|ui| menu_panel(ui, &mut menu, &mut editor));
+        assert!(rig.menu.audio_settings_dialog.is_none());
+        let out = rig.click(&mut h, item);
+        assert!(rig.menu.audio_settings_dialog.is_some(), "the dialog opened");
         assert!(out.text_rect("Audio Settings").is_some(), "its title");
 
         // Cancel closes it and leaves the config alone.
         let cancel = out.text_rect("Cancel").expect("Cancel").center();
-        let _ = h.click(cancel, |ui| menu_panel(ui, &mut menu, &mut editor));
-        assert!(menu.audio_settings_dialog.is_none(), "the dialog closed");
-        assert_eq!(editor.config(), &crate::io::config::AppConfig::default());
-        let out = h.settle(|ui| menu_panel(ui, &mut menu, &mut editor));
+        let out = rig.click(&mut h, cancel);
+        assert!(rig.menu.audio_settings_dialog.is_none(), "the dialog closed");
+        assert_eq!(rig.editor.config(), &crate::io::config::AppConfig::default());
         assert!(out.text_rect("Audio Settings").is_none());
     }
 
     #[test]
-    fn unsaved_readout_is_a_painted_dot_between_name_and_text() {
+    fn the_project_title_shows_the_name_dot_and_caption() {
         for width in [1280.0_f32, 520.0] {
             let mut h = Headless::new(width, 400.0);
-            let mut editor = editor("Test 2", true);
-            let _ = menu_bar(&mut h, &mut editor);
-            let out = menu_bar(&mut h, &mut editor);
+            let caption = "48 kHz / 24-bit";
+            let _ = h.frame(Vec::new(), |ui| project_title(ui, "Test 2", true, caption));
+            let out = h.frame(Vec::new(), |ui| project_title(ui, "Test 2", true, caption));
 
-            let dots: Vec<_> = out.circles().into_iter().filter(|c| c.fill == THEME.marker_color).collect();
-            assert_eq!(dots.len(), 1, "one amber dot at width {width}");
+            let dots: Vec<_> = out.circles().into_iter().filter(|c| c.fill == ui_kit::tokens::color::TEXT_SECONDARY).collect();
+            assert_eq!(dots.len(), 1, "one unsaved dot at width {width}");
             let dot = dots[0];
-            assert_eq!(dot.radius * 2.0, THEME.unsaved_dot_d, "6 px dot");
+            assert_eq!(dot.radius * 2.0, ui_kit::tokens::space::SCALE_8, "8 px dot");
 
             let name = out.text_rect("Test 2").expect("project name");
-            let unsaved = out.text_rect("unsaved").expect("unsaved text");
-            assert!(name.right() <= dot.center.x - dot.radius + EPS, "name left of the dot");
-            assert!(dot.center.x + dot.radius <= unsaved.left() + EPS, "dot left of the text");
-            assert!((unsaved.right() - (width - THEME.menu_right_pad)).abs() < 1.0, "8 px right padding: text ends at {} of {width}", unsaved.right());
-            assert!(unsaved.right() <= width - THEME.menu_right_pad + EPS, "nothing runs past the padding");
+            assert!(name.right() <= dot.center.x - dot.radius + EPS, "the dot follows the name");
+            assert!(out.text_rect(caption).is_some(), "the format caption");
+            assert!(out.text_rect("unsaved").is_none(), "no literal unsaved text");
             assert!(out.texts().iter().all(|t| !t.text.contains('\u{25CF}')), "the dot is painted, never a glyph");
         }
     }
 
     #[test]
-    fn clean_project_shows_only_the_name() {
+    fn a_clean_project_title_shows_only_name_and_caption() {
         let mut h = Headless::new(1280.0, 400.0);
-        let mut editor = editor("Test 2", false);
-        let _ = menu_bar(&mut h, &mut editor);
-        let out = menu_bar(&mut h, &mut editor);
+        let _ = h.frame(Vec::new(), |ui| project_title(ui, "Test 2", false, "48 kHz / 24-bit"));
+        let out = h.frame(Vec::new(), |ui| project_title(ui, "Test 2", false, "48 kHz / 24-bit"));
         assert!(out.text_rect("Test 2").is_some());
-        assert!(out.text_rect("unsaved").is_none());
-        assert!(out.circles().iter().all(|c| c.fill != THEME.marker_color));
+        assert!(out.text_rect("48 kHz / 24-bit").is_some());
+        assert!(out.circles().iter().all(|c| c.fill != ui_kit::tokens::color::TEXT_SECONDARY), "no dot while clean");
     }
 
     #[test]
     fn a_long_name_is_truncated_not_clipped() {
         let mut h = Headless::new(520.0, 400.0);
-        let long = "A very long project name that cannot fit the menu bar";
-        let mut editor = editor(long, true);
-        let _ = menu_bar(&mut h, &mut editor);
-        let out = menu_bar(&mut h, &mut editor);
-        let unsaved = out.text_rect("unsaved").expect("unsaved text");
-        assert!(unsaved.right() <= 520.0 - THEME.menu_right_pad + EPS);
+        let long = "A very long project name that cannot fit the toolbar";
+        let _ = h.frame(Vec::new(), |ui| project_title(ui, long, true, "48 kHz / 24-bit"));
+        let out = h.frame(Vec::new(), |ui| project_title(ui, long, true, "48 kHz / 24-bit"));
         let name = out.text_rect(long).expect("project name");
-        let full_w =
-            h.ctx.fonts_mut(|fonts| fonts.layout_no_wrap(long.to_string(), egui::FontId::proportional(THEME.clip_name_size), THEME.text_muted).size().x);
+        let full_w = h.ctx.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(long.to_string(), ui_kit::fonts::semibold(ui_kit::tokens::typography::HEADLINE_SIZE), ui_kit::tokens::color::TEXT_PRIMARY)
+                .size()
+                .x
+        });
         assert!(name.width() < full_w - 20.0, "name is shortened to {} from {full_w}", name.width());
-        let dot = out.circles().into_iter().find(|c| c.fill == THEME.marker_color).expect("amber dot");
+        let dot = out.circles().into_iter().find(|c| c.fill == ui_kit::tokens::color::TEXT_SECONDARY).expect("unsaved dot");
         assert!(name.right() <= dot.center.x - dot.radius + EPS);
+        assert!(name.right() <= 520.0, "nothing runs past the window");
     }
 
     // ---- While a take is recorded ----
 
-    /// The real menu bar; the Project actions chosen are pushed to `actions`.
-    fn menu_panel_actions(ui: &mut egui::Ui, menu: &mut ProjectMenu, editor: &mut Editor, actions: &mut Vec<ProjectMenuAction>) {
-        egui::Panel::top("menu_bar").exact_size(30.0).frame(egui::Frame::new().fill(THEME.bar_bg)).show(ui, |ui| {
-            let (action, _) = menu.show(ui, editor);
-            if action != ProjectMenuAction::None {
-                actions.push(action);
-            }
-        });
-    }
-
-    /// On a fresh menu bar: opens the menu `title`, clicks `item_text`, and
-    /// returns the menu (to look at its dialogs) and the Project actions chosen.
+    /// On a fresh bar: opens the menu button, then the `title` submenu, and
+    /// clicks `item_text`. Returns the menu (to look at its dialogs) and the
+    /// Project actions chosen.
     fn choose(editor: &mut Editor, title: &str, item_text: &str) -> (ProjectMenu, Vec<ProjectMenuAction>) {
         let mut h = Headless::new(1280.0, 800.0);
-        let mut menu = ProjectMenu::default();
-        let mut actions = Vec::new();
-        let out = h.settle(|ui| menu_panel_actions(ui, &mut menu, editor, &mut actions));
+        let mut rig = MenuRig::new(editor);
+        let out = rig.frame(&mut h);
+        let icon = out.text_rect(ui_kit::icons::regular::LIST).unwrap_or_else(|| panic!("no menu button")).center();
+        let out = rig.click(&mut h, icon);
         let at = out.text_rect(title).unwrap_or_else(|| panic!("no {title} menu")).center();
-        let _ = h.click(at, |ui| {
-            menu_panel_actions(ui, &mut menu, editor, &mut actions);
-        });
-        let out = h.settle(|ui| menu_panel_actions(ui, &mut menu, editor, &mut actions));
+        let out = rig.click(&mut h, at);
         let at = out.text_rect(item_text).unwrap_or_else(|| panic!("no {item_text} item in {title}")).center();
-        let _ = h.click(at, |ui| {
-            menu_panel_actions(ui, &mut menu, editor, &mut actions);
-        });
-        let _ = h.settle(|ui| menu_panel_actions(ui, &mut menu, editor, &mut actions));
-        (menu, actions)
+        let _ = rig.click(&mut h, at);
+        (rig.menu, rig.actions)
     }
 
     /// A project with a clip and a range selected; recording when `recording`.

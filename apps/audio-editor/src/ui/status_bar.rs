@@ -1,4 +1,4 @@
-//! ui::status_bar: the bottom status bar with readouts and project info.
+//! ui::status_bar: the bottom status bar (the ui-kit status bar component).
 
 use eframe::egui;
 
@@ -8,54 +8,50 @@ use crate::ui::dialogs::export::ExportBanner;
 use crate::ui::theme::{THEME, Theme};
 use crate::util::time::samples_to_timecode;
 
-/// Font size of every status bar readout.
+/// Font size of every start-screen status bar readout.
 const SIZE: f32 = 11.0;
 
-/// Draws the status bar inside its panel: the playhead time on the left (while
-/// a take is recorded, "REC" in red and the elapsed recording time instead),
-/// the selection readout next to it, a finished-export banner with a Reveal
-/// link, and the sample rate, bit depth and snap/ripple state on the right.
+/// The status bar, 26 tall: sentence-case items in the ui-kit status bar
+/// component. The playhead time on the left (while a take is recorded, "Rec"
+/// and the elapsed recording time instead), then the selection readout, a
+/// finished-export note, "Ripple on" / "Snap on" while those are on, and the
+/// sample rate and bit depth. A finished export keeps its Reveal link,
+/// right-aligned.
 pub fn show(ui: &mut egui::Ui, editor: &Editor, export: Option<&ExportBanner>) {
     let rate = editor.project.sample_rate;
-    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
-        match editor.recording_status().filter(|_| editor.take_is_live()) {
-            Some(take) => {
-                ui.label(egui::RichText::new("REC").font(Theme::mono(SIZE)).color(THEME.record_red));
-                ui.label(egui::RichText::new(samples_to_timecode(take.frames, rate)).font(Theme::mono(SIZE)).color(THEME.text_primary));
-            }
-            None => {
-                ui.label(egui::RichText::new("PLAYHEAD").font(Theme::mono(SIZE)).color(THEME.text_muted));
-                ui.label(egui::RichText::new(samples_to_timecode(editor.view.playhead, rate)).font(Theme::mono(SIZE)).color(THEME.text_primary));
-            }
+    let time = |samples: u64| samples_to_timecode(samples, rate);
+    let mut items: Vec<String> = Vec::new();
+    match editor.recording_status().filter(|_| editor.take_is_live()) {
+        Some(take) => items.push(format!("Rec {}", time(take.frames))),
+        None => items.push(format!("Playhead {}", time(editor.view.playhead))),
+    }
+    if let Selection::Range { start, end, .. } = editor.selection() {
+        items.push(format!("Sel {} to {} ({})", time(*start), time(*end), time(end.saturating_sub(*start))));
+    }
+    if let Some(export) = export {
+        items.push(format!("Exported {}", export.name));
+    }
+    if editor.view.ripple {
+        items.push("Ripple on".to_string());
+    }
+    if editor.view.snap {
+        items.push("Snap on".to_string());
+    }
+    items.push(format!("{} kHz", rate / 1000));
+    items.push(bit_depth(editor.project.export_bit_depth).to_string());
+    let items: Vec<&str> = items.iter().map(String::as_str).collect();
+    let bar = ui_kit::status_bar(ui, &items);
+    // The finished export's Reveal link, right-aligned in the bar (the
+    // component's items all read from the left, so the right end is free).
+    if let Some(export) = export {
+        let rect = bar.rect;
+        let pad = ui_kit::tokens::space::SCALE_4;
+        let max_rect = egui::Rect::from_min_max(egui::pos2(rect.right() - 200.0, rect.top()), egui::pos2(rect.right() - pad, rect.bottom()));
+        let mut link = ui.new_child(egui::UiBuilder::new().max_rect(max_rect).layout(egui::Layout::right_to_left(egui::Align::Center)));
+        if link.link("Reveal").clicked() {
+            editor.reveal_file(&export.path);
         }
-        if let Selection::Range { start, end, .. } = editor.selection() {
-            let t = |samples: u64| samples_to_timecode(samples, rate);
-            ui.label(egui::RichText::new("SEL").font(Theme::mono(SIZE)).color(THEME.text_muted));
-            ui.label(egui::RichText::new(t(*start)).font(Theme::mono(SIZE)).color(THEME.text_primary));
-            ui.label(egui::RichText::new("to").font(Theme::mono(SIZE)).color(THEME.text_muted));
-            ui.label(egui::RichText::new(t(*end)).font(Theme::mono(SIZE)).color(THEME.text_primary));
-            ui.label(egui::RichText::new(t(end.saturating_sub(*start))).font(Theme::mono(SIZE)).color(THEME.accent));
-        }
-        if let Some(export) = export {
-            ui.label(egui::RichText::new(format!("Exported {}", export.name)).font(Theme::mono(SIZE)).color(THEME.text_muted));
-            if ui.link(egui::RichText::new("Reveal").font(Theme::mono(SIZE))).clicked() {
-                editor.reveal_file(&export.path);
-            }
-        }
-        // Right-aligned readouts, added in reverse so the reading order is
-        // "48 kHz 24-bit SNAP ON RIPPLE OFF". Each label and its value are
-        // one unit (4 px apart); 22 px between units, 12 px off the right
-        // window edge.
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(12.0);
-            ui.spacing_mut().item_spacing.x = 22.0;
-            toggle_readout(ui, "RIPPLE", on_off(editor.view.ripple), editor.view.ripple);
-            toggle_readout(ui, "SNAP", on_off(editor.view.snap), editor.view.snap);
-            ui.label(egui::RichText::new(bit_depth(editor.project.export_bit_depth)).font(Theme::mono(SIZE)).color(THEME.text_primary));
-            ui.label(egui::RichText::new(format!("{} kHz", rate / 1000)).font(Theme::mono(SIZE)).color(THEME.text_primary));
-        });
-    });
+    }
 }
 
 /// Label for a project's export bit depth, as shown in the status bar.
@@ -67,9 +63,10 @@ fn bit_depth(depth: crate::model::project::BitDepth) -> &'static str {
     }
 }
 
-/// Text of a toggle readout's value: ON or OFF.
-fn on_off(on: bool) -> &'static str {
-    if on { "ON" } else { "OFF" }
+/// The toolbar caption: the project format as the status bar spells it,
+/// "48 kHz / 24-bit".
+pub fn format_caption(rate: u32, depth: crate::model::project::BitDepth) -> String {
+    format!("{} kHz / {}", rate / 1000, bit_depth(depth))
 }
 
 /// Start-screen status bar: the default output device on the left (omitted
@@ -86,18 +83,4 @@ pub fn show_start(ui: &mut egui::Ui, device: Option<&str>) {
             ui.label(egui::RichText::new("NO PROJECT OPEN").font(Theme::mono(SIZE)).color(THEME.text_muted));
         });
     });
-}
-
-/// One toggle readout: label and value laid out as a single job, so the pair
-/// always reads left to right: the label muted, a space, then the value
-/// accent while on and plain primary while off.
-fn toggle_readout(ui: &mut egui::Ui, label: &str, value: &str, on: bool) {
-    let mut job = egui::text::LayoutJob::default();
-    let format = |color| egui::TextFormat::simple(Theme::mono(SIZE), color);
-    job.append(label, 0.0, format(THEME.text_muted));
-    job.append(" ", 0.0, format(THEME.text_muted));
-    job.append(value, 0.0, format(if on { THEME.accent } else { THEME.text_primary }));
-    let galley = ui.ctx().fonts_mut(|fonts| fonts.layout_job(job));
-    let (rect, _) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
-    ui.painter().galley(rect.min, galley, THEME.text_primary);
 }
