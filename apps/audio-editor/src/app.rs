@@ -13,7 +13,7 @@ use crate::ui::bin_panel::{self, BinPanel};
 use crate::ui::dialogs::confirm::{CloseChoice, CloseConfirmDialog, ConfirmDialog, ExportCloseChoice, ExportCloseDialog, RecordCloseChoice, RecordCloseDialog};
 use crate::ui::dialogs::export::{BANNER_SECONDS, ExportBanner};
 use crate::ui::master_strip;
-use crate::ui::menu::{ProjectMenu, ProjectMenuAction, project_title};
+use crate::ui::menu::{ProjectMenu, ProjectMenuAction, project_title, start_title};
 use crate::ui::start_screen::StartScreen;
 use crate::ui::status_bar;
 use crate::ui::theme::THEME;
@@ -26,6 +26,10 @@ use ui_kit::tokens::{color, size, space};
 /// The user-visible application name, used for the window title, the start
 /// screen heading and the installer.
 pub const APP_NAME: &str = "CutMark Audio Editor";
+
+/// The short app name shown in the start screen's toolbar title area and its
+/// panel heading.
+pub const APP_SHORT_NAME: &str = "Cutmark Audio";
 
 /// Height of the 52px main toolbar (the window's title bar).
 const TOP_BAR_H: f32 = size::TOOLBAR_MAIN_HEIGHT;
@@ -284,12 +288,13 @@ impl App {
         Some(pending)
     }
 
-    /// The 52px main toolbar on the start screen: empty zones (a start screen
-    /// has no project to name), but it is the window's drag area and the
-    /// caption buttons' home, so the chrome never shows a bare title bar.
+    /// The 52px main toolbar on the start screen: the app mark and the app
+    /// name in the left zone, empty center and right (no Undo, Redo or Export
+    /// while no project is open), but still the window's drag area and the
+    /// caption buttons' home.
     fn show_start_bar(ui: &mut egui::Ui) {
         egui::Panel::top("start_bar").exact_size(TOP_BAR_H).frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
-            ui_kit::main_toolbar(ui, |_| {}, |_| {}, |_| {});
+            ui_kit::main_toolbar(ui, |ui| start_title(ui, APP_SHORT_NAME), |_| {}, |_| {});
         });
     }
 

@@ -75,9 +75,18 @@ pub fn project_title(ui: &mut egui::Ui, name: &str, dirty: bool, caption: &str) 
     });
 }
 
+/// The start screen's toolbar title: the app mark and the app name in
+/// type.headline. No project is open, so there is no unsaved dot and no
+/// format caption.
+pub fn start_title(ui: &mut egui::Ui, name: &str) {
+    app_mark(ui);
+    ui.add_space(space::SCALE_4);
+    ui.label(egui::RichText::new(name).font(fonts::semibold(typography::HEADLINE_SIZE)).color(color::TEXT_PRIMARY));
+}
+
 /// Draws the app mark placeholder: an accent circle with a notch cut from its
 /// top right (spec "Open questions" item 1: placeholder until a real logo).
-fn app_mark(ui: &mut egui::Ui) {
+pub(crate) fn app_mark(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
     let c = rect.center();
     let painter = ui.painter();

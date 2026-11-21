@@ -432,95 +432,141 @@ pub struct Theme {
     // ---- Start screen ----
     /// Status bar height (26), reused by the start screen status bar.
     pub status_bar_h: f32,
+    /// Minimum margin around the start screen panel (48).
+    pub start_card_margin: f32,
+    /// Start screen panel width (560).
+    pub start_panel_w: f32,
+    /// Start screen panel height (560).
+    pub start_panel_h: f32,
+    // Unused since 10c, kept until the shim is deleted in phase 13.
     /// Start screen card width (1000).
+    #[allow(dead_code)]
     pub start_card_w: f32,
     /// Start screen card height (600).
+    #[allow(dead_code)]
     pub start_card_h: f32,
-    /// Minimum margin around the start screen card (48).
-    pub start_card_margin: f32,
     /// Smallest start screen card width when the window is narrow (760).
+    #[allow(dead_code)]
     pub start_card_min_w: f32,
     /// Corner radius of the start screen card (14).
+    #[allow(dead_code)]
     pub start_card_radius: f32,
     /// Width of the start screen card's left column (360).
+    #[allow(dead_code)]
     pub start_col_w: f32,
     /// Top padding of the left column (36).
+    #[allow(dead_code)]
     pub start_pad_top: f32,
     /// Side padding of the left column (32).
+    #[allow(dead_code)]
     pub start_pad_side: f32,
     /// Bottom padding of the left column (28).
+    #[allow(dead_code)]
     pub start_pad_bottom: f32,
     /// Top padding of the right column (32).
+    #[allow(dead_code)]
     pub start_pad_r_top: f32,
     /// Side padding of the right column (28).
+    #[allow(dead_code)]
     pub start_pad_r_side: f32,
     /// Bottom padding of the right column (20).
+    #[allow(dead_code)]
     pub start_pad_r_bottom: f32,
     /// Height of the logo bar box (40).
+    #[allow(dead_code)]
     pub start_logo_h: f32,
     /// Width of one logo bar (4).
+    #[allow(dead_code)]
     pub start_bar_w: f32,
     /// Horizontal pitch between logo bars (6).
+    #[allow(dead_code)]
     pub start_bar_pitch: f32,
-    /// Height of each of the 20 logo bars.
-    pub start_bar_heights: [f32; 20],
     /// Gap between the logo and the title (20).
+    #[allow(dead_code)]
     pub start_title_gap: f32,
     /// Gap between the version line and the buttons (40).
+    #[allow(dead_code)]
     pub start_buttons_gap: f32,
     /// Height of the New/Open buttons (52).
+    #[allow(dead_code)]
     pub start_btn_h: f32,
     /// Gap between the two buttons (10).
+    #[allow(dead_code)]
     pub start_btn_gap: f32,
     /// Corner radius of the buttons (8).
+    #[allow(dead_code)]
     pub start_btn_radius: f32,
     /// Gap between the buttons and the drop zone (20).
+    #[allow(dead_code)]
     pub start_drop_gap: f32,
     /// Height of the dashed drop zone (52).
+    #[allow(dead_code)]
     pub start_drop_h: f32,
     /// Corner radius of the drop zone (8).
+    #[allow(dead_code)]
     pub start_drop_radius: f32,
     /// White text on the accent button.
+    #[allow(dead_code)]
     pub start_on_accent: egui::Color32,
     /// Gap between the recent rows (2).
+    #[allow(dead_code)]
     pub start_row_gap: f32,
     /// Height of one recent row (64).
+    #[allow(dead_code)]
     pub start_row_h: f32,
     /// Size of the recent row's project tile (40).
+    #[allow(dead_code)]
     pub start_tile: f32,
     /// Fixed width of the last-opened date column (96).
+    #[allow(dead_code)]
     pub start_last_col_w: f32,
     /// Size of the per-row remove button (28).
+    #[allow(dead_code)]
     pub start_x_btn: f32,
     /// Fill of the MISSING pill.
+    #[allow(dead_code)]
     pub start_missing_fill: egui::Color32,
     /// At-rest background of the most recently opened recent row (#1F2328).
+    #[allow(dead_code)]
     pub start_row_recent: egui::Color32,
     /// Text color of the MISSING pill.
+    #[allow(dead_code)]
     pub start_missing_text: egui::Color32,
     /// Icon color of a missing project's tile.
+    #[allow(dead_code)]
     pub start_missing_icon: egui::Color32,
     /// Title font size under the logo (24).
+    #[allow(dead_code)]
     pub start_title_size: f32,
     /// Small mono font size: version line, shortcut hints, path (11).
+    #[allow(dead_code)]
     pub start_small_size: f32,
     /// Button label font size (14).
+    #[allow(dead_code)]
     pub start_btn_text_size: f32,
     /// Hint font size: drop zone, footnotes, dates, Clear missing (12).
+    #[allow(dead_code)]
     pub start_hint_size: f32,
     /// Recent row name font size (14).
+    #[allow(dead_code)]
     pub start_name_size: f32,
     /// MISSING pill font size (10.5).
+    #[allow(dead_code)]
     pub start_pill_size: f32,
     /// Phosphor icon size in buttons and tiles (16).
+    #[allow(dead_code)]
     pub start_icon_size: f32,
     /// Height of the recent-projects header row (22).
+    #[allow(dead_code)]
     pub start_header_h: f32,
     /// Corner radius of a recent row and its tile (8).
+    #[allow(dead_code)]
     pub start_row_radius: f32,
     /// Dash length of the drop-zone dashed border (4).
+    #[allow(dead_code)]
     pub start_dash: f32,
     /// Gap between dashes of the drop-zone border (4).
+    #[allow(dead_code)]
     pub start_dash_gap: f32,
 }
 
@@ -749,9 +795,11 @@ impl Default for Theme {
             accent_hover: tokens::accent::HOVER,
             // Start screen
             status_bar_h: tokens::size::STATUS_BAR_HEIGHT,
+            start_card_margin: 48.0,
+            start_panel_w: 560.0,
+            start_panel_h: 560.0,
             start_card_w: 1000.0,
             start_card_h: 600.0,
-            start_card_margin: 48.0,
             start_card_min_w: 760.0,
             start_card_radius: 14.0,
             start_col_w: 360.0,
@@ -764,7 +812,6 @@ impl Default for Theme {
             start_logo_h: 40.0,
             start_bar_w: 4.0,
             start_bar_pitch: 6.0,
-            start_bar_heights: [8.0, 16.0, 26.0, 34.0, 22.0, 30.0, 38.0, 24.0, 14.0, 28.0, 36.0, 20.0, 30.0, 18.0, 10.0, 24.0, 32.0, 16.0, 8.0, 12.0],
             start_title_gap: 20.0,
             start_buttons_gap: 40.0,
             start_btn_h: 52.0,

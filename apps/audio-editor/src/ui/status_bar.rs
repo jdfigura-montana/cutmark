@@ -5,11 +5,7 @@ use eframe::egui;
 use crate::editor::Editor;
 use crate::editor::selection::Selection;
 use crate::ui::dialogs::export::ExportBanner;
-use crate::ui::theme::{THEME, Theme};
 use crate::util::time::samples_to_timecode;
-
-/// Font size of every start-screen status bar readout.
-const SIZE: f32 = 11.0;
 
 /// The status bar, 26 tall: sentence-case items in the ui-kit status bar
 /// component. The playhead time on the left (while a take is recorded, "Rec"
@@ -69,18 +65,25 @@ pub fn format_caption(rate: u32, depth: crate::model::project::BitDepth) -> Stri
     format!("{} kHz / {}", rate / 1000, bit_depth(depth))
 }
 
-/// Start-screen status bar: the default output device on the left (omitted
-/// when none is known) and "NO PROJECT OPEN" on the right.
+/// Start-screen status bar through the ui-kit component: the default output
+/// device on the left ("Output <device>", omitted when none is known) and
+/// "No project open" right-aligned.
 pub fn show_start(ui: &mut egui::Ui, device: Option<&str>) {
-    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
-        if let Some(device) = device {
-            ui.label(egui::RichText::new("OUTPUT").font(Theme::mono(SIZE)).color(THEME.text_muted));
-            ui.label(egui::RichText::new(device).font(Theme::mono(SIZE)).color(THEME.text_primary));
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(12.0);
-            ui.label(egui::RichText::new("NO PROJECT OPEN").font(Theme::mono(SIZE)).color(THEME.text_muted));
-        });
-    });
+    let mut items: Vec<String> = Vec::new();
+    if let Some(device) = device {
+        items.push(format!("Output {device}"));
+    }
+    let items: Vec<&str> = items.iter().map(String::as_str).collect();
+    let bar = ui_kit::status_bar(ui, &items);
+    // "No project open", right-aligned in the bar (the component's items all
+    // read from the left, so the right end is free).
+    let rect = bar.rect;
+    let pad = ui_kit::tokens::space::SCALE_4;
+    let max_rect = egui::Rect::from_min_max(egui::pos2(rect.right() - 200.0, rect.top()), egui::pos2(rect.right() - pad, rect.bottom()));
+    let mut right = ui.new_child(egui::UiBuilder::new().max_rect(max_rect).layout(egui::Layout::right_to_left(egui::Align::Center)));
+    right.label(
+        egui::RichText::new("No project open")
+            .font(ui_kit::fonts::medium(ui_kit::tokens::typography::CAPTION_SIZE))
+            .color(ui_kit::tokens::color::TEXT_TERTIARY),
+    );
 }
