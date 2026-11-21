@@ -168,20 +168,12 @@ pub struct Theme {
     pub wave_lane_pad: f32,
 
     // ---- Meters ----
-    /// Background fill of a meter bar area.
-    pub meter_bar_bg: egui::Color32,
     /// Meter bar color above -6 dBFS.
     pub meter_red: egui::Color32,
     /// Meter bar color above -18 dBFS.
     pub meter_yellow: egui::Color32,
     /// Meter bar color below -18 dBFS.
     pub meter_green: egui::Color32,
-    /// Peak-hold marker color.
-    pub meter_hold: egui::Color32,
-    /// Clip light color while latched.
-    pub clip_light_on: egui::Color32,
-    /// Clip light color while clear.
-    pub clip_light_off: egui::Color32,
 
     // ---- Errors / dialogs ----
     /// Error text color inside dialogs.
@@ -215,8 +207,6 @@ pub struct Theme {
     pub text_muted: egui::Color32,
     /// Faintest text (hints, disabled labels).
     pub text_faint: egui::Color32,
-    /// Translucent accent overlay drawn on hovered clickable controls.
-    pub hover_overlay: egui::Color32,
     /// Default (and minimum) width of every modal dialog.
     pub dialog_w: f32,
     /// Translucent shade drawn over the UI behind modal windows.
@@ -511,13 +501,9 @@ impl Default for Theme {
             clip_name_min_w: 8.0,
             wave_lane_pad: 1.0,
             // Meters
-            meter_bar_bg: tokens::color::BG_GROUND,
             meter_red: tokens::color::SEM_METER_CLIP,
             meter_yellow: tokens::color::SEM_METER_WARN,
             meter_green: tokens::color::SEM_METER_OK,
-            meter_hold: egui::Color32::from_rgb(230, 234, 240),
-            clip_light_on: tokens::color::SEM_METER_CLIP,
-            clip_light_off: egui::Color32::from_rgb(0x3A, 0x22, 0x24),
 
             // Bin panel
             // Errors / dialogs
@@ -536,7 +522,6 @@ impl Default for Theme {
             text_normal: tokens::color::TEXT_SECONDARY,
             text_muted: tokens::color::TEXT_TERTIARY,
             text_faint: tokens::color::TEXT_DISABLED,
-            hover_overlay: accent_alpha(0x2E),
             dialog_w: 420.0,
             export_dialog_w: 480.0,
             modal_shade: egui::Color32::from_black_alpha(140),

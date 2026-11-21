@@ -4,7 +4,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Color32, Pos2, Rect};
+use eframe::egui::Color32;
 use uuid::Uuid;
 
 use crate::ui::theme::THEME;
@@ -105,9 +105,6 @@ impl Default for ChannelBallistics {
     }
 }
 
-/// Scale tick values printed on the meter, in dBFS.
-pub const TICKS: [f32; 8] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0, -48.0, -60.0];
-
 /// One channel's raw meter reading from the audio thread: peak, sum of
 /// squares, frames and clip flag (the same tuple `Editor::read_meters` yields).
 pub type ChannelReading = (f32, f32, u32, bool);
@@ -156,20 +153,6 @@ impl MeterState {
             }
         }
     }
-}
-
-/// Maps a dBFS value to a y position inside a bar area (bottom = -60 dB).
-pub fn db_y(area: Rect, db: f32) -> f32 {
-    let t = ((db - FLOOR) / -FLOOR).clamp(0.0, 1.0);
-    area.bottom() - t * area.height()
-}
-
-/// Fills the part of `bar` between two dBFS values with `color`.
-pub fn fill_zone(painter: &egui::Painter, bar: Rect, lo: f32, hi: f32, color: Color32) {
-    if hi <= lo {
-        return;
-    }
-    painter.rect_filled(Rect::from_min_max(Pos2::new(bar.left(), db_y(bar, hi)), Pos2::new(bar.right(), db_y(bar, lo))), 0.0, color);
 }
 
 #[cfg(test)]

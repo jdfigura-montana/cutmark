@@ -1,3 +1,6 @@
+## Task S1 phase 12b (2026-11-21)
+- Master panel on ui-kit panel, stereo meter with scale and fader; master_strip.rs off the theme shim; fader_bare and meter drawing helpers deleted (widget files stay, other code still uses them). Tests 703 (was 697), check.ps1 green. Open for JD eyes: fader range is now ui-kit's -60..+6 (was -60..+12), the bars show RMS like before but there is no peak-hold line, the peak value no longer turns red above 0 dB, panel width 136, no board image for this panel.
+
 ## Task S1 phase 12a (2026-11-21)
 - Media panel restyled: ui-kit panel, 44 header with Sort (glass menu) and Import icon buttons, list rows with 28 tile and duration, glass context menu, empty state with Import button. bin_panel.rs off the theme shim. Tests 697 (was 692). Open for JD eyes: left panel frame in app.rs changed to ground + 8 px gap; row details (usage, rate, format) moved to a tooltip; no board image for this panel, so tile fill (bg.control) is my reading.
 

@@ -1,6 +1,6 @@
 //! ui::widgets::fader: linear slider for dB and pan, with gesture events.
 
-use eframe::egui::{self, Pos2, Rect, Stroke, Vec2};
+use eframe::egui::{self, Pos2, Rect};
 
 use crate::ui::theme::THEME;
 
@@ -97,63 +97,5 @@ pub fn slider_bare(ui: &mut egui::Ui, id: egui::Id, rect: Rect, value: f32, rang
     // Round thumb on top.
     painter.circle_filled(Pos2::new(thumb_x, cy), thumb_r, THEME.slider_thumb);
 
-    out
-}
-
-/// Draws a bare vertical fader in `rect`: a thin centered track and a wide,
-/// short cap with a center line, no value text (the caller shows the value).
-///
-/// The value maps linearly over `min..max`, top = max. Double-click reports
-/// `reset`; Esc during a drag reports `cancelled`.
-pub fn fader_bare(ui: &mut egui::Ui, id: egui::Id, rect: Rect, value: f32, range: (f32, f32)) -> SliderOutcome {
-    let (min, max) = range;
-    let painter = ui.painter_at(rect);
-    let resp = ui.interact(rect, id, egui::Sense::click_and_drag());
-
-    let mut out = SliderOutcome::default();
-    let dragging = resp.dragged();
-    if resp.drag_started() && !resp.double_clicked() {
-        out.started = true;
-    }
-    if resp.double_clicked() {
-        out.reset = true;
-    }
-    if resp.drag_stopped() {
-        out.ended = true;
-    }
-    if dragging && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-        out.cancelled = true;
-    }
-
-    // New value from the pointer position along the fader height.
-    if dragging && let Some(p) = resp.interact_pointer_pos() {
-        let t = (p.y - rect.top()) / rect.height();
-        out.value = Some(max - t.clamp(0.0, 1.0) * (max - min));
-    }
-
-    let shown = out.value.unwrap_or(value);
-    let t = ((max - shown) / (max - min)).clamp(0.0, 1.0);
-    let cx = rect.center().x;
-    let half_track = THEME.track_slider_track_w * 0.5;
-
-    // Track: a thin line down the center of the fader.
-    painter.rect_filled(Rect::from_min_max(Pos2::new(cx - half_track, rect.top()), Pos2::new(cx + half_track, rect.bottom())), half_track, THEME.slider_track);
-
-    // Cap: stays fully inside the rect as it travels.
-    let cap_h = 12.0;
-    let cap_y = rect.top() + t * (rect.height() - cap_h) + cap_h * 0.5;
-    let cap = Rect::from_center_size(Pos2::new(cx, cap_y), Vec2::new(rect.width(), cap_h));
-    // Small shadow under the cap.
-    painter.rect_filled(cap.translate(egui::vec2(0.0, 1.0)), THEME.corner_r, egui::Color32::from_black_alpha(60));
-    painter.rect_filled(cap, THEME.corner_r, THEME.slider_thumb);
-    // 1 px center line across the cap.
-    painter.line_segment(
-        [Pos2::new(cap.left() + 3.0, cap.center().y), Pos2::new(cap.right() - 3.0, cap.center().y)],
-        Stroke::new(THEME.hairline, THEME.slider_fill),
-    );
-
-    if out.reset {
-        return SliderOutcome { started: false, value: None, ended: false, cancelled: false, reset: true };
-    }
     out
 }

@@ -425,10 +425,17 @@ impl App {
                 status_bar::show(ui, editor, banner.as_ref());
             });
 
-        // Right: Master strip, fixed width.
-        egui::Panel::right("master_strip").resizable(false).exact_size(116.0).frame(egui::Frame::new().fill(THEME.panel_bg)).show(ui, |ui| {
-            master_strip::show(ui, editor, meters);
-        });
+        // Right: Master panel on the ground, fixed width, with the window gap
+        // on its right, top and bottom.
+        let gap = space::WINDOW_GAP as i8;
+        egui::Panel::right("master_strip")
+            .resizable(false)
+            .exact_size(136.0)
+            .frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin { left: 0, top: gap, bottom: gap, right: gap }))
+            .show(ui, |ui| {
+                ui.take_available_space();
+                master_strip::show(ui, editor, meters);
+            });
 
         // Left: Media panel on the ground, resizable between 200 and 400 px,
         // 236 default, with the window gap on its left, top and bottom.
