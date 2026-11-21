@@ -19,13 +19,65 @@ use crate::ui::dialogs;
 use crate::ui::dialogs::new_project::NewProjectDialog;
 use crate::ui::menu;
 use crate::ui::status_bar;
-use crate::ui::theme::THEME;
 
 /// Fixed seeds of the two decorative band waveforms (back layer, front layer).
 const BAND_SEEDS: [u32; 2] = [0x9E37_79B1, 0x85EB_CA6B];
 
 /// Width of one decorative band column, in points.
 const BAND_COLUMN_W: f32 = 3.0;
+
+/// The 1 px hairline stroke width.
+const HAIRLINE: f32 = 1.0;
+/// Opacity of the hero band and of each of its layers (0.55).
+const START_BAND_ALPHA: f32 = 0.55;
+/// Height of the hero's decorative waveform band (180).
+const START_BAND_H: f32 = 180.0;
+/// Minimum margin around the start screen panel (48).
+const START_CARD_MARGIN: f32 = 48.0;
+/// Padding inside an action card, x then y (16, 14).
+const START_CARD_PAD: egui::Vec2 = egui::vec2(16.0, 14.0);
+/// Corner radius of an action card (14).
+const START_CARD_RADIUS: f32 = 14.0;
+/// Side of the icon tile in an action card (44).
+const START_CARD_TILE: f32 = 44.0;
+/// Font size of an action card title and the recent panel title (15).
+const START_CARD_TITLE_SIZE: f32 = 15.0;
+/// Dash length of the drop-zone dashed border (4).
+const START_DASH: f32 = 4.0;
+/// Gap between dashes of the drop-zone border (4).
+const START_DASH_GAP: f32 = 4.0;
+/// Height of the dashed drop zone (84).
+const START_DROP_H: f32 = 84.0;
+/// Corner radius of the drop zone (14).
+const START_DROP_RADIUS: f32 = 14.0;
+/// Stroke width of the drop zone border (1.5).
+const START_DROP_STROKE: f32 = 1.5;
+/// Gap between the two start screen panels (16).
+const START_GAP: f32 = 16.0;
+/// Height of the recent-projects header row (22).
+const START_HEADER_H: f32 = 22.0;
+/// Phosphor icon size in tiles and the drop zone (20).
+const START_ICON_SIZE: f32 = 20.0;
+/// Side of the hero's app mark (44).
+const START_MARK: f32 = 44.0;
+/// Start screen content max width (1120).
+const START_MAX_W: f32 = 1120.0;
+/// Start screen panel height (640).
+const START_PANEL_H: f32 = 640.0;
+/// Start screen hero panel width (420); the recent panel takes the rest.
+const START_PANEL_W: f32 = 420.0;
+/// Gap between the recent rows (2).
+const START_ROW_GAP: f32 = 2.0;
+/// Height of one recent row (58).
+const START_ROW_H: f32 = 58.0;
+/// Corner radius of a recent row (10).
+const START_ROW_RADIUS: f32 = 10.0;
+/// Size of the recent row's project tile (40); the action card tile is 44.
+const START_TILE: f32 = 40.0;
+/// Hero app name font size (26).
+const START_TITLE_SIZE: f32 = 26.0;
+/// Size of the per-row remove button (28).
+const START_X_BTN: f32 = 28.0;
 
 /// Where the start screen reads and changes the recent list and opens
 /// projects. The app uses [`LIVE`]; the tests swap in doubles so they
@@ -119,13 +171,13 @@ impl StartScreen {
 
         // The 26 px status bar under the panels.
         egui::Panel::bottom("start_status_bar")
-            .exact_size(THEME.status_bar_h)
-            .frame(egui::Frame::new().fill(THEME.bar_bg).inner_margin(egui::Margin { left: 8, ..Default::default() }))
+            .exact_size(ui_kit::tokens::size::STATUS_BAR_HEIGHT)
+            .frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin { left: 8, ..Default::default() }))
             .show(ui, |ui| {
                 status_bar::show_start(ui, output_device);
             });
 
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(THEME.app_bg)).show(ui, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
             self.show_panels(ui, &mut opened);
         });
         self.show_recovery_modal(ui, &mut opened);
@@ -148,14 +200,14 @@ impl StartScreen {
         let entries = self.entries();
 
         let avail = ui.max_rect();
-        let margin = THEME.start_card_margin;
-        let min_w = THEME.start_panel_w + THEME.start_gap + THEME.start_panel_w / 2.0;
-        let w = THEME.start_max_w.min(avail.width() - 2.0 * margin).max(min_w);
-        let h = THEME.start_panel_h.min(avail.height() - 2.0 * margin).max(THEME.start_panel_h * 0.75);
+        let margin = START_CARD_MARGIN;
+        let min_w = START_PANEL_W + START_GAP + START_PANEL_W / 2.0;
+        let w = START_MAX_W.min(avail.width() - 2.0 * margin).max(min_w);
+        let h = START_PANEL_H.min(avail.height() - 2.0 * margin).max(START_PANEL_H * 0.75);
         let content = Rect::from_center_size(avail.center(), vec2(w, h));
-        let hero_w = THEME.start_panel_w.min(w * 0.45);
+        let hero_w = START_PANEL_W.min(w * 0.45);
         let hero = Rect::from_min_size(content.min, vec2(hero_w, h));
-        let recent = Rect::from_min_max(pos2(hero.right() + THEME.start_gap, content.top()), content.max);
+        let recent = Rect::from_min_max(pos2(hero.right() + START_GAP, content.top()), content.max);
 
         self.show_hero(ui, hero, opened);
         self.show_recent(ui, recent, &entries, opened);
@@ -225,14 +277,14 @@ impl StartScreen {
         let inner = rect.shrink(pad);
 
         // The decorative band sits behind the heading, under the top edge.
-        let mark_side = THEME.start_mark;
+        let mark_side = START_MARK;
         let band_top = inner.top() + mark_side + pad;
-        paint_band(ui, Rect::from_min_size(pos2(rect.left(), band_top), vec2(rect.width(), THEME.start_band_h)));
+        paint_band(ui, Rect::from_min_size(pos2(rect.left(), band_top), vec2(rect.width(), START_BAND_H)));
 
         // Heading: mark, then the name over the version.
         let mark = Rect::from_min_size(inner.min, Vec2::splat(mark_side));
         menu::paint_app_mark(ui, mark, color::BG_PANEL);
-        let name = ui.painter().layout_no_wrap(crate::app::APP_SHORT_NAME.to_owned(), fonts::semibold(THEME.start_title_size), color::TEXT_PRIMARY);
+        let name = ui.painter().layout_no_wrap(crate::app::APP_SHORT_NAME.to_owned(), fonts::semibold(START_TITLE_SIZE), color::TEXT_PRIMARY);
         let version = ui.painter().layout_no_wrap(format!("v{}", env!("CARGO_PKG_VERSION")), fonts::mono(typography::VALUE_SIZE), color::TEXT_TERTIARY);
         let block_h = name.size().y + version.size().y;
         let text_x = mark.right() + space::SCALE_12;
@@ -242,8 +294,8 @@ impl StartScreen {
         ui.painter().galley(pos2(text_x, version_y), version, color::TEXT_TERTIARY);
 
         // Cards and the drop zone, anchored to the bottom of the panel.
-        let drop = Rect::from_min_size(pos2(inner.left(), inner.bottom() - THEME.start_drop_h), vec2(inner.width(), THEME.start_drop_h));
-        let card_h = THEME.start_card_tile + 2.0 * THEME.start_card_pad.y;
+        let drop = Rect::from_min_size(pos2(inner.left(), inner.bottom() - START_DROP_H), vec2(inner.width(), START_DROP_H));
+        let card_h = START_CARD_TILE + 2.0 * START_CARD_PAD.y;
         let open_card = Rect::from_min_size(pos2(inner.left(), drop.top() - space::SCALE_12 - card_h), vec2(inner.width(), card_h));
         let new_card = Rect::from_min_size(pos2(inner.left(), open_card.top() - space::SCALE_10 - card_h), vec2(inner.width(), card_h));
 
@@ -282,8 +334,8 @@ impl StartScreen {
         let inner = rect.shrink(pad);
 
         // Header: title left, "Clear missing" and the count right.
-        let header = Rect::from_min_size(inner.min, vec2(inner.width(), THEME.start_header_h));
-        let title = ui.painter().layout_no_wrap("Recent projects".to_owned(), fonts::semibold(THEME.start_card_title_size), color::TEXT_PRIMARY);
+        let header = Rect::from_min_size(inner.min, vec2(inner.width(), START_HEADER_H));
+        let title = ui.painter().layout_no_wrap("Recent projects".to_owned(), fonts::semibold(START_CARD_TITLE_SIZE), color::TEXT_PRIMARY);
         ui.painter().galley(pos2(header.left(), header.center().y - title.size().y / 2.0), title, color::TEXT_PRIMARY);
         let count = ui.painter().layout_no_wrap(format!("{} of 10", entries.len()), fonts::mono(typography::VALUE_SIZE), color::TEXT_TERTIARY);
         let count_left = header.right() - count.size().x;
@@ -297,10 +349,10 @@ impl StartScreen {
         }
 
         // Footer: a hairline across the panel and the key hints under it.
-        let footer_h = THEME.start_header_h * 2.0;
+        let footer_h = START_HEADER_H * 2.0;
         let line_y = rect.bottom() - footer_h;
-        ui.painter().rect_filled(Rect::from_min_max(pos2(rect.left(), line_y), pos2(rect.right(), line_y + THEME.hairline)), 0.0, color::STROKE_HAIRLINE);
-        let hint = ui.painter().layout_no_wrap(footer_hint(!entries.is_empty()).to_owned(), fonts::medium(THEME.start_hint_size), color::TEXT_TERTIARY);
+        ui.painter().rect_filled(Rect::from_min_max(pos2(rect.left(), line_y), pos2(rect.right(), line_y + HAIRLINE)), 0.0, color::STROKE_HAIRLINE);
+        let hint = ui.painter().layout_no_wrap(footer_hint(!entries.is_empty()).to_owned(), fonts::medium(typography::CAPTION_SIZE), color::TEXT_TERTIARY);
         let hint_y = line_y + (footer_h - hint.size().y) / 2.0;
         ui.painter().galley(pos2(inner.left(), hint_y), hint, color::TEXT_TERTIARY);
 
@@ -308,12 +360,12 @@ impl StartScreen {
         let list = Rect::from_min_max(pos2(inner.left(), header.bottom() + space::SCALE_12), pos2(inner.right(), line_y - space::SCALE_8));
         let mut list_ui = ui.new_child(UiBuilder::new().max_rect(list));
         if entries.is_empty() {
-            let text = ui.painter().layout_no_wrap("No recent projects yet".to_owned(), fonts::medium(THEME.start_hint_size), color::TEXT_TERTIARY);
+            let text = ui.painter().layout_no_wrap("No recent projects yet".to_owned(), fonts::medium(typography::CAPTION_SIZE), color::TEXT_TERTIARY);
             ui.painter().galley(pos2(list.left(), list.top()), text, color::TEXT_TERTIARY);
             return;
         }
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut list_ui, |ui| {
-            ui.spacing_mut().item_spacing.y = THEME.start_row_gap;
+            ui.spacing_mut().item_spacing.y = START_ROW_GAP;
             for (index, entry) in entries.iter().enumerate() {
                 self.show_row(ui, index, entry, opened);
             }
@@ -322,7 +374,7 @@ impl StartScreen {
 
     /// The "Clear missing" text link in the header, right edge at `right`.
     fn clear_missing_link(&self, ui: &egui::Ui, header: Rect, right: f32) -> egui::Response {
-        let galley = ui.painter().layout_no_wrap("Clear missing".to_owned(), fonts::medium(THEME.start_hint_size), color::TEXT_SECONDARY);
+        let galley = ui.painter().layout_no_wrap("Clear missing".to_owned(), fonts::medium(typography::CAPTION_SIZE), color::TEXT_SECONDARY);
         let rect = Rect::from_min_size(pos2(right - galley.size().x, header.center().y - galley.size().y / 2.0), galley.size());
         let response = ui.interact(rect, ui.id().with("start_clear_missing"), Sense::click());
         let tint = if response.hovered() { color::TEXT_PRIMARY } else { color::TEXT_SECONDARY };
@@ -337,7 +389,7 @@ impl StartScreen {
     fn show_row(&mut self, ui: &mut egui::Ui, index: usize, entry: &RecentEntry, opened: &mut Option<Editor>) {
         let selected = self.sel == Some(index);
         let exists = entry.exists();
-        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), THEME.start_row_h), Sense::click());
+        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), START_ROW_H), Sense::click());
         response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &entry.name));
         let shown = ui.is_rect_visible(rect);
         let hovered = response.contains_pointer();
@@ -348,34 +400,34 @@ impl StartScreen {
 
         // The remove button: visible on hover or selection. It is registered
         // after the row, so it wins the clicks over its own rectangle.
-        let side = THEME.start_x_btn;
+        let side = START_X_BTN;
         let remove_rect = Rect::from_center_size(pos2(rect.right() - space::SCALE_10 - side / 2.0, rect.center().y), Vec2::splat(side));
         let remove = (selected || hovered).then(|| ui.interact(remove_rect, response.id.with("remove"), Sense::click()));
 
         if shown {
             let accent = ui_kit::Theme::get(ui.ctx()).accent;
-            let radius = CornerRadius::from(THEME.start_row_radius);
+            let radius = CornerRadius::from(START_ROW_RADIUS);
             if selected {
                 ui.painter().rect_filled(rect, radius, color::BG_ROW_SELECTED);
             } else if hovered {
                 ui.painter().rect_filled(rect, radius, color::BG_GROUP);
             }
             // Tile.
-            let tile = Rect::from_center_size(pos2(rect.left() + space::SCALE_10 + THEME.start_tile / 2.0, rect.center().y), Vec2::splat(THEME.start_tile));
+            let tile = Rect::from_center_size(pos2(rect.left() + space::SCALE_10 + START_TILE / 2.0, rect.center().y), Vec2::splat(START_TILE));
             let (tile_fill, glyph_color) = match (selected, exists) {
                 (true, _) => (accent.tint, accent.accent),
                 (false, true) => (color::BG_CONTROL, color::TEXT_TERTIARY),
                 (false, false) => (color::BG_CONTROL, color::TEXT_DISABLED),
             };
             ui.painter().rect_filled(tile, CornerRadius::from(radius::GROUP), tile_fill);
-            let glyph = ui.painter().layout_no_wrap(ui_kit::icons::regular::WAVEFORM.to_owned(), fonts::icon_regular(THEME.start_icon_size), glyph_color);
+            let glyph = ui.painter().layout_no_wrap(ui_kit::icons::regular::WAVEFORM.to_owned(), fonts::icon_regular(START_ICON_SIZE), glyph_color);
             ui.painter().galley(tile.center() - glyph.size() / 2.0, glyph, glyph_color);
 
             // Date column, right of the text and left of the button slot.
             let (date_text, date_color) = if exists {
                 (format_last_opened(entry.last_opened).unwrap_or_default(), color::TEXT_TERTIARY)
             } else {
-                ("Missing".to_owned(), THEME.error_soft)
+                ("Missing".to_owned(), color::SEM_RECORD)
             };
             let date = ui.painter().layout_no_wrap(date_text, fonts::medium(typography::CAPTION_SIZE), date_color);
             let date_left = remove_rect.left() - space::SCALE_4 - date.size().x;
@@ -386,7 +438,7 @@ impl StartScreen {
             let text_w = (date_left - space::SCALE_12 - text_left).max(0.0);
             let name_color = if exists { color::TEXT_PRIMARY } else { color::TEXT_TERTIARY };
             let name = ui.painter().layout_no_wrap(entry.name.clone(), fonts::semibold(typography::BODY_SIZE), name_color);
-            let path_font = fonts::mono(THEME.start_small_size);
+            let path_font = fonts::mono(typography::MICRO_SIZE);
             let path_text = middle_truncate(ui.painter(), &entry.root.display().to_string(), &path_font, text_w);
             let path = ui.painter().layout_no_wrap(path_text, path_font, color::TEXT_TERTIARY);
             let block_h = name.size().y + space::SCALE_2 + path.size().y;
@@ -542,8 +594,8 @@ fn footer_hint(has_rows: bool) -> &'static str {
 /// A panel: `bg.panel` fill with a hairline rim, radius `radius.panel`.
 fn paint_panel(ui: &egui::Ui, rect: Rect) {
     let rounding = CornerRadius::from(radius::PANEL);
-    ui.painter().rect_filled(rect, rounding, THEME.panel_bg);
-    ui.painter().rect_stroke(rect, rounding, Stroke::new(THEME.hairline, color::STROKE_HAIRLINE), StrokeKind::Inside);
+    ui.painter().rect_filled(rect, rounding, color::BG_PANEL);
+    ui.painter().rect_stroke(rect, rounding, Stroke::new(HAIRLINE, color::STROKE_HAIRLINE), StrokeKind::Inside);
 }
 
 /// One action card's content.
@@ -570,7 +622,7 @@ fn action_card(ui: &mut egui::Ui, rect: Rect, card: &Card<'_>) -> egui::Response
     let response = ui.interact(rect, ui.id().with(card.id), Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, card.title));
     let accent = ui_kit::Theme::get(ui.ctx()).accent;
-    let rounding = CornerRadius::from(THEME.start_card_radius);
+    let rounding = CornerRadius::from(START_CARD_RADIUS);
     let (fill, title_color, subtitle_color, tile_fill, glyph_color) = if card.primary {
         let fill = if response.is_pointer_button_down_on() {
             accent.pressed
@@ -586,15 +638,14 @@ fn action_card(ui: &mut egui::Ui, rect: Rect, card: &Card<'_>) -> egui::Response
     };
     ui.painter().rect_filled(rect, rounding, fill);
     if !card.primary {
-        ui.painter().rect_stroke(rect, rounding, Stroke::new(THEME.hairline, color::STROKE_HAIRLINE), StrokeKind::Inside);
+        ui.painter().rect_stroke(rect, rounding, Stroke::new(HAIRLINE, color::STROKE_HAIRLINE), StrokeKind::Inside);
     }
-    let tile =
-        Rect::from_min_size(pos2(rect.left() + THEME.start_card_pad.x, rect.center().y - THEME.start_card_tile / 2.0), Vec2::splat(THEME.start_card_tile));
+    let tile = Rect::from_min_size(pos2(rect.left() + START_CARD_PAD.x, rect.center().y - START_CARD_TILE / 2.0), Vec2::splat(START_CARD_TILE));
     ui.painter().rect_filled(tile, CornerRadius::from(radius::GROUP), tile_fill);
-    let glyph = ui.painter().layout_no_wrap(card.icon.to_owned(), fonts::icon_regular(THEME.start_icon_size), glyph_color);
+    let glyph = ui.painter().layout_no_wrap(card.icon.to_owned(), fonts::icon_regular(START_ICON_SIZE), glyph_color);
     ui.painter().galley(tile.center() - glyph.size() / 2.0, glyph, glyph_color);
 
-    let title = ui.painter().layout_no_wrap(card.title.to_owned(), fonts::semibold(THEME.start_card_title_size), title_color);
+    let title = ui.painter().layout_no_wrap(card.title.to_owned(), fonts::semibold(START_CARD_TITLE_SIZE), title_color);
     let subtitle = ui.painter().layout_no_wrap(card.subtitle.to_owned(), fonts::medium(typography::CAPTION_SIZE), subtitle_color);
     let block_h = title.size().y + subtitle.size().y;
     let text_x = tile.right() + space::SCALE_12;
@@ -604,7 +655,7 @@ fn action_card(ui: &mut egui::Ui, rect: Rect, card: &Card<'_>) -> egui::Response
     ui.painter().galley(pos2(text_x, subtitle_y), subtitle, subtitle_color);
 
     let shortcut = ui.painter().layout_no_wrap(card.shortcut.to_owned(), fonts::mono(typography::VALUE_SIZE), subtitle_color);
-    let shortcut_pos = pos2(rect.right() - THEME.start_card_pad.x - shortcut.size().x, rect.center().y - shortcut.size().y / 2.0);
+    let shortcut_pos = pos2(rect.right() - START_CARD_PAD.x - shortcut.size().x, rect.center().y - shortcut.size().y / 2.0);
     ui.painter().galley(shortcut_pos, shortcut, subtitle_color);
 
     if response.has_focus() {
@@ -618,13 +669,13 @@ fn action_card(ui: &mut egui::Ui, rect: Rect, card: &Card<'_>) -> egui::Response
 /// drop hovers.
 fn paint_drop_zone(ui: &egui::Ui, rect: Rect, hovering: bool, error: Option<&str>) {
     let accent = ui_kit::Theme::get(ui.ctx()).accent.accent;
-    let rim = if hovering { accent } else { THEME.start_drop_border };
-    let outline = rounded_rect_path(rect.shrink(THEME.start_drop_stroke / 2.0), THEME.start_drop_radius);
-    ui.painter().extend(egui::Shape::dashed_line(&outline, Stroke::new(THEME.start_drop_stroke, rim), THEME.start_dash, THEME.start_dash_gap));
+    let rim = if hovering { accent } else { color::STROKE_SEPARATOR_STRONG };
+    let outline = rounded_rect_path(rect.shrink(START_DROP_STROKE / 2.0), START_DROP_RADIUS);
+    ui.painter().extend(egui::Shape::dashed_line(&outline, Stroke::new(START_DROP_STROKE, rim), START_DASH, START_DASH_GAP));
 
-    let font = fonts::medium(THEME.start_hint_size);
+    let font = fonts::medium(typography::CAPTION_SIZE);
     if let Some(message) = error {
-        let mut job = egui::text::LayoutJob::single_section(message.to_owned(), egui::TextFormat::simple(font, THEME.error_soft));
+        let mut job = egui::text::LayoutJob::single_section(message.to_owned(), egui::TextFormat::simple(font, color::SEM_RECORD));
         job.wrap = egui::text::TextWrapping {
             max_width: rect.width() - 2.0 * space::SCALE_16,
             max_rows: 3,
@@ -632,11 +683,11 @@ fn paint_drop_zone(ui: &egui::Ui, rect: Rect, hovering: bool, error: Option<&str
             overflow_character: Some('\u{2026}'),
         };
         let galley = ui.painter().layout_job(job);
-        ui.painter().galley(rect.center() - galley.size() / 2.0, galley, THEME.error_soft);
+        ui.painter().galley(rect.center() - galley.size() / 2.0, galley, color::SEM_RECORD);
         return;
     }
     let tint = if hovering { color::TEXT_SECONDARY } else { color::TEXT_TERTIARY };
-    let icon = ui.painter().layout_no_wrap(ui_kit::icons::regular::UPLOAD_SIMPLE.to_owned(), fonts::icon_regular(THEME.start_icon_size), tint);
+    let icon = ui.painter().layout_no_wrap(ui_kit::icons::regular::UPLOAD_SIMPLE.to_owned(), fonts::icon_regular(START_ICON_SIZE), tint);
     let hint = ui.painter().layout_no_wrap("Drop a project folder or project.json here".to_owned(), font, tint);
     let gap = space::SCALE_6;
     let total = icon.size().y + gap + hint.size().y;
@@ -699,7 +750,7 @@ fn band_peaks(seed: u32, columns: usize) -> Vec<(f32, f32)> {
 /// animates and nothing asks for a repaint.
 fn paint_band(ui: &egui::Ui, rect: Rect) {
     let accent = ui_kit::Theme::get(ui.ctx()).accent.accent;
-    let layer = THEME.start_band_alpha * THEME.start_band_alpha;
+    let layer = START_BAND_ALPHA * START_BAND_ALPHA;
     let columns = (rect.width() / BAND_COLUMN_W).max(2.0) as usize;
     let painter = ui.painter().with_clip_rect(rect);
     let front = rect.shrink2(vec2(0.0, rect.height() * 0.2));
@@ -918,7 +969,7 @@ mod tests {
         let mut frame = |h: &mut Headless| {
             h.frame(Vec::new(), |ui| {
                 egui::CentralPanel::default().show(ui, |ui| {
-                    paint_band(ui, Rect::from_min_size(pos2(100.0, 100.0), vec2(420.0, THEME.start_band_h)));
+                    paint_band(ui, Rect::from_min_size(pos2(100.0, 100.0), vec2(420.0, START_BAND_H)));
                     painted = true;
                 });
             })
@@ -945,7 +996,7 @@ mod tests {
         let version = format!("v{}", env!("CARGO_PKG_VERSION"));
         assert!(out.text_rect(&version).is_some(), "the version from Cargo");
         let name = out.text_rect(crate::app::APP_SHORT_NAME).expect("the app name");
-        let mark_left = name.left() - space::SCALE_12 - THEME.start_mark;
+        let mark_left = name.left() - space::SCALE_12 - START_MARK;
         // 1280 wide: content is 1120 wide, starts at x 80; the hero pads 24.
         assert!((mark_left - 104.0).abs() <= 1.0, "the mark sits in the hero's padding, at {mark_left}");
         let title = out.text_rect("Recent projects").expect("the recent title");
@@ -984,7 +1035,7 @@ mod tests {
     #[test]
     fn long_folder_paths_are_cut_in_the_middle() {
         let mut h = Headless::new(400.0, 200.0);
-        let font = fonts::mono(THEME.start_small_size);
+        let font = fonts::mono(typography::MICRO_SIZE);
         let long = "C:\\Users\\someone\\Documents\\Podcasts\\Season 4\\Episode 12 final mix\\project";
         let mut cut = String::new();
         let mut same = String::new();

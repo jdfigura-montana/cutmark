@@ -1,3 +1,6 @@
+## Task S1 phase 13b (2026-11-21)
+- View > Appearance dialog, THEME shim deleted (metrics module + tokens), style lint opted in for the audio editor. Tests 704, check.ps1 green, release exe rebuilt.
+
 ## Task S1 phase 13a (2026-11-21)
 - Dialogs on ui-kit: ui_kit::dialog frame, inspector rows, segmented, text_field, slider, switch and primary_button; dialogs/mod.rs shrunk to thin helpers; bin remove confirm and start recovery dialog moved too. Tests 703 (unchanged). Open for JD eyes: footer order is now Cancel then primary, no red destructive buttons, label column is gone (controls sit after their label), whole-control greying for one-input devices and no-range scope, dialog widths 420/500 are my reading (no board image), Export em dash caption left unchanged.
 

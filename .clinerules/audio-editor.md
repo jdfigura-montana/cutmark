@@ -45,7 +45,7 @@ These add to the rules in the root CLAUDE.md. They apply to any task in apps/aud
 
 ## UI rules
 - Visual target is docs/audio-editor/ui-target.png.
-- Every color, size and font comes from src/ui/theme.rs. No hardcoded Color32 or pixel values elsewhere in src/ui.
+- Every color and font comes from ui_kit tokens and the runtime ui_kit::Theme (accent). Sizes with no token live in ui::timeline::metrics or a file's own consts. The style lint (crates/ui-kit/tests/no_hardcoded_style.rs) enforces it.
 - Any right-aligned group must still read left to right on screen.
 
 ## egui 0.36 gotchas

@@ -10,10 +10,9 @@ use crate::ui::dialogs::confirm::ConfirmDialog;
 use crate::ui::dialogs::export::ExportDialog;
 use crate::ui::dialogs::project_settings::ProjectSettingsDialog;
 use crate::ui::dialogs::save_as::SaveAsDialog;
-use crate::ui::theme::{THEME, menu_item_style};
 use crate::ui::timeline::ViewMenuAction;
 use ui_kit::fonts;
-use ui_kit::tokens::{color, typography};
+use ui_kit::tokens::{color, space, typography};
 
 /// What the user chose in the Project menu this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,12 +29,15 @@ pub enum ProjectMenuAction {
     Import,
 }
 
-/// A menu separator: 1 px line in the border color with 4 px vertical margin.
+/// Thickness of a menu separator line.
+const SEPARATOR_THICKNESS: f32 = 1.0;
+
+/// A menu separator: 1 px line in the hairline color with 4 px vertical margin.
 fn menu_sep(ui: &mut egui::Ui) {
-    ui.add_space(4.0);
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), THEME.hairline), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 0.0, THEME.control_border);
-    ui.add_space(4.0);
+    ui.add_space(space::SCALE_4);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), SEPARATOR_THICKNESS), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, color::STROKE_HAIRLINE);
+    ui.add_space(space::SCALE_4);
 }
 
 /// A menu item button with a right-aligned type.value shortcut hint.
@@ -70,7 +72,6 @@ pub(crate) fn paint_app_mark(ui: &egui::Ui, rect: egui::Rect, notch: egui::Color
 pub fn start_menu_bar(ui: &mut egui::Ui) -> ProjectMenuAction {
     let action = std::cell::Cell::new(ProjectMenuAction::None);
     let mut menus = [ui_kit::Menu::new("File", |ui| {
-        menu_item_style(ui.style_mut());
         if ui.add(item("New project", "Ctrl+N")).clicked() {
             action.set(ProjectMenuAction::New);
             ui.close();
@@ -104,7 +105,6 @@ pub fn menu_bar(
     // Marker are disabled; Save, New, Open, Close and View stay.
     let mut menus = [
         ui_kit::Menu::new("Project", |ui| {
-            menu_item_style(ui.style_mut());
             let editor = &mut **editor.borrow_mut();
             let recording = editor.is_recording();
             let chosen = menu.borrow_mut().project_menu(ui, editor, recording);
@@ -113,26 +113,22 @@ pub fn menu_bar(
             }
         }),
         ui_kit::Menu::new("Edit", |ui| {
-            menu_item_style(ui.style_mut());
             let editor = &mut **editor.borrow_mut();
             let recording = editor.is_recording();
             ProjectMenu::edit_menu(ui, editor, recording);
         }),
         ui_kit::Menu::new("Markers", |ui| {
-            menu_item_style(ui.style_mut());
             let editor = &mut **editor.borrow_mut();
             let recording = editor.is_recording();
             ProjectMenu::markers_menu(ui, editor, recording);
         }),
         ui_kit::Menu::new("Process", |ui| {
-            menu_item_style(ui.style_mut());
             let editor = &mut **editor.borrow_mut();
             let recording = editor.is_recording();
             menu.borrow_mut().process_menu(ui, editor, recording);
         }),
         ui_kit::Menu::new("View", |ui| {
-            menu_item_style(ui.style_mut());
-            let chosen = ProjectMenu::view_menu(ui, &editor.borrow());
+            let chosen = menu.borrow_mut().view_menu(ui, &editor.borrow());
             if chosen != ViewMenuAction::None {
                 view_action.set(chosen);
             }
@@ -156,6 +152,8 @@ pub struct ProjectMenu {
     /// Export dialog; kept for the whole session so the last choices are
     /// remembered between opens.
     export_dialog: Option<ExportDialog>,
+    /// True while the Appearance dialog (accent and glass) is open.
+    appearance_open: bool,
 }
 
 impl ProjectMenu {
@@ -421,7 +419,7 @@ impl ProjectMenu {
     }
 
     /// The View menu's items; returns the zoom command the user chose.
-    fn view_menu(menu: &mut egui::Ui, editor: &Editor) -> ViewMenuAction {
+    fn view_menu(&mut self, menu: &mut egui::Ui, editor: &Editor) -> ViewMenuAction {
         let mut view_action = ViewMenuAction::None;
         if menu.add(item("Zoom In", "+")).clicked() {
             view_action = ViewMenuAction::ZoomIn;
@@ -439,6 +437,11 @@ impl ProjectMenu {
         }
         if menu.add(item("Zoom to Fit", "\\")).clicked() {
             view_action = ViewMenuAction::ZoomToFit;
+            menu.close();
+        }
+        menu_sep(menu);
+        if menu.add(egui::Button::new("Appearance...")).clicked() {
+            self.appearance_open = true;
             menu.close();
         }
         view_action
@@ -472,6 +475,9 @@ impl ProjectMenu {
         if let Some(dialog) = &mut self.error_dialog {
             dialog.show(ctx);
         }
+        if self.appearance_open {
+            ui_kit::appearance_dialog(ctx, &mut self.appearance_open);
+        }
     }
 
     /// True while one of the menu's dialogs (save error, Save As, Project or
@@ -482,6 +488,7 @@ impl ProjectMenu {
             || self.save_as_dialog.is_some()
             || self.settings_dialog.is_some()
             || self.audio_settings_dialog.is_some()
+            || self.appearance_open
     }
 
     /// Shows a failed Process menu operation in the error modal, with the
@@ -564,7 +571,7 @@ mod tests {
         /// One frame: the bar with the menu bar, then the dialogs.
         fn ui(&mut self, ui: &mut egui::Ui) {
             let Self { menu, editor, actions } = self;
-            egui::Panel::top("menu_bar").exact_size(44.0).frame(egui::Frame::new().fill(THEME.bar_bg)).show(ui, |ui| {
+            egui::Panel::top("menu_bar").exact_size(44.0).frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
                 let menu_cell = std::cell::RefCell::new(&mut *menu);
                 let editor_cell = std::cell::RefCell::new(&mut **editor);
                 ui.horizontal(|ui| {
@@ -635,7 +642,7 @@ mod tests {
             "Process",
             &[("Gain...", "Ctrl+G"), ("Normalize...", "Ctrl+Shift+N"), ("Fade In", "Ctrl+Shift+I"), ("Fade Out", "Ctrl+Shift+O"), ("Silence", "Ctrl+L")],
         ),
-        ("View", &[("Zoom In", "+"), ("Zoom Out", "-"), ("Zoom to Selection", "Ctrl+\\"), ("Zoom to Fit", "\\")]),
+        ("View", &[("Zoom In", "+"), ("Zoom Out", "-"), ("Zoom to Selection", "Ctrl+\\"), ("Zoom to Fit", "\\"), ("Appearance...", "")]),
     ];
 
     #[test]
@@ -716,6 +723,25 @@ mod tests {
         assert!(rig.menu.audio_settings_dialog.is_none(), "the dialog closed");
         assert_eq!(rig.editor.config(), &crate::io::config::AppConfig::default());
         assert!(out.text_rect("Audio Settings").is_none());
+    }
+
+    #[test]
+    fn view_appearance_opens_the_ui_kit_dialog_and_done_closes_it() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let mut editor = editor("Test", false);
+        let mut rig = MenuRig::new(&mut editor);
+        let out = rig.frame(&mut h);
+        assert!(!rig.menu.modal_open());
+        let view = out.text_rect("View").expect("View menu").center();
+        let out = rig.click(&mut h, view);
+        let item = out.text_rect("Appearance...").expect("the menu item").center();
+        let out = rig.click(&mut h, item);
+        assert!(rig.menu.appearance_open && rig.menu.modal_open(), "the dialog opened");
+        assert!(out.text_rect("Appearance").is_some(), "its title");
+
+        let done = out.text_rect("Done").expect("Done").center();
+        let _ = rig.click(&mut h, done);
+        assert!(!rig.menu.appearance_open, "Done closed the dialog");
     }
 
     // ---- While a take is recorded ----

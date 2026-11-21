@@ -16,7 +16,6 @@ use crate::ui::master_strip;
 use crate::ui::menu::{ProjectMenu, ProjectMenuAction, app_mark};
 use crate::ui::start_screen::StartScreen;
 use crate::ui::status_bar;
-use crate::ui::theme::THEME;
 use crate::ui::timeline::{self, ViewMenuAction};
 use crate::ui::widgets::meter::MeterState;
 use ui_kit::tokens::{color, size, space};
@@ -420,7 +419,7 @@ impl App {
         // Bottom: status bar.
         egui::Panel::bottom("status_bar")
             .exact_size(STATUS_BAR_H)
-            .frame(egui::Frame::new().fill(THEME.bar_bg).inner_margin(egui::Margin { left: 8, ..Default::default() }))
+            .frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin { left: 8, ..Default::default() }))
             .show(ui, |ui| {
                 status_bar::show(ui, editor, banner.as_ref());
             });
@@ -1089,7 +1088,7 @@ mod tests {
 
     /// The painted live clip: the rect with the solid `record_red` border.
     fn live_clip_rect(out: &Out) -> Option<egui::Rect> {
-        out.rects().into_iter().find(|r| r.stroke.color == THEME.record_red && r.stroke.width > 0.0).map(|r| r.rect)
+        out.rects().into_iter().find(|r| r.stroke.color == color::SEM_RECORD && r.stroke.width > 0.0).map(|r| r.rect)
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //! below that), plus reorder grip, inline rename, context menu, bottom-edge
 //! resize and the volume and pan sliders.
 
+use crate::ui::timeline::metrics;
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
 
@@ -15,7 +16,6 @@ use uuid::Uuid;
 
 use crate::editor::Editor;
 use crate::editor::action::Action;
-use crate::ui::theme::THEME;
 use crate::ui::widgets::fader;
 use crate::ui::widgets::meter;
 
@@ -229,7 +229,7 @@ pub fn show(
         }
 
         // Resize strip at the bottom edge.
-        let resize_rect = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - THEME.track_resize_h), egui::pos2(rect.right(), rect.bottom()));
+        let resize_rect = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - metrics::TRACK_RESIZE_H), egui::pos2(rect.right(), rect.bottom()));
         let resize = ui.interact(resize_rect, egui::Id::new(("track_resize", ht.id)), egui::Sense::drag());
         let resize = resize.on_hover_cursor(egui::CursorIcon::ResizeVertical);
         if resize.dragged() {
@@ -392,7 +392,7 @@ pub fn show(
             let line_painter = ui.painter_at(header_rect.union(lane_rect));
             line_painter.line_segment(
                 [egui::pos2(header_rect.left(), line_y), egui::pos2(lane_rect.right(), line_y)],
-                egui::Stroke::new(THEME.reorder_line_w, THEME.reorder_line_color),
+                egui::Stroke::new(metrics::REORDER_LINE_W, ui_kit::Theme::get(ui.ctx()).accent.accent),
             );
         }
     }
@@ -409,7 +409,7 @@ pub fn add_row_rect(header_rect: egui::Rect, scroll_y: f32, tracks_h: f32) -> eg
 
 /// The 1 px `stroke.track` line along the bottom edge of `rect`.
 fn paint_row_line(painter: &egui::Painter, rect: egui::Rect) {
-    let line = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - THEME.hairline), rect.right_bottom());
+    let line = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - metrics::HAIRLINE), rect.right_bottom());
     painter.rect_filled(line, 0.0, color::STROKE_TRACK);
 }
 
@@ -425,7 +425,7 @@ fn paint_header_row(painter: &egui::Painter, rect: egui::Rect, selected: bool) {
 /// Right-click menu on one track header: Rename, Delete Track, Add Above/Below.
 /// While a take is recorded (`locked`) every item is disabled.
 fn context_menu(editor: &mut Editor, resp: &egui::Response, state: &mut State, id: Uuid, index: usize, track_name: &str, locked: bool) {
-    egui::Popup::context_menu(resp).style(crate::ui::theme::menu_item_style as fn(&mut egui::Style)).show(|ui| {
+    egui::Popup::context_menu(resp).show(|ui| {
         if locked {
             ui.disable();
         }
@@ -517,8 +517,8 @@ struct Geometry {
 /// toggles are fully inside the header at every height from the model minimum.
 fn geometry(rect: egui::Rect, number_w: f32, line_h: f32) -> Geometry {
     let pad = space::SCALE_2;
-    let content_bottom = rect.bottom() - THEME.track_resize_h;
-    let two_row_h = pad + line_h + pad + TOGGLE_ROW_H + pad + METER_H + pad + size::SEGMENT_HEIGHT + THEME.track_resize_h;
+    let content_bottom = rect.bottom() - metrics::TRACK_RESIZE_H;
+    let two_row_h = pad + line_h + pad + TOGGLE_ROW_H + pad + METER_H + pad + size::SEGMENT_HEIGHT + metrics::TRACK_RESIZE_H;
     let toggles_at = |left: f32, top: f32| -> [egui::Rect; 3] {
         std::array::from_fn(|i| egui::Rect::from_min_size(egui::pos2(left + i as f32 * (TOGGLE_SIDE + TOGGLE_GAP), top), egui::vec2(TOGGLE_SIDE, TOGGLE_SIDE)))
     };
@@ -543,7 +543,7 @@ fn geometry(rect: egui::Rect, number_w: f32, line_h: f32) -> Geometry {
         .then(|| egui::Rect::from_min_size(egui::pos2(rect.left() + pad, meter_top), egui::vec2(rect.width() - 2.0 * pad, METER_H)));
     // The slider row sits centered between the meter and the resize strip; the
     // 28 px hit area may touch the meter, the visible 14 px knob never does.
-    let slider_top = (rect.height() >= THEME.compact_track_h).then(|| {
+    let slider_top = (rect.height() >= metrics::COMPACT_TRACK_H).then(|| {
         let above = meter.map_or(row_bottom + pad, |m| m.bottom());
         let slack = content_bottom - above - size::SEGMENT_HEIGHT;
         (above + slack / 2.0).min(content_bottom - size::SEGMENT_HEIGHT)
@@ -730,7 +730,7 @@ mod tests {
         assert_eq!(slider_knobs(&out), 2, "the default height shows the volume and pan sliders");
 
         editor.set_track_height(id, 40.0);
-        assert!(editor.project.tracks[0].height < THEME.compact_track_h);
+        assert!(editor.project.tracks[0].height < metrics::COMPACT_TRACK_H);
         let out = h.frame(Vec::new(), |ui| {
             show(ui, &mut editor, header, lane, 0.0, &mut meters);
         });
@@ -762,7 +762,7 @@ mod tests {
                 show(ui, &mut editor, header, lane, 0.0, &mut meters);
             });
             let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(header.width(), height));
-            let inside = rect.with_max_y(rect.bottom() - THEME.track_resize_h);
+            let inside = rect.with_max_y(rect.bottom() - metrics::TRACK_RESIZE_H);
             let squares = toggle_squares(&out);
             assert_eq!(squares.len(), 3, "M, S and R at {height} px");
             for square in &squares {
@@ -790,13 +790,13 @@ mod tests {
         for height in [40.0, 64.0, 86.0] {
             let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(208.0, height));
             let geo = geometry(rect, 8.0, 17.0);
-            let inside = rect.with_max_y(rect.bottom() - THEME.track_resize_h);
+            let inside = rect.with_max_y(rect.bottom() - metrics::TRACK_RESIZE_H);
             for toggle in geo.toggles {
                 assert!(inside.contains_rect(toggle), "{toggle:?} inside {inside:?} at {height} px");
             }
             assert!(inside.contains_rect(geo.grip), "the grip inside at {height} px");
             assert!(geo.meter.is_none_or(|meter| inside.contains_rect(meter)), "the meter inside at {height} px");
-            assert_eq!(geo.slider_top.is_some(), height >= THEME.compact_track_h);
+            assert_eq!(geo.slider_top.is_some(), height >= metrics::COMPACT_TRACK_H);
             if let Some(top) = geo.slider_top {
                 assert!(top + size::SEGMENT_HEIGHT <= inside.bottom() + 0.01, "the sliders end above the resize strip at {height} px");
             }

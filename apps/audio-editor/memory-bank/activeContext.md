@@ -1,3 +1,12 @@
+## Phase 13b (appearance, shim removed, lint on)
+S1 phase 13b DONE (2026-11-21): ui/theme.rs (THEME shim) is DELETED; nothing imports ui::theme. Release exe rebuilt.
+- View > Appearance... (menu.rs): sets ProjectMenu.appearance_open; show_dialogs draws ui_kit::appearance_dialog; modal_open includes it. app.rs already polls ui_kit::appearance, so the accent follows live.
+- Layout numbers with no token live in `ui::timeline::metrics` (inline module in timeline/mod.rs; sizes and opacities only); start_screen.rs has its own START_* consts. Colors are ui_kit tokens, or the runtime accent via `ui_kit::Theme::get(ctx).accent.accent` (never a constant).
+- Menus: the shim's menu_item_style/menu_frame are gone; ui_kit::Menu closures, Popup::context_menu and egui::Frame::menu(ui.style()) take the look from ui_kit::apply.
+- Style lint: crates/ui-kit/tests/no_hardcoded_style.rs OPT_IN now has apps/audio-editor/src. No `style-lint: allow` lines were needed. Alpha tints use Color32::gamma_multiply on a token (the lint bans from_rgba_*).
+- Tint changes while removing the shim (nearest token, no behavior change): offline clip body = sem.record at 60%, fade shade = bg.ground at 35%, error/missing text = sem.record, drop-zone rim = stroke.separator.strong.
+- Tests 704 (703, minus the 2 shim tests, plus: icons test kept in ui/mod.rs, metrics test, Appearance menu test).
+
 ## Phase 13a (dialogs)
 S1 phase 13a DONE (2026-11-21): every dialog is a ui-kit dialog; the dialogs no longer import ui::theme. Release exe not rebuilt by this entry.
 - dialogs/mod.rs is now thin: `dialog(ctx, id, title, width, &mut open, body, footer)` wraps ui_kit::dialog (sets the content width to width - 2*(24+1)), plus description, warning_description, error_text, enter_pressed, scroll_form, `choice` (typed adapter over ui_kit::segmented), secondary_button (plain egui::Button, the ui-kit apply look), primary_button(enabled), with_browse, db_control, ms_control (ui_kit::slider + DragValue in the mono value type, double-click on the slider resets to 0). Widths: NARROW_W 420 (messages, Gain, Normalize, close prompts), FORM_W 500 (forms, Export).

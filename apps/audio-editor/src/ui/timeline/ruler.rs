@@ -1,5 +1,6 @@
 //! ui::timeline::ruler: the timecode ruler with markers.
 
+use crate::ui::timeline::metrics;
 use eframe::egui;
 use uuid::Uuid;
 
@@ -10,8 +11,6 @@ use crate::model::marker::Marker;
 
 use ui_kit::MarkerKind;
 use ui_kit::widgets;
-
-use crate::ui::theme::THEME;
 
 use super::{Geom, tick_step};
 
@@ -82,7 +81,7 @@ fn marker_hit(markers: &[Marker], g: &Geom, ruler_rect: egui::Rect, p: egui::Pos
         .iter()
         .find(|m| {
             let x = g.sample_to_x(m.position);
-            (p.x - x).abs() <= THEME.marker_tri_w + MARKER_GRAB_PX
+            (p.x - x).abs() <= metrics::MARKER_TRI_W + MARKER_GRAB_PX
         })
         .map(|m| m.id)
 }
@@ -137,7 +136,7 @@ pub fn handle_markers(ui: &egui::Ui, editor: &mut Editor, g: &Geom, ruler_rect: 
         blocked = true;
     } else if down && let (Some(press), Some(p)) = (state.press, pos) {
         let dist = ((p.x - press.pos.x).powi(2) + (p.y - press.pos.y).powi(2)).sqrt();
-        if dist >= THEME.drag_start_px
+        if dist >= metrics::DRAG_START_PX
             && state.drag.is_none()
             && let Some(base) = editor.project.markers.iter().find(|m| m.id == press.id).map(|m| m.position)
         {
@@ -148,7 +147,7 @@ pub fn handle_markers(ui: &egui::Ui, editor: &mut Editor, g: &Geom, ruler_rect: 
             let raw = g.x_to_sample(p.x);
             let target = if editor.view.snap && !alt {
                 let candidates = editor.snap_candidates(&[], Some(drag.id));
-                snap::snap(raw, &candidates, g.spp, THEME.snap_px).unwrap_or(raw)
+                snap::snap(raw, &candidates, g.spp, metrics::SNAP_PX).unwrap_or(raw)
             } else {
                 raw
             };
@@ -310,9 +309,8 @@ pub fn draw_marker_menu(ui: &egui::Ui, editor: &mut Editor) {
 
     let mut close = false;
     let response = egui::Area::new(egui::Id::new("marker_context_menu")).order(egui::Order::Foreground).fixed_pos(menu.pos).show(ui.ctx(), |ui| {
-        crate::ui::theme::menu_frame().show(ui, |ui| {
-            crate::ui::theme::menu_item_style(ui.style_mut());
-            ui.set_min_width(THEME.clip_menu_min_w);
+        egui::Frame::menu(ui.style()).show(ui, |ui| {
+            ui.set_min_width(metrics::CLIP_MENU_MIN_W);
             if ui.button("Delete Marker").clicked() {
                 let _ = editor.apply(Action::DeleteMarkers { ids: vec![menu.id] });
                 close = true;
@@ -351,7 +349,7 @@ pub fn draw(
     // Major ticks with timecode labels, plus minor ticks between them.
     // The label step is the smallest step whose labels are at least 60 px
     // apart; the labels adapt their format to that step.
-    let step = tick_step(g.spp, rate, THEME.ruler_min_tick_px);
+    let step = tick_step(g.spp, rate, metrics::RULER_MIN_TICK_PX);
     let (start, end) = g.visible_range();
     let first = start / step * step;
     let minor = step / 5;
@@ -392,11 +390,11 @@ pub fn draw(
             continue;
         }
         if Some(marker.id) == selected {
-            painter.line_segment([egui::pos2(x, ruler_rect.top()), egui::pos2(x, lane_rect.bottom())], egui::Stroke::new(THEME.hairline, line_color));
+            painter.line_segment([egui::pos2(x, ruler_rect.top()), egui::pos2(x, lane_rect.bottom())], egui::Stroke::new(metrics::HAIRLINE, line_color));
         } else {
             painter.line_segment(
                 [egui::pos2(x, ruler_rect.bottom()), egui::pos2(x, lane_rect.bottom())],
-                egui::Stroke::new(THEME.hairline, line_color.gamma_multiply(MARKER_LINE_ALPHA)),
+                egui::Stroke::new(metrics::HAIRLINE, line_color.gamma_multiply(MARKER_LINE_ALPHA)),
             );
         }
         dots.push((x, MARKER_KIND));

@@ -8,7 +8,6 @@ use uuid::Uuid;
 use crate::editor::Editor;
 use crate::editor::message::Message;
 use crate::editor::transport::TransportState;
-use crate::ui::theme::THEME;
 use crate::ui::widgets::meter;
 use crate::util::time::seconds_to_samples;
 
@@ -19,6 +18,124 @@ pub mod lane;
 pub mod ruler;
 pub mod track_header;
 pub mod waveform;
+
+/// Timeline geometry and drawing constants: sizes and opacities with no
+/// ui-kit token. Colors come from `ui_kit::tokens` and the runtime theme.
+pub(crate) mod metrics {
+    /// Grab distance of a range boundary line.
+    pub(crate) const BOUNDARY_GRAB_PX: f32 = 4.0;
+    /// Opacity of a live clip body fill (the record color, translucent).
+    pub(crate) const CLIP_BODY_ALPHA: f32 = 34.0 / 255.0;
+    /// Font size of the clip gain value in the header strip.
+    pub(crate) const CLIP_GAIN_SIZE: f32 = 10.0;
+    /// Opacity of a live clip header strip fill.
+    pub(crate) const CLIP_HEADER_ALPHA: f32 = 102.0 / 255.0;
+    /// Vertical inset of a clip rect from its track lane edges.
+    pub(crate) const CLIP_MARGIN: f32 = 2.0;
+    /// Minimum width of the clip context menu.
+    pub(crate) const CLIP_MENU_MIN_W: f32 = 150.0;
+    /// Gap between a clip header's name and the value at its right.
+    pub(crate) const CLIP_NAME_GAP: f32 = 6.0;
+    /// Narrowest width in which a clip header still shows its name.
+    pub(crate) const CLIP_NAME_MIN_W: f32 = 8.0;
+    /// Distance from the visible left edge at which a clip name pins when its own left edge is scrolled out of view.
+    pub(crate) const CLIP_NAME_PIN: f32 = 16.0;
+    /// Corner radius of a clip.
+    pub(crate) const CLIP_RADIUS: f32 = 5.0;
+    /// Horizontal padding of the clip header text.
+    pub(crate) const CLIP_TEXT_PAD: f32 = 4.0;
+    /// Header height below which the header uses the compact layout.
+    pub(crate) const COMPACT_TRACK_H: f32 = 64.0;
+    /// Small corner radius for filled rects.
+    pub(crate) const CORNER_R: f32 = 2.0;
+    /// Pointer travel that turns a press into a drag.
+    pub(crate) const DRAG_START_PX: f32 = 3.0;
+    /// Extra grab margin around a fade handle square.
+    pub(crate) const FADE_HANDLE_GRAB: f32 = 2.0;
+    /// Side length of a fade handle square.
+    pub(crate) const FADE_HANDLE_SZ: f32 = 8.0;
+    /// Opacity of the darkening outside the fade curves (bg.ground).
+    pub(crate) const FADE_SHADE_ALPHA: f32 = 0.35;
+    /// Opacity of the fade curve lines (text.primary).
+    pub(crate) const GAIN_CURVE_ALPHA: f32 = 0.7;
+    /// Width of the inline gain edit field.
+    pub(crate) const GAIN_EDIT_W: f32 = 52.0;
+    /// Vertical grab distance of the clip gain line.
+    pub(crate) const GAIN_HIT_PX: f32 = 4.0;
+    /// Width of the gain value text area at the right of the clip header.
+    pub(crate) const GAIN_TEXT_W: f32 = 56.0;
+    /// Dash length of the dashed ghost border.
+    pub(crate) const GHOST_DASH: f32 = 6.0;
+    /// Gap length of the dashed ghost border.
+    pub(crate) const GHOST_GAP: f32 = 4.0;
+    /// The 1 px hairline stroke width.
+    pub(crate) const HAIRLINE: f32 = 1.0;
+    /// Width of the track header column.
+    pub(crate) const HEADER_COL_W: f32 = 208.0;
+    /// Height of the clip header strip (name + gain row).
+    pub(crate) const HEADER_STRIP_H: f32 = 18.0;
+    /// Width of the insert line.
+    pub(crate) const INSERT_LINE_W: f32 = 2.0;
+    /// Half width of a marker hit area on the ruler.
+    pub(crate) const MARKER_TRI_W: f32 = 5.0;
+    /// Opacity of an offline clip's body (sem.record).
+    pub(crate) const OFFLINE_BODY_ALPHA: f32 = 0.6;
+    /// Width of the range boundary lines.
+    pub(crate) const RANGE_LINE_W: f32 = 1.0;
+    /// Width of the reorder insertion line.
+    pub(crate) const REORDER_LINE_W: f32 = 2.0;
+    /// Minimum width in points a ruler tick must have to be drawn.
+    pub(crate) const RULER_MIN_TICK_PX: f32 = 60.0;
+    /// Height of the horizontal scrollbar strip.
+    pub(crate) const SCROLLBAR_H: f32 = 12.0;
+    /// Minimum scrollbar thumb width.
+    pub(crate) const SCROLLBAR_THUMB_MIN: f32 = 20.0;
+    /// Border width of a selected clip.
+    pub(crate) const SELECTION_BORDER_W: f32 = 2.0;
+    /// Snap distance in points (the "8 px snap distance").
+    pub(crate) const SNAP_PX: f32 = 8.0;
+    /// Clip width below which a clip draws as a single hairline.
+    pub(crate) const THIN_CLIP_W: f32 = 3.0;
+    /// Height of the resize strip at the header's bottom edge.
+    pub(crate) const TRACK_RESIZE_H: f32 = 4.0;
+    /// Width of the trimmable clip edge zones.
+    pub(crate) const TRIM_EDGE_W: f32 = 6.0;
+    /// Radius of the drawn sample dots at extreme zoom-in.
+    pub(crate) const WAVE_DOT_R: f32 = 1.5;
+    /// Space left above and below a waveform inside its lane.
+    pub(crate) const WAVE_LANE_PAD: f32 = 1.0;
+    /// Stroke width of the waveform lines.
+    pub(crate) const WAVE_WIDTH: f32 = 1.0;
+    /// Opacity of the idle (not hovered) clip gain line (text.primary).
+    pub(crate) const GAIN_LINE_IDLE_ALPHA: f32 = 76.0 / 255.0;
+    /// Opacity of the waveform's lane center guide (wave color).
+    pub(crate) const GUIDE_CENTER_ALPHA: f32 = 51.0 / 255.0;
+    /// Opacity of the divider between the two lanes of stereo media (bg.ground).
+    pub(crate) const GUIDE_DIVIDER_ALPHA: f32 = 89.0 / 255.0;
+    /// Opacity of the ghost clip fill while a bin drag hovers (accent).
+    pub(crate) const GHOST_FILL_ALPHA: f32 = 90.0 / 255.0;
+    /// Opacity of the ghost clip border (accent).
+    pub(crate) const GHOST_STROKE_ALPHA: f32 = 220.0 / 255.0;
+    /// Opacity of the insert line on Ctrl while a bin drag hovers (accent).
+    pub(crate) const INSERT_LINE_ALPHA: f32 = 230.0 / 255.0;
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// The timeline geometry the spec fixes: header strip, trim zones,
+        /// snap distance and the clip-body opacities.
+        #[test]
+        fn metrics_hold_the_spec_values() {
+            assert_eq!(HEADER_STRIP_H, 18.0);
+            assert_eq!(TRIM_EDGE_W, 6.0);
+            assert_eq!(SNAP_PX, 8.0);
+            assert_eq!(FADE_HANDLE_SZ, 8.0);
+            assert_eq!((CLIP_BODY_ALPHA * 255.0).round(), 34.0);
+            assert_eq!((CLIP_HEADER_ALPHA * 255.0).round(), 102.0);
+        }
+    }
+}
 
 /// Smallest zoom: one thirty-second of a sample per pixel.
 pub const MIN_SPP: f64 = 1.0 / 32.0;
@@ -196,7 +313,7 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction, m
     let mut messages = Vec::new();
     ui_kit::panel(ui, |ui| {
         let content_rect = ui.max_rect();
-        let lane_width = ui.available_width() - THEME.header_col_w;
+        let lane_width = ui.available_width() - metrics::HEADER_COL_W;
         panel_toolbar(ui, editor, lane_width);
         messages.extend(show_frame(ui, editor, view_menu, meters).into_iter().map(Message::media));
         // The transport deck floats over the panel's content area.
@@ -323,12 +440,12 @@ fn show_frame(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction,
     let avail = ui.available_rect_before_wrap();
     let resp = ui.allocate_rect(avail, egui::Sense::click());
 
-    let lane_left = avail.left() + THEME.header_col_w;
+    let lane_left = avail.left() + metrics::HEADER_COL_W;
     let lane_right = avail.right();
     let lane_width = lane_right - lane_left;
-    let ruler_rect = egui::Rect::from_min_max(egui::pos2(lane_left, avail.top()), egui::pos2(lane_right, avail.top() + THEME.ruler_h));
+    let ruler_rect = egui::Rect::from_min_max(egui::pos2(lane_left, avail.top()), egui::pos2(lane_right, avail.top() + size::RULER_HEIGHT));
     let header_rect = egui::Rect::from_min_max(egui::pos2(avail.left(), ruler_rect.bottom()), egui::pos2(lane_left, avail.bottom()));
-    let lane_rect = egui::Rect::from_min_max(egui::pos2(lane_left, ruler_rect.bottom()), egui::pos2(lane_right, avail.bottom() - THEME.scrollbar_h));
+    let lane_rect = egui::Rect::from_min_max(egui::pos2(lane_left, ruler_rect.bottom()), egui::pos2(lane_right, avail.bottom() - metrics::SCROLLBAR_H));
     let scroll_rect = egui::Rect::from_min_max(egui::pos2(lane_left, lane_rect.bottom()), egui::pos2(lane_right, avail.bottom()));
 
     let content_h: f32 = editor.project.tracks.iter().map(|t| t.height).sum::<f32>() + track_header::ADD_ROW_H;
@@ -582,11 +699,11 @@ fn draw(
     interaction::draw_range(ui, editor, g, lane_rect, view.scroll_y);
 
     // Ruler: ticks, labels, markers and their faint lines.
-    painter.rect_filled(ruler_rect, 0.0, THEME.ruler_bg);
+    painter.rect_filled(ruler_rect, 0.0, color::BG_PANEL);
     ruler::draw(&painter, ruler_rect, lane_rect, g, editor.project.sample_rate, editor.project_length(), &editor.project.markers, editor.selected_marker());
     // `stroke.track.header` under the ruler, across the corner cell too.
     let ruler_line =
-        egui::Rect::from_min_max(egui::pos2(header_rect.left(), ruler_rect.bottom() - THEME.hairline), egui::pos2(ruler_rect.right(), ruler_rect.bottom()));
+        egui::Rect::from_min_max(egui::pos2(header_rect.left(), ruler_rect.bottom() - metrics::HAIRLINE), egui::pos2(ruler_rect.right(), ruler_rect.bottom()));
     painter.rect_filled(ruler_line, 0.0, color::STROKE_TRACK_HEADER);
 
     // Range selection: a 3 px accent bar along the ruler bottom across the
@@ -595,7 +712,11 @@ fn draw(
         let x0 = g.sample_to_x(*start).max(g.lane_left);
         let x1 = g.sample_to_x(*end).min(lane_rect.right());
         if x1 > x0 {
-            painter.rect_filled(egui::Rect::from_min_max(egui::pos2(x0, ruler_rect.bottom() - 3.0), egui::pos2(x1, ruler_rect.bottom())), 0.0, THEME.accent);
+            painter.rect_filled(
+                egui::Rect::from_min_max(egui::pos2(x0, ruler_rect.bottom() - 3.0), egui::pos2(x1, ruler_rect.bottom())),
+                0.0,
+                ui_kit::Theme::get(painter.ctx()).accent.accent,
+            );
         }
     }
 
@@ -612,11 +733,13 @@ fn draw(
     // its old hit area (the strip height by the thumb length); the 6 px
     // capsule is painted centered in it.
     let frac = (visible as f32 / scroll_extent(content_length(editor), visible) as f32).min(1.0);
-    let thumb_w = (scroll_rect.width() * frac).max(THEME.scrollbar_thumb_min);
+    let thumb_w = (scroll_rect.width() * frac).max(metrics::SCROLLBAR_THUMB_MIN);
     let scroll_max = max_scroll_x as f32;
     let thumb_x = g.lane_left + if scroll_max > 0.0 { (view.scroll_x as f32 / scroll_max) * (scroll_rect.width() - thumb_w) } else { 0.0 };
-    let thumb_rect =
-        egui::Rect::from_min_max(egui::pos2(thumb_x, scroll_rect.top() + THEME.hairline), egui::pos2(thumb_x + thumb_w, scroll_rect.bottom() - THEME.hairline));
+    let thumb_rect = egui::Rect::from_min_max(
+        egui::pos2(thumb_x, scroll_rect.top() + metrics::HAIRLINE),
+        egui::pos2(thumb_x + thumb_w, scroll_rect.bottom() - metrics::HAIRLINE),
+    );
     let thumb = ui.interact(thumb_rect, egui::Id::new("timeline_hscroll_thumb"), egui::Sense::click_and_drag());
     let capsule = egui::Rect::from_center_size(thumb_rect.center(), egui::vec2(thumb_rect.width(), size::SCROLLBAR_THUMB_WIDTH));
     ui_kit::scroll_thumb(&painter, capsule, thumb.hovered() || thumb.dragged());
@@ -882,7 +1005,7 @@ mod tests {
         let out = track_area_frame();
         let rects = out.rects();
         let empty = rects.iter().find(|r| r.fill == color::BG_TRACK_EMPTY).expect("the empty area below the Add track row").rect;
-        let strip = rects.iter().find(|r| r.fill == color::BG_TRACK_HEADER && r.rect.width() == THEME.header_col_w).expect("the header column strip").rect;
+        let strip = rects.iter().find(|r| r.fill == color::BG_TRACK_HEADER && r.rect.width() == metrics::HEADER_COL_W).expect("the header column strip").rect;
         assert_eq!(strip.bottom(), empty.top(), "the header strip ends where the empty area starts");
         assert_eq!(strip.left(), empty.left(), "the empty area covers the header column");
         assert!(empty.right() > strip.right() + 100.0, "and the lanes");
@@ -891,7 +1014,7 @@ mod tests {
             .iter()
             .find(|r| r.fill == color::STROKE_TRACK && r.rect.width() > strip.width() + 100.0 && r.rect.bottom() == empty.top())
             .expect("a stroke.track line under the Add track row");
-        assert_eq!(line.rect.height(), THEME.hairline);
+        assert_eq!(line.rect.height(), metrics::HAIRLINE);
         let add = out.text_rect("+ Add track").expect("the Add track label");
         assert!(add.center().y > empty.top() - track_header::ADD_ROW_H && add.center().y < empty.top(), "the label sits in the row above the empty area");
     }
@@ -900,18 +1023,18 @@ mod tests {
     fn the_header_column_is_one_strip_with_a_tracks_label_a_divider_and_a_line_under_the_ruler() {
         let out = track_area_frame();
         let rects = out.rects();
-        let strip = rects.iter().find(|r| r.fill == color::BG_TRACK_HEADER && r.rect.width() == THEME.header_col_w).expect("the header column strip").rect;
+        let strip = rects.iter().find(|r| r.fill == color::BG_TRACK_HEADER && r.rect.width() == metrics::HEADER_COL_W).expect("the header column strip").rect;
         let divider = rects.iter().find(|r| r.fill == color::STROKE_TRACK_HEADER && r.rect.height() == strip.height()).expect("the divider").rect;
-        assert_eq!((divider.right(), divider.width()), (strip.right(), THEME.hairline), "the divider is on the strip's right edge");
+        assert_eq!((divider.right(), divider.width()), (strip.right(), metrics::HAIRLINE), "the divider is on the strip's right edge");
         let label = out.texts().into_iter().find(|t| t.text == "Tracks").expect("the Tracks label");
         assert_eq!(label.color, color::TEXT_TERTIARY);
-        assert!(label.rect.center().y < strip.top() + THEME.ruler_h && strip.contains_rect(label.rect), "the label is in the ruler row's corner cell");
+        assert!(label.rect.center().y < strip.top() + size::RULER_HEIGHT && strip.contains_rect(label.rect), "the label is in the ruler row's corner cell");
         let under_ruler = rects
             .iter()
-            .find(|r| r.fill == color::STROKE_TRACK_HEADER && r.rect.height() == THEME.hairline && r.rect.left() == strip.left())
+            .find(|r| r.fill == color::STROKE_TRACK_HEADER && r.rect.height() == metrics::HAIRLINE && r.rect.left() == strip.left())
             .expect("stroke.track.header under the ruler")
             .rect;
-        assert_eq!(under_ruler.bottom(), strip.top() + THEME.ruler_h, "the line is the ruler's bottom edge");
+        assert_eq!(under_ruler.bottom(), strip.top() + size::RULER_HEIGHT, "the line is the ruler's bottom edge");
         assert!(under_ruler.width() > strip.width() + 100.0, "and runs over the lanes too");
     }
 
@@ -919,7 +1042,7 @@ mod tests {
     fn row_separators_are_painted_above_the_lane_fills() {
         let out = track_area_frame();
         let rects = out.rects();
-        let lane_wide = |r: &egui::epaint::RectShape| r.rect.width() > THEME.header_col_w + 100.0;
+        let lane_wide = |r: &egui::epaint::RectShape| r.rect.width() > metrics::HEADER_COL_W + 100.0;
         let separators: Vec<usize> = rects.iter().enumerate().filter(|(_, r)| r.fill == color::STROKE_TRACK && lane_wide(r)).map(|(i, _)| i).collect();
         assert_eq!(separators.len(), 3 + 1, "one line per track and one under the Add track row");
         let fills: Vec<usize> = rects

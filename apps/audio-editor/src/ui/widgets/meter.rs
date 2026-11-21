@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 use eframe::egui::Color32;
 use uuid::Uuid;
 
-use crate::ui::theme::THEME;
 use crate::util::db::linear_to_db;
 
 /// Duration of the RMS averaging window, in seconds.
@@ -90,11 +89,11 @@ impl ChannelBallistics {
     #[allow(dead_code)]
     pub fn color_for(db: f32) -> Color32 {
         if db > -6.0 {
-            THEME.meter_red
+            ui_kit::tokens::color::SEM_METER_CLIP
         } else if db > -18.0 {
-            THEME.meter_yellow
+            ui_kit::tokens::color::SEM_METER_WARN
         } else {
-            THEME.meter_green
+            ui_kit::tokens::color::SEM_METER_OK
         }
     }
 }
@@ -215,8 +214,8 @@ mod tests {
 
     #[test]
     fn colors_split_at_minus_eighteen_and_minus_six() {
-        assert_eq!(ChannelBallistics::color_for(-30.0), THEME.meter_green);
-        assert_eq!(ChannelBallistics::color_for(-12.0), THEME.meter_yellow);
-        assert_eq!(ChannelBallistics::color_for(-1.0), THEME.meter_red);
+        assert_eq!(ChannelBallistics::color_for(-30.0), ui_kit::tokens::color::SEM_METER_OK);
+        assert_eq!(ChannelBallistics::color_for(-12.0), ui_kit::tokens::color::SEM_METER_WARN);
+        assert_eq!(ChannelBallistics::color_for(-1.0), ui_kit::tokens::color::SEM_METER_CLIP);
     }
 }

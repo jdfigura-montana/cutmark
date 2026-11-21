@@ -1,5 +1,6 @@
 //! ui::timeline::waveform: waveform painting from cached peaks.
 
+use crate::ui::timeline::metrics;
 use eframe::egui;
 
 use crate::editor::record::RecordStatus;
@@ -10,8 +11,6 @@ use crate::model::media::{PeakLevel, Peaks};
 use crate::util::db::db_to_linear;
 use crate::util::fade::fade_gain;
 
-use crate::ui::theme::THEME;
-
 use super::Geom;
 
 /// Samples per pixel below which the conformed samples are read directly.
@@ -19,7 +18,7 @@ const DIRECT_READ_SPP: f64 = 256.0;
 
 /// Stroke of the waveform lines, in the clip's track color.
 fn wave_stroke(color: egui::Color32) -> egui::Stroke {
-    egui::Stroke::new(THEME.wave_width, color)
+    egui::Stroke::new(metrics::WAVE_WIDTH, color)
 }
 
 /// Index of the coarsest peak level whose block size fits within `spp`.
@@ -132,22 +131,22 @@ pub fn draw(painter: &egui::Painter, clip: &Clip, loaded: &Loaded, g: &Geom, bod
 }
 
 /// The lane guides under a waveform: a faint center line per lane in the wave
-/// color at alpha 0x33 and, for two lanes, a 1 px black 35% divider between L
+/// color at alpha 20% and, for two lanes, a 1 px ground-colored 35% divider between L
 /// and R. `scale` is the track's opacity factor (0.45 when muted).
 fn guides(body: egui::Rect, channels: usize, x_left: f32, x_right: f32, color: egui::Color32, scale: f32) -> Vec<egui::Shape> {
     let lane_h = body.height() / channels as f32;
-    let center = egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), (0x33 as f32 * scale) as u8);
-    let divider = egui::Color32::from_rgba_unmultiplied(0, 0, 0, (89.0 * scale) as u8);
+    let center = color.gamma_multiply(metrics::GUIDE_CENTER_ALPHA * scale);
+    let divider = ui_kit::tokens::color::BG_GROUND.gamma_multiply(metrics::GUIDE_DIVIDER_ALPHA * scale);
     let mut shapes: Vec<egui::Shape> = Vec::new();
     // Faint center line per lane.
     for lane in 0..channels {
         let cy = body.top() + lane_h * (lane as f32 + 0.5);
-        shapes.push(egui::Shape::line_segment([egui::pos2(x_left, cy), egui::pos2(x_right, cy)], egui::Stroke::new(THEME.hairline, center)));
+        shapes.push(egui::Shape::line_segment([egui::pos2(x_left, cy), egui::pos2(x_right, cy)], egui::Stroke::new(metrics::HAIRLINE, center)));
     }
     // Divider between the two lanes of stereo media.
     if channels == 2 {
         let dy = body.top() + lane_h;
-        shapes.push(egui::Shape::line_segment([egui::pos2(x_left, dy), egui::pos2(x_right, dy)], egui::Stroke::new(THEME.hairline, divider)));
+        shapes.push(egui::Shape::line_segment([egui::pos2(x_left, dy), egui::pos2(x_right, dy)], egui::Stroke::new(metrics::HAIRLINE, divider)));
     }
     shapes
 }
@@ -212,7 +211,7 @@ pub fn draw_live(painter: &egui::Painter, status: &RecordStatus<'_>, g: &Geom, b
             let (min, max) = (entry[lane * 2], entry[lane * 2 + 1]);
             let top = body.top() + lane_h * lane as f32;
             let cy = top + lane_h * 0.5;
-            let half = (lane_h * 0.5 - THEME.wave_lane_pad).max(0.0);
+            let half = (lane_h * 0.5 - metrics::WAVE_LANE_PAD).max(0.0);
             let y_min = (cy - max * wave_scale * half).clamp(top, top + lane_h);
             let y_max = (cy - min * wave_scale * half).clamp(top, top + lane_h);
             if y_min == y_max {
@@ -278,7 +277,7 @@ fn draw_columns(
     let left = g.lane_left + first_col as f32;
     for (lane, column) in lanes.iter().enumerate() {
         let top = body_top + lane_h * lane as f32;
-        let rect = egui::Rect::from_min_max(egui::pos2(left, top + THEME.wave_lane_pad), egui::pos2(left + width, top + lane_h - THEME.wave_lane_pad));
+        let rect = egui::Rect::from_min_max(egui::pos2(left, top + metrics::WAVE_LANE_PAD), egui::pos2(left + width, top + lane_h - metrics::WAVE_LANE_PAD));
         ui_kit::paint_waveform(painter, rect, column, color);
     }
 }
@@ -303,7 +302,7 @@ fn draw_samples(
     for lane in 0..channels {
         let top = lane_h * lane as f32;
         let cy = top + lane_h * 0.5;
-        let half = (lane_h * 0.5 - THEME.wave_lane_pad).max(0.0);
+        let half = (lane_h * 0.5 - metrics::WAVE_LANE_PAD).max(0.0);
         let ch = lane.min(peak_channels - 1);
         let mut points: Vec<egui::Pos2> = Vec::new();
         for frame in clip.src_in..clip.src_out.min(frame_count as u64) {
@@ -319,13 +318,13 @@ fn draw_samples(
         if points.len() > 1 {
             if g.spp < 0.125 {
                 for &p in &points {
-                    shapes.push(egui::Shape::circle_filled(p, THEME.wave_dot_r, stroke.color));
+                    shapes.push(egui::Shape::circle_filled(p, metrics::WAVE_DOT_R, stroke.color));
                 }
             }
             shapes.push(egui::Shape::line(points, stroke));
         } else if g.spp < 0.125 {
             for &p in &points {
-                shapes.push(egui::Shape::circle_filled(p, THEME.wave_dot_r, stroke.color));
+                shapes.push(egui::Shape::circle_filled(p, metrics::WAVE_DOT_R, stroke.color));
             }
         }
     }
@@ -455,9 +454,9 @@ mod tests {
         let body = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(256.0, 40.0));
         let mut h = crate::ui::test_util::Headless::new(400.0, 200.0);
         let out = h.frame(Vec::new(), |ui| {
-            draw_live(ui.painter(), &status, &g, body, 1.0, THEME.record_red);
+            draw_live(ui.painter(), &status, &g, body, 1.0, ui_kit::tokens::color::SEM_RECORD);
         });
-        out.rects().into_iter().filter(|r| r.fill == THEME.record_red).map(|r| r.rect).collect()
+        out.rects().into_iter().filter(|r| r.fill == ui_kit::tokens::color::SEM_RECORD).map(|r| r.rect).collect()
     }
 
     #[test]
@@ -492,9 +491,9 @@ mod tests {
         let body = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(160.0, 40.0));
         let mut h = crate::ui::test_util::Headless::new(400.0, 200.0);
         let out = h.frame(Vec::new(), |ui| {
-            draw_live(ui.painter(), &status, &g, body, 1.0, THEME.record_red);
+            draw_live(ui.painter(), &status, &g, body, 1.0, ui_kit::tokens::color::SEM_RECORD);
         });
-        let columns: Vec<_> = out.rects().into_iter().filter(|r| r.fill == THEME.record_red).collect();
+        let columns: Vec<_> = out.rects().into_iter().filter(|r| r.fill == ui_kit::tokens::color::SEM_RECORD).collect();
         assert_eq!(columns.len(), 96, "3,072 frames / 32 spp");
         assert!(columns.iter().all(|r| r.rect.right() <= 96.5));
     }
