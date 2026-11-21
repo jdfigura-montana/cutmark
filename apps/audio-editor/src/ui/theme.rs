@@ -9,9 +9,6 @@ use std::sync::LazyLock;
 use eframe::egui;
 use ui_kit::tokens;
 
-/// Named family holding the Inter Medium face (ui-kit's medium weight step).
-const MEDIUM_FAMILY: &str = ui_kit::fonts::MEDIUM_FAMILY;
-
 /// The named egui font family holding the Inter SemiBold face.
 const SEMIBOLD_FAMILY: &str = ui_kit::fonts::SEMIBOLD_FAMILY;
 
@@ -331,10 +328,30 @@ pub struct Theme {
     pub status_bar_h: f32,
     /// Minimum margin around the start screen panel (48).
     pub start_card_margin: f32,
-    /// Start screen panel width (560).
+    /// Start screen hero panel width (420); the recent panel takes the rest.
     pub start_panel_w: f32,
-    /// Start screen panel height (560).
+    /// Start screen panel height (640).
     pub start_panel_h: f32,
+    /// Start screen content max width (1120).
+    pub start_max_w: f32,
+    /// Gap between the two start screen panels (16).
+    pub start_gap: f32,
+    /// Side of the hero's app mark (44).
+    pub start_mark: f32,
+    /// Height of the hero's decorative waveform band (180).
+    pub start_band_h: f32,
+    /// Opacity of the hero band and of each of its layers (0.55).
+    pub start_band_alpha: f32,
+    /// Padding inside an action card, x then y (16, 14).
+    pub start_card_pad: egui::Vec2,
+    /// Side of the icon tile in an action card (44).
+    pub start_card_tile: f32,
+    /// Font size of an action card title and the recent panel title (15).
+    pub start_card_title_size: f32,
+    /// Stroke width of the drop zone border (1.5).
+    pub start_drop_stroke: f32,
+    /// Color of the drop zone dashed border, white at 14 percent.
+    pub start_drop_border: egui::Color32,
     // Unused since 10c, kept until the shim is deleted in phase 13.
     /// Start screen card width (1000).
     #[allow(dead_code)]
@@ -345,8 +362,7 @@ pub struct Theme {
     /// Smallest start screen card width when the window is narrow (760).
     #[allow(dead_code)]
     pub start_card_min_w: f32,
-    /// Corner radius of the start screen card (14).
-    #[allow(dead_code)]
+    /// Corner radius of an action card (14).
     pub start_card_radius: f32,
     /// Width of the start screen card's left column (360).
     #[allow(dead_code)]
@@ -396,29 +412,23 @@ pub struct Theme {
     /// Gap between the buttons and the drop zone (20).
     #[allow(dead_code)]
     pub start_drop_gap: f32,
-    /// Height of the dashed drop zone (52).
-    #[allow(dead_code)]
+    /// Height of the dashed drop zone (84).
     pub start_drop_h: f32,
-    /// Corner radius of the drop zone (8).
-    #[allow(dead_code)]
+    /// Corner radius of the drop zone (14).
     pub start_drop_radius: f32,
     /// White text on the accent button.
     #[allow(dead_code)]
     pub start_on_accent: egui::Color32,
     /// Gap between the recent rows (2).
-    #[allow(dead_code)]
     pub start_row_gap: f32,
-    /// Height of one recent row (64).
-    #[allow(dead_code)]
+    /// Height of one recent row (58).
     pub start_row_h: f32,
-    /// Size of the recent row's project tile (40).
-    #[allow(dead_code)]
+    /// Size of the recent row's project tile (40); the action card tile is 44.
     pub start_tile: f32,
     /// Fixed width of the last-opened date column (96).
     #[allow(dead_code)]
     pub start_last_col_w: f32,
     /// Size of the per-row remove button (28).
-    #[allow(dead_code)]
     pub start_x_btn: f32,
     /// Fill of the MISSING pill.
     #[allow(dead_code)]
@@ -432,17 +442,14 @@ pub struct Theme {
     /// Icon color of a missing project's tile.
     #[allow(dead_code)]
     pub start_missing_icon: egui::Color32,
-    /// Title font size under the logo (24).
-    #[allow(dead_code)]
+    /// Hero app name font size (26).
     pub start_title_size: f32,
-    /// Small mono font size: version line, shortcut hints, path (11).
-    #[allow(dead_code)]
+    /// Small mono font size: folder path in a recent row (11).
     pub start_small_size: f32,
     /// Button label font size (14).
     #[allow(dead_code)]
     pub start_btn_text_size: f32,
     /// Hint font size: drop zone, footnotes, dates, Clear missing (12).
-    #[allow(dead_code)]
     pub start_hint_size: f32,
     /// Recent row name font size (14).
     #[allow(dead_code)]
@@ -450,20 +457,15 @@ pub struct Theme {
     /// MISSING pill font size (10.5).
     #[allow(dead_code)]
     pub start_pill_size: f32,
-    /// Phosphor icon size in buttons and tiles (16).
-    #[allow(dead_code)]
+    /// Phosphor icon size in tiles and the drop zone (20).
     pub start_icon_size: f32,
     /// Height of the recent-projects header row (22).
-    #[allow(dead_code)]
     pub start_header_h: f32,
-    /// Corner radius of a recent row and its tile (8).
-    #[allow(dead_code)]
+    /// Corner radius of a recent row (10).
     pub start_row_radius: f32,
     /// Dash length of the drop-zone dashed border (4).
-    #[allow(dead_code)]
     pub start_dash: f32,
     /// Gap between dashes of the drop-zone border (4).
-    #[allow(dead_code)]
     pub start_dash_gap: f32,
 }
 
@@ -471,11 +473,6 @@ impl Theme {
     /// Monospace font at `size`, used for every timecode readout.
     pub fn mono(size: f32) -> egui::FontId {
         egui::FontId::new(size, egui::FontFamily::Monospace)
-    }
-
-    /// Medium-weight text font at `size`, used for row names and buttons.
-    pub fn medium(size: f32) -> egui::FontId {
-        egui::FontId::new(size, egui::FontFamily::Name(MEDIUM_FAMILY.into()))
     }
 
     /// SemiBold heading font at `size`, used for headings and track names.
@@ -643,8 +640,18 @@ impl Default for Theme {
             // Start screen
             status_bar_h: tokens::size::STATUS_BAR_HEIGHT,
             start_card_margin: 48.0,
-            start_panel_w: 560.0,
-            start_panel_h: 560.0,
+            start_panel_w: 420.0,
+            start_panel_h: 640.0,
+            start_max_w: 1120.0,
+            start_gap: 16.0,
+            start_mark: 44.0,
+            start_band_h: 180.0,
+            start_band_alpha: 0.55,
+            start_card_pad: egui::vec2(16.0, 14.0),
+            start_card_tile: 44.0,
+            start_card_title_size: 15.0,
+            start_drop_stroke: 1.5,
+            start_drop_border: egui::Color32::from_white_alpha(36),
             start_card_w: 1000.0,
             start_card_h: 600.0,
             start_card_min_w: 760.0,
@@ -665,11 +672,11 @@ impl Default for Theme {
             start_btn_gap: 10.0,
             start_btn_radius: 8.0,
             start_drop_gap: 20.0,
-            start_drop_h: 52.0,
-            start_drop_radius: 8.0,
+            start_drop_h: 84.0,
+            start_drop_radius: 14.0,
             start_on_accent: egui::Color32::WHITE,
             start_row_gap: 2.0,
-            start_row_h: 64.0,
+            start_row_h: 58.0,
             start_tile: 40.0,
             start_last_col_w: 96.0,
             start_x_btn: 28.0,
@@ -677,15 +684,15 @@ impl Default for Theme {
             start_row_recent: egui::Color32::from_rgb(0x1F, 0x23, 0x28),
             start_missing_text: egui::Color32::from_rgb(0xE5, 0x54, 0x4B),
             start_missing_icon: egui::Color32::from_rgb(0x5A, 0x61, 0x6D),
-            start_title_size: 24.0,
+            start_title_size: 26.0,
             start_small_size: 11.0,
             start_btn_text_size: 14.0,
             start_hint_size: 12.0,
             start_name_size: 14.0,
             start_pill_size: 10.5,
-            start_icon_size: 16.0,
+            start_icon_size: 20.0,
             start_header_h: 22.0,
-            start_row_radius: 8.0,
+            start_row_radius: 10.0,
             start_dash: 4.0,
             start_dash_gap: 4.0,
         }
@@ -755,7 +762,7 @@ mod tests {
         let families = [
             egui::FontFamily::Proportional,
             egui::FontFamily::Monospace,
-            egui::FontFamily::Name(MEDIUM_FAMILY.into()),
+            egui::FontFamily::Name(ui_kit::fonts::MEDIUM_FAMILY.into()),
             egui::FontFamily::Name(SEMIBOLD_FAMILY.into()),
         ];
         // Both phosphor cuts are in every family's fallback list (the

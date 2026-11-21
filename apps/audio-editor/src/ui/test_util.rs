@@ -225,6 +225,12 @@ impl Out {
         self.rects().into_iter().filter(|r| r.fill.a() > 0 && r.rect.height() == 1.0).map(|r| r.rect).max_by(|a, b| a.width().total_cmp(&b.width()))
     }
 
+    /// True when this frame asked egui for another frame (an animation or an
+    /// explicit repaint request); false when the UI is at rest.
+    pub fn repaint_requested(&self) -> bool {
+        self.0.viewport_output.get(&ViewportId::ROOT).is_some_and(|v| v.repaint_delay != std::time::Duration::MAX)
+    }
+
     /// True when the app asked the window to stay open this frame.
     pub fn cancelled_close(&self) -> bool {
         self.0.viewport_output.get(&ViewportId::ROOT).is_some_and(|v| v.commands.contains(&egui::ViewportCommand::CancelClose))

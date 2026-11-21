@@ -140,7 +140,11 @@ impl App {
                 if !ui.ctx().egui_wants_keyboard_input() && !start.dialog_is_open() {
                     Self::handle_start_shortcuts(ui, start);
                 }
-                Self::show_start_bar(ui);
+                match Self::show_start_bar(ui) {
+                    ProjectMenuAction::New => *start = StartScreen::with_new_dialog(),
+                    ProjectMenuAction::Open => *start = StartScreen::with_open_request(),
+                    _ => {}
+                }
                 opened = start.show(ui, self.start_output.as_deref());
             }
             Screen::Editing(editor) => {
@@ -284,21 +288,27 @@ impl App {
         Some(pending)
     }
 
-    /// The 44px main toolbar on the start screen: the app mark on the left,
-    /// the app name in the center, nothing on the right (no menus or Export
-    /// while no project is open), but still the window's drag area and the
-    /// caption buttons' home.
-    fn show_start_bar(ui: &mut egui::Ui) {
+    /// The 44px title bar on the start screen: the app mark and the File menu
+    /// on the left, the app name in the center, nothing on the right (no
+    /// Export while no project is open), and it is still the window's drag
+    /// area and the caption buttons' home. Returns the File menu action.
+    fn show_start_bar(ui: &mut egui::Ui) -> ProjectMenuAction {
+        let chosen = std::cell::Cell::new(ProjectMenuAction::None);
         egui::Panel::top("start_bar").exact_size(TOP_BAR_H).frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
             ui_kit::main_toolbar(
                 ui,
-                app_mark,
+                |ui| {
+                    app_mark(ui);
+                    ui.add_space(space::SCALE_8);
+                    chosen.set(crate::ui::menu::start_menu_bar(ui));
+                },
                 |ui| {
                     ui_kit::title_block(ui, &ui_kit::Title::App(APP_SHORT_NAME));
                 },
                 |_| {},
             );
         });
+        chosen.get()
     }
 
     /// Draws the editor layout, handles the menus and the editor shortcuts.
@@ -1496,14 +1506,37 @@ mod tests {
     }
 
     #[test]
-    fn no_project_centers_the_app_name_and_the_start_screen_has_no_menus() {
+    fn no_project_centers_the_app_name_and_the_start_screen_has_only_the_file_menu() {
         let mut h = Headless::new(1280.0, 800.0);
         let mut app = App::default();
         let _ = h.frame(Vec::new(), |ui| app.run(ui));
         let out = h.frame(Vec::new(), |ui| app.run(ui));
         let title = out.texts().into_iter().find(|t| t.text == APP_SHORT_NAME && t.rect.center().y < TITLE_BAR_H).expect("the app name in the title bar");
         assert!((title.rect.center().x - 640.0).abs() <= 1.0, "the app name is centered, off by {}", title.rect.center().x - 640.0);
-        assert!(out.text_rect("Edit").is_none() && out.text_rect("Export").is_none(), "no menus or Export without a project");
+        let file = out.text_rect("File").expect("the File menu title");
+        assert!(file.center().y < TITLE_BAR_H && file.right() < title.rect.left(), "File sits in the left zone, before the centered name");
+        assert!(out.text_rect("Edit").is_none() && out.text_rect("Export").is_none(), "only File, and no Export, without a project");
+    }
+
+    #[test]
+    fn the_start_file_menu_has_new_and_open_with_their_shortcuts() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let mut app = App::default();
+        let _ = h.frame(Vec::new(), |ui| app.run(ui));
+        let out = h.frame(Vec::new(), |ui| app.run(ui));
+        let at = out.text_rect("File").expect("the File menu title").center();
+        let _ = h.click(at, |ui| app.run(ui));
+        let out = h.settle(|ui| app.run(ui));
+        // The hero cards repeat "New project", "Ctrl+N" and "Ctrl+O" far below
+        // the title bar: only the popover's copies, just under it, count.
+        let in_popover = |out: &Out, label: &str| out.texts().into_iter().find(|t| t.text == label && t.rect.center().y < 160.0).map(|t| t.rect);
+        for label in ["New project", "Open project...", "Ctrl+N", "Ctrl+O"] {
+            assert!(in_popover(&out, label).is_some(), "the File menu shows {label}");
+        }
+        let item = in_popover(&out, "New project").expect("the New project item").center();
+        let _ = h.click(item, |ui| app.run(ui));
+        let _ = h.settle(|ui| app.run(ui));
+        assert!(matches!(&app.screen, Screen::Start(start) if start.dialog_is_open()), "New project opens the New Project dialog");
     }
 
     #[test]

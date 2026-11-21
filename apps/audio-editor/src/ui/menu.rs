@@ -50,11 +50,38 @@ const APP_MARK_SIZE: f32 = 18.0;
 /// top right (spec "Open questions" item 1: placeholder until a real logo).
 pub(crate) fn app_mark(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(APP_MARK_SIZE, APP_MARK_SIZE), egui::Sense::hover());
+    paint_app_mark(ui, rect, color::BG_GROUND);
+}
+
+/// Paints the app mark into `rect` (a square); `notch` is the color of the
+/// surface behind it, which the cut-out notch shows.
+pub(crate) fn paint_app_mark(ui: &egui::Ui, rect: egui::Rect, notch: egui::Color32) {
     let c = rect.center();
-    let radius = APP_MARK_SIZE / 2.0;
+    let radius = rect.width() / 2.0;
     let painter = ui.painter();
     painter.circle_filled(c, radius, ui_kit::Theme::get(ui.ctx()).accent.accent);
-    painter.rect_filled(egui::Rect::from_min_size(egui::pos2(c.x, c.y - radius), egui::vec2(radius, radius)), 0.0, color::BG_GROUND);
+    painter.rect_filled(egui::Rect::from_min_size(egui::pos2(c.x, c.y - radius), egui::vec2(radius, radius)), 0.0, notch);
+}
+
+/// The start screen's menu bar: File with New project and Open project, the
+/// same two actions (and shortcuts) the start screen has. Returns the action
+/// the user chose (`New` or `Open`). Call it in the left zone of the main
+/// toolbar, after the app mark.
+pub fn start_menu_bar(ui: &mut egui::Ui) -> ProjectMenuAction {
+    let action = std::cell::Cell::new(ProjectMenuAction::None);
+    let mut menus = [ui_kit::Menu::new("File", |ui| {
+        menu_item_style(ui.style_mut());
+        if ui.add(item("New project", "Ctrl+N")).clicked() {
+            action.set(ProjectMenuAction::New);
+            ui.close();
+        }
+        if ui.add(item("Open project...", "Ctrl+O")).clicked() {
+            action.set(ProjectMenuAction::Open);
+            ui.close();
+        }
+    })];
+    ui_kit::menu_bar(ui, &mut menus);
+    action.get()
 }
 
 /// The title bar's menu bar: the Project, Edit, Markers, Process and View

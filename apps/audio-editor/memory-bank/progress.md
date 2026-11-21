@@ -1,3 +1,6 @@
+## Task S1 R4 (2026-11-21)
+- Start screen rebuilt to rev 3 (hero + recent panels, title bar File menu, Delete key, footer hints). Tests 692 (was 679), check.ps1 green. Release exe not rebuilt (app was running). Open for JD eyes: no board image was readable, so tile/card colors, band placement and the selected-tile look are my reading of the spec; no View or Help menu (nothing for them to hold).
+
 ## Task S1 R3 (2026-11-21)
 - Track area structure: header column strip with "Tracks" corner, stroke.track lines under rows and the Add track row, bg.track.empty below it, selected header bg.track.header.selected. Tests 679, check.ps1 green. Details in activeContext.
 
