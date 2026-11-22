@@ -20,6 +20,11 @@ pub fn show(ui: &mut egui::Ui, state: &ControllerState) {
                 ui.label(format!("Disk free: {}", format_free(free)));
             }
         }
+        // An info line, not a warning: the camera file uses a different codec than the profile.
+        if let Some(info) = crate::engine::cam::info_line() {
+            ui.separator();
+            ui.label(info);
+        }
     });
 }
 

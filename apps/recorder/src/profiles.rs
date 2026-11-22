@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
-use crate::config::{ConfigError, Profile, write_json};
+use media_io::encode::{Codec as EncoderCodec, aligned_1080_value, probe_amf};
+
+use crate::config::{ConfigError, Container, Profile, write_json};
 
 /// How long an edit waits for further edits before the profile is written to its file.
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
@@ -149,7 +151,7 @@ impl ProfileStore {
             self.warnings = loaded.warnings;
         }
         if self.profiles.is_empty() {
-            self.profiles = Profile::shipped().to_vec();
+            self.profiles = Profile::shipped().map(|profile| with_default_container(profile, &|| aligned_1080_value().is_some())).to_vec();
         }
         self.dirty = None;
     }
@@ -240,7 +242,8 @@ fn unique_name(base: &str, taken: &[Profile]) -> String {
 /// Saves a new profile with the shipped defaults under a name that is not taken, and returns it.
 pub fn create(dir: &Path) -> Result<Profile, ProfileError> {
     let taken = load_all(dir).profiles;
-    let profile = Profile { name: unique_name(NEW_NAME, &taken), ..Profile::tutorial_av1_1440p60() };
+    let base = with_default_container(Profile::tutorial_av1_1440p60(), &|| aligned_1080_value().is_some());
+    let profile = Profile { name: unique_name(NEW_NAME, &taken), ..base };
     save(dir, &profile)?;
     Ok(profile)
 }
@@ -299,12 +302,36 @@ const NEW_SHIPPED_NAME: &str = "Cam only AV1";
 /// of a newly added [`Profile::cam_only_av1_1080p30`] are copied from the first existing profile that
 /// has the webcam on, else they are None.
 pub fn init(dir: &Path, written: &mut Vec<String>) -> Result<(), ConfigError> {
+    init_with(dir, written, &gpu_codes_1080_exactly)
+}
+
+/// Whether this GPU codes AV1 at exactly 1080 lines. The encoder probe answers once per run; it runs here if it has not yet.
+fn gpu_codes_1080_exactly() -> bool {
+    aligned_1080_value().is_some() || probe_amf(1920, 1080, 60).iter().any(|row| row.codec == EncoderCodec::Av1 && row.aligned_1080.is_some())
+}
+
+/// Gives a shipped profile its default container for a new install: MP4 for Tutorial AV1, and for Cam only AV1
+/// MP4 when `aligned_1080` says the GPU codes 1080 lines exactly (it is asked only then), else MKV.
+/// Premiere HEVC already ships as MP4. Profile files that exist are never passed through here.
+fn with_default_container(profile: Profile, aligned_1080: &dyn Fn() -> bool) -> Profile {
+    let container = if profile.name == Profile::tutorial_av1_1440p60().name {
+        Container::Mp4
+    } else if profile.name == NEW_SHIPPED_NAME {
+        if aligned_1080() { Container::Mp4 } else { Container::Mkv }
+    } else {
+        profile.container
+    };
+    Profile { container, ..profile }
+}
+
+/// Writes the shipped profiles that are missing like `init`, with `aligned_1080` deciding the container of Cam only AV1.
+fn init_with(dir: &Path, written: &mut Vec<String>, aligned_1080: &dyn Fn() -> bool) -> Result<(), ConfigError> {
     let shipped = Profile::shipped();
     let loaded = load_all(dir);
     if loaded.profiles.is_empty() && written.is_empty() {
         for profile in &shipped {
             move_broken_file_out_of_the_way(dir, &profile.name)?;
-            save(dir, profile)?;
+            save(dir, &with_default_container(profile.clone(), aligned_1080))?;
         }
         written.extend(shipped.iter().map(|profile| profile.name.clone()));
         return Ok(());
@@ -325,7 +352,7 @@ pub fn init(dir: &Path, written: &mut Vec<String>) -> Result<(), ConfigError> {
             written.push(profile.name.clone());
             continue;
         }
-        let mut added = profile.clone();
+        let mut added = with_default_container(profile.clone(), aligned_1080);
         if profile.name == NEW_SHIPPED_NAME && !webcam_taken {
             added.webcam = webcam_source.clone();
             webcam_taken = true;
@@ -556,6 +583,50 @@ mod tests {
         init(&dir, &mut written)?;
         assert_eq!(load_all(&dir).profiles.len(), 3);
         assert_eq!(fs::read_to_string(dir.join("Tutorial AV1 1440p60.json.bad"))?, "{ not json");
+        fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn new_installs_get_mp4_and_cam_only_follows_the_exact_1080_probe() -> Result<(), Box<dyn Error>> {
+        for (aligned, cam_container) in [(true, Container::Mp4), (false, Container::Mkv)] {
+            let dir = fresh_dir(&format!("containers-{aligned}"))?;
+            init_with(&dir, &mut Vec::new(), &|| aligned)?;
+            let containers: Vec<(String, Container)> = load_all(&dir).profiles.into_iter().map(|profile| (profile.name, profile.container)).collect();
+            assert_eq!(
+                containers,
+                vec![
+                    ("Cam only AV1".to_owned(), cam_container),
+                    ("Premiere HEVC 1080p60".to_owned(), Container::Mp4),
+                    ("Tutorial AV1 1440p60".to_owned(), Container::Mp4),
+                ],
+                "aligned {aligned}"
+            );
+            fs::remove_dir_all(&dir)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_probe_is_only_asked_when_cam_only_is_written() -> Result<(), Box<dyn Error>> {
+        let dir = fresh_dir("probe-lazy")?;
+        let mut written = Profile::shipped().iter().map(|profile| profile.name.clone()).collect::<Vec<_>>();
+        save(&dir, &Profile::tutorial_av1_1440p60())?;
+        init_with(&dir, &mut written, &|| panic!("the probe must not run when nothing is written"))?;
+        fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn an_existing_profile_file_keeps_its_container() -> Result<(), Box<dyn Error>> {
+        let dir = fresh_dir("keeps-container")?;
+        // Tutorial AV1 as an older install wrote it: MKV, and already in the written list.
+        save(&dir, &Profile { container: Container::Mkv, ..Profile::tutorial_av1_1440p60() })?;
+        let mut written = vec!["Tutorial AV1 1440p60".to_owned(), "Premiere HEVC 1080p60".to_owned(), "Cam only AV1".to_owned()];
+        init_with(&dir, &mut written, &|| true)?;
+        let loaded = load_all(&dir);
+        assert_eq!(loaded.profiles.len(), 1);
+        assert_eq!(loaded.profiles[0].container, Container::Mkv);
         fs::remove_dir_all(&dir)?;
         Ok(())
     }

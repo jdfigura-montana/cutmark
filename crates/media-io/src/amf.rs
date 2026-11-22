@@ -1,6 +1,7 @@
 //! The AMD AMF hardware encoder backend.
 
 use std::ffi::{CStr, CString, c_int, c_void};
+use std::sync::Mutex;
 
 use ffmpeg_next::Rational;
 use ffmpeg_next::codec::encoder;
@@ -73,6 +74,8 @@ pub struct OptionRanges {
     pub has_filler_data: bool,
     /// Whether the encoder has an enforce_hrd option.
     pub has_enforce_hrd: bool,
+    /// The named values of the align option (av1_amf only), empty when the encoder has none.
+    pub align_values: Vec<String>,
 }
 
 /// The outcome of probing one AMF codec.
@@ -84,23 +87,41 @@ pub struct CodecSupport {
     pub result: Result<(), String>,
     /// The option ranges read from the encoder; empty when it could not be created.
     pub ranges: OptionRanges,
+    /// For AV1: the align value that makes the GPU code 1920x1080 as exactly 1080 lines, when one does.
+    pub aligned_1080: Option<String>,
+}
+
+/// What the AV1 probe found about exact 1080 line coding: None until it has run, then the align value that did it (or None).
+static ALIGNED_1080: Mutex<Option<Option<String>>> = Mutex::new(None);
+
+/// The align value that made the last AV1 probe code exactly 1080 lines, if a probe ran and found one.
+pub fn aligned_1080_value() -> Option<String> {
+    ALIGNED_1080.lock().ok().and_then(|slot| slot.clone().flatten())
 }
 
 impl AmfEncoder {
     /// Opens an AMF encoder for the given configuration on the pool's frames context.
+    ///
+    /// An AV1 encoder at 1080 lines uses the align value the probe found to code them exactly, if any.
     pub fn open(cfg: &EncoderConfig, pool: &D3d11FramePool) -> Result<Self, EncoderError> {
-        Self::open_reporting(cfg, pool).1
+        let align = if cfg.codec == Codec::Av1 && cfg.height == 1080 { aligned_1080_value() } else { None };
+        Self::open_with_align(cfg, pool, align.as_deref())
+    }
+
+    /// Opens an AMF encoder like `open`, with the align option (av1_amf only) set to the named value.
+    pub fn open_with_align(cfg: &EncoderConfig, pool: &D3d11FramePool, align: Option<&str>) -> Result<Self, EncoderError> {
+        Self::open_reporting(cfg, pool, align).1
     }
 
     /// Opens an encoder and also returns the option ranges read from it, even when opening fails.
-    fn open_reporting(cfg: &EncoderConfig, pool: &D3d11FramePool) -> (OptionRanges, Result<Self, EncoderError>) {
+    fn open_reporting(cfg: &EncoderConfig, pool: &D3d11FramePool, align: Option<&str>) -> (OptionRanges, Result<Self, EncoderError>) {
         let mut ranges = OptionRanges::default();
-        let result = Self::open_into(cfg, pool, &mut ranges);
+        let result = Self::open_into(cfg, pool, align, &mut ranges);
         (ranges, result)
     }
 
     /// Opens an encoder, storing the option ranges as soon as they are readable.
-    fn open_into(cfg: &EncoderConfig, pool: &D3d11FramePool, ranges_out: &mut OptionRanges) -> Result<Self, EncoderError> {
+    fn open_into(cfg: &EncoderConfig, pool: &D3d11FramePool, align: Option<&str>, ranges_out: &mut OptionRanges) -> Result<Self, EncoderError> {
         cfg.validate()?;
         let name = codec_name(cfg.codec);
         let codec = encoder::find_by_name(name).ok_or_else(|| MediaError::EncoderMissing(name.to_string()))?;
@@ -111,7 +132,13 @@ impl AmfEncoder {
         let priv_data = private_options(&context);
         let context_ptr = raw_context(&context);
         *ranges_out = read_option_ranges(priv_data);
-        let options = amf_options(cfg.codec, cfg, ranges_out)?;
+        let mut options = amf_options(cfg.codec, cfg, ranges_out)?;
+        if let Some(value) = align {
+            if !ranges_out.align_values.iter().any(|offered| offered == value) {
+                return Err(out_of_range(name, "align", value, &format!("one of {}", ranges_out.align_values.join(", "))).into());
+            }
+            push(&mut options, "align", value.to_string());
+        }
         let mut video = context.encoder().video().map_err(MediaError::Init)?;
         video.set_width(cfg.width);
         video.set_height(cfg.height);
@@ -133,6 +160,17 @@ impl AmfEncoder {
         // SAFETY: the encoder owns a live AVCodecContext; extradata_size is plain data.
         let size = unsafe { (*self.context_ptr()).extradata_size };
         usize::try_from(size).unwrap_or(0)
+    }
+
+    /// The codec header (extradata) bytes the opened encoder holds, empty when it holds none.
+    #[allow(unsafe_code)]
+    fn header_data(&mut self) -> Vec<u8> {
+        let context = self.context_ptr();
+        // SAFETY: the encoder owns a live AVCodecContext; extradata, when not null, holds extradata_size readable bytes.
+        unsafe {
+            let size = usize::try_from((*context).extradata_size).unwrap_or(0);
+            if (*context).extradata.is_null() || size == 0 { Vec::new() } else { std::slice::from_raw_parts((*context).extradata, size).to_vec() }
+        }
     }
 
     /// Every applied option as the opened encoder reports it, in the order they were set.
@@ -215,7 +253,9 @@ impl AmfEncoder {
 pub fn probe_amf(width: u32, height: u32, fps: u32) -> Vec<CodecSupport> {
     match probe_all(width, height, fps) {
         Ok(support) => support,
-        Err(reason) => PROBE_CODECS.iter().map(|&codec| CodecSupport { codec, result: Err(reason.clone()), ranges: OptionRanges::default() }).collect(),
+        Err(reason) => {
+            PROBE_CODECS.iter().map(|&codec| CodecSupport { codec, result: Err(reason.clone()), ranges: OptionRanges::default(), aligned_1080: None }).collect()
+        }
     }
 }
 
@@ -228,10 +268,177 @@ fn probe_all(width: u32, height: u32, fps: u32) -> Result<Vec<CodecSupport>, Str
         .iter()
         .map(|&codec| {
             let cfg = EncoderConfig { codec, width, height, fps_num: fps.max(1), fps_den: 1, ..EncoderConfig::default() };
-            let (ranges, result) = AmfEncoder::open_reporting(&cfg, &pool);
-            CodecSupport { codec, result: result.map(drop).map_err(|err| err.to_string()), ranges }
+            let (ranges, result) = AmfEncoder::open_reporting(&cfg, &pool, None);
+            let aligned_1080 = if codec == Codec::Av1 && result.is_ok() { exact_1080_value(&hw_device, fps, &ranges.align_values) } else { None };
+            CodecSupport { codec, result: result.map(drop).map_err(|err| err.to_string()), ranges, aligned_1080 }
         })
         .collect())
+}
+
+/// The align value that makes the GPU code AV1 at 1920x1080 as exactly 1080 lines. The answer comes from one
+/// probe at that size, whatever size the caller probes, and is kept for the rest of the process.
+fn exact_1080_value(hw_device: &D3d11Device, fps: u32, values: &[String]) -> Option<String> {
+    if let Ok(slot) = ALIGNED_1080.lock()
+        && let Some(known) = slot.as_ref()
+    {
+        return known.clone();
+    }
+    let pool = D3d11FramePool::new(hw_device, 1920, 1080, 4).ok()?;
+    let cfg = EncoderConfig { codec: Codec::Av1, width: 1920, height: 1080, fps_num: fps.max(1), fps_den: 1, ..EncoderConfig::default() };
+    let found = probe_aligned_1080(&cfg, &pool, values);
+    log::info!(
+        "AMF av1_amf: exact 1080 line coding {}",
+        found.as_deref().map_or("is not offered by this GPU".to_string(), |value| format!("comes from align = {value}"))
+    );
+    if let Ok(mut slot) = ALIGNED_1080.lock() {
+        *slot = Some(found.clone());
+    }
+    found
+}
+
+/// The first align value (in the order the encoder lists them) under which the GPU codes exactly the configured height.
+fn probe_aligned_1080(cfg: &EncoderConfig, pool: &D3d11FramePool, values: &[String]) -> Option<String> {
+    values.iter().find(|value| coded_height_with(cfg, pool, value) == Some(cfg.height)).cloned()
+}
+
+/// Encodes one frame with the given align value and reads the frame height out of the AV1 sequence header.
+/// None when the encoder will not open with the value or yields no sequence header.
+fn coded_height_with(cfg: &EncoderConfig, pool: &D3d11FramePool, align: &str) -> Option<u32> {
+    let mut encoder = AmfEncoder::open_with_align(cfg, pool, Some(align)).ok()?;
+    let mut frame = HwFrame::from_pool(pool).ok()?;
+    frame.set_pts(0);
+    encoder.send(frame).ok()?;
+    let mut height = None;
+    encoder
+        .finish(&mut |packet| {
+            if height.is_none() {
+                height = packet.data().and_then(sequence_header_height);
+            }
+        })
+        .ok()?;
+    height.or_else(|| {
+        // The encoder may keep the header out of the stream; an av1C record puts its OBUs after four bytes.
+        let header = encoder.header_data();
+        sequence_header_height(if header.first() == Some(&0x81) { header.get(4..)? } else { &header })
+    })
+}
+
+/// A most-significant-bit-first reader over a byte slice.
+struct BitReader<'a> {
+    /// The bytes being read.
+    data: &'a [u8],
+    /// The next bit to read, counted from the start of the slice.
+    position: usize,
+}
+
+impl BitReader<'_> {
+    /// Reads `count` bits (at most 32) as a number, or None past the end.
+    fn read(&mut self, count: u32) -> Option<u32> {
+        let mut value = 0u64;
+        for _ in 0..count {
+            let byte = *self.data.get(self.position / 8)?;
+            value = (value << 1) | u64::from((byte >> (7 - self.position % 8)) & 1);
+            self.position += 1;
+        }
+        u32::try_from(value).ok()
+    }
+
+    /// Reads one flag bit.
+    fn flag(&mut self) -> Option<bool> {
+        self.read(1).map(|bit| bit == 1)
+    }
+
+    /// Skips an unsigned variable length code: zeros up to a one, then as many bits as there were zeros.
+    fn skip_uvlc(&mut self) -> Option<()> {
+        let mut zeros = 0u32;
+        while !self.flag()? {
+            zeros += 1;
+            if zeros >= 32 {
+                return Some(());
+            }
+        }
+        self.read(zeros).map(drop)
+    }
+}
+
+/// The frame height in the first AV1 sequence header OBU of a byte stream, or None when there is none.
+fn sequence_header_height(data: &[u8]) -> Option<u32> {
+    const SEQUENCE_HEADER: u8 = 1;
+    let mut at = 0usize;
+    while at < data.len() {
+        let header = *data.get(at)?;
+        at += 1 + usize::from(header & 0x04 != 0);
+        let size = if header & 0x02 != 0 {
+            // The size is a little endian base 128 number of up to eight bytes.
+            let mut size = 0usize;
+            for shift in 0..8 {
+                let byte = *data.get(at)?;
+                at += 1;
+                size |= usize::from(byte & 0x7F) << (7 * shift);
+                if byte & 0x80 == 0 {
+                    break;
+                }
+            }
+            size
+        } else {
+            data.len().saturating_sub(at)
+        };
+        let payload = data.get(at..at.checked_add(size)?)?;
+        if (header >> 3) & 0x0F == SEQUENCE_HEADER {
+            return max_frame_height(payload);
+        }
+        at += size;
+    }
+    None
+}
+
+/// Reads max_frame_height_minus_1 (plus one) out of a sequence header OBU's payload.
+fn max_frame_height(payload: &[u8]) -> Option<u32> {
+    let mut bits = BitReader { data: payload, position: 0 };
+    bits.read(3)?; // seq_profile
+    bits.read(1)?; // still_picture
+    let reduced = bits.flag()?;
+    if reduced {
+        bits.read(5)?; // seq_level_idx[0]
+    } else {
+        let timing_info = bits.flag()?;
+        let mut decoder_model = false;
+        let mut buffer_delay_bits = 0;
+        if timing_info {
+            bits.read(32)?; // num_units_in_display_tick
+            bits.read(32)?; // time_scale
+            if bits.flag()? {
+                bits.skip_uvlc()?; // num_ticks_per_picture_minus_1
+            }
+            decoder_model = bits.flag()?;
+            if decoder_model {
+                buffer_delay_bits = bits.read(5)? + 1; // buffer_delay_length_minus_1
+                bits.read(32)?; // num_units_in_decoding_tick
+                bits.read(5)?; // buffer_removal_time_length_minus_1
+                bits.read(5)?; // frame_presentation_time_length_minus_1
+            }
+        }
+        let initial_display_delay = bits.flag()?;
+        let operating_points = bits.read(5)? + 1;
+        for _ in 0..operating_points {
+            bits.read(12)?; // operating_point_idc
+            if bits.read(5)? > 7 {
+                bits.read(1)?; // seq_tier
+            }
+            if decoder_model && bits.flag()? {
+                bits.read(buffer_delay_bits)?; // decoder_buffer_delay
+                bits.read(buffer_delay_bits)?; // encoder_buffer_delay
+                bits.read(1)?; // low_delay_mode_flag
+            }
+            if initial_display_delay && bits.flag()? {
+                bits.read(4)?; // initial_display_delay_minus_1
+            }
+        }
+    }
+    let width_bits = bits.read(4)? + 1;
+    let height_bits = bits.read(4)? + 1;
+    bits.read(width_bits)?; // max_frame_width_minus_1
+    bits.read(height_bits)?.checked_add(1)
 }
 
 /// A D3D11 device created by FFmpeg for probing, kept alive by its buffer reference.
@@ -425,6 +632,7 @@ fn read_option_ranges(priv_data: *mut c_void) -> OptionRanges {
         presets: preset_name.map(|name| named_values(priv_data, name)).unwrap_or_default(),
         has_filler_data: !find_option(priv_data, c"filler_data").is_null(),
         has_enforce_hrd: !find_option(priv_data, c"enforce_hrd").is_null(),
+        align_values: named_values(priv_data, c"align"),
     }
 }
 
@@ -710,6 +918,7 @@ mod tests {
             presets: ["speed", "balanced", "quality"].map(String::from).to_vec(),
             has_filler_data: true,
             has_enforce_hrd: true,
+            align_values: Vec::new(),
         }
     }
 
@@ -936,6 +1145,92 @@ mod tests {
             let options = amf_options(Codec::Hevc, &cfg, &fake_ranges(Codec::Hevc)).unwrap();
             assert_eq!(value(&options, "g"), gop.to_string(), "{secs} s at {num}/{den}");
         }
+    }
+
+    /// Collects bits most significant first, for building sequence headers.
+    #[derive(Default)]
+    struct BitWriter {
+        bytes: Vec<u8>,
+        used: usize,
+    }
+
+    impl BitWriter {
+        fn put(&mut self, value: u64, count: u32) {
+            for shift in (0..count).rev() {
+                if self.used.is_multiple_of(8) {
+                    self.bytes.push(0);
+                }
+                if (value >> shift) & 1 == 1
+                    && let Some(last) = self.bytes.last_mut()
+                {
+                    *last |= 0x80 >> (self.used % 8);
+                }
+                self.used += 1;
+            }
+        }
+    }
+
+    /// One OBU of the given type holding the payload, with a one byte size field.
+    fn obu(kind: u8, payload: &[u8]) -> Vec<u8> {
+        let mut out = vec![(kind << 3) | 0x02, payload.len() as u8];
+        out.extend_from_slice(payload);
+        out
+    }
+
+    /// A sequence header payload for one operating point, optionally with timing and decoder model info.
+    fn sequence_payload(height: u32, with_timing: bool) -> Vec<u8> {
+        let mut bits = BitWriter::default();
+        bits.put(0, 3); // seq_profile
+        bits.put(0, 1); // still_picture
+        bits.put(0, 1); // reduced_still_picture_header
+        bits.put(u64::from(with_timing), 1); // timing_info_present_flag
+        if with_timing {
+            bits.put(1, 32); // num_units_in_display_tick
+            bits.put(60, 32); // time_scale
+            bits.put(1, 1); // equal_picture_interval
+            bits.put(1, 1); // num_ticks_per_picture_minus_1, the variable length code for 0 is one bit
+            bits.put(1, 1); // decoder_model_info_present_flag
+            bits.put(9, 5); // buffer_delay_length_minus_1
+            bits.put(1, 32); // num_units_in_decoding_tick
+            bits.put(4, 5); // buffer_removal_time_length_minus_1
+            bits.put(4, 5); // frame_presentation_time_length_minus_1
+        }
+        bits.put(0, 1); // initial_display_delay_present_flag
+        bits.put(0, 5); // operating_points_cnt_minus_1
+        bits.put(0, 12); // operating_point_idc
+        bits.put(8, 5); // seq_level_idx, above 7 so a tier bit follows
+        bits.put(0, 1); // seq_tier
+        if with_timing {
+            bits.put(1, 1); // decoder_model_present_for_this_op
+            bits.put(0, 10); // decoder_buffer_delay
+            bits.put(0, 10); // encoder_buffer_delay
+            bits.put(0, 1); // low_delay_mode_flag
+        }
+        bits.put(10, 4); // frame_width_bits_minus_1
+        bits.put(10, 4); // frame_height_bits_minus_1
+        bits.put(1919, 11); // max_frame_width_minus_1
+        bits.put(u64::from(height - 1), 11); // max_frame_height_minus_1
+        bits.bytes
+    }
+
+    #[test]
+    fn the_frame_height_is_read_from_a_sequence_header_after_other_obus() {
+        for with_timing in [false, true] {
+            let mut stream = obu(2, &[]); // temporal delimiter
+            stream.extend(obu(1, &sequence_payload(1082, with_timing)));
+            stream.extend(obu(6, &[0xFF, 0xFF])); // a frame OBU after the header
+            assert_eq!(sequence_header_height(&stream), Some(1082), "timing {with_timing}");
+        }
+        assert_eq!(sequence_header_height(&obu(1, &sequence_payload(1080, false))), Some(1080));
+    }
+
+    #[test]
+    fn no_sequence_header_or_a_cut_off_one_gives_no_height() {
+        assert_eq!(sequence_header_height(&[]), None);
+        assert_eq!(sequence_header_height(&obu(2, &[])), None);
+        let whole = obu(1, &sequence_payload(1080, false));
+        assert_eq!(sequence_header_height(whole.get(..whole.len() - 1).unwrap_or_default()), None);
+        assert_eq!(sequence_header_height(&obu(1, &[0x00, 0x01])), None);
     }
 
     #[test]

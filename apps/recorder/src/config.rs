@@ -1124,9 +1124,10 @@ mod tests {
         assert!(names.iter().all(|name| name.ends_with(".json")), "{names:?}");
 
         let first: Profile = serde_json::from_str(&fs::read_to_string(dir.join("profiles").join("Tutorial AV1 1440p60.json"))?)?;
-        assert_eq!(first, Profile::tutorial_av1_1440p60());
+        // New installs get MP4 for Tutorial AV1; Cam only AV1 gets MP4 or MKV depending on this GPU's probe.
+        assert_eq!(first, Profile { container: Container::Mp4, ..Profile::tutorial_av1_1440p60() });
         let cam_only: Profile = serde_json::from_str(&fs::read_to_string(dir.join("profiles").join("Cam only AV1.json"))?)?;
-        assert_eq!(cam_only, Profile::cam_only_av1_1080p30());
+        assert_eq!(Profile { container: Container::Mkv, ..cam_only }, Profile::cam_only_av1_1080p30());
         fs::remove_dir_all(&dir)?;
         Ok(())
     }

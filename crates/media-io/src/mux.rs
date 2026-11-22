@@ -26,7 +26,7 @@ use crate::hw::ff_error;
 /// The stream time base for Matroska tracks: milliseconds.
 const MKV_TIME_BASE: Rational = Rational(1, 1000);
 
-/// The stream time base for MP4 and MOV tracks: the 90 kHz clock, fine enough for any frame rate.
+/// The stream time base for MP4 and MOV audio tracks: the 90 kHz clock. Video tracks use one frame as their tick instead.
 const MOV_TIME_BASE: Rational = Rational(1, 90_000);
 
 /// The movflags that make a killed process leave a playable fragmented file.
@@ -135,7 +135,9 @@ impl Muxer {
         let encoder_time_base = Rational::new(encoder_time_base.0, encoder_time_base.1);
         let frame_step = Rational::new(fps.1, fps.0);
         let codec_id = params.id();
-        let time_base = self.stream_time_base();
+        // MP4 and MOV count one frame per tick (the muxer scales the track up to a whole number of ticks per
+        // frame), so every frame is exactly one frame long; Matroska only has milliseconds.
+        let time_base = if self.container == Container::Mkv { MKV_TIME_BASE } else { frame_step };
         let index = {
             let mut stream = self.ctx.add_stream(codec_id)?;
             stream.set_time_base(time_base);
@@ -265,10 +267,15 @@ impl Muxer {
         };
         let stream_tb = ctx.stream(stream).map(|s| s.time_base()).ok_or(MediaError::Null("muxer write stream"))?;
         let is_key = out.is_key();
-        out.set_pts(out.pts().map(|pts| pts.rescale(info.encoder_time_base, stream_tb)));
-        out.set_dts(out.dts().map(|dts| dts.rescale(info.encoder_time_base, stream_tb)));
         if let Some(frame_step) = info.frame_step {
+            // Video lands on the frame grid: the time stamp snaps to its whole frame number, and every frame lasts one frame.
+            let on_grid = |ts: i64| ts.rescale(info.encoder_time_base, frame_step).rescale(frame_step, stream_tb);
+            out.set_pts(out.pts().map(on_grid));
+            out.set_dts(out.dts().map(on_grid));
             out.set_duration(1i64.rescale(frame_step, stream_tb));
+        } else {
+            out.set_pts(out.pts().map(|pts| pts.rescale(info.encoder_time_base, stream_tb)));
+            out.set_dts(out.dts().map(|dts| dts.rescale(info.encoder_time_base, stream_tb)));
         }
         out.write_interleaved(ctx)?;
         // Only video flushes on keyframes; audio packets interleave freely.

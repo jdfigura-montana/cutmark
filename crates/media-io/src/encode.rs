@@ -4,7 +4,7 @@ use ffmpeg_next::codec::Parameters;
 use ffmpeg_next::packet::Packet;
 use serde::{Deserialize, Serialize};
 
-pub use crate::amf::{CodecSupport, NumericOption, OptionRanges, amf_options, probe_amf};
+pub use crate::amf::{CodecSupport, NumericOption, OptionRanges, aligned_1080_value, amf_options, probe_amf};
 
 use crate::HwFrame;
 use crate::MediaError;
@@ -69,7 +69,7 @@ pub enum ComboError {
     /// MOV was asked to hold a codec it does not take.
     #[error("MOV takes HEVC and H.264 only. Use MKV for AV1, or pick HEVC or H.264")]
     MovCodec,
-    /// AV1 in MP4 needs a height that is a multiple of 16.
+    /// AV1 in MP4 needs a height that is a multiple of 16, unless the GPU codes 1080 lines exactly.
     #[error("AV1 at {height}p needs MKV. Use MKV, or HEVC for MP4")]
     Av1Mp4Height {
         /// The output height in pixels.
@@ -80,12 +80,22 @@ pub enum ComboError {
     PcmContainer,
 }
 
-/// Checks that the container can hold the video and audio codecs at this height.
+/// Checks that the container can hold the video and audio codecs at this height, using what the encoder probe
+/// found out about exact 1080 line coding on this GPU (no probe yet counts as not found).
 pub fn check_combo(container: Container, codec: Codec, height: u32, audio_codec: AudioCodec) -> Result<(), ComboError> {
+    check_combo_with(container, codec, height, audio_codec, aligned_1080_value().is_some())
+}
+
+/// Checks that the container can hold the video and audio codecs at this height.
+///
+/// `aligned_1080` is what the encoder probe found: the GPU can code AV1 at exactly 1080 lines, so AV1 in MP4 is
+/// fine at that height. Any other height that is not a multiple of 16 stays refused.
+pub fn check_combo_with(container: Container, codec: Codec, height: u32, audio_codec: AudioCodec, aligned_1080: bool) -> Result<(), ComboError> {
     if container == Container::Mov && codec == Codec::Av1 {
         return Err(ComboError::MovCodec);
     }
-    if container == Container::Mp4 && codec == Codec::Av1 && !height.is_multiple_of(16) {
+    let exact_1080 = aligned_1080 && height == 1080;
+    if container == Container::Mp4 && codec == Codec::Av1 && !height.is_multiple_of(16) && !exact_1080 {
         return Err(ComboError::Av1Mp4Height { height });
     }
     if container == Container::Mp4 && audio_codec == AudioCodec::Pcm24 {
@@ -399,33 +409,42 @@ mod tests {
 
     #[test]
     fn mov_takes_hevc_and_h264_only() {
-        assert_eq!(check_combo(Container::Mov, Codec::Hevc, 1080, AAC), Ok(()));
-        assert_eq!(check_combo(Container::Mov, Codec::H264, 1080, AAC), Ok(()));
-        assert_eq!(check_combo(Container::Mov, Codec::Av1, 1088, AAC), Err(ComboError::MovCodec));
+        assert_eq!(check_combo_with(Container::Mov, Codec::Hevc, 1080, AAC, false), Ok(()));
+        assert_eq!(check_combo_with(Container::Mov, Codec::H264, 1080, AAC, false), Ok(()));
+        assert_eq!(check_combo_with(Container::Mov, Codec::Av1, 1088, AAC, false), Err(ComboError::MovCodec));
     }
 
     #[test]
     fn av1_in_mp4_needs_a_height_that_is_a_multiple_of_16() {
-        assert_eq!(check_combo(Container::Mp4, Codec::Av1, 1440, AAC), Ok(()));
-        assert_eq!(check_combo(Container::Mp4, Codec::Av1, 1088, AAC), Ok(()));
-        let err = check_combo(Container::Mp4, Codec::Av1, 1080, AAC);
+        assert_eq!(check_combo_with(Container::Mp4, Codec::Av1, 1440, AAC, false), Ok(()));
+        assert_eq!(check_combo_with(Container::Mp4, Codec::Av1, 1088, AAC, false), Ok(()));
+        let err = check_combo_with(Container::Mp4, Codec::Av1, 1080, AAC, false);
         assert_eq!(err, Err(ComboError::Av1Mp4Height { height: 1080 }));
         assert_eq!(err.map_err(|e| e.to_string()), Err("AV1 at 1080p needs MKV. Use MKV, or HEVC for MP4".to_owned()));
-        assert_eq!(check_combo(Container::Mp4, Codec::Hevc, 1080, AAC), Ok(()));
+        assert_eq!(check_combo_with(Container::Mp4, Codec::Hevc, 1080, AAC, false), Ok(()));
+    }
+
+    #[test]
+    fn av1_in_mp4_at_1080_is_allowed_when_the_probe_found_exact_1080_coding() {
+        assert_eq!(check_combo_with(Container::Mp4, Codec::Av1, 1080, AAC, true), Ok(()));
+        assert_eq!(check_combo_with(Container::Mp4, Codec::Av1, 1080, AAC, false), Err(ComboError::Av1Mp4Height { height: 1080 }));
+        // The probe only vouches for 1080 lines, so another odd height stays refused.
+        assert_eq!(check_combo_with(Container::Mp4, Codec::Av1, 900, AAC, true), Err(ComboError::Av1Mp4Height { height: 900 }));
+        assert_eq!(check_combo_with(Container::Mov, Codec::Av1, 1080, AAC, true), Err(ComboError::MovCodec));
     }
 
     #[test]
     fn mkv_takes_every_video_codec_at_any_height() {
         for codec in [Codec::Av1, Codec::Hevc, Codec::H264] {
-            assert_eq!(check_combo(Container::Mkv, codec, 1080, AAC), Ok(()));
+            assert_eq!(check_combo_with(Container::Mkv, codec, 1080, AAC, false), Ok(()));
         }
     }
 
     #[test]
     fn pcm_audio_is_allowed_in_mkv_and_mov_only() {
-        assert_eq!(check_combo(Container::Mkv, Codec::Hevc, 1080, AudioCodec::Pcm24), Ok(()));
-        assert_eq!(check_combo(Container::Mov, Codec::Hevc, 1080, AudioCodec::Pcm24), Ok(()));
-        assert_eq!(check_combo(Container::Mp4, Codec::Hevc, 1080, AudioCodec::Pcm24), Err(ComboError::PcmContainer));
-        assert_eq!(check_combo(Container::Mp4, Codec::Hevc, 1080, AAC), Ok(()));
+        assert_eq!(check_combo_with(Container::Mkv, Codec::Hevc, 1080, AudioCodec::Pcm24, false), Ok(()));
+        assert_eq!(check_combo_with(Container::Mov, Codec::Hevc, 1080, AudioCodec::Pcm24, false), Ok(()));
+        assert_eq!(check_combo_with(Container::Mp4, Codec::Hevc, 1080, AudioCodec::Pcm24, false), Err(ComboError::PcmContainer));
+        assert_eq!(check_combo_with(Container::Mp4, Codec::Hevc, 1080, AAC, false), Ok(()));
     }
 }

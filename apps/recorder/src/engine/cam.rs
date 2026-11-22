@@ -7,13 +7,14 @@
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use capture::{qpc_frequency, qpc_now};
-use media_io::encode::{EncoderConfig, check_combo};
+use media_io::encode::{Codec, ComboError, EncoderConfig, aligned_1080_value, check_combo_with};
 use media_io::mux::{MuxSender, MuxThread, Muxer};
 use media_io::{AmfEncoder, AudioCodec, D3d11Device, D3d11FramePool, EncodedPacket, Encoder, HwFrame, MediaError};
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
@@ -41,6 +42,47 @@ const TIME_BUCKETS: usize = 1000;
 /// The audio codec the container check is run with: the camera file has no audio, so any codec every container takes will do.
 fn no_audio() -> AudioCodec {
     AudioCodec::Aac { kbps: 320 }
+}
+
+/// The status bar line for a camera file that was encoded as HEVC because the container cannot hold its AV1 here.
+static INFO_LINE: Mutex<Option<String>> = Mutex::new(None);
+
+/// Whether the HEVC fallback has been logged yet; it is logged once per run.
+static FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// The info line the status bar shows for the camera file, if the last take plan made one.
+pub fn info_line() -> Option<String> {
+    INFO_LINE.lock().ok().and_then(|line| line.clone())
+}
+
+/// Replaces the info line.
+fn set_info_line(line: Option<String>) {
+    if let Ok(mut slot) = INFO_LINE.lock() {
+        *slot = line;
+    }
+}
+
+/// The codec the camera file is encoded with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum CameraCodec {
+    /// The profile's codec, which the container holds at the camera's height.
+    Profile,
+    /// HEVC in place of AV1; the text is the info line that says why.
+    HevcFallback(String),
+}
+
+/// Decides the camera file's codec. In MP4 or MOV, AV1 at a height the GPU cannot code exactly falls back to HEVC in the
+/// same container; every other refusal stays an error.
+pub(super) fn camera_codec(container: Container, codec: Codec, height: u32, aligned_1080: bool) -> Result<CameraCodec, ComboError> {
+    match check_combo_with(container, codec, height, no_audio(), aligned_1080) {
+        Ok(()) => Ok(CameraCodec::Profile),
+        Err(ComboError::Av1Mp4Height { height }) if container.needs_finalize() => {
+            check_combo_with(container, Codec::Hevc, height, no_audio(), aligned_1080)?;
+            let name = container.extension().to_uppercase();
+            Ok(CameraCodec::HevcFallback(format!("Camera ISO: HEVC (AV1 {height}p not supported in {name} on this GPU)")))
+        }
+        Err(err) => Err(err),
+    }
 }
 
 /// The constant frame rate pacer of the camera file.
@@ -280,12 +322,13 @@ pub(super) struct CamPlan {
 /// None when the profile has no webcam or its ISO is off. The error is the text of the banner for a take that
 /// could not have the camera file: the camera is not open, or the container cannot hold the codec.
 pub(super) fn plan(cfg: &SessionConfig) -> Result<Option<CamPlan>, String> {
+    set_info_line(None);
     let Some(webcam) = cfg.profile.webcam.as_ref().filter(|webcam| webcam.iso) else { return Ok(None) };
     let Some(share) = crate::webcam::shared() else {
         return Err("The camera is not open, so this take has no camera file.".to_owned());
     };
     let format = share.capture.format();
-    let encoder = EncoderConfig {
+    let mut encoder = EncoderConfig {
         width: format.width,
         height: format.height,
         fps_num: format.fps_num,
@@ -294,7 +337,15 @@ pub(super) fn plan(cfg: &SessionConfig) -> Result<Option<CamPlan>, String> {
         ..encoder_config(&cfg.profile)
     };
     encoder.validate().map_err(|err| format!("The camera file was skipped: {err}"))?;
-    check_combo(cfg.profile.container, encoder.codec, encoder.height, no_audio()).map_err(|err| format!("The camera file was skipped: {err}"))?;
+    let codec = camera_codec(cfg.profile.container, encoder.codec, encoder.height, aligned_1080_value().is_some())
+        .map_err(|err| format!("The camera file was skipped: {err}"))?;
+    if let CameraCodec::HevcFallback(line) = codec {
+        encoder.codec = Codec::Hevc;
+        if !FALLBACK_LOGGED.swap(true, Ordering::Relaxed) {
+            log::info!("{line}");
+        }
+        set_info_line(Some(line));
+    }
     let file = cfg.take_folder.join(format!("{}_cam.{}", cfg.base_name, cfg.profile.container.extension()));
     Ok(Some(CamPlan { share, encoder, container: cfg.profile.container, file, offset_ms: webcam.offset_clamped() }))
 }
@@ -573,6 +624,20 @@ fn finish_file(rec: Recorder<'_>, plan: &CamPlan, lost: bool) -> Result<CamSumma
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn av1_in_mp4_at_a_height_the_gpu_cannot_code_exactly_falls_back_to_hevc() {
+        let line = "Camera ISO: HEVC (AV1 1080p not supported in MP4 on this GPU)".to_owned();
+        assert_eq!(camera_codec(Container::Mp4, Codec::Av1, 1080, false), Ok(CameraCodec::HevcFallback(line)));
+        // The GPU codes 1080 exactly, or the height is a multiple of 16: the profile's codec stays.
+        assert_eq!(camera_codec(Container::Mp4, Codec::Av1, 1080, true), Ok(CameraCodec::Profile));
+        assert_eq!(camera_codec(Container::Mp4, Codec::Av1, 1088, false), Ok(CameraCodec::Profile));
+        // Matroska takes AV1 at any height, and other codecs never fall back.
+        assert_eq!(camera_codec(Container::Mkv, Codec::Av1, 1080, false), Ok(CameraCodec::Profile));
+        assert_eq!(camera_codec(Container::Mp4, Codec::Hevc, 1080, false), Ok(CameraCodec::Profile));
+        // MOV cannot hold AV1 at all, which is not a height problem, so that refusal stays.
+        assert_eq!(camera_codec(Container::Mov, Codec::Av1, 1080, false), Err(ComboError::MovCodec));
+    }
 
     /// A real QPC frequency: 100 ns ticks.
     const QPC_FREQ: i64 = 10_000_000;

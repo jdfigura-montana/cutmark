@@ -2,7 +2,9 @@
 //! option ranges they report. Otherwise it prints the AMF encoders' private options, then
 //! encodes the primary monitor to probe_<codec>_<rc>.<ext>.
 //!
-//! Usage: encode_probe [--probe] [--codec av1|hevc|h264] [--rc cq|cqp|cbr|vbr] [--quality N] [--seconds N] [--source screen|noise|motion] [--container mkv|mp4|mov]
+//! Usage: encode_probe [--probe] [--codec av1|hevc|h264] [--rc cq|cqp|cbr|vbr] [--quality N] [--seconds N] [--source screen|noise|motion] [--container mkv|mp4|mov] [--align NAME] [--height N]
+//! --height sets the output height (default 1080; the width stays 1920), for checking heights that are a multiple of 16.
+//! --align sets av1_amf's align option to a named value (64x16, 1080p or none); without it the probed value is used.
 //! The cq output is named probe_<codec>_cq<N>.<ext>; --quality (1 to 100) only applies to --rc cq.
 //! The container defaults to mkv; a combination it cannot hold is refused before any encoding.
 //! The default source is the primary monitor. The noise source fills every frame with fresh
@@ -18,7 +20,7 @@ use std::time::{Duration, Instant};
 use capture::{Gpu, LatestFrame, MonitorCapture, Nv12Converter, list_monitors};
 use ffmpeg_next::ffi;
 use media_io::AudioCodec;
-use media_io::encode::{Codec, CodecSupport, Encoder, Preset, RateControl, check_combo, probe_amf};
+use media_io::encode::{Codec, CodecSupport, Encoder, Preset, RateControl, check_combo_with, probe_amf};
 use media_io::{AmfEncoder, Container, D3d11Device, D3d11FramePool, EncodedPacket, EncoderConfig, HwFrame, Muxer};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_WRITE, D3D11_MAP_WRITE, D3D11_MAPPED_SUBRESOURCE, D3D11_TEXTURE2D_DESC,
@@ -68,6 +70,8 @@ struct Args {
     rate_control: RateControl,
     seconds: u64,
     container: Container,
+    align: Option<String>,
+    height: u32,
 }
 
 /// Parses the command line, with the documented defaults.
@@ -79,6 +83,8 @@ fn parse_args() -> Result<Args, String> {
     let mut seconds = 10u64;
     let mut quality: Option<u8> = None;
     let mut container = Container::Mkv;
+    let mut align: Option<String> = None;
+    let mut height = 1080u32;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -124,6 +130,8 @@ fn parse_args() -> Result<Args, String> {
                     other => return Err(format!("--container wants mkv, mp4 or mov, got {other:?}")),
                 };
             }
+            "--height" => height = args.next().and_then(|value| value.parse().ok()).filter(|&n| n > 0).ok_or("--height wants a whole number above 0")?,
+            "--align" => align = Some(args.next().ok_or("--align wants a value name")?),
             "--seconds" => {
                 seconds = args.next().and_then(|value| value.parse().ok()).filter(|&n| n > 0).ok_or("--seconds wants a whole number above 0")?;
             }
@@ -142,7 +150,7 @@ fn parse_args() -> Result<Args, String> {
     } else if let RateControl::ConstantQuality { quality, .. } = rc.1 {
         rc_name = format!("cq{quality}");
     }
-    Ok(Args { probe_only, source, codec: codec.0, codec_name: codec.1, rc_name, rate_control: rc.1, seconds, container })
+    Ok(Args { probe_only, source, codec: codec.0, codec_name: codec.1, rc_name, rate_control: rc.1, seconds, container, align, height })
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -152,8 +160,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         print_probe_table(&probe_amf(1920, 1080, 60));
         return Ok(());
     }
-    // The probe encodes 1080p with AAC, so those are the facts the combination check sees.
-    if let Err(err) = check_combo(args.container, args.codec, 1080, AudioCodec::Aac { kbps: 320 }) {
+    // The probe encodes with AAC; the AMF probe says whether the GPU codes 1080 lines exactly.
+    let aligned_1080 = probe_amf(1920, 1080, 60).iter().any(|row| row.aligned_1080.is_some());
+    if let Err(err) = check_combo_with(args.container, args.codec, args.height, AudioCodec::Aac { kbps: 320 }, aligned_1080) {
         eprintln!("{err}");
         std::process::exit(1);
     }
@@ -176,15 +185,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (Some(capture), None, (first.width as u32, first.height as u32))
     };
 
-    let mut converter = Nv12Converter::new(&gpu, source_size.0, source_size.1, 1920, 1080, 60)?;
+    let mut converter = Nv12Converter::new(&gpu, source_size.0, source_size.1, 1920, args.height, 60)?;
     let nv12 = converter.create_output()?;
-    let pool = D3d11FramePool::new(&hw_device, 1920, 1080, 8)?;
+    let pool = D3d11FramePool::new(&hw_device, 1920, args.height, 8)?;
     println!("pool mode: {:?}", pool.mode());
 
     let cfg = EncoderConfig {
         codec: args.codec,
         width: 1920,
-        height: 1080,
+        height: args.height,
         fps_num: 60,
         fps_den: 1,
         rate_control: args.rate_control,
@@ -192,11 +201,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         keyframe_secs: 2.0,
     };
     println!("config: {cfg:?}");
-    let mut encoder = AmfEncoder::open(&cfg, &pool)?;
+    let mut encoder = match args.align.as_deref() {
+        Some(align) => AmfEncoder::open_with_align(&cfg, &pool, Some(align))?,
+        None => AmfEncoder::open(&cfg, &pool)?,
+    };
     print_read_back(&encoder);
     println!("encoder time base: {:?}", encoder.time_base());
 
-    let path_text = format!("probe_{}_{}.{}", args.codec_name, args.rc_name, args.container.extension());
+    let align_part = args.align.as_deref().map(|align| format!("_{align}")).unwrap_or_default();
+    let path_text = format!("probe_{}_{}{align_part}.{}", args.codec_name, args.rc_name, args.container.extension());
     let mut muxer = Muxer::create(Path::new(&path_text), args.container)?;
     // The same container tags and stream title the recorder writes.
     muxer.set_tags(Path::new(&path_text).file_stem().and_then(|stem| stem.to_str()).unwrap_or("probe"), ENCODER_TAG);
@@ -435,6 +448,13 @@ fn print_probe_table(support: &[CodecSupport]) {
         );
         if let Err(reason) = &row.result {
             println!("       error: {reason}");
+        }
+        if row.codec == Codec::Av1 {
+            let exact = row
+                .aligned_1080
+                .as_deref()
+                .map_or("no align value codes 1080 lines exactly".to_string(), |value| format!("align = {value} codes 1080 lines exactly"));
+            println!("       align values: {}; {exact}", row.ranges.align_values.join(","));
         }
     }
 }

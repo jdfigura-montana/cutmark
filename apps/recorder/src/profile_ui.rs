@@ -6,9 +6,9 @@ use std::ops::RangeInclusive;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
-use egui::{Button, ComboBox, DragValue, Slider, TextEdit, Ui};
+use egui::{Button, ComboBox, DragValue, RichText, Slider, TextEdit, Ui};
 use media_io::AudioCodec;
-use media_io::encode::{Codec as EncoderCodec, CodecSupport, ConfigError, MAX_MBPS, NumericOption, OptionRanges, amf_options, check_combo, probe_amf};
+use media_io::encode::{Codec as EncoderCodec, CodecSupport, ConfigError, MAX_MBPS, NumericOption, OptionRanges, amf_options, check_combo_with, probe_amf};
 
 use crate::config::{AudioCodecChoice, Codec, Container, Preset, Profile, RateControl, Settings, takes_root};
 use crate::engine::session::encoder_config;
@@ -23,6 +23,9 @@ const FPS_CHOICES: [u32; 2] = [30, 60];
 
 /// How long the next take's path in the preview line is kept before the takes folder is read again.
 const PREVIEW_REFRESH: Duration = Duration::from_secs(2);
+
+/// The line shown under the container picker while MKV is chosen.
+const MKV_HINT: &str = "MKV: Windows Explorer shows no video details for MKV files. Use MP4 for the widest compatibility.";
 
 /// The size and frame rate the AMF probe ran for.
 type ProbeKey = (u32, u32, u32);
@@ -147,6 +150,11 @@ impl AmfProbe {
     /// The codecs the last probe reported as working.
     fn usable(&self) -> Vec<EncoderCodec> {
         self.done.as_ref().map(|(_, list)| list.iter().filter(|support| support.result.is_ok()).map(|support| support.codec).collect()).unwrap_or_default()
+    }
+
+    /// Whether the last probe found that the GPU codes AV1 at exactly 1080 lines.
+    fn aligned_1080(&self) -> bool {
+        self.support(EncoderCodec::Av1).is_some_and(|support| support.aligned_1080.is_some())
     }
 
     /// The option ranges of every probed codec.
@@ -555,6 +563,11 @@ impl ProfileSection {
                     }
                 });
             });
+            if p.container == Container::Mkv {
+                ui.label("");
+                ui.label(RichText::new(MKV_HINT).small().weak());
+                ui.end_row();
+            }
         });
 
         self.size_custom = size_custom;
@@ -699,7 +712,7 @@ fn validate(profile: &Profile, size: (u32, u32), audio: AudioCodec, probe: &AmfP
             None => {}
         },
     }
-    if let Err(err) = check_combo(profile.container, config.codec, size.1, audio) {
+    if let Err(err) = check_combo_with(profile.container, config.codec, size.1, audio, probe.aligned_1080()) {
         errors.push((Field::Container, err.to_string()));
     }
     errors
