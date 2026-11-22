@@ -117,6 +117,81 @@ impl Default for PipSettings {
     }
 }
 
+/// The chroma key of the camera: the key colour, the three sliders, the garbage matte and an optional mask.
+///
+/// The crop and mask percentages are of the whole camera frame, before any picture in picture crop.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KeySettings {
+    /// Whether the camera is keyed.
+    pub enabled: bool,
+    /// The colour that becomes transparent, as red, green and blue.
+    pub color: [u8; 3],
+    /// How far from the key colour a pixel may be and still be fully transparent, 0 to 1.
+    pub similarity: f32,
+    /// How wide the soft edge beyond the similarity is, 0 to 1.
+    pub smoothness: f32,
+    /// How strongly the key colour is pulled out of the pixels that stay, 0 to 1.
+    pub spill: f32,
+    /// The part of the camera's left side that is thrown away, in percent.
+    pub crop_left_pct: f32,
+    /// The part of the camera's right side that is thrown away, in percent.
+    pub crop_right_pct: f32,
+    /// The part of the camera's top that is thrown away, in percent.
+    pub crop_top_pct: f32,
+    /// The part of the camera's bottom that is thrown away, in percent.
+    pub crop_bottom_pct: f32,
+    /// Whether the mask rectangle is cut out of the picture.
+    pub mask_enabled: bool,
+    /// Left edge of the mask rectangle, in percent of the camera frame's width.
+    pub mask_x_pct: f32,
+    /// Top edge of the mask rectangle, in percent of the camera frame's height.
+    pub mask_y_pct: f32,
+    /// Width of the mask rectangle, in percent of the camera frame's width.
+    pub mask_w_pct: f32,
+    /// Height of the mask rectangle, in percent of the camera frame's height.
+    pub mask_h_pct: f32,
+}
+
+impl Default for KeySettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            color: [0, 177, 64],
+            similarity: 0.40,
+            smoothness: 0.08,
+            spill: 0.10,
+            crop_left_pct: 0.0,
+            crop_right_pct: 0.0,
+            crop_top_pct: 0.0,
+            crop_bottom_pct: 0.0,
+            mask_enabled: false,
+            mask_x_pct: 40.0,
+            mask_y_pct: 40.0,
+            mask_w_pct: 20.0,
+            mask_h_pct: 20.0,
+        }
+    }
+}
+
+/// The part of the camera frame that the garbage crop keeps, as 0 to 1 texture coordinates; at least 5 percent stays.
+pub fn garbage_rect(key: &KeySettings) -> RectF {
+    let (left, right) = crop_axis(key.crop_left_pct, key.crop_right_pct);
+    let (top, bottom) = crop_axis(key.crop_top_pct, key.crop_bottom_pct);
+    RectF::new(left, top, right, bottom)
+}
+
+/// The mask rectangle as 0 to 1 texture coordinates, kept inside the frame, or None when it is off or has no area.
+pub fn mask_rect(key: &KeySettings) -> Option<RectF> {
+    if !key.mask_enabled {
+        return None;
+    }
+    let x = finite(key.mask_x_pct).clamp(0.0, 100.0);
+    let y = finite(key.mask_y_pct).clamp(0.0, 100.0);
+    let w = finite(key.mask_w_pct).clamp(0.0, 100.0 - x);
+    let h = finite(key.mask_h_pct).clamp(0.0, 100.0 - y);
+    (w > 0.0 && h > 0.0).then(|| RectF::new(x / 100.0, y / 100.0, (x + w) / 100.0, (y + h) / 100.0))
+}
+
 /// Where the camera picture comes from and where it goes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CamPlacement {
@@ -234,6 +309,88 @@ pub fn place(layout: Layout, screen: Option<(u32, u32)>, cam: Option<(u32, u32)>
         Layout::Pip => Placement { screen: screen.map(|(w, h)| fit_rect(w, h, out_w, out_h)), cam: cam.map(|(w, h)| pip_placement(w, h, pip, out_w, out_h)) },
         Layout::CamOnly => {
             Placement { screen: None, cam: cam.map(|(w, h)| CamPlacement { src: RectF::new(0.0, 0.0, 1.0, 1.0), dst: fit_rect(w, h, out_w, out_h) }) }
+        }
+    }
+}
+
+/// What a layout draws behind the pictures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BackgroundKind {
+    /// Nothing; a keyed camera floats over the screen, and the Cam only layout uses the colour.
+    #[default]
+    None,
+    /// A solid colour.
+    Color,
+    /// A PNG or JPG image from a file.
+    Image,
+}
+
+/// How an image background fills the rectangle it is given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BackgroundFit {
+    /// Fills the rectangle and crops whatever does not fit.
+    #[default]
+    Cover,
+    /// Fits whole inside the rectangle, letterboxed with the background colour.
+    Contain,
+    /// Stretches over the rectangle, ignoring the aspect ratio.
+    Stretch,
+}
+
+/// The background settings of a layout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackgroundSettings {
+    /// What the background shows.
+    pub kind: BackgroundKind,
+    /// The solid colour as red, green and blue; also the letterbox colour of Contain.
+    pub color: [u8; 3],
+    /// The path of the image file, used when the kind is Image.
+    pub image_path: String,
+    /// How an image fills its rectangle.
+    pub fit: BackgroundFit,
+}
+
+impl Default for BackgroundSettings {
+    fn default() -> Self {
+        Self { kind: BackgroundKind::None, color: [32, 32, 32], image_path: String::new(), fit: BackgroundFit::Cover }
+    }
+}
+
+/// The source and destination rectangles of a background image fitted into a target rectangle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BackgroundPlacement {
+    /// The part of the image that is shown, as 0 to 1 texture coordinates.
+    pub src: RectF,
+    /// The part of the target the image fills, in output pixels.
+    pub dst: RectF,
+}
+
+/// Fits a source image into `target` for the given fit: Cover fills and crops, Contain fits with a
+/// letterbox that the caller paints in the background colour, and Stretch fills without cropping.
+pub fn fit_background(src_w: u32, src_h: u32, target: RectF, fit: BackgroundFit) -> BackgroundPlacement {
+    let whole = RectF::new(0.0, 0.0, 1.0, 1.0);
+    let (target_w, target_h) = (target.width(), target.height());
+    if src_w == 0 || src_h == 0 || target_w <= 0.0 || target_h <= 0.0 {
+        return BackgroundPlacement { src: whole, dst: target };
+    }
+    let (src_wf, src_hf) = (src_w as f32, src_h as f32);
+    match fit {
+        BackgroundFit::Stretch => BackgroundPlacement { src: whole, dst: target },
+        BackgroundFit::Cover => {
+            let scale = (target_w / src_wf).max(target_h / src_hf);
+            let keep_w = (target_w / scale / src_wf).min(1.0);
+            let keep_h = (target_h / scale / src_hf).min(1.0);
+            let left = (1.0 - keep_w) / 2.0;
+            let top = (1.0 - keep_h) / 2.0;
+            BackgroundPlacement { src: RectF::new(left, top, left + keep_w, top + keep_h), dst: target }
+        }
+        BackgroundFit::Contain => {
+            let scale = (target_w / src_wf).min(target_h / src_hf);
+            let width = (src_wf * scale).min(target_w);
+            let height = (src_hf * scale).min(target_h);
+            let left = target.left + (target_w - width) / 2.0;
+            let top = target.top + (target_h - height) / 2.0;
+            BackgroundPlacement { src: whole, dst: RectF::new(left, top, left + width, top + height) }
         }
     }
 }
@@ -424,8 +581,113 @@ mod tests {
     }
 
     #[test]
+    fn no_garbage_crop_keeps_the_whole_frame() {
+        assert_eq!(garbage_rect(&KeySettings::default()), rect(0.0, 0.0, 1.0, 1.0));
+    }
+
+    #[test]
+    fn the_garbage_crop_cuts_each_side_by_its_percentage() {
+        let key = KeySettings { crop_left_pct: 10.0, crop_right_pct: 20.0, crop_top_pct: 5.0, crop_bottom_pct: 30.0, ..KeySettings::default() };
+        assert_close(garbage_rect(&key), rect(0.10, 0.05, 0.80, 0.70));
+    }
+
+    #[test]
+    fn the_garbage_crop_always_leaves_part_of_the_frame() {
+        let key = KeySettings { crop_left_pct: 200.0, crop_right_pct: 200.0, crop_top_pct: f32::NAN, crop_bottom_pct: -5.0, ..KeySettings::default() };
+        let kept = garbage_rect(&key);
+        assert!(kept.width() >= 0.049 && kept.height() > 0.99, "{kept:?}");
+        assert!(kept.left >= 0.0 && kept.right <= 1.0);
+    }
+
+    #[test]
+    fn a_mask_that_is_off_cuts_nothing() {
+        assert_eq!(mask_rect(&KeySettings::default()), None);
+    }
+
+    #[test]
+    fn a_mask_is_given_as_a_fraction_of_the_frame() {
+        let key = KeySettings { mask_enabled: true, mask_x_pct: 10.0, mask_y_pct: 20.0, mask_w_pct: 30.0, mask_h_pct: 40.0, ..KeySettings::default() };
+        assert_eq!(mask_rect(&key).map(|mask| (mask.left, mask.top)), Some((0.10, 0.20)));
+        let mask = mask_rect(&key).unwrap_or(rect(0.0, 0.0, 0.0, 0.0));
+        assert_close(mask, rect(0.10, 0.20, 0.40, 0.60));
+    }
+
+    #[test]
+    fn a_mask_that_sticks_out_is_cut_at_the_frame_edge() {
+        let key = KeySettings { mask_enabled: true, mask_x_pct: 80.0, mask_y_pct: 90.0, mask_w_pct: 50.0, mask_h_pct: 50.0, ..KeySettings::default() };
+        let mask = mask_rect(&key).unwrap_or(rect(0.0, 0.0, 0.0, 0.0));
+        assert_close(mask, rect(0.80, 0.90, 1.0, 1.0));
+    }
+
+    #[test]
+    fn a_mask_without_area_or_with_junk_values_cuts_nothing() {
+        let flat = KeySettings { mask_enabled: true, mask_w_pct: 0.0, ..KeySettings::default() };
+        assert_eq!(mask_rect(&flat), None);
+        let junk = KeySettings { mask_enabled: true, mask_x_pct: f32::NAN, mask_y_pct: 100.0, ..KeySettings::default() };
+        assert_eq!(mask_rect(&junk), None);
+    }
+
+    #[test]
     fn a_picture_of_size_zero_counts_as_missing() {
         let placed = place(Layout::Pip, Some((0, 0)), Some((0, 720)), &PipSettings::default(), 1920, 1080);
         assert!(placed.screen.is_none() && placed.cam.is_none());
+    }
+
+    fn target() -> RectF {
+        rect(100.0, 50.0, 700.0, 410.0)
+    }
+
+    #[test]
+    fn cover_fills_the_target_and_crops_the_long_source_axis() {
+        // A 2000x1000 source in a 600x360 target: the target is 0.3 of the source width but 0.36 of
+        // the height, so the height fills and the sides of the source are cropped away.
+        let placed = fit_background(2000, 1000, target(), BackgroundFit::Cover);
+        assert_eq!(placed.dst, target());
+        let keep_w = 600.0 / (600.0_f32 / 2000.0).max(360.0 / 1000.0) / 2000.0;
+        assert_close(placed.src, rect((1.0 - keep_w) / 2.0, 0.0, (1.0 + keep_w) / 2.0, 1.0));
+    }
+
+    #[test]
+    fn cover_crops_the_other_axis_when_the_source_is_tall() {
+        // A 1000x2000 source: the width fills and the top and bottom are cropped away.
+        let placed = fit_background(1000, 2000, target(), BackgroundFit::Cover);
+        assert_eq!(placed.dst, target());
+        let keep_h = 360.0 / (600.0_f32 / 1000.0).max(360.0 / 2000.0) / 2000.0;
+        assert_close(placed.src, rect(0.0, (1.0 - keep_h) / 2.0, 1.0, (1.0 + keep_h) / 2.0));
+    }
+
+    #[test]
+    fn contain_fits_the_whole_picture_and_letterboxes_the_rest() {
+        // A 2000x1000 source in a 600x360 target fits at 0.18 of the source, 360 high and 720 wide,
+        // but at most 600 wide, so it is 600x300 and centred with 30 pixels of letterbox each way.
+        let placed = fit_background(2000, 1000, target(), BackgroundFit::Contain);
+        assert_eq!(placed.src, rect(0.0, 0.0, 1.0, 1.0));
+        assert_eq!(placed.dst, rect(100.0, 80.0, 700.0, 380.0));
+    }
+
+    #[test]
+    fn stretch_fills_the_target_and_keeps_the_whole_picture() {
+        let placed = fit_background(2000, 1000, target(), BackgroundFit::Stretch);
+        assert_eq!(placed.src, rect(0.0, 0.0, 1.0, 1.0));
+        assert_eq!(placed.dst, target());
+    }
+
+    #[test]
+    fn a_degenerate_source_or_target_crops_nothing() {
+        let zero_source = fit_background(0, 100, target(), BackgroundFit::Cover);
+        assert_eq!(zero_source.src, rect(0.0, 0.0, 1.0, 1.0));
+        assert_eq!(zero_source.dst, target());
+        let empty_target = fit_background(2000, 1000, rect(10.0, 10.0, 10.0, 10.0), BackgroundFit::Stretch);
+        assert_eq!(empty_target.src, rect(0.0, 0.0, 1.0, 1.0));
+        assert_eq!(empty_target.dst, rect(10.0, 10.0, 10.0, 10.0));
+    }
+
+    #[test]
+    fn the_background_defaults_are_none_over_dark_grey() {
+        let settings = BackgroundSettings::default();
+        assert_eq!(settings.kind, BackgroundKind::None);
+        assert_eq!(settings.color, [32, 32, 32]);
+        assert_eq!(settings.fit, BackgroundFit::Cover);
+        assert_eq!(settings.image_path, "");
     }
 }

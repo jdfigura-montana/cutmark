@@ -26,8 +26,8 @@ mod wgc;
 pub use audio::{AudioCapture, AudioDevice, AudioPacket, DeviceKind, find_device, list_audio_devices};
 #[cfg(windows)]
 pub use compose::{
-    CamColor, CamPlacement, ComposedFrame, Compositor, Corner, Layout, PipSettings, PipShape, Placement, RectF, YuvMatrix, YuvRange, cam_crop, fit_rect,
-    pip_placement, place, read_bgra,
+    BackgroundFit, BackgroundKind, BackgroundPlacement, BackgroundSettings, CamColor, CamPlacement, ComposedFrame, Compositor, Corner, KeySettings, Layout,
+    PipSettings, PipShape, Placement, RectF, YuvMatrix, YuvRange, cam_crop, fit_background, fit_rect, garbage_rect, mask_rect, pip_placement, place, read_bgra,
 };
 #[cfg(windows)]
 pub use convert::Nv12Converter;

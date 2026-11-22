@@ -27,11 +27,11 @@ pub fn show(ui: &mut egui::Ui, store: &mut ProfileStore, profile_name: &str, rec
     ui.heading("Layout");
     let Some(profile) = store.get(profile_name) else {
         ui.label("No profile is active.");
+        crate::background_ui::show(ui, store, profile_name, recording);
         return;
     };
     let mut layout = profile.layout;
     let mut pip = profile.pip.clone();
-    let mut background = profile.cam_only_bg;
     let webcam_on = profile.webcam.is_some();
     let mut changed = false;
     ui.add_enabled_ui(!recording, |ui| {
@@ -43,12 +43,7 @@ pub fn show(ui: &mut egui::Ui, store: &mut ProfileStore, profile_name: &str, rec
         match layout {
             LayoutKind::ScreenOnly => {}
             LayoutKind::Pip => changed |= pip_controls(ui, &mut pip),
-            LayoutKind::CamOnly => {
-                ui.horizontal(|ui| {
-                    ui.label("Background");
-                    changed |= ui.color_edit_button_srgb(&mut background).changed();
-                });
-            }
+            LayoutKind::CamOnly => {}
         }
     });
     if recording {
@@ -61,9 +56,9 @@ pub fn show(ui: &mut egui::Ui, store: &mut ProfileStore, profile_name: &str, rec
         store.edit(profile_name, |profile| {
             profile.layout = layout;
             profile.pip = pip;
-            profile.cam_only_bg = background;
         });
     }
+    crate::background_ui::show(ui, store, profile_name, recording);
 }
 
 /// Draws the picture in picture controls; true when one of them changed.

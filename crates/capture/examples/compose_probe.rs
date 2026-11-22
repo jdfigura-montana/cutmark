@@ -6,7 +6,10 @@
 use std::error::Error;
 use std::time::{Duration, Instant};
 
-use capture::{CamFrame, CameraFormat, Compositor, Gpu, Layout, MonitorCapture, PipSettings, WebcamCapture, list_cameras, list_monitors, read_bgra};
+use capture::{
+    BackgroundKind, BackgroundSettings, CamFrame, CameraFormat, Compositor, Gpu, KeySettings, Layout, MonitorCapture, PipSettings, WebcamCapture, list_cameras,
+    list_monitors, read_bgra,
+};
 
 /// The size of the composed frames.
 const OUT_W: u32 = 1920;
@@ -37,13 +40,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut compositor = Compositor::new(&gpu, OUT_W, OUT_H)?;
     compositor.set_cam_color(webcam.color());
     let pip = PipSettings { border_px: 4.0, radius_px: 24.0, ..PipSettings::default() };
-    let background = [32, 32, 32];
+    let background = BackgroundSettings { kind: BackgroundKind::Color, ..BackgroundSettings::default() };
+    compositor.set_background(&background)?;
 
-    let composed = compositor.compose(Some(&screen_frame.texture), Some(&cam_frame), &Layout::Pip, &pip, background)?;
+    let composed = compositor.compose(Some(&screen_frame.texture), Some(&cam_frame), &Layout::Pip, &pip, &KeySettings::default(), false)?;
     write_texture(&gpu, &composed.texture, "compose_pip.bmp")?;
     println!("wrote compose_pip.bmp (frame {})", composed.seq);
 
-    let composed = compositor.compose(Some(&screen_frame.texture), Some(&cam_frame), &Layout::CamOnly, &pip, background)?;
+    let composed = compositor.compose(Some(&screen_frame.texture), Some(&cam_frame), &Layout::CamOnly, &pip, &KeySettings::default(), false)?;
     write_texture(&gpu, &composed.texture, "compose_camonly.bmp")?;
     println!("wrote compose_camonly.bmp (frame {})", composed.seq);
 

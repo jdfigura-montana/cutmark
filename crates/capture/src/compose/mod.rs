@@ -1,13 +1,17 @@
 //! The D3D11 compositor: draws the screen and the NV12 camera into one BGRA frame on the GPU.
 //!
 //! It runs on the shared device, so no picture ever reaches the CPU. The shaders in `shaders.hlsl` are
-//! compiled when the compositor is created. The layout math lives in [`layout`]. See the recorder
-//! spec: Layouts and Compositor.
+//! compiled when the compositor is created. The layout math lives in [`layout`], and the background
+//! image loading lives in [`image`]. See the recorder spec: Layouts, Compositor and Virtual background.
 #![allow(unsafe_code)]
 
+mod image;
 mod layout;
 
-pub use layout::{CamPlacement, Corner, Layout, PipSettings, PipShape, Placement, RectF, cam_crop, fit_rect, pip_placement, place};
+pub use layout::{
+    BackgroundFit, BackgroundKind, BackgroundPlacement, BackgroundSettings, CamPlacement, Corner, KeySettings, Layout, PipSettings, PipShape, Placement, RectF,
+    cam_crop, fit_background, fit_rect, garbage_rect, mask_rect, pip_placement, place,
+};
 
 use crate::{CamFrame, CaptureError, Gpu, with_context};
 use windows::Win32::Graphics::Direct3D::Fxc::{D3DCOMPILE_ENABLE_STRICTNESS, D3DCOMPILE_OPTIMIZATION_LEVEL3, D3DCompile};
@@ -16,10 +20,10 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_BLEND_DESC, D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_ONE,
     D3D11_BLEND_OP_ADD, D3D11_BUFFER_DESC, D3D11_COLOR_WRITE_ENABLE_ALL, D3D11_COMPARISON_NEVER, D3D11_CPU_ACCESS_READ, D3D11_CULL_NONE, D3D11_FILL_SOLID,
     D3D11_FILTER_MIN_MAG_MIP_LINEAR, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_RASTERIZER_DESC, D3D11_RENDER_TARGET_BLEND_DESC, D3D11_SAMPLER_DESC,
-    D3D11_SHADER_RESOURCE_VIEW_DESC, D3D11_SHADER_RESOURCE_VIEW_DESC_0, D3D11_TEX2D_SRV, D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_TEXTURE2D_DESC,
-    D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, D3D11_VIEWPORT, ID3D11BlendState, ID3D11Buffer, ID3D11ClassLinkage, ID3D11DepthStencilView, ID3D11Device,
-    ID3D11DeviceContext, ID3D11InputLayout, ID3D11Multithread, ID3D11PixelShader, ID3D11RasterizerState, ID3D11RenderTargetView, ID3D11SamplerState,
-    ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11VertexShader,
+    D3D11_SHADER_RESOURCE_VIEW_DESC, D3D11_SHADER_RESOURCE_VIEW_DESC_0, D3D11_SUBRESOURCE_DATA, D3D11_TEX2D_SRV, D3D11_TEXTURE_ADDRESS_CLAMP,
+    D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, D3D11_VIEWPORT, ID3D11BlendState, ID3D11Buffer, ID3D11ClassLinkage, ID3D11DepthStencilView,
+    ID3D11Device, ID3D11DeviceContext, ID3D11InputLayout, ID3D11Multithread, ID3D11PixelShader, ID3D11RasterizerState, ID3D11RenderTargetView,
+    ID3D11SamplerState, ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11VertexShader,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8_UNORM, DXGI_SAMPLE_DESC};
 use windows::core::{BOOL, Interface, PCSTR, s};
@@ -115,6 +119,14 @@ struct Params {
     shape: [f32; 4],
     yuv_coef: [f32; 4],
     yuv_range: [f32; 4],
+    /// Key colour in rgb; alpha is the key mode: 0 off, 1 keyed, 2 matte view.
+    key_color: [f32; 4],
+    /// x: similarity, y: smoothness, z: spill, w: 1 when the mask rectangle is on.
+    key_params: [f32; 4],
+    /// Left, top, right and bottom of the part of the camera frame the garbage crop keeps, 0 to 1.
+    key_garbage: [f32; 4],
+    /// Left, top, right and bottom of the mask rectangle, 0 to 1.
+    key_mask: [f32; 4],
 }
 
 /// One output texture with its render target view.
@@ -163,6 +175,16 @@ pub struct Compositor {
     cam_views: Vec<(ID3D11Texture2D, [ID3D11ShaderResourceView; 2])>,
     cam_color: CamColor,
     cam_error_logged: bool,
+    /// The background settings in force; an image kind without a loaded image draws as the colour.
+    bg: BackgroundSettings,
+    /// The loaded background image, kept until the path changes.
+    bg_image: Option<image::BackgroundImage>,
+    /// The path of the last image that failed to load, so a bad file is not reopened every frame.
+    bg_failed: Option<String>,
+    /// A 1x1 texture and its view used to paint the solid background colour.
+    solid: (ID3D11Texture2D, ID3D11ShaderResourceView),
+    /// The colour currently held by the 1x1 texture.
+    solid_color: [u8; 3],
 }
 
 impl Compositor {
@@ -204,6 +226,7 @@ impl Compositor {
         for _ in 0..RING_LEN {
             targets.push(create_target(&device, output_w, output_h)?);
         }
+        let solid = create_solid(&device)?;
         Ok(Self {
             context: gpu.context().clone(),
             multithread,
@@ -224,6 +247,11 @@ impl Compositor {
             cam_views: Vec::new(),
             cam_color: CamColor::default(),
             cam_error_logged: false,
+            bg: BackgroundSettings::default(),
+            bg_image: None,
+            bg_failed: None,
+            solid,
+            solid_color: [32, 32, 32],
         })
     }
 
@@ -237,17 +265,50 @@ impl Compositor {
         self.cam_color = color;
     }
 
+    /// Makes the given background current; returns the error when its image cannot be loaded.
+    ///
+    /// The image texture is loaded once per path and reused. A failed load keeps whatever background
+    /// was current before, and the path is remembered so the file is not reopened every frame.
+    pub fn set_background(&mut self, bg: &BackgroundSettings) -> Result<(), CaptureError> {
+        if bg.kind == BackgroundKind::Image {
+            let loaded = self.bg_image.as_ref().is_some_and(|image| image.path() == bg.image_path);
+            if !loaded && self.bg_failed.as_deref() != Some(bg.image_path.as_str()) {
+                match image::load(&self.device, &bg.image_path) {
+                    Ok(loaded_image) => {
+                        self.bg_image = Some(loaded_image);
+                        self.bg_failed = None;
+                    }
+                    Err(error) => {
+                        self.bg_image = None;
+                        self.bg_failed = Some(bg.image_path.clone());
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        self.bg = bg.clone();
+        Ok(())
+    }
+
     /// Composes one frame into the next output texture and returns it with its sequence number.
     ///
-    /// Screen only draws the screen. Picture in picture draws the screen, then the camera. Cam only draws
-    /// `bg_color`, then the camera fitted to the frame. A picture that is missing is left out.
+    /// Screen only draws the screen. Cam only draws the background, then the camera fitted to the
+    /// frame; a background of kind None draws as the colour. Picture in picture draws the screen,
+    /// then the background inside the camera's shape when the kind is Colour or Image, then the
+    /// camera; a kind of None leaves the screen to show through behind a keyed camera. The image of
+    /// an Image background comes from [`Compositor::set_background`]; when it is not loaded the
+    /// colour is drawn instead. A picture that is missing is left out.
+    ///
+    /// The camera is keyed by `key`; with `matte` the keyed camera shows its alpha as black and white instead.
+    #[allow(clippy::too_many_arguments)]
     pub fn compose(
         &mut self,
         screen: Option<&ID3D11Texture2D>,
         cam: Option<&CamFrame>,
         layout: &Layout,
         pip: &PipSettings,
-        bg_color: [u8; 3],
+        key: &KeySettings,
+        matte: bool,
     ) -> Result<ComposedFrame, CaptureError> {
         let screen_size = screen.map(texture_size);
         let cam_size = cam.map(|frame| texture_size(&frame.texture));
@@ -277,15 +338,45 @@ impl Compositor {
         let target = self.targets.get(index).ok_or(CaptureError::Missing("the compositor output ring is empty"))?;
         let (texture, rtv) = (target.texture.clone(), target.rtv.clone());
         let clear = match layout {
-            Layout::CamOnly => [f32::from(bg_color[0]) / 255.0, f32::from(bg_color[1]) / 255.0, f32::from(bg_color[2]) / 255.0, 1.0],
+            Layout::CamOnly => [f32::from(self.bg.color[0]) / 255.0, f32::from(self.bg.color[1]) / 255.0, f32::from(self.bg.color[2]) / 255.0, 1.0],
             Layout::ScreenOnly | Layout::Pip => [0.0, 0.0, 0.0, 1.0],
         };
         self.begin(&rtv, clear);
         if let (Some(rect), Some(view)) = (placement.screen, &screen_view) {
-            self.draw_bgra(rect, view);
+            self.draw_bgra(rect, view, 0.0, 0.0);
+        }
+        let bg_image = if self.bg.kind == BackgroundKind::Image {
+            // The view is cloned out so the draws can borrow self mutably below.
+            self.bg_image.as_ref().map(|image| (image.size(), image.view().clone()))
+        } else {
+            None
+        };
+        match layout {
+            Layout::CamOnly => {
+                if let Some(((image_w, image_h), view)) = &bg_image {
+                    let full = RectF::new(0.0, 0.0, self.out_w as f32, self.out_h as f32);
+                    let placed = fit_background(*image_w, *image_h, full, self.bg.fit);
+                    self.draw_bgra(placed.dst, view, 0.0, 0.0);
+                }
+            }
+            Layout::Pip => {
+                if self.bg.kind != BackgroundKind::None
+                    && let Some(cam) = placement.cam
+                {
+                    let mode = if pip.shape == PipShape::Circle { 2.0 } else { 1.0 };
+                    let radius = pip.radius_px.max(0.0);
+                    let color = self.bg.color;
+                    self.draw_solid(cam.dst, color, mode, radius);
+                    if let Some(((image_w, image_h), view)) = &bg_image {
+                        let placed = fit_background(*image_w, *image_h, cam.dst, self.bg.fit);
+                        self.draw_bgra(placed.dst, view, mode, radius);
+                    }
+                }
+            }
+            Layout::ScreenOnly => {}
         }
         if let (Some(cam), Some(views)) = (placement.cam, &cam_views) {
-            self.draw_nv12(&cam, pip, views);
+            self.draw_nv12(&cam, pip, key, matte, views);
         }
         self.end();
         Ok(ComposedFrame { texture, seq: self.seq })
@@ -320,12 +411,14 @@ impl Compositor {
         }
     }
 
-    /// Draws a BGRA texture into the rectangle.
-    fn draw_bgra(&self, rect: RectF, view: &ID3D11ShaderResourceView) {
+    /// Draws a BGRA texture into the rectangle; mode 0 cuts at the rectangle, 1 at a rounded
+    /// rectangle of `radius_px` and 2 at a circle.
+    fn draw_bgra(&self, rect: RectF, view: &ID3D11ShaderResourceView, mode: f32, radius_px: f32) {
         let params = Params {
             dst_rect: [rect.left, rect.top, rect.right, rect.bottom],
             src_uv: [0.0, 0.0, 1.0, 1.0],
-            shape: [0.0, 0.0, self.out_w as f32, self.out_h as f32],
+            border_color: [0.0, 0.0, 0.0, mode],
+            shape: [radius_px.max(0.0), 0.0, self.out_w as f32, self.out_h as f32],
             ..Params::default()
         };
         // SAFETY: the context and every object are live; params outlives the copy that UpdateSubresource makes.
@@ -337,11 +430,32 @@ impl Compositor {
         }
     }
 
-    /// Draws the camera into its rectangle with the crop, the rounded corners and the border, or as a circle with a ring.
-    fn draw_nv12(&self, cam: &CamPlacement, pip: &PipSettings, views: &[ID3D11ShaderResourceView; 2]) {
+    /// Paints the solid background colour into the rectangle, cut by the shape like [`Compositor::draw_bgra`].
+    fn draw_solid(&mut self, rect: RectF, color: [u8; 3], mode: f32, radius_px: f32) {
+        if self.solid_color != color {
+            // BGRA byte order: blue first, then green, red and opaque alpha.
+            let bgra = [color[2], color[1], color[0], 255u8];
+            // SAFETY: the 1x1 texture is live and bgra holds exactly one BGRA pixel.
+            unsafe { self.context.UpdateSubresource(&self.solid.0, 0, None, bgra.as_ptr().cast(), 4, 0) };
+            self.solid_color = color;
+        }
+        self.draw_bgra(rect, &self.solid.1, mode, radius_px);
+    }
+
+    /// Draws the camera into its rectangle with the key, the crop, the rounded corners and the border, or as a circle with a ring.
+    fn draw_nv12(&self, cam: &CamPlacement, pip: &PipSettings, key: &KeySettings, matte: bool, views: &[ID3D11ShaderResourceView; 2]) {
         let (coef, range) = self.cam_color.shader_constants();
         let [red, green, blue] = pip.border_color;
         let circle = pip.shape == PipShape::Circle;
+        let unit = |value: f32| if value.is_finite() { value.clamp(0.0, 1.0) } else { 0.0 };
+        let mode = match (key.enabled, matte) {
+            (false, _) => 0.0,
+            (true, false) => 1.0,
+            (true, true) => 2.0,
+        };
+        let garbage = garbage_rect(key);
+        let mask = mask_rect(key);
+        let mask_edges = mask.map_or([0.0; 4], |rect| [rect.left, rect.top, rect.right, rect.bottom]);
         let params = Params {
             dst_rect: [cam.dst.left, cam.dst.top, cam.dst.right, cam.dst.bottom],
             src_uv: [cam.src.left, cam.src.top, cam.src.right, cam.src.bottom],
@@ -350,6 +464,10 @@ impl Compositor {
             shape: [pip.radius_px.max(0.0), pip.border_px.max(0.0), self.out_w as f32, self.out_h as f32],
             yuv_coef: coef,
             yuv_range: range,
+            key_color: [f32::from(key.color[0]) / 255.0, f32::from(key.color[1]) / 255.0, f32::from(key.color[2]) / 255.0, mode],
+            key_params: [unit(key.similarity), unit(key.smoothness), unit(key.spill), if mask.is_some() { 1.0 } else { 0.0 }],
+            key_garbage: [garbage.left, garbage.top, garbage.right, garbage.bottom],
+            key_mask: mask_edges,
         };
         let [luma, chroma] = views;
         // SAFETY: the context and every object are live; params outlives the copy that UpdateSubresource makes.
@@ -474,6 +592,33 @@ fn create_target(device: &ID3D11Device, width: u32, height: u32) -> Result<Targe
     with_context("failed to create a compositor render target view", unsafe { device.CreateRenderTargetView(&texture, None, Some(&mut rtv)) })?;
     let rtv = rtv.ok_or(CaptureError::Missing("CreateRenderTargetView returned no view"))?;
     Ok(Target { texture, rtv })
+}
+
+/// Creates the 1x1 texture that paints the solid background colour, starting white.
+fn create_solid(device: &ID3D11Device) -> Result<(ID3D11Texture2D, ID3D11ShaderResourceView), CaptureError> {
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: 1,
+        Height: 1,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        Usage: D3D11_USAGE_DEFAULT,
+        BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+        CPUAccessFlags: 0,
+        MiscFlags: 0,
+    };
+    let white = [255u8, 255, 255, 255];
+    let data = D3D11_SUBRESOURCE_DATA { pSysMem: white.as_ptr().cast(), SysMemPitch: 4, SysMemSlicePitch: 0 };
+    let mut texture: Option<ID3D11Texture2D> = None;
+    // SAFETY: desc and data describe the one white pixel and texture is a valid out pointer.
+    with_context("failed to create the solid background texture", unsafe { device.CreateTexture2D(&desc, Some(&data), Some(&mut texture)) })?;
+    let texture = texture.ok_or(CaptureError::Missing("CreateTexture2D returned no solid background texture"))?;
+    let mut view: Option<ID3D11ShaderResourceView> = None;
+    // SAFETY: the texture is live on the same device and view is a valid out pointer.
+    with_context("failed to create the solid background view", unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut view)) })?;
+    let view = view.ok_or(CaptureError::Missing("CreateShaderResourceView returned no solid background view"))?;
+    Ok((texture, view))
 }
 
 /// Creates the linear, clamping sampler.

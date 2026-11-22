@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use capture::{AudioDevice, CaptureError, ControlProp, DeviceKind};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 use crate::profiles;
@@ -379,6 +379,85 @@ pub struct WebcamSettings {
     pub iso_rc: RateControl,
     /// Delay of the camera frames against the screen, in milliseconds, from -500 to 500.
     pub offset_ms: i32,
+    /// The chroma key of the camera in the composite; the raw camera file is never keyed.
+    pub key: KeyConfig,
+}
+
+/// The chroma key of the camera, saved in a profile; it mirrors `capture::KeySettings`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KeyConfig {
+    /// Whether the camera is keyed.
+    pub enabled: bool,
+    /// The key colour as red, green and blue.
+    pub color: [u8; 3],
+    /// How far from the key colour a pixel may be and still be fully transparent, 0 to 1.
+    pub similarity: f32,
+    /// How wide the soft edge beyond the similarity is, 0 to 1.
+    pub smoothness: f32,
+    /// How strongly the key colour is pulled out of the pixels that stay, 0 to 1.
+    pub spill: f32,
+    /// The part of the camera's left side that is thrown away, in percent.
+    pub crop_left_pct: f32,
+    /// The part of the camera's right side that is thrown away, in percent.
+    pub crop_right_pct: f32,
+    /// The part of the camera's top that is thrown away, in percent.
+    pub crop_top_pct: f32,
+    /// The part of the camera's bottom that is thrown away, in percent.
+    pub crop_bottom_pct: f32,
+    /// Whether the mask rectangle is cut out of the picture.
+    pub mask_enabled: bool,
+    /// Left edge of the mask rectangle, in percent of the camera frame's width.
+    pub mask_x_pct: f32,
+    /// Top edge of the mask rectangle, in percent of the camera frame's height.
+    pub mask_y_pct: f32,
+    /// Width of the mask rectangle, in percent of the camera frame's width.
+    pub mask_w_pct: f32,
+    /// Height of the mask rectangle, in percent of the camera frame's height.
+    pub mask_h_pct: f32,
+}
+
+impl Default for KeyConfig {
+    fn default() -> Self {
+        let key = capture::KeySettings::default();
+        Self {
+            enabled: key.enabled,
+            color: key.color,
+            similarity: key.similarity,
+            smoothness: key.smoothness,
+            spill: key.spill,
+            crop_left_pct: key.crop_left_pct,
+            crop_right_pct: key.crop_right_pct,
+            crop_top_pct: key.crop_top_pct,
+            crop_bottom_pct: key.crop_bottom_pct,
+            mask_enabled: key.mask_enabled,
+            mask_x_pct: key.mask_x_pct,
+            mask_y_pct: key.mask_y_pct,
+            mask_w_pct: key.mask_w_pct,
+            mask_h_pct: key.mask_h_pct,
+        }
+    }
+}
+
+impl From<&KeyConfig> for capture::KeySettings {
+    fn from(config: &KeyConfig) -> Self {
+        Self {
+            enabled: config.enabled,
+            color: config.color,
+            similarity: config.similarity,
+            smoothness: config.smoothness,
+            spill: config.spill,
+            crop_left_pct: config.crop_left_pct,
+            crop_right_pct: config.crop_right_pct,
+            crop_top_pct: config.crop_top_pct,
+            crop_bottom_pct: config.crop_bottom_pct,
+            mask_enabled: config.mask_enabled,
+            mask_x_pct: config.mask_x_pct,
+            mask_y_pct: config.mask_y_pct,
+            mask_w_pct: config.mask_w_pct,
+            mask_h_pct: config.mask_h_pct,
+        }
+    }
 }
 
 impl Default for WebcamSettings {
@@ -391,6 +470,7 @@ impl Default for WebcamSettings {
             iso: true,
             iso_rc: RateControl::ConstantQuality { quality: 70, max_mbps: 30.0 },
             offset_ms: 0,
+            key: KeyConfig::default(),
         }
     }
 }
@@ -402,13 +482,8 @@ impl WebcamSettings {
     }
 }
 
-/// The background of the Cam only layout in a profile file that has none: dark grey.
-const DEFAULT_CAM_ONLY_BG: [u8; 3] = [32, 32, 32];
-
-/// The Cam only background of a profile file that has none.
-fn default_cam_only_bg() -> [u8; 3] {
-    DEFAULT_CAM_ONLY_BG
-}
+/// The background colour of a profile file that has none: dark grey.
+const DEFAULT_BACKGROUND_COLOR: [u8; 3] = [32, 32, 32];
 
 /// Which pictures the composite of a profile shows.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -548,8 +623,80 @@ impl From<&PipConfig> for capture::PipSettings {
     }
 }
 
+/// What a layout draws behind the pictures; mirrors `capture::BackgroundKind`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundKind {
+    /// Nothing; a keyed camera floats over the screen, and the Cam only layout uses the colour.
+    #[default]
+    None,
+    /// A solid colour.
+    Color,
+    /// A PNG or JPG image from a file.
+    Image,
+}
+
+/// How an image background fills the rectangle it is given; mirrors `capture::BackgroundFit`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundFit {
+    /// Fills the rectangle and crops whatever does not fit.
+    #[default]
+    Cover,
+    /// Fits whole inside the rectangle, letterboxed with the background colour.
+    Contain,
+    /// Stretches over the rectangle, ignoring the aspect ratio.
+    Stretch,
+}
+
+/// The background settings of a profile; mirrors `capture::BackgroundSettings`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BackgroundConfig {
+    /// What the background shows.
+    pub kind: BackgroundKind,
+    /// The solid colour as red, green and blue.
+    pub color: [u8; 3],
+    /// The path of the image file, used when the kind is Image.
+    pub image_path: String,
+    /// How an image fills its rectangle.
+    pub fit: BackgroundFit,
+}
+
+impl Default for BackgroundConfig {
+    fn default() -> Self {
+        Self { kind: BackgroundKind::None, color: DEFAULT_BACKGROUND_COLOR, image_path: String::new(), fit: BackgroundFit::Cover }
+    }
+}
+
+impl From<&BackgroundConfig> for capture::BackgroundSettings {
+    fn from(config: &BackgroundConfig) -> Self {
+        Self { kind: config.kind.into(), color: config.color, image_path: config.image_path.clone(), fit: config.fit.into() }
+    }
+}
+
+impl From<BackgroundKind> for capture::BackgroundKind {
+    fn from(kind: BackgroundKind) -> Self {
+        match kind {
+            BackgroundKind::None => Self::None,
+            BackgroundKind::Color => Self::Color,
+            BackgroundKind::Image => Self::Image,
+        }
+    }
+}
+
+impl From<BackgroundFit> for capture::BackgroundFit {
+    fn from(fit: BackgroundFit) -> Self {
+        match fit {
+            BackgroundFit::Cover => Self::Cover,
+            BackgroundFit::Contain => Self::Contain,
+            BackgroundFit::Stretch => Self::Stretch,
+        }
+    }
+}
+
 /// One capture and encode profile, stored as profiles\{name}.json.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Profile {
     /// Display name, also the file name.
     pub name: String,
@@ -585,9 +732,71 @@ pub struct Profile {
     /// The camera's place and look in the Pip layout.
     #[serde(default)]
     pub pip: PipConfig,
-    /// The background colour of the Cam only layout as red, green and blue; profile files without one use dark grey.
-    #[serde(default = "default_cam_only_bg")]
-    pub cam_only_bg: [u8; 3],
+    /// The background of the Cam only layout and of the picture in picture camera.
+    #[serde(default)]
+    pub background: BackgroundConfig,
+    /// The Cam only background of an old profile file, migrated into `background.color` on load;
+    /// always None in a profile that lives in memory.
+    #[serde(default, skip_serializing)]
+    pub cam_only_bg: Option<[u8; 3]>,
+}
+
+/// The shape of a profile file, so the old `cam_only_bg` key can be read and migrated.
+#[derive(Deserialize)]
+struct ProfileFile {
+    name: String,
+    codec: Codec,
+    rate_control: RateControl,
+    #[serde(default = "default_preset")]
+    preset: Preset,
+    #[serde(default = "default_keyframe_secs")]
+    keyframe_secs: f32,
+    width: u32,
+    height: u32,
+    fps: u32,
+    #[serde(default)]
+    container: Container,
+    aac_tracks: bool,
+    mixdown: bool,
+    #[serde(default)]
+    webcam: Option<WebcamSettings>,
+    #[serde(default)]
+    layout: LayoutKind,
+    #[serde(default)]
+    pip: PipConfig,
+    #[serde(default)]
+    background: BackgroundConfig,
+    #[serde(default)]
+    cam_only_bg: Option<[u8; 3]>,
+}
+
+impl<'de> Deserialize<'de> for Profile {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let file = ProfileFile::deserialize(deserializer)?;
+        let mut profile = Profile {
+            name: file.name,
+            codec: file.codec,
+            rate_control: file.rate_control,
+            preset: file.preset,
+            keyframe_secs: file.keyframe_secs,
+            width: file.width,
+            height: file.height,
+            fps: file.fps,
+            container: file.container,
+            aac_tracks: file.aac_tracks,
+            mixdown: file.mixdown,
+            webcam: file.webcam,
+            layout: file.layout,
+            pip: file.pip,
+            background: file.background,
+            cam_only_bg: None,
+        };
+        // An old profile's Cam only colour moves into the new background block, so nothing is lost.
+        if let Some(bg) = file.cam_only_bg {
+            profile.background.color = bg;
+        }
+        Ok(profile)
+    }
 }
 
 impl Profile {
@@ -608,7 +817,8 @@ impl Profile {
             webcam: None,
             layout: LayoutKind::default(),
             pip: PipConfig::default(),
-            cam_only_bg: DEFAULT_CAM_ONLY_BG,
+            background: BackgroundConfig::default(),
+            cam_only_bg: None,
         }
     }
 
@@ -629,7 +839,8 @@ impl Profile {
             webcam: None,
             layout: LayoutKind::default(),
             pip: PipConfig::default(),
-            cam_only_bg: DEFAULT_CAM_ONLY_BG,
+            background: BackgroundConfig::default(),
+            cam_only_bg: None,
         }
     }
 
@@ -1061,13 +1272,15 @@ mod layout_tests {
     fn a_profile_file_from_before_the_layouts_still_loads() -> Result<(), Box<dyn Error>> {
         let mut value = serde_json::to_value(Profile::tutorial_av1_1440p60())?;
         let object = value.as_object_mut().ok_or("a profile is a JSON object")?;
-        for key in ["layout", "pip", "cam_only_bg"] {
+        for key in ["layout", "pip", "background"] {
             assert!(object.remove(key).is_some(), "a profile writes the {key} key");
         }
+        // The old Cam only colour key of an even older profile file migrates into the background block.
+        object.insert("cam_only_bg".to_owned(), serde_json::json!([10, 20, 30]));
         let profile: Profile = serde_json::from_value(value)?;
-        assert_eq!(profile, Profile::tutorial_av1_1440p60());
+        assert_eq!(profile, Profile { background: BackgroundConfig { color: [10, 20, 30], ..BackgroundConfig::default() }, ..Profile::tutorial_av1_1440p60() });
         assert_eq!(profile.layout, LayoutKind::ScreenOnly);
-        assert_eq!(profile.cam_only_bg, [32, 32, 32]);
+        assert_eq!(profile.background.color, [10, 20, 30]);
         Ok(())
     }
 
@@ -1095,11 +1308,13 @@ mod layout_tests {
         let profile = Profile {
             layout: LayoutKind::Pip,
             pip: PipConfig { anchor: AnchorCorner::TopRight, border_px: 6.0, border_color: [255, 0, 0], ..PipConfig::default() },
-            cam_only_bg: [10, 20, 30],
+            background: BackgroundConfig { kind: BackgroundKind::Image, color: [10, 20, 30], image_path: "bg.png".to_owned(), fit: BackgroundFit::Contain },
             ..Profile::premiere_hevc_1080p60()
         };
         let text = serde_json::to_string(&profile)?;
         assert!(text.contains("\"layout\":\"pip\""), "{text}");
+        assert!(text.contains("\"kind\":\"image\"") && text.contains("\"fit\":\"contain\""), "{text}");
+        assert!(!text.contains("cam_only_bg"), "{text}");
         assert_eq!(serde_json::from_str::<Profile>(&text)?, profile);
         Ok(())
     }
@@ -1112,5 +1327,47 @@ mod layout_tests {
         assert_eq!(settings.crop_top_pct, 5.0);
         assert_eq!(capture::PipSettings::from(&PipConfig::default()), capture::PipSettings::default());
         assert_eq!(capture::Layout::from(LayoutKind::CamOnly), capture::Layout::CamOnly);
+    }
+
+    #[test]
+    fn the_saved_background_converts_to_the_compositor_settings() {
+        let config = BackgroundConfig { kind: BackgroundKind::Image, color: [1, 2, 3], image_path: "bg.png".to_owned(), fit: BackgroundFit::Stretch };
+        let settings = capture::BackgroundSettings::from(&config);
+        assert_eq!(settings.kind, capture::BackgroundKind::Image);
+        assert_eq!(settings.color, [1, 2, 3]);
+        assert_eq!(settings.image_path, "bg.png");
+        assert_eq!(settings.fit, capture::BackgroundFit::Stretch);
+        assert_eq!(capture::BackgroundSettings::from(&BackgroundConfig::default()), capture::BackgroundSettings::default());
+    }
+
+    #[test]
+    fn the_key_defaults_match_the_spec() -> Result<(), Box<dyn Error>> {
+        let key: KeyConfig = serde_json::from_str("{}")?;
+        assert_eq!(key, KeyConfig::default());
+        assert!(!key.enabled && !key.mask_enabled);
+        assert_eq!(key.color, [0, 177, 64]);
+        assert_eq!((key.similarity, key.smoothness, key.spill), (0.40, 0.08, 0.10));
+        assert_eq!((key.crop_left_pct, key.crop_right_pct, key.crop_top_pct, key.crop_bottom_pct), (0.0, 0.0, 0.0, 0.0));
+        assert_eq!(capture::KeySettings::from(&key), capture::KeySettings::default());
+        Ok(())
+    }
+
+    #[test]
+    fn a_partial_key_keeps_the_defaults_for_the_rest() -> Result<(), Box<dyn Error>> {
+        let key: KeyConfig = serde_json::from_str(r#"{ "enabled": true, "similarity": 0.55, "mask_enabled": true, "mask_w_pct": 30.0 }"#)?;
+        assert!(key.enabled && key.mask_enabled);
+        assert_eq!((key.similarity, key.mask_w_pct), (0.55, 30.0));
+        assert_eq!((key.smoothness, key.spill, key.color), (0.08, 0.10, [0, 177, 64]));
+        Ok(())
+    }
+
+    #[test]
+    fn an_old_webcam_profile_without_a_key_still_loads_with_the_key_off() -> Result<(), Box<dyn Error>> {
+        let settings: WebcamSettings = serde_json::from_str(r#"{ "camera_id": "usb#1", "offset_ms": 40 }"#)?;
+        assert_eq!(settings.key, KeyConfig::default());
+        assert!(!settings.key.enabled);
+        let text = serde_json::to_string(&WebcamSettings { key: KeyConfig { enabled: true, ..KeyConfig::default() }, ..WebcamSettings::default() })?;
+        assert!(serde_json::from_str::<WebcamSettings>(&text)?.key.enabled);
+        Ok(())
     }
 }

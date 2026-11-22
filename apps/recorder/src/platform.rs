@@ -1,6 +1,79 @@
 //! Windows-specific window helpers.
 
+use std::path::PathBuf;
+
 use raw_window_handle::HasWindowHandle;
+
+/// Opens a file picker filtered to PNG and JPG images; None when it fails or the user cancels.
+pub fn pick_image_file() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        pick_image_file_win32()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// Runs the IFileOpenDialog picker with a PNG and JPG filter, on this thread's COM apartment.
+#[cfg(windows)]
+#[allow(unsafe_code, reason = "the shell file picker: COM calls that run a modal open dialog")]
+fn pick_image_file_win32() -> Option<PathBuf> {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+    use windows::core::HRESULT;
+
+    // SAFETY: CoInitializeEx only takes an apartment flag; a returned S_OK is balanced by CoUninitialize below.
+    let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    let file = pick_with_dialog();
+    if let Err(error) = &file {
+        log::warn!("the image file picker failed: {error}");
+    }
+    if hr == HRESULT(0) {
+        // SAFETY: this thread was the one that got S_OK above, and every COM pointer is released by now.
+        unsafe { CoUninitialize() };
+    }
+    file.ok().flatten()
+}
+
+/// Shows the dialog and turns the picked shell item into a path; None when the user cancels.
+#[cfg(windows)]
+#[allow(unsafe_code, reason = "the shell file picker: COM calls that run a modal open dialog")]
+fn pick_with_dialog() -> Result<Option<PathBuf>, windows::core::Error> {
+    use std::path::PathBuf;
+
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
+    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+    use windows::Win32::UI::Shell::{
+        FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST, FileOpenDialog, IFileDialog, IFileOpenDialog, SIGDN_FILESYSPATH,
+    };
+    use windows::core::{HRESULT, Interface, w};
+
+    // SAFETY: FileOpenDialog is the standard dialog class id and the interface is a valid out parameter.
+    let dialog: IFileOpenDialog = unsafe { CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)? };
+    let file_dialog: IFileDialog = dialog.cast()?;
+    // SAFETY: the dialog is live; the calls only set picker options and the filter list.
+    unsafe {
+        file_dialog.SetOptions(FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST)?;
+        file_dialog.SetFileTypes(&[
+            COMDLG_FILTERSPEC { pszName: w!("Images"), pszSpec: w!("*.png;*.jpg;*.jpeg") },
+            COMDLG_FILTERSPEC { pszName: w!("All files"), pszSpec: w!("*.*") },
+        ])?;
+    }
+    // SAFETY: the dialog is live and a null owner means the dialog has no parent window.
+    if let Err(error) = unsafe { file_dialog.Show(None) } {
+        // Cancelling the dialog comes back as HRESULT 0x800704C7, which is not a failure.
+        return if error.code() == HRESULT(0x8007_04C7u32 as i32) { Ok(None) } else { Err(error) };
+    }
+    let item = unsafe { dialog.GetResult() }?;
+    // SAFETY: the item is live and SIGDN_FILESYSPATH asks for a file system path.
+    let name = unsafe { item.GetDisplayName(SIGDN_FILESYSPATH)? };
+    // SAFETY: name is a live NUL terminated string handed out by GetDisplayName.
+    let path = unsafe { name.to_string() }.ok().map(PathBuf::from);
+    // SAFETY: balances the allocation behind GetDisplayName, which is done with once the path is taken.
+    unsafe { CoTaskMemFree(Some(name.as_ptr().cast())) };
+    Ok(path)
+}
 
 /// Hides a window from screen capture, or shows it to capture again, on a raw window handle value.
 pub fn set_capture_exclusion(raw_hwnd: isize, exclude: bool) -> Result<(), String> {

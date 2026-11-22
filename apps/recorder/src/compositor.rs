@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use capture::{CaptureError, Compositor, Gpu, Layout, MonitorCapture, PipSettings, list_monitors};
+use capture::{BackgroundSettings, CaptureError, Compositor, Gpu, KeySettings, Layout, MonitorCapture, PipSettings, list_monitors};
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 use windows::core::Interface;
 
@@ -45,8 +45,12 @@ pub struct ComposeConfig {
     pub layout: Layout,
     /// The camera's place and look in the picture in picture layout.
     pub pip: PipSettings,
-    /// The background colour of the cam only layout.
-    pub bg: [u8; 3],
+    /// What the composite draws behind the camera.
+    pub bg: BackgroundSettings,
+    /// The chroma key of the camera.
+    pub key: KeySettings,
+    /// Whether the keyed camera shows its matte; only the window's preview ever sets this, never a take.
+    pub matte: bool,
     /// Index into `capture::list_monitors()`.
     pub monitor: usize,
     /// Whether the mouse cursor is drawn.
@@ -55,15 +59,38 @@ pub struct ComposeConfig {
 
 impl Default for ComposeConfig {
     fn default() -> Self {
-        Self { width: 0, height: 0, fps: 60, layout: Layout::ScreenOnly, pip: PipSettings::default(), bg: [32, 32, 32], monitor: 0, cursor: true }
+        Self {
+            width: 0,
+            height: 0,
+            fps: 60,
+            layout: Layout::ScreenOnly,
+            pip: PipSettings::default(),
+            bg: BackgroundSettings::default(),
+            key: KeySettings::default(),
+            matte: false,
+            monitor: 0,
+            cursor: true,
+        }
     }
 }
 
 impl ComposeConfig {
-    /// The configuration of a profile; a profile with the Source size gets `source_size` rounded down to even numbers.
+    /// The configuration of a profile, with the matte view off; a profile with the Source size gets `source_size` rounded down to even numbers.
     pub fn from_profile(profile: &Profile, source_size: (u32, u32), monitor: usize, cursor: bool) -> Self {
         let (width, height) = if profile.is_source_size() { (source_size.0 & !1, source_size.1 & !1) } else { (profile.width, profile.height) };
-        Self { width, height, fps: profile.fps.max(1), layout: profile.layout.into(), pip: (&profile.pip).into(), bg: profile.cam_only_bg, monitor, cursor }
+        let key = profile.webcam.as_ref().map(|webcam| KeySettings::from(&webcam.key)).unwrap_or_default();
+        Self {
+            width,
+            height,
+            fps: profile.fps.max(1),
+            layout: profile.layout.into(),
+            pip: (&profile.pip).into(),
+            bg: (&profile.background).into(),
+            key,
+            matte: false,
+            monitor,
+            cursor,
+        }
     }
 }
 
@@ -102,6 +129,8 @@ struct Shared {
     stop: AtomicBool,
     /// The text of the last error, cleared by the next good frame.
     error: Mutex<Option<String>>,
+    /// The text of the last background warning, cleared when the background works again.
+    warning: Mutex<Option<String>>,
 }
 
 /// Locks a mutex, carrying on with the data if a thread panicked while holding it.
@@ -149,6 +178,11 @@ impl CompositorHandle {
         lock(&self.shared.error).clone()
     }
 
+    /// The text of the last background warning, or None while the background is fine.
+    pub fn warning(&self) -> Option<String> {
+        lock(&self.shared.warning).clone()
+    }
+
     /// Holds the compositor for a recording: the thread keeps running and stays on one device until the guard is dropped.
     ///
     /// A layout that shows the camera pins the camera's device when a camera is open, so its frames can be drawn.
@@ -163,6 +197,8 @@ impl CompositorHandle {
             (_, Some(share)) => share.gpu,
         };
         *pinned = Some(gpu.clone());
+        // A matte frame must never reach a take, even if the window had the matte view on a moment ago.
+        lock(&self.shared.config).matte = false;
         Ok(PinGuard { handle: self.clone(), gpu })
     }
 }
@@ -236,6 +272,7 @@ impl CompositorThread {
             active: AtomicBool::new(false),
             stop: AtomicBool::new(false),
             error: Mutex::new(None),
+            warning: Mutex::new(None),
         });
         let thread_shared = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
@@ -425,8 +462,20 @@ impl Worker {
         if let Some(share) = cam {
             compositor.set_cam_color(share.capture.color());
         }
+        // The background image is loaded here, on the compose thread and device, and cached by path.
+        match compositor.set_background(&config.bg) {
+            Ok(()) => *lock(&self.shared.warning) = None,
+            Err(err) => {
+                let message = format!("the background image could not be loaded, using the colour instead: {err}");
+                let mut warning = lock(&self.shared.warning);
+                if warning.as_deref() != Some(message.as_str()) {
+                    log::warn!("compositor: {message}");
+                    *warning = Some(message);
+                }
+            }
+        }
         let composed = compositor
-            .compose(screen.as_ref().map(|frame| &frame.texture), cam_frame.as_ref(), &config.layout, &config.pip, config.bg)
+            .compose(screen.as_ref().map(|frame| &frame.texture), cam_frame.as_ref(), &config.layout, &config.pip, &config.key, config.matte)
             .map_err(|err| err.to_string())?;
         let (width, height) = compositor.output_size();
         self.seq += 1;
@@ -483,11 +532,33 @@ mod tests {
         let mut profile = Profile::premiere_hevc_1080p60();
         profile.layout = crate::config::LayoutKind::Pip;
         profile.pip.scale_pct = 40.0;
-        profile.cam_only_bg = [1, 2, 3];
+        profile.background = crate::config::BackgroundConfig {
+            kind: crate::config::BackgroundKind::Image,
+            color: [1, 2, 3],
+            image_path: "bg.png".to_owned(),
+            fit: crate::config::BackgroundFit::Stretch,
+        };
         let config = ComposeConfig::from_profile(&profile, (1920, 1080), 0, true);
         assert_eq!(config.layout, Layout::Pip);
         assert_eq!(config.pip.scale_pct, 40.0);
-        assert_eq!(config.bg, [1, 2, 3]);
+        assert_eq!(config.bg.color, [1, 2, 3]);
+        assert_eq!(config.bg.image_path, "bg.png");
+        assert_eq!(config.bg.fit, capture::BackgroundFit::Stretch);
+        assert_eq!(config.bg.kind, capture::BackgroundKind::Image);
+    }
+
+    #[test]
+    fn the_key_comes_from_the_profile_webcam_and_the_matte_starts_off() {
+        let mut profile = Profile::premiere_hevc_1080p60();
+        assert_eq!(ComposeConfig::from_profile(&profile, (1920, 1080), 0, true).key, KeySettings::default());
+        let mut webcam = crate::config::WebcamSettings::default();
+        webcam.key.enabled = true;
+        webcam.key.similarity = 0.55;
+        profile.webcam = Some(webcam);
+        let config = ComposeConfig::from_profile(&profile, (1920, 1080), 0, true);
+        assert!(config.key.enabled);
+        assert_eq!(config.key.similarity, 0.55);
+        assert!(!config.matte);
     }
 
     #[test]
