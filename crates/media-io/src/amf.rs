@@ -789,6 +789,8 @@ pub fn amf_options(codec: Codec, cfg: &EncoderConfig, ranges: &OptionRanges) -> 
             // QVBR on AMF takes its target bitrate from bit_rate, so the ceiling doubles as the target.
             let ceiling = bits_per_second(max_mbps);
             push_rates(&mut options, ceiling, ceiling, ceiling);
+            // Without the HRD enforced, QVBR treats maxrate and bufsize as hints and runs well past the ceiling.
+            push_enforce_hrd(&mut options, ranges);
         }
         RateControl::ConstantQp { qp_i, qp_p } => {
             push(&mut options, "rc", rc_mode(encoder, ranges, &["cqp"])?);
@@ -939,6 +941,7 @@ mod tests {
             assert_eq!(value(&options, "b"), "40000000");
             assert_eq!(value(&options, "maxrate"), "40000000");
             assert_eq!(value(&options, "bufsize"), "40000000");
+            assert_eq!(value(&options, "enforce_hrd"), "1");
             assert_eq!(value(&options, "quality"), "balanced");
             assert_eq!(value(&options, "g"), "120");
             assert!(options.iter().any(|(key, _)| key == "qvbr_quality_level"));
@@ -1049,7 +1052,11 @@ mod tests {
     #[test]
     fn options_split_between_the_context_and_private_data_for_every_mode() {
         let modes = [
-            (RateControl::ConstantQuality { quality: 70, max_mbps: 40.0 }, vec!["b", "maxrate", "bufsize", "g"], vec!["rc", "qvbr_quality_level", "quality"]),
+            (
+                RateControl::ConstantQuality { quality: 70, max_mbps: 40.0 },
+                vec!["b", "maxrate", "bufsize", "g"],
+                vec!["rc", "qvbr_quality_level", "enforce_hrd", "quality"],
+            ),
             (RateControl::ConstantQp { qp_i: 24, qp_p: 26 }, vec!["g"], vec!["rc", "qp_i", "qp_p", "quality"]),
             (RateControl::Cbr { mbps: 20.0 }, vec!["b", "maxrate", "bufsize", "g"], vec!["rc", "filler_data", "enforce_hrd", "quality"]),
             (RateControl::VbrPeak { target_mbps: 20.0, max_mbps: 40.0 }, vec!["b", "maxrate", "bufsize", "g"], vec!["rc", "enforce_hrd", "quality"]),
@@ -1074,10 +1081,11 @@ mod tests {
     }
 
     #[test]
-    fn enforce_hrd_is_set_for_cbr_and_vbr_only_when_the_encoder_has_it() {
+    fn enforce_hrd_is_set_for_cbr_vbr_and_quality_only_when_the_encoder_has_it() {
         let cbr = config(Codec::Hevc, RateControl::Cbr { mbps: 20.0 });
         let vbr = config(Codec::Hevc, RateControl::VbrPeak { target_mbps: 20.0, max_mbps: 40.0 });
-        for cfg in [&cbr, &vbr] {
+        let quality = config(Codec::Hevc, RateControl::ConstantQuality { quality: 70, max_mbps: 40.0 });
+        for cfg in [&cbr, &vbr, &quality] {
             let options = amf_options(Codec::Hevc, cfg, &fake_ranges(Codec::Hevc)).unwrap();
             assert_eq!(value(&options, "enforce_hrd"), "1");
             let mut ranges = fake_ranges(Codec::Hevc);
@@ -1085,8 +1093,9 @@ mod tests {
             let options = amf_options(Codec::Hevc, cfg, &ranges).unwrap();
             assert!(!options.iter().any(|(key, _)| key == "enforce_hrd"));
         }
-        let quality = config(Codec::Hevc, RateControl::ConstantQuality { quality: 70, max_mbps: 40.0 });
-        let options = amf_options(Codec::Hevc, &quality, &fake_ranges(Codec::Hevc)).unwrap();
+        // Constant QP has no rate ceiling to enforce.
+        let cqp = config(Codec::Hevc, RateControl::ConstantQp { qp_i: 24, qp_p: 26 });
+        let options = amf_options(Codec::Hevc, &cqp, &fake_ranges(Codec::Hevc)).unwrap();
         assert!(!options.iter().any(|(key, _)| key == "enforce_hrd"));
     }
 

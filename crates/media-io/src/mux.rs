@@ -46,6 +46,9 @@ const HELD_LIMIT: usize = 4096;
 /// The suffix of the temp file a finalize writes beside the take, before it replaces the take.
 const FINALIZE_SUFFIX: &str = ".finalizing";
 
+/// The samples the AAC encoder puts ahead of the first real sample (its priming gap), as one encoder frame.
+const AAC_PRIMING_SAMPLES: i64 = 1024;
+
 /// The container tags a remux must not copy, because the new muxer writes its own brands.
 const BRAND_TAGS: [&str; 3] = ["major_brand", "minor_version", "compatible_brands"];
 
@@ -176,13 +179,18 @@ impl Muxer {
     /// When a video stream the container wants a codec header for has none yet (AMF may
     /// send its headers in-band only), the header waits for the first video packet.
     pub fn start(&mut self) -> Result<(), MediaError> {
-        // Matroska cannot store negative timestamps, so tell the muxer to
-        // shift the AAC priming gap instead of failing on the first packet.
+        // Matroska cannot store negative timestamps, so tell the muxer to shift the AAC priming gap
+        // instead of failing on the first packet. MP4 and MOV store it as an edit of the audio track, and
+        // shifting there would push the video off its first frame and stretch its first sample.
+        let avoid_negative_ts = match self.container {
+            Container::Mkv => ffi::AVFMT_AVOID_NEG_TS_MAKE_ZERO,
+            Container::Mp4 | Container::Mov => ffi::AVFMT_AVOID_NEG_TS_DISABLED,
+        };
         // SAFETY: ctx is a live output context; setting avoid_negative_ts
         // before write_header is what avformat's own callers do.
         #[allow(unsafe_code)]
         unsafe {
-            (*self.ctx.as_mut_ptr()).avoid_negative_ts = ffi::AVFMT_AVOID_NEG_TS_MAKE_ZERO as _;
+            (*self.ctx.as_mut_ptr()).avoid_negative_ts = avoid_negative_ts as _;
         }
         self.missing_headers = self.video_streams_without_header();
         if self.missing_headers.is_empty() {
@@ -539,11 +547,16 @@ fn remux_faststart(source: &Path, target: &Path, format: &str, progress: &mut dy
     output.set_metadata(copied_tags(input.metadata().iter()));
     // The output stream each input stream goes to; streams that are neither video nor audio are dropped.
     let mut mapped: Vec<Option<usize>> = Vec::new();
+    // How far each source stream moves earlier, in its own time base: the AAC priming gap, which the
+    // fragmented file cannot hold (it starts every track at zero) and the standard file keeps as an edit.
+    let mut priming: Vec<i64> = Vec::new();
     for source_stream in input.streams() {
         if !matches!(source_stream.parameters().medium(), Type::Video | Type::Audio) {
             mapped.push(None);
+            priming.push(0);
             continue;
         }
+        priming.push(priming_ticks(&source_stream));
         let mut target_stream = output.add_stream(source_stream.parameters().id())?;
         target_stream.set_parameters(source_stream.parameters());
         target_stream.set_time_base(source_stream.time_base());
@@ -571,6 +584,11 @@ fn remux_faststart(source: &Path, target: &Path, format: &str, progress: &mut dy
         let source_tb = input.stream(source_index).map(|s| s.time_base()).ok_or(MediaError::Null("finalize source stream"))?;
         let target_tb = output.stream(target_index).map(|s| s.time_base()).ok_or(MediaError::Null("finalize target stream"))?;
         let position = packet.position();
+        let gap = priming.get(source_index).copied().unwrap_or(0);
+        if gap != 0 {
+            packet.set_pts(packet.pts().map(|pts| pts - gap));
+            packet.set_dts(packet.dts().map(|dts| dts - gap));
+        }
         packet.rescale_ts(source_tb, target_tb);
         packet.set_stream(target_index);
         packet.set_position(-1);
@@ -586,6 +604,21 @@ fn remux_faststart(source: &Path, target: &Path, format: &str, progress: &mut dy
     output.write_trailer()?;
     progress(1.0);
     Ok(())
+}
+
+/// The AAC priming gap of a stream in its own time base: one encoder frame of samples for an AAC audio
+/// stream, zero for every other stream.
+#[allow(unsafe_code)]
+fn priming_ticks(stream: &ffmpeg_next::format::stream::Stream<'_>) -> i64 {
+    // SAFETY: the stream belongs to a live input context, so its codecpar is live plain data.
+    let (id, rate) = unsafe {
+        let par = (*stream.as_ptr()).codecpar;
+        if par.is_null() { (ffi::AVCodecID::AV_CODEC_ID_NONE, 0) } else { ((*par).codec_id, (*par).sample_rate) }
+    };
+    if id != ffi::AVCodecID::AV_CODEC_ID_AAC || rate <= 0 {
+        return 0;
+    }
+    AAC_PRIMING_SAMPLES.rescale(Rational::new(1, rate), stream.time_base())
 }
 
 /// Copies a tag list without the brand tags, which the new muxer writes itself.
@@ -1023,6 +1056,103 @@ mod tests {
         drop(muxer);
         let _ = std::fs::remove_file(&path);
         assert!(err.is_some_and(|text| text.contains("codec header")));
+        Ok(())
+    }
+
+    /// Codec parameters for a 48 kHz stereo AAC stream with the usual one frame priming gap and no encoder behind it.
+    fn aac_params() -> Parameters {
+        let mut params = Parameters::new();
+        // SAFETY: params owns a fresh AVCodecParameters, so writing its plain fields is sound; the extradata
+        // buffer is padded as FFmpeg requires and owned by the parameters from then on.
+        #[allow(unsafe_code)]
+        unsafe {
+            let raw = params.as_mut_ptr();
+            (*raw).codec_type = ffi::AVMediaType::AVMEDIA_TYPE_AUDIO;
+            (*raw).codec_id = ffi::AVCodecID::AV_CODEC_ID_AAC;
+            (*raw).sample_rate = 48_000;
+            (*raw).frame_size = 1024;
+            (*raw).initial_padding = 1024;
+            ffi::av_channel_layout_default(&mut (*raw).ch_layout, 2);
+            // The AudioSpecificConfig of AAC LC, 48 kHz, stereo.
+            let buffer = ffi::av_mallocz(2 + ffi::AV_INPUT_BUFFER_PADDING_SIZE as usize).cast::<u8>();
+            if !buffer.is_null() {
+                buffer.write(0x11);
+                buffer.add(1).write(0x90);
+                (*raw).extradata = buffer;
+                (*raw).extradata_size = 2;
+            }
+        }
+        params
+    }
+
+    /// The media time of the first edit in every elst box of a file, in file order (one per track).
+    fn edit_media_times(path: &Path) -> Result<Vec<i64>, Box<dyn std::error::Error>> {
+        let bytes = std::fs::read(path)?;
+        let mut times = Vec::new();
+        for at in bytes.windows(4).enumerate().filter(|(_, tag)| *tag == b"elst").map(|(at, _)| at) {
+            // After the tag: version and flags, the entry count, then segment duration and media time.
+            let version = *bytes.get(at + 4).ok_or("cut off elst")?;
+            let field = if version == 1 { 8 } else { 4 };
+            let start = at + 4 + 4 + 4 + field;
+            let raw = bytes.get(start..start + field).ok_or("cut off elst")?;
+            times.push(if field == 8 { i64::from_be_bytes(raw.try_into()?) } else { i64::from(i32::from_be_bytes(raw.try_into()?)) });
+        }
+        Ok(times)
+    }
+
+    #[test]
+    fn video_starts_at_zero_on_the_frame_grid_and_audio_keeps_only_its_priming_edit() -> Result<(), Box<dyn std::error::Error>> {
+        crate::init()?;
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+        const FRAMES: i64 = 120;
+        for container in [Container::Mp4, Container::Mov] {
+            let path = std::env::temp_dir().join(format!("cutmark_mux_align_{}_{nanos}.{}", std::process::id(), container.extension()));
+            let mut muxer = Muxer::create(&path, container)?;
+            let video = muxer.add_video(mjpeg_params(), (1, 60), (60, 1))?;
+            let audio = muxer.add_audio(aac_params(), (1, 48_000), "Mixdown", true)?;
+            muxer.start()?;
+            // The AAC encoder stamps its first packet one frame early (the priming gap) and the video starts at frame 0.
+            let audio_packets = FRAMES * 48_000 / 60 / 1024;
+            let mut next_audio = 0;
+            for frame in 0..FRAMES {
+                let mut packet = Packet::copy(&[0xFF, 0xD8, 0xFF, 0xD9]);
+                packet.set_pts(Some(frame));
+                packet.set_dts(Some(frame));
+                packet.set_flags(Flags::KEY);
+                muxer.write(video, &EncodedPacket::new(packet))?;
+                while next_audio < audio_packets && (next_audio - 1) * 1024 * 60 <= frame * 48_000 {
+                    let mut packet = Packet::copy(&[0x21, 0x10, 0x04, 0x60]);
+                    packet.set_pts(Some((next_audio - 1) * 1024));
+                    packet.set_dts(Some((next_audio - 1) * 1024));
+                    packet.set_flags(Flags::KEY);
+                    muxer.write(audio, &EncodedPacket::new(packet))?;
+                    next_audio += 1;
+                }
+            }
+            muxer.finish()?;
+            finalize(&path, container, &mut |_| {})?;
+            let edits = edit_media_times(&path)?;
+            let mut input = ffmpeg_next::format::input(&path)?;
+            let starts: Vec<i64> = input.streams().map(|stream| stream.start_time()).collect();
+            let video_time_base = input.stream(video).map(|stream| stream.time_base()).ok_or("no video stream")?;
+            let mut stamps = Vec::new();
+            for (stream, packet) in input.packets() {
+                if stream.index() == video {
+                    stamps.push((packet.dts().unwrap_or(i64::MIN), packet.duration()));
+                }
+            }
+            drop(input);
+            let _ = std::fs::remove_file(&path);
+            let tick = i64::from(video_time_base.denominator()) / i64::from(video_time_base.numerator()) / 60;
+            assert_eq!(starts.first().copied(), Some(0), "{container:?} video starts at zero: {starts:?}");
+            assert_eq!(starts.get(audio).copied(), Some(0), "{container:?} audio starts with the video: {starts:?}");
+            // One edit per track: the video plays from its first sample, the audio skips its priming frame.
+            assert_eq!(edits, vec![0, 1024], "{container:?} edit list media times");
+            assert_eq!(stamps.len(), FRAMES as usize, "{container:?}");
+            for (index, (dts, duration)) in stamps.iter().enumerate() {
+                assert_eq!((*dts, *duration), (index as i64 * tick, tick), "{container:?} frame {index} sits on the grid");
+            }
+        }
         Ok(())
     }
 
