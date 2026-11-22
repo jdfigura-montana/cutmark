@@ -24,8 +24,10 @@ const FPS_CHOICES: [u32; 2] = [30, 60];
 /// How long the next take's path in the preview line is kept before the takes folder is read again.
 const PREVIEW_REFRESH: Duration = Duration::from_secs(2);
 
-/// The line shown under the container picker while MKV is chosen.
+/// The line shown under a constant quality max bitrate field.
 const SOFT_MAX_HINT: &str = "On AMD the max is a soft limit; use VBR for a firm budget.";
+
+/// The line shown under the container picker while MKV is chosen.
 const MKV_HINT: &str = "MKV: Windows Explorer shows no video details for MKV files. Use MP4 for the widest compatibility.";
 
 /// The size and frame rate the AMF probe ran for.
@@ -40,7 +42,7 @@ pub struct ProfileOutcome {
 
 /// The field of a profile that an error belongs next to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Field {
+pub enum Field {
     Codec,
     Rate,
     Preset,
@@ -156,6 +158,11 @@ impl AmfProbe {
     /// Whether the last probe found that the GPU codes AV1 at exactly 1080 lines.
     fn aligned_1080(&self) -> bool {
         self.support(EncoderCodec::Av1).is_some_and(|support| support.aligned_1080.is_some())
+    }
+
+    /// The probed options of one codec, once a probe has answered and listed it.
+    pub fn ranges(&self, codec: Codec) -> Option<OptionRanges> {
+        self.support(EncoderCodec::from(codec)).map(|support| support.ranges.clone())
     }
 
     /// The option ranges of every probed codec.
@@ -448,48 +455,7 @@ impl ProfileSection {
                 }
             });
 
-            row(ui, "Rate control", &errors, Field::Rate, |ui| {
-                let mode = Mode::of(p.rate_control);
-                let mut chosen = mode;
-                ComboBox::from_id_salt("profile-rate").selected_text(mode.label()).show_ui(ui, |ui| {
-                    for choice in Mode::ALL {
-                        ui.selectable_value(&mut chosen, choice, choice.label());
-                    }
-                });
-                if chosen != mode {
-                    p.rate_control = default_rate(chosen, ranges_of(&all_ranges, p.codec));
-                }
-            });
-
-            let ranges = ranges_of(&all_ranges, p.codec);
-            match &mut p.rate_control {
-                RateControl::ConstantQuality { quality, max_mbps } => {
-                    row(ui, "Quality", &errors, Field::Quality, |ui| {
-                        ui.add(Slider::new(quality, 1..=100));
-                    });
-                    row(ui, "Max bitrate", &errors, Field::MaxMbps, |ui| mbps_field(ui, max_mbps));
-                    ui.label("");
-                    ui.label(RichText::new(SOFT_MAX_HINT).small().weak());
-                    ui.end_row();
-                }
-                RateControl::ConstantQp { qp_i, qp_p } => {
-                    let range_i = qp_range(ranges.and_then(|r| r.qp_i.as_ref()));
-                    let range_p = qp_range(ranges.and_then(|r| r.qp_p.as_ref()));
-                    row(ui, "QP", &errors, Field::Qp, |ui| {
-                        ui.label("I");
-                        ui.add(DragValue::new(qp_i).range(range_i));
-                        ui.label("P");
-                        ui.add(DragValue::new(qp_p).range(range_p));
-                    });
-                }
-                RateControl::Cbr { mbps } => {
-                    row(ui, "Bitrate", &errors, Field::Mbps, |ui| mbps_field(ui, mbps));
-                }
-                RateControl::VbrPeak { target_mbps, max_mbps } => {
-                    row(ui, "Target bitrate", &errors, Field::Target, |ui| mbps_field(ui, target_mbps));
-                    row(ui, "Max bitrate", &errors, Field::MaxMbps, |ui| mbps_field(ui, max_mbps));
-                }
-            }
+            rate_control_editor(ui, "profile", &mut p.rate_control, ranges_of(&all_ranges, p.codec), &errors);
 
             row(ui, "Preset", &errors, Field::Preset, |ui| {
                 ComboBox::from_id_salt("profile-preset").selected_text(preset_label(p.preset)).show_ui(ui, |ui| {
@@ -582,6 +548,90 @@ impl ProfileSection {
         if self.has_errors {
             ui.colored_label(ui.visuals().error_fg_color, "Fix the errors above before starting a take");
         }
+    }
+}
+
+/// Draws the rate control picker and the fields of the chosen mode as rows of a two column grid, and returns
+/// whether the rate control changed.
+///
+/// A new mode starts with its documented defaults, `ranges` are the probed options of the codec (none before the
+/// probe has answered) and `errors` are shown in red next to the field they belong to. `id_salt` keeps the picker's
+/// id apart when more than one editor is on screen.
+pub fn rate_control_editor(ui: &mut Ui, id_salt: &str, rate: &mut RateControl, ranges: Option<&OptionRanges>, errors: &[(Field, String)]) -> bool {
+    let before = *rate;
+    row(ui, "Rate control", errors, Field::Rate, |ui| {
+        let mode = Mode::of(*rate);
+        let mut chosen = mode;
+        ComboBox::from_id_salt(format!("{id_salt}-rate")).selected_text(mode.label()).show_ui(ui, |ui| {
+            for choice in Mode::ALL {
+                ui.selectable_value(&mut chosen, choice, choice.label());
+            }
+        });
+        if chosen != mode {
+            *rate = default_rate(chosen, ranges);
+        }
+    });
+
+    match rate {
+        RateControl::ConstantQuality { quality, max_mbps } => {
+            row(ui, "Quality", errors, Field::Quality, |ui| {
+                ui.add(Slider::new(quality, 1..=100));
+            });
+            row(ui, "Max bitrate", errors, Field::MaxMbps, |ui| mbps_field(ui, max_mbps));
+            ui.label("");
+            ui.label(RichText::new(SOFT_MAX_HINT).small().weak());
+            ui.end_row();
+        }
+        RateControl::ConstantQp { qp_i, qp_p } => {
+            let range_i = qp_range(ranges.and_then(|r| r.qp_i.as_ref()));
+            let range_p = qp_range(ranges.and_then(|r| r.qp_p.as_ref()));
+            row(ui, "QP", errors, Field::Qp, |ui| {
+                ui.label("I");
+                ui.add(DragValue::new(qp_i).range(range_i));
+                ui.label("P");
+                ui.add(DragValue::new(qp_p).range(range_p));
+            });
+        }
+        RateControl::Cbr { mbps } => {
+            row(ui, "Bitrate", errors, Field::Mbps, |ui| mbps_field(ui, mbps));
+        }
+        RateControl::VbrPeak { target_mbps, max_mbps } => {
+            row(ui, "Target bitrate", errors, Field::Target, |ui| mbps_field(ui, target_mbps));
+            row(ui, "Max bitrate", errors, Field::MaxMbps, |ui| mbps_field(ui, max_mbps));
+        }
+    }
+    *rate != before
+}
+
+/// The errors of a rate control for a codec: the neutral limits, then the encoder's own when its probed `ranges` are known.
+pub fn rate_errors(codec: Codec, rate: RateControl, ranges: Option<&OptionRanges>) -> Vec<(Field, String)> {
+    let mut errors = Errors::new();
+    let config = encoder_config(&Profile { codec, rate_control: rate, ..Profile::premiere_hevc_1080p60() });
+    match config.validate() {
+        Err(ConfigError::Invalid { field, reason }) => errors.push((field_of(field), reason)),
+        Err(other) => errors.push((Field::Rate, other.to_string())),
+        Ok(()) => {
+            if let Some(ranges) = ranges
+                && let Err(err) = amf_options(config.codec, &config, ranges)
+            {
+                let field = if matches!(rate, RateControl::ConstantQp { .. }) { Field::Qp } else { Field::Rate };
+                errors.push((field, err.to_string()));
+            }
+        }
+    }
+    errors
+}
+
+/// What the camera file's codec line says: the profile's codec, or HEVC with the reason when the container
+/// cannot hold the profile's codec at the camera's height on this GPU.
+pub fn iso_codec_text(profile: &Profile, camera_height: u32, probe: &AmfProbe) -> String {
+    let codec = EncoderCodec::from(profile.codec);
+    let fallback =
+        profile.codec == Codec::Av1 && check_combo_with(profile.container, codec, camera_height, AudioCodec::Aac { kbps: 320 }, probe.aligned_1080()).is_err();
+    if fallback {
+        format!("HEVC (AV1 {camera_height}p not supported in {} on this GPU)", container_label(profile.container))
+    } else {
+        codec_label(profile.codec).to_owned()
     }
 }
 
@@ -757,6 +807,27 @@ mod tests {
         let errors = validate(&av1_mp4, (1920, 1080), AudioCodec::Aac { kbps: 320 }, &probe);
         assert!(errors.iter().any(|(field, _)| *field == Field::Container), "{errors:?}");
         assert!(validate(&Profile::premiere_hevc_1080p60(), (1920, 1080), AudioCodec::Aac { kbps: 320 }, &probe).is_empty());
+    }
+
+    #[test]
+    fn the_camera_file_names_its_codec_and_the_reason_for_a_fallback() {
+        let probe = AmfProbe::default();
+        let mut profile = Profile::tutorial_av1_1440p60();
+        profile.container = Container::Mp4;
+        assert_eq!(iso_codec_text(&profile, 1080, &probe), "HEVC (AV1 1080p not supported in MP4 on this GPU)");
+        assert_eq!(iso_codec_text(&profile, 720, &probe), "AV1");
+        profile.container = Container::Mkv;
+        assert_eq!(iso_codec_text(&profile, 1080, &probe), "AV1");
+        profile.codec = Codec::Hevc;
+        profile.container = Container::Mp4;
+        assert_eq!(iso_codec_text(&profile, 1080, &probe), "HEVC");
+    }
+
+    #[test]
+    fn a_rate_control_error_is_found_without_a_probe() {
+        let bad = RateControl::VbrPeak { target_mbps: 50.0, max_mbps: 40.0 };
+        assert!(!rate_errors(Codec::Hevc, bad, None).is_empty());
+        assert!(rate_errors(Codec::Hevc, default_rate(Mode::Vbr, None), None).is_empty());
     }
 
     #[test]

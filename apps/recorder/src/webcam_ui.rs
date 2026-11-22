@@ -1,14 +1,16 @@
 //! The Webcam section of the window: camera, mode, live camera picture and the camera controls.
 
+use std::cell::RefCell;
 use std::time::Duration;
 
 use capture::CameraFormat;
-use egui::{Button, Checkbox, Color32, ComboBox, Grid, ProgressBar, Slider, Ui};
+use egui::{Button, Checkbox, Color32, ComboBox, DragValue, Grid, ProgressBar, Slider, Ui};
 use media_io::SyncReport;
 
 use crate::config::{ControlSetting, WebcamSettings};
 use crate::engine::bus::{BusSender, Command, CommandKind};
 use crate::engine::controller::{ControllerState, Phase};
+use crate::profile_ui::{AmfProbe, iso_codec_text, rate_control_editor, rate_errors};
 use crate::profiles::ProfileStore;
 use crate::webcam::WebcamHost;
 
@@ -26,6 +28,11 @@ const SYNC_WARN: Color32 = Color32::from_rgb(0xE6, 0xB4, 0x3C);
 
 /// How often the window redraws while a sync test runs, so its progress moves.
 const SYNC_REPAINT: Duration = Duration::from_millis(100);
+
+thread_local! {
+    /// The encoder probe the camera file group reads its option ranges from.
+    static ISO_PROBE: RefCell<AmfProbe> = RefCell::new(AmfProbe::default());
+}
 
 /// Draws the Webcam section. Everything except the camera controls is read-only while recording.
 ///
@@ -54,6 +61,8 @@ pub fn show(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore, record
     });
     ui.add_space(4.0);
     controls(ui, host, store);
+    ui.add_space(4.0);
+    iso_group(ui, host, store, recording, &state.active_profile);
     ui.add_space(4.0);
     sync_test(ui, host, store, state, bus);
 }
@@ -145,6 +154,50 @@ fn controls(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore) {
             host.reset_defaults(store);
         }
     });
+}
+
+/// The Camera ISO file group: whether the raw camera is saved on its own, how it is encoded, and the camera offset.
+/// Edits go to the active profile through the store, and the group is read-only while recording.
+fn iso_group(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, recording: bool, profile_name: &str) {
+    let Some(settings) = host.settings(store).cloned() else { return };
+    let Some(profile) = store.get(profile_name).cloned() else { return };
+    ui.label("Camera ISO file");
+    let key = (settings.format.width, settings.format.height, profile.fps);
+    let (ranges, codec_text) = ISO_PROBE.with(|cell| {
+        let mut probe = cell.borrow_mut();
+        if !recording {
+            probe.update(ui.ctx(), key);
+        }
+        (probe.ranges(profile.codec), iso_codec_text(&profile, settings.format.height, &probe))
+    });
+    let mut iso = settings.iso;
+    let mut rate = settings.iso_rc;
+    let mut offset = settings.offset_ms;
+    let mut changed = false;
+    ui.add_enabled_ui(!recording, |ui| {
+        changed |= ui.checkbox(&mut iso, "Also save the raw camera as its own file").changed();
+        ui.add_enabled_ui(iso, |ui| {
+            let errors = rate_errors(profile.codec, rate, ranges.as_ref());
+            Grid::new("webcam-iso").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+                changed |= rate_control_editor(ui, "webcam-iso", &mut rate, ranges.as_ref(), &errors);
+                ui.label("Codec");
+                ui.label(codec_text);
+                ui.end_row();
+                ui.label("Camera offset");
+                changed |= ui.add(DragValue::new(&mut offset).range(-500..=500).suffix(" ms")).changed();
+                ui.end_row();
+            });
+        });
+    });
+    if changed {
+        store.edit(profile_name, |profile| {
+            if let Some(webcam) = &mut profile.webcam {
+                webcam.iso = iso;
+                webcam.iso_rc = rate;
+                webcam.offset_ms = offset;
+            }
+        });
+    }
 }
 
 /// The Sync test button with its hint, the progress while it runs, and the result with the button that applies it.
