@@ -26,6 +26,9 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 
+/// The encoder tag the probe's files carry, shaped like the recorder's.
+const ENCODER_TAG: &str = concat!("Cutmark Recorder ", env!("CARGO_PKG_VERSION"));
+
 /// The noise source's frame size.
 const NOISE_WIDTH: usize = 1920;
 /// The noise source's frame height.
@@ -195,6 +198,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let path_text = format!("probe_{}_{}.{}", args.codec_name, args.rc_name, args.container.extension());
     let mut muxer = Muxer::create(Path::new(&path_text), args.container)?;
+    // The same container tags and stream title the recorder writes.
+    muxer.set_tags(Path::new(&path_text).file_stem().and_then(|stem| stem.to_str()).unwrap_or("probe"), ENCODER_TAG);
     let stream = muxer.add_video(encoder.parameters(), encoder.time_base(), (60, 1))?;
     muxer.start()?;
     let mut sink = Sink { muxer, stream, stats: Stats::default(), error: None };
@@ -237,6 +242,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let stats = sink.stats;
     sink.muxer.finish()?;
+    // MP4 and MOV were written fragmented; a clean end rewrites them as standard files.
+    if args.container.needs_finalize() {
+        media_io::mux::finalize(Path::new(&path_text), args.container, &mut |_| {})?;
+        println!("finalized {path_text}");
+    }
 
     let seconds = start.elapsed().as_secs_f64();
     let mbps = stats.bytes as f64 * 8.0 / seconds / 1_000_000.0;

@@ -1,18 +1,31 @@
 //! The status bar at the bottom of the window: the live numbers while a take runs, the free disk space while idle.
 
-use crate::engine::controller::{ControllerState, Phase};
+use crate::engine::controller::{ControllerState, FinalizeProgress, Phase};
 use crate::engine::stats::{CamLine, GIB, TakeStats};
 
-/// Draws the status bar's contents: every live number while recording or paused, the free disk space while idle.
+/// Draws the status bar's contents: every live number while recording or paused, the free disk space while idle,
+/// and the progress of the rewrite of a finished take's files while that runs.
 pub fn show(ui: &mut egui::Ui, state: &ControllerState) {
     let live = if state.phase == Phase::Idle { None } else { state.take_stats.as_ref() };
-    ui.horizontal_wrapped(|ui| match live {
-        Some(stats) => recording(ui, stats),
-        None => {
-            let free = state.take_stats.as_ref().and_then(|stats| stats.disk_free_bytes).or(state.idle_free_bytes);
-            ui.label(format!("Disk free: {}", format_free(free)));
+    ui.horizontal_wrapped(|ui| {
+        if let Some(finalizing) = &state.finalizing {
+            ui.label(finalizing_text(finalizing));
+            ui.add(egui::ProgressBar::new(finalizing.progress.clamp(0.0, 1.0)).desired_width(120.0));
+            ui.separator();
+        }
+        match live {
+            Some(stats) => recording(ui, stats),
+            None => {
+                let free = state.take_stats.as_ref().and_then(|stats| stats.disk_free_bytes).or(state.idle_free_bytes);
+                ui.label(format!("Disk free: {}", format_free(free)));
+            }
         }
     });
+}
+
+/// The status bar's text for the rewrite of a finished take's files: the status and the percentage done.
+fn finalizing_text(finalizing: &FinalizeProgress) -> String {
+    format!("{} {:.0}%", finalizing.status, finalizing.progress.clamp(0.0, 1.0) * 100.0)
 }
 
 /// The items of a running take, separated by thin lines.
@@ -92,6 +105,14 @@ mod tests {
         assert_eq!(format_left(None), "--");
         assert_eq!(format_left(Some(90)), "2 min");
         assert_eq!(format_left(Some(7500)), "2h 05m");
+    }
+
+    #[test]
+    fn the_finalizing_text_names_the_status_and_the_percentage() {
+        let half = FinalizeProgress { status: crate::engine::controller::FINALIZING, progress: 0.5 };
+        assert_eq!(finalizing_text(&half), "Finalizing 50%");
+        let over = FinalizeProgress { progress: 1.7, ..half };
+        assert_eq!(finalizing_text(&over), "Finalizing 100%");
     }
 
     #[test]

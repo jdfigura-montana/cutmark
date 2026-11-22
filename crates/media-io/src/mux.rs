@@ -1,22 +1,27 @@
-//! The MKV muxer: copies encoder packets into a Matroska file that stays
-//! playable if the process dies mid-take.
+//! The muxer: copies encoder packets into a Matroska, MP4 or MOV file that stays
+//! playable if the process dies mid-take, and rewrites MP4 and MOV takes as standard
+//! files after a clean stop.
 
+use std::ffi::{OsStr, c_int, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread::JoinHandle;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use ffmpeg_next::Dictionary;
 use ffmpeg_next::Rational;
 use ffmpeg_next::Rescale;
 use ffmpeg_next::codec::Parameters;
 use ffmpeg_next::ffi;
-use ffmpeg_next::packet::{Flags, Packet};
+use ffmpeg_next::media::Type;
+use ffmpeg_next::packet::{Flags, Mut, Packet, Ref};
 
 use crate::MediaError;
 use crate::encode::EncodedPacket;
+use crate::hw::ff_error;
 
 /// The stream time base for Matroska tracks: milliseconds.
 const MKV_TIME_BASE: Rational = Rational(1, 1000);
@@ -29,6 +34,21 @@ const FRAGMENT_FLAGS: &str = "frag_keyframe+empty_moov+default_base_moof";
 
 pub use crate::encode::Container;
 
+/// FFmpeg's AVERROR_INVALIDDATA, which the bindings do not export.
+const AVERROR_INVALIDDATA: i32 = -1_094_995_529;
+
+/// FFmpeg's AVERROR_EXTERNAL, used for failures that come from the file system.
+const AVERROR_EXTERNAL: i32 = -542_398_533;
+
+/// How many packets may wait for a missing codec header before the take is given up.
+const HELD_LIMIT: usize = 4096;
+
+/// The suffix of the temp file a finalize writes beside the take, before it replaces the take.
+const FINALIZE_SUFFIX: &str = ".finalizing";
+
+/// The container tags a remux must not copy, because the new muxer writes its own brands.
+const BRAND_TAGS: [&str; 3] = ["major_brand", "minor_version", "compatible_brands"];
+
 /// The timing facts of one added stream, kept for rescaling on write.
 struct StreamInfo {
     /// The time base the encoder stamps its packets in.
@@ -37,7 +57,7 @@ struct StreamInfo {
     frame_step: Option<Rational>,
 }
 
-/// Writes encoded packets into a Matroska file and flushes on keyframes.
+/// Writes encoded packets into a Matroska, MP4 or MOV file and flushes on keyframes.
 pub struct Muxer {
     ctx: ffmpeg_next::format::context::Output,
     /// The output file, read back for its final size after the trailer.
@@ -46,6 +66,12 @@ pub struct Muxer {
     container: Container,
     streams: Vec<StreamInfo>,
     started: bool,
+    /// Whether the container header is written; false while it waits for the first video packet.
+    header_written: bool,
+    /// The video streams whose codec header is still missing, by stream index.
+    missing_headers: Vec<usize>,
+    /// Packets that arrived before the header was written, in the encoder's time stamps.
+    held: Vec<(usize, Packet)>,
     /// The chapters added just before the trailer, as start ms, end ms and title.
     chapters: Vec<(u64, u64, String)>,
 }
@@ -58,7 +84,29 @@ impl Muxer {
             Container::Mp4 => ffmpeg_next::format::output_as(path, "mp4")?,
             Container::Mov => ffmpeg_next::format::output_as(path, "mov")?,
         };
-        Ok(Self { ctx, path: path.to_path_buf(), container, streams: Vec::new(), started: false, chapters: Vec::new() })
+        Ok(Self {
+            ctx,
+            path: path.to_path_buf(),
+            container,
+            streams: Vec::new(),
+            started: false,
+            header_written: false,
+            missing_headers: Vec::new(),
+            held: Vec::new(),
+            chapters: Vec::new(),
+        })
+    }
+
+    /// Sets the container tags: the encoder name, the title and the creation time (now, in UTC); call before `start`.
+    ///
+    /// FFmpeg's own muxers write their name in place of the encoder tag, whatever it is set to, so
+    /// the encoder tag is only handed over here; the title and the creation time do reach the file.
+    pub fn set_tags(&mut self, title: &str, encoder: &str) {
+        let mut metadata = Dictionary::new();
+        metadata.set("encoder", encoder);
+        metadata.set("title", title);
+        metadata.set("creation_time", &utc_timestamp(unix_seconds_now()));
+        self.ctx.set_metadata(metadata);
     }
 
     /// The time base the container's streams are created with.
@@ -79,6 +127,11 @@ impl Muxer {
     /// Adds one video stream that copies the encoder's codec parameters,
     /// including extradata, and returns the stream index.
     pub fn add_video(&mut self, params: Parameters, encoder_time_base: (i32, i32), fps: (i32, i32)) -> Result<usize, MediaError> {
+        self.add_video_titled(params, encoder_time_base, fps, "Video")
+    }
+
+    /// Adds one video stream like `add_video`, with a metadata title that names it.
+    pub fn add_video_titled(&mut self, params: Parameters, encoder_time_base: (i32, i32), fps: (i32, i32), title: &str) -> Result<usize, MediaError> {
         let encoder_time_base = Rational::new(encoder_time_base.0, encoder_time_base.1);
         let frame_step = Rational::new(fps.1, fps.0);
         let codec_id = params.id();
@@ -89,6 +142,7 @@ impl Muxer {
             stream.set_rate(Rational::new(fps.0, fps.1));
             stream.set_avg_frame_rate(Rational::new(fps.0, fps.1));
             stream.set_parameters(params);
+            stream.set_metadata(stream_tags(title, false));
             stream.index()
         };
         self.streams.push(StreamInfo { encoder_time_base, frame_step: Some(frame_step) });
@@ -105,9 +159,7 @@ impl Muxer {
             let mut stream = self.ctx.add_stream(codec_id)?;
             stream.set_time_base(time_base);
             stream.set_parameters(params);
-            let mut metadata = Dictionary::new();
-            metadata.set("title", title);
-            stream.set_metadata(metadata);
+            stream.set_metadata(stream_tags(title, true));
             if default {
                 set_default_disposition(&mut stream);
             }
@@ -118,6 +170,9 @@ impl Muxer {
     }
 
     /// Writes the container header; call once after all streams are added.
+    ///
+    /// When a video stream the container wants a codec header for has none yet (AMF may
+    /// send its headers in-band only), the header waits for the first video packet.
     pub fn start(&mut self) -> Result<(), MediaError> {
         // Matroska cannot store negative timestamps, so tell the muxer to
         // shift the AAC priming gap instead of failing on the first packet.
@@ -127,6 +182,18 @@ impl Muxer {
         unsafe {
             (*self.ctx.as_mut_ptr()).avoid_negative_ts = ffi::AVFMT_AVOID_NEG_TS_MAKE_ZERO as _;
         }
+        self.missing_headers = self.video_streams_without_header();
+        if self.missing_headers.is_empty() {
+            self.write_header()?;
+        } else {
+            log::info!("the encoder gave no codec header for stream(s) {:?}; the container header waits for the first video packet", self.missing_headers);
+        }
+        self.started = true;
+        Ok(())
+    }
+
+    /// Writes the container header with the movflags the container needs.
+    fn write_header(&mut self) -> Result<(), MediaError> {
         match self.container {
             Container::Mkv => {
                 self.ctx.write_header()?;
@@ -137,39 +204,130 @@ impl Muxer {
                 self.ctx.write_header_with(options)?;
             }
         }
-        self.started = true;
+        self.header_written = true;
         Ok(())
+    }
+
+    /// The video streams that need a codec header in the container and have none: the output
+    /// format wants global headers, the codec is one that carries its parameter sets in a header,
+    /// and the stream's extradata is empty.
+    #[allow(unsafe_code)]
+    fn video_streams_without_header(&self) -> Vec<usize> {
+        // SAFETY: ctx is a live output context; oformat is set by output_as and read only here.
+        let wants_global_header = unsafe {
+            let format = (*self.ctx.as_ptr()).oformat;
+            !format.is_null() && (*format).flags & (ffi::AVFMT_GLOBALHEADER as c_int) != 0
+        };
+        if !wants_global_header {
+            return Vec::new();
+        }
+        (0..self.streams.len())
+            .filter(|&index| self.streams.get(index).is_some_and(|info| info.frame_step.is_some()))
+            .filter(|&index| {
+                // SAFETY: index is below the stream count, so the stream and its codecpar are live.
+                let (id, extradata) = unsafe {
+                    let par = (*(*(*self.ctx.as_ptr()).streams.add(index))).codecpar;
+                    if par.is_null() { (ffi::AVCodecID::AV_CODEC_ID_NONE, 1) } else { ((*par).codec_id, (*par).extradata_size) }
+                };
+                extradata <= 0 && carries_codec_header(id)
+            })
+            .collect()
+    }
+
+    /// Queues one packet for the header, or writes it when the header is out: it stays in the
+    /// encoder's time stamps until the stream time base is final.
+    pub fn write(&mut self, stream: usize, packet: &EncodedPacket) -> Result<(), MediaError> {
+        if !self.started {
+            return Err(MediaError::Null("muxer write before start"));
+        }
+        if self.streams.get(stream).is_none() {
+            return Err(MediaError::Null("muxer write stream index"));
+        }
+        let Some(data) = packet.data() else {
+            return Ok(());
+        };
+        let mut out = Packet::copy(data);
+        out.set_stream(stream);
+        out.set_pts(packet.pts());
+        out.set_dts(packet.dts());
+        if packet.is_key() {
+            out.set_flags(Flags::KEY);
+        }
+        if self.header_written { self.emit(stream, out) } else { self.hold(stream, out) }
     }
 
     /// Rescales one packet's timestamps into the stream's time base and
     /// interleaved-writes it, flushing the output when it is a keyframe.
-    pub fn write(&mut self, stream: usize, packet: &EncodedPacket) -> Result<(), MediaError> {
-        let Self { ctx, streams, started, .. } = self;
-        if !*started {
-            return Err(MediaError::Null("muxer write before start"));
-        }
+    fn emit(&mut self, stream: usize, mut out: Packet) -> Result<(), MediaError> {
+        let Self { ctx, streams, .. } = self;
         let Some(info) = streams.get(stream) else {
             return Err(MediaError::Null("muxer write stream index"));
         };
-        let Some(data) = packet.data() else {
-            return Ok(());
-        };
         let stream_tb = ctx.stream(stream).map(|s| s.time_base()).ok_or(MediaError::Null("muxer write stream"))?;
-        let is_key = packet.is_key();
-        let mut out = Packet::copy(data);
-        out.set_stream(stream);
-        out.set_pts(packet.pts().map(|pts| pts.rescale(info.encoder_time_base, stream_tb)));
-        out.set_dts(packet.dts().map(|dts| dts.rescale(info.encoder_time_base, stream_tb)));
+        let is_key = out.is_key();
+        out.set_pts(out.pts().map(|pts| pts.rescale(info.encoder_time_base, stream_tb)));
+        out.set_dts(out.dts().map(|dts| dts.rescale(info.encoder_time_base, stream_tb)));
         if let Some(frame_step) = info.frame_step {
             out.set_duration(1i64.rescale(frame_step, stream_tb));
-        }
-        if is_key {
-            out.set_flags(Flags::KEY);
         }
         out.write_interleaved(ctx)?;
         // Only video flushes on keyframes; audio packets interleave freely.
         if is_key && info.frame_step.is_some() {
             flush_output(ctx);
+        }
+        Ok(())
+    }
+
+    /// Keeps a packet until the header is out. The first packet of a video stream with no codec
+    /// header gives it one through FFmpeg's extract_extradata filter; once every stream has one the
+    /// header is written and the kept packets follow in arrival order.
+    fn hold(&mut self, stream: usize, out: Packet) -> Result<(), MediaError> {
+        if self.missing_headers.contains(&stream) {
+            let encoder_time_base = self.streams.get(stream).map_or(Rational::new(1, 1000), |info| info.encoder_time_base);
+            let extradata = extract_extradata(self.stream_parameters(stream)?, encoder_time_base, &out)?;
+            self.set_extradata(stream, &extradata)?;
+            self.missing_headers.retain(|&index| index != stream);
+        }
+        self.held.push((stream, out));
+        if self.missing_headers.is_empty() {
+            self.write_header()?;
+            for (stream, packet) in std::mem::take(&mut self.held) {
+                self.emit(stream, packet)?;
+            }
+        } else if self.held.len() > HELD_LIMIT {
+            return Err(no_header("the video stream sent no packet to read its codec header from"));
+        }
+        Ok(())
+    }
+
+    /// The codec parameters of one stream of the output.
+    #[allow(unsafe_code)]
+    fn stream_parameters(&self, stream: usize) -> Result<*const ffi::AVCodecParameters, MediaError> {
+        if stream >= self.streams.len() {
+            return Err(MediaError::Null("muxer stream index"));
+        }
+        // SAFETY: stream is below the stream count, so the stream and its codecpar are live.
+        let par = unsafe { (*(*(*self.ctx.as_ptr()).streams.add(stream))).codecpar };
+        if par.is_null() { Err(MediaError::Null("stream codecpar")) } else { Ok(par.cast_const()) }
+    }
+
+    /// Gives one stream the codec header, as extradata in its codec parameters.
+    #[allow(unsafe_code)]
+    fn set_extradata(&mut self, stream: usize, data: &[u8]) -> Result<(), MediaError> {
+        let par = self.stream_parameters(stream)?.cast_mut();
+        let size = c_int::try_from(data.len()).map_err(|_| no_header("the codec header is too large"))?;
+        // SAFETY: par is the live codecpar of the stream; the new buffer is padded as FFmpeg
+        // requires, filled from data before it is stored, and owned by codecpar from then on,
+        // which frees it with the stream. The old extradata is empty and freed with av_free.
+        unsafe {
+            let buffer = ffi::av_mallocz(data.len() + ffi::AV_INPUT_BUFFER_PADDING_SIZE as usize).cast::<u8>();
+            if buffer.is_null() {
+                return Err(MediaError::Null("av_mallocz"));
+            }
+            std::ptr::copy_nonoverlapping(data.as_ptr(), buffer, data.len());
+            ffi::av_free((*par).extradata.cast::<c_void>());
+            (*par).extradata = buffer;
+            (*par).extradata_size = size;
         }
         Ok(())
     }
@@ -182,6 +340,9 @@ impl Muxer {
 
     /// Adds the chapters, then writes the Matroska trailer.
     fn write_trailer(&mut self) -> Result<(), MediaError> {
+        if !self.header_written {
+            return Err(no_header("the take ended before the video stream sent a packet to read its codec header from"));
+        }
         for (index, (start_ms, end_ms, title)) in std::mem::take(&mut self.chapters).into_iter().enumerate() {
             let id = i64::try_from(index + 1).unwrap_or(i64::MAX);
             let start = i64::try_from(start_ms).unwrap_or(i64::MAX);
@@ -212,6 +373,236 @@ fn set_default_disposition(stream: &mut ffmpeg_next::format::stream::StreamMut<'
     // disposition flag set is what avformat's own helpers do.
     unsafe {
         (*stream.as_mut_ptr()).disposition = ffi::AV_DISPOSITION_DEFAULT as _;
+    }
+}
+
+/// The metadata of one stream: its title, the handler name that MP4 and MOV keep the title in,
+/// and for audio the undetermined language.
+fn stream_tags(title: &str, audio: bool) -> Dictionary<'static> {
+    let mut metadata = Dictionary::new();
+    metadata.set("title", title);
+    metadata.set("handler_name", title);
+    if audio {
+        metadata.set("language", "und");
+    }
+    metadata
+}
+
+/// Whether a codec keeps its parameter sets in a codec header that the container must carry.
+fn carries_codec_header(id: ffi::AVCodecID) -> bool {
+    matches!(id, ffi::AVCodecID::AV_CODEC_ID_H264 | ffi::AVCodecID::AV_CODEC_ID_HEVC | ffi::AVCodecID::AV_CODEC_ID_AV1)
+}
+
+/// The error for a stream whose codec header cannot be found.
+fn no_header(reason: &str) -> MediaError {
+    MediaError::Ffmpeg { code: AVERROR_INVALIDDATA, message: format!("no codec header for the video stream: {reason}") }
+}
+
+/// The error for a file system step of a finalize.
+fn file_failure(what: &str, err: &std::io::Error) -> MediaError {
+    MediaError::Ffmpeg { code: AVERROR_EXTERNAL, message: format!("{what}: {err}") }
+}
+
+/// Reads the codec header out of the first packet of a stream with FFmpeg's extract_extradata
+/// bitstream filter: the sequence header OBU for AV1, the parameter sets for H.264 and HEVC.
+#[allow(unsafe_code)]
+fn extract_extradata(parameters: *const ffi::AVCodecParameters, time_base: Rational, packet: &Packet) -> Result<Vec<u8>, MediaError> {
+    // SAFETY: the name is a static C string; the filter pointer is read only.
+    let filter = unsafe { ffi::av_bsf_get_by_name(c"extract_extradata".as_ptr()) };
+    if filter.is_null() {
+        return Err(MediaError::Null("av_bsf_get_by_name extract_extradata"));
+    }
+    let mut context: *mut ffi::AVBSFContext = std::ptr::null_mut();
+    // SAFETY: filter is live and context is a live out pointer.
+    let code = unsafe { ffi::av_bsf_alloc(filter, &mut context) };
+    if code < 0 || context.is_null() {
+        return Err(ff_error(if code < 0 { code } else { AVERROR_INVALIDDATA }));
+    }
+    let found = filter_for_extradata(context, parameters, time_base, packet);
+    // SAFETY: context is the live filter allocated above, freed exactly once.
+    unsafe { ffi::av_bsf_free(&mut context) };
+    found.and_then(|data| data.ok_or_else(|| no_header("the first packet holds none")))
+}
+
+/// Runs one packet through an allocated extract_extradata filter and returns the extradata it found, if any.
+#[allow(unsafe_code)]
+fn filter_for_extradata(
+    context: *mut ffi::AVBSFContext,
+    parameters: *const ffi::AVCodecParameters,
+    time_base: Rational,
+    packet: &Packet,
+) -> Result<Option<Vec<u8>>, MediaError> {
+    // SAFETY: context is a live, not yet initialised filter and parameters is the live codecpar of
+    // a stream; par_in is allocated by av_bsf_alloc and filled by the copy.
+    let code = unsafe {
+        (*context).time_base_in = ffi::AVRational { num: time_base.numerator(), den: time_base.denominator() };
+        ffi::avcodec_parameters_copy((*context).par_in, parameters)
+    };
+    if code < 0 {
+        return Err(ff_error(code));
+    }
+    // SAFETY: context holds its parameters now.
+    let code = unsafe { ffi::av_bsf_init(context) };
+    if code < 0 {
+        return Err(ff_error(code));
+    }
+    // The filter takes the packet it is given, so it gets a reference of its own.
+    let mut input = packet.clone();
+    // SAFETY: context is initialised and input is a live packet the filter may take over.
+    let code = unsafe { ffi::av_bsf_send_packet(context, input.as_mut_ptr()) };
+    if code < 0 {
+        return Err(ff_error(code));
+    }
+    let mut found = None;
+    loop {
+        let mut filtered = Packet::empty();
+        // SAFETY: context is initialised and filtered is a clean packet.
+        let code = unsafe { ffi::av_bsf_receive_packet(context, filtered.as_mut_ptr()) };
+        if code < 0 {
+            // EAGAIN or end of stream: the filter has nothing more for this packet.
+            break;
+        }
+        if found.is_some() {
+            continue;
+        }
+        let mut size = 0usize;
+        // SAFETY: filtered is a live packet; the side data it returns lives as long as the packet
+        // and is copied before the packet is dropped.
+        found = unsafe {
+            let data = ffi::av_packet_get_side_data(filtered.as_ptr(), ffi::AVPacketSideDataType::AV_PKT_DATA_NEW_EXTRADATA, &mut size);
+            if data.is_null() || size == 0 { None } else { Some(std::slice::from_raw_parts(data, size).to_vec()) }
+        };
+    }
+    Ok(found)
+}
+
+/// The current time as seconds since the Unix epoch.
+fn unix_seconds_now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// Formats seconds since the Unix epoch as the ISO 8601 UTC text FFmpeg reads for creation_time.
+fn utc_timestamp(seconds: u64) -> String {
+    let days = i64::try_from(seconds / 86_400).unwrap_or(0);
+    let rest = seconds % 86_400;
+    // Days since 1970-01-01 to a calendar date (Howard Hinnant's civil_from_days).
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
+    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 { month_index + 3 } else { month_index - 9 };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.000000Z", rest / 3600, rest / 60 % 60, rest % 60)
+}
+
+/// Rewrites a fragmented MP4 or MOV file as a standard file with the moov atom at the front.
+///
+/// Every stream and every tag is copied without re-encoding into a temp file beside the original,
+/// which then replaces the original. On any failure the original stays as it was. MKV needs no
+/// finalize and returns at once. `progress` is called with the share done, from 0 to 1.
+pub fn finalize(path: &Path, container: Container, progress: &mut dyn FnMut(f32)) -> Result<(), MediaError> {
+    let format = match container {
+        Container::Mkv => return Ok(()),
+        Container::Mp4 => "mp4",
+        Container::Mov => "mov",
+    };
+    let mut name = path.file_name().map(OsStr::to_os_string).ok_or(MediaError::Null("finalize file name"))?;
+    name.push(FINALIZE_SUFFIX);
+    let temp = path.with_file_name(name);
+    if let Err(err) = remux_faststart(path, &temp, format, progress) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(err);
+    }
+    if let Err(err) = std::fs::rename(&temp, path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(file_failure("the finished file could not replace the take", &err));
+    }
+    Ok(())
+}
+
+/// Copies every video and audio stream of `source` into `target` as a standard file of the given
+/// muxer, with movflags faststart, and reports the share of the source read.
+fn remux_faststart(source: &Path, target: &Path, format: &str, progress: &mut dyn FnMut(f32)) -> Result<(), MediaError> {
+    let total = std::fs::metadata(source).map(|meta| meta.len()).unwrap_or(0);
+    let mut input = ffmpeg_next::format::input(source)?;
+    let mut output = ffmpeg_next::format::output_as(target, format)?;
+    output.set_metadata(copied_tags(input.metadata().iter()));
+    // The output stream each input stream goes to; streams that are neither video nor audio are dropped.
+    let mut mapped: Vec<Option<usize>> = Vec::new();
+    for source_stream in input.streams() {
+        if !matches!(source_stream.parameters().medium(), Type::Video | Type::Audio) {
+            mapped.push(None);
+            continue;
+        }
+        let mut target_stream = output.add_stream(source_stream.parameters().id())?;
+        target_stream.set_parameters(source_stream.parameters());
+        target_stream.set_time_base(source_stream.time_base());
+        target_stream.set_rate(source_stream.rate());
+        target_stream.set_avg_frame_rate(source_stream.avg_frame_rate());
+        target_stream.set_metadata(copied_tags(source_stream.metadata().iter()));
+        carry_stream_flags(&source_stream, &mut target_stream);
+        mapped.push(Some(target_stream.index()));
+    }
+    let mut options = Dictionary::new();
+    options.set("movflags", "faststart");
+    output.write_header_with(options)?;
+    let mut packet = Packet::empty();
+    let mut percent = -1i32;
+    loop {
+        match packet.read(&mut input) {
+            Ok(()) => {}
+            Err(ffmpeg_next::Error::Eof) => break,
+            Err(err) => return Err(err.into()),
+        }
+        let source_index = packet.stream();
+        let Some(Some(target_index)) = mapped.get(source_index).copied() else {
+            continue;
+        };
+        let source_tb = input.stream(source_index).map(|s| s.time_base()).ok_or(MediaError::Null("finalize source stream"))?;
+        let target_tb = output.stream(target_index).map(|s| s.time_base()).ok_or(MediaError::Null("finalize target stream"))?;
+        let position = packet.position();
+        packet.rescale_ts(source_tb, target_tb);
+        packet.set_stream(target_index);
+        packet.set_position(-1);
+        packet.write_interleaved(&mut output)?;
+        if total > 0 && position >= 0 {
+            let now = (position as f64 / total as f64 * 100.0).clamp(0.0, 99.0) as i32;
+            if now != percent {
+                percent = now;
+                progress(now as f32 / 100.0);
+            }
+        }
+    }
+    output.write_trailer()?;
+    progress(1.0);
+    Ok(())
+}
+
+/// Copies a tag list without the brand tags, which the new muxer writes itself.
+fn copied_tags<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Dictionary<'static> {
+    let mut copy = Dictionary::new();
+    for (key, value) in tags {
+        if !BRAND_TAGS.contains(&key) {
+            copy.set(key, value);
+        }
+    }
+    copy
+}
+
+/// Carries the disposition over and clears the codec tag, so the new muxer picks the tag it needs.
+#[allow(unsafe_code)]
+fn carry_stream_flags(source: &ffmpeg_next::format::stream::Stream<'_>, target: &mut ffmpeg_next::format::stream::StreamMut<'_>) {
+    // SAFETY: both streams belong to live contexts; their codecpar and disposition fields are plain data.
+    unsafe {
+        let target_ptr = target.as_mut_ptr();
+        (*target_ptr).disposition = (*source.as_ptr()).disposition;
+        let par = (*target_ptr).codecpar;
+        if !par.is_null() {
+            (*par).codec_tag = 0;
+        }
     }
 }
 
@@ -509,6 +900,140 @@ mod tests {
             assert_eq!(chapters, 0, "{container:?}");
         }
         Ok(())
+    }
+
+    /// The four character types of a file's top level boxes, in order.
+    fn top_level_boxes(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let bytes = std::fs::read(path)?;
+        let mut types = Vec::new();
+        let mut offset = 0usize;
+        while offset + 8 <= bytes.len() {
+            let size = u32::from_be_bytes([bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]]) as usize;
+            types.push(String::from_utf8_lossy(&bytes[offset + 4..offset + 8]).into_owned());
+            offset += if size == 0 { bytes.len() - offset } else { size.max(8) };
+        }
+        Ok(types)
+    }
+
+    #[test]
+    fn finalize_rewrites_a_fragmented_file_with_the_moov_first_and_keeps_the_tags() -> Result<(), Box<dyn std::error::Error>> {
+        crate::init()?;
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+        for container in [Container::Mp4, Container::Mov] {
+            let path = std::env::temp_dir().join(format!("cutmark_mux_final_{}_{nanos}.{}", std::process::id(), container.extension()));
+            let mut muxer = Muxer::create(&path, container)?;
+            muxer.set_tags("Take 1", "Cutmark Recorder test");
+            muxer.add_video(mjpeg_params(), (1, 90_000), (30, 1))?;
+            muxer.start()?;
+            write_frames(&mut muxer)?;
+            muxer.finish()?;
+            let before = top_level_boxes(&path)?;
+            let mut last = 0.0f32;
+            finalize(&path, container, &mut |share| last = share)?;
+            let after = top_level_boxes(&path)?;
+            let input = ffmpeg_next::format::input(&path)?;
+            let (duration, title, streams) = (input.duration(), input.metadata().get("title").map(str::to_owned), input.streams().count());
+            drop(input);
+            let temp_left = path.with_file_name(format!("{}{FINALIZE_SUFFIX}", path.file_name().and_then(OsStr::to_str).unwrap_or_default())).exists();
+            let _ = std::fs::remove_file(&path);
+            assert!(before.iter().any(|kind| kind == "moof"), "{container:?} starts fragmented: {before:?}");
+            assert!(!after.iter().any(|kind| kind == "moof"), "{container:?} ends standard: {after:?}");
+            let (moov, mdat) = (after.iter().position(|kind| kind == "moov"), after.iter().position(|kind| kind == "mdat"));
+            assert!(moov.is_some() && moov < mdat, "{container:?} moov before mdat: {after:?}");
+            assert!(duration > 0, "{container:?} duration {duration}");
+            assert_eq!(title.as_deref(), Some("Take 1"), "{container:?}");
+            assert_eq!(streams, 1, "{container:?}");
+            assert_eq!(last, 1.0, "{container:?}");
+            assert!(!temp_left, "{container:?} left its temp file");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_matroska_file_keeps_the_title_the_creation_time_and_the_stream_titles() -> Result<(), Box<dyn std::error::Error>> {
+        crate::init()?;
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+        let path = std::env::temp_dir().join(format!("cutmark_mux_tags_{}_{nanos}.mkv", std::process::id()));
+        let mut muxer = Muxer::create(&path, Container::Mkv)?;
+        muxer.set_tags("Take 2", "Cutmark Recorder test");
+        muxer.add_video_titled(mjpeg_params(), (1, 1000), (30, 1), "Camera")?;
+        muxer.start()?;
+        write_frames(&mut muxer)?;
+        muxer.finish()?;
+        let input = ffmpeg_next::format::input(&path)?;
+        let title = input.metadata().get("title").map(str::to_owned);
+        let created = input.metadata().get("creation_time").is_some();
+        let stream_title = input.stream(0).and_then(|stream| stream.metadata().get("title").map(str::to_owned));
+        drop(input);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(title.as_deref(), Some("Take 2"));
+        assert!(created, "creation_time is written");
+        assert_eq!(stream_title.as_deref(), Some("Camera"));
+        Ok(())
+    }
+
+    #[test]
+    fn finalizing_a_file_that_is_not_there_fails_and_leaves_nothing_behind() -> Result<(), Box<dyn std::error::Error>> {
+        crate::init()?;
+        let path = std::env::temp_dir().join(format!("cutmark_mux_missing_{}.mp4", std::process::id()));
+        assert!(finalize(&path, Container::Mp4, &mut |_| {}).is_err());
+        assert!(!path.with_file_name(format!("{}{FINALIZE_SUFFIX}", path.file_name().and_then(OsStr::to_str).unwrap_or_default())).exists());
+        // MKV needs nothing and succeeds even for a name that does not exist.
+        assert!(finalize(&path, Container::Mkv, &mut |_| {}).is_ok());
+        Ok(())
+    }
+
+    /// Codec parameters for a tiny H.264 video stream with no codec header, as AMF may deliver it.
+    fn headerless_h264_params() -> Parameters {
+        let mut params = Parameters::new();
+        // SAFETY: params owns a fresh AVCodecParameters, so writing its plain fields is sound.
+        #[allow(unsafe_code)]
+        unsafe {
+            let raw = params.as_mut_ptr();
+            (*raw).codec_type = ffi::AVMediaType::AVMEDIA_TYPE_VIDEO;
+            (*raw).codec_id = ffi::AVCodecID::AV_CODEC_ID_H264;
+            (*raw).width = 16;
+            (*raw).height = 16;
+        }
+        params
+    }
+
+    #[test]
+    fn a_video_stream_with_no_codec_header_waits_for_one_and_is_an_error_when_none_comes() -> Result<(), Box<dyn std::error::Error>> {
+        crate::init()?;
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+        let path = std::env::temp_dir().join(format!("cutmark_mux_noheader_{}_{nanos}.mkv", std::process::id()));
+        let mut muxer = Muxer::create(&path, Container::Mkv)?;
+        muxer.add_video(headerless_h264_params(), (1, 1000), (30, 1))?;
+        muxer.start()?;
+        assert!(!muxer.header_written, "the header waits for the first video packet");
+        // A lone access unit delimiter holds no parameter sets.
+        let mut packet = Packet::copy(&[0, 0, 0, 1, 0x09, 0x10]);
+        packet.set_pts(Some(0));
+        packet.set_dts(Some(0));
+        packet.set_flags(Flags::KEY);
+        let err = muxer.write(0, &EncodedPacket::new(packet)).err().map(|err| err.to_string());
+        drop(muxer);
+        let _ = std::fs::remove_file(&path);
+        assert!(err.is_some_and(|text| text.contains("codec header")));
+        Ok(())
+    }
+
+    #[test]
+    fn creation_times_are_iso_8601_in_utc() {
+        assert_eq!(utc_timestamp(0), "1970-01-01T00:00:00.000000Z");
+        assert_eq!(utc_timestamp(1_700_000_000), "2023-11-14T22:13:20.000000Z");
+        assert_eq!(utc_timestamp(951_782_400), "2000-02-29T00:00:00.000000Z");
+        assert_eq!(utc_timestamp(1_798_761_599), "2026-12-31T23:59:59.000000Z");
+    }
+
+    #[test]
+    fn only_codecs_with_a_codec_header_hold_the_container_header() {
+        assert!(carries_codec_header(ffi::AVCodecID::AV_CODEC_ID_AV1));
+        assert!(carries_codec_header(ffi::AVCodecID::AV_CODEC_ID_HEVC));
+        assert!(carries_codec_header(ffi::AVCodecID::AV_CODEC_ID_H264));
+        assert!(!carries_codec_header(ffi::AVCodecID::AV_CODEC_ID_MJPEG));
+        assert!(!carries_codec_header(ffi::AVCodecID::AV_CODEC_ID_AAC));
     }
 
     #[test]

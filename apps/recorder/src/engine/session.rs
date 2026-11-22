@@ -827,6 +827,14 @@ impl RecordingSession {
     }
 }
 
+/// The encoder tag every take's container carries.
+pub(super) const ENCODER_TAG: &str = concat!("Cutmark Recorder ", env!("CARGO_PKG_VERSION"));
+
+/// The take name a container carries as its title: the file name without its extension.
+pub(super) fn take_title(file: &Path) -> String {
+    file.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
 /// Creates the muxer, adds the video stream then the audio streams, starts it,
 /// and returns the mux thread plus the stream index per audio stream.
 fn build_muxer(
@@ -837,8 +845,9 @@ fn build_muxer(
     audio: Vec<AudioStreamSpec>,
 ) -> Result<(MuxThread, Vec<usize>), EngineError> {
     let mut muxer = Muxer::create(output_file, container)?;
+    muxer.set_tags(&take_title(output_file), ENCODER_TAG);
     // The video stream is stream 0; the mixdown and per-track streams follow.
-    muxer.add_video(setup.params.0, setup.time_base, (fps as i32, 1))?;
+    muxer.add_video_titled(setup.params.0, setup.time_base, (fps as i32, 1), "Video")?;
     let mut indexes = Vec::with_capacity(audio.len());
     for spec in audio {
         let index = muxer.add_audio(spec.params.0, spec.time_base, &spec.title, spec.default)?;

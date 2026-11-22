@@ -108,6 +108,18 @@ pub struct SyncProgress {
     pub progress: f32,
 }
 
+/// What the window shows while a finished take's MP4 or MOV files are rewritten as standard files.
+pub const FINALIZING: &str = "Finalizing";
+
+/// How far the rewrite of a finished take's files has got.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FinalizeProgress {
+    /// What the window shows next to the progress bar.
+    pub status: &'static str,
+    /// The share of the take's files rewritten so far, from 0 to 1.
+    pub progress: f32,
+}
+
 /// How far a running pre-flight has got.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PreflightProgress {
@@ -236,6 +248,8 @@ pub struct ControllerState {
     pub sync_test: Option<SyncProgress>,
     /// The result of the last finished sync test, or why it failed, kept until the next one starts.
     pub sync_result: Option<Result<media_io::SyncReport, String>>,
+    /// How far the rewrite of the last take's MP4 or MOV files has got, or none while no rewrite runs; the phase stays idle.
+    pub finalizing: Option<FinalizeProgress>,
 }
 
 /// A function the controller calls with the state after every change, while it holds the state lock.
@@ -1313,6 +1327,7 @@ impl Worker {
         self.commit_popup();
         let Some(active) = self.active.take() else { return };
         let marks_warning = active.marks_warning.clone();
+        let video_file = lock(&self.shared).take.as_ref().map(|take| take.video_file.clone());
         // The counters as the take ends, for the recordingStopped event; the session's own summary comes later.
         let last = active.session.stats();
         self.update(|state| {
@@ -1332,6 +1347,7 @@ impl Worker {
         // The free space is read again right away, so the idle status bar shows what the take left.
         self.last_idle_check = None;
         let (stopped, cam) = active.session.stop_with_cam();
+        let cam_file = cam.as_ref().map(|cam| cam.file.clone());
         // Finishing the marks happens inside stop and may leave a warning.
         if let Some(text) = marks_warning.take() {
             self.update(|state| state.marks_warning = Some(text));
@@ -1343,12 +1359,60 @@ impl Worker {
                     state.summary = Some(summary);
                     state.cam_summary = cam;
                 });
+                // MP4 and MOV takes were written fragmented; a clean stop rewrites them as standard files.
+                self.finalize_files(video_file.into_iter().chain(cam_file).collect());
             }
             Err(err) => {
                 log::error!("the recording failed on stop: {err}");
                 self.update(|state| state.error = Some(format!("the recording failed on stop: {err}")));
             }
         }
+    }
+
+    /// Rewrites each MP4 or MOV file of a cleanly stopped take as a standard file with the moov atom first,
+    /// showing "Finalizing" with the progress. A file that cannot be rewritten stays fragmented and playable,
+    /// and a warning banner names it. MKV files are final as written and are skipped.
+    fn finalize_files(&mut self, files: Vec<PathBuf>) {
+        let files: Vec<(PathBuf, media_io::Container)> = files
+            .into_iter()
+            .filter_map(|file| {
+                let container = file.extension().and_then(|extension| extension.to_str()).and_then(media_io::Container::from_extension)?;
+                container.needs_finalize().then_some((file, container))
+            })
+            .collect();
+        if files.is_empty() {
+            return;
+        }
+        let count = files.len() as f32;
+        for (index, (file, container)) in files.iter().enumerate() {
+            let before = index as f32;
+            self.update(|state| state.finalizing = Some(FinalizeProgress { status: FINALIZING, progress: before / count }));
+            let mut shown = -1i32;
+            let result = media_io::mux::finalize(file, *container, &mut |done| {
+                let progress = (before + done) / count;
+                // The window is asked to repaint only when the shown percentage changes.
+                let percent = (progress * 100.0) as i32;
+                if percent != shown {
+                    shown = percent;
+                    self.update(|state| state.finalizing = Some(FinalizeProgress { status: FINALIZING, progress }));
+                }
+            });
+            match result {
+                Ok(()) => log::info!("finalized {}", file.display()),
+                Err(err) => {
+                    log::warn!("could not finalize {}: {err}", file.display());
+                    let name = file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+                    let text = format!("{name} could not be finished and stays in its fragmented form, which still plays: {err}");
+                    self.update(|state| {
+                        if state.banners.len() >= BANNER_LIMIT {
+                            state.banners.remove(0);
+                        }
+                        state.banners.push(text);
+                    });
+                }
+            }
+        }
+        self.update(|state| state.finalizing = None);
     }
 
     /// Pauses the running take at the moment of the press.

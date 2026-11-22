@@ -122,7 +122,17 @@ impl AmfEncoder {
         let encoder = video.open().map_err(MediaError::Init)?;
         let mut opened = Self { encoder, time_base: (time_base_num(cfg), time_base_den(cfg)), finished: false, read_back: Vec::new() };
         opened.read_back = read_back_options(opened.context_ptr(), name, &options)?;
+        log::info!("AMF {name}: codec header of {} bytes after open (0 means the muxer reads it from the first packet)", opened.header_bytes());
         Ok(opened)
+    }
+
+    /// How many bytes of codec header (extradata) the opened encoder holds; the flag asking for
+    /// global headers is set for MKV, MP4 and MOV alike, which all have AVFMT_GLOBALHEADER.
+    #[allow(unsafe_code)]
+    fn header_bytes(&mut self) -> usize {
+        // SAFETY: the encoder owns a live AVCodecContext; extradata_size is plain data.
+        let size = unsafe { (*self.context_ptr()).extradata_size };
+        usize::try_from(size).unwrap_or(0)
     }
 
     /// Every applied option as the opened encoder reports it, in the order they were set.

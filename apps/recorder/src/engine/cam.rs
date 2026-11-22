@@ -19,7 +19,7 @@ use media_io::{AmfEncoder, AudioCodec, D3d11Device, D3d11FramePool, EncodedPacke
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 
 use super::pacer::Pacer;
-use super::session::{SessionConfig, Stats, encoder_config};
+use super::session::{ENCODER_TAG, SessionConfig, Stats, encoder_config, take_title};
 use crate::config::Container;
 use crate::webcam::CamShare;
 
@@ -415,7 +415,8 @@ fn setup(plan: &CamPlan) -> Result<Pipeline, String> {
     let encoder = AmfEncoder::open(&plan.encoder, &pool).map_err(|err| err.to_string())?;
     let mut muxer = Muxer::create(&plan.file, plan.container).map_err(|err| err.to_string())?;
     let fps = (plan.encoder.fps_num as i32, plan.encoder.fps_den as i32);
-    muxer.add_video(encoder.parameters(), encoder.time_base(), fps).map_err(|err| err.to_string())?;
+    muxer.set_tags(&take_title(&plan.file), ENCODER_TAG);
+    muxer.add_video_titled(encoder.parameters(), encoder.time_base(), fps, "Camera").map_err(|err| err.to_string())?;
     muxer.start().map_err(|err| err.to_string())?;
     let mux = MuxThread::start(muxer).map_err(|err| err.to_string())?;
     Ok(Pipeline { pool, encoder, mux })

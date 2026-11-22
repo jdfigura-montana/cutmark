@@ -46,6 +46,21 @@ impl Container {
             Self::Mov => "mov",
         }
     }
+
+    /// The container a file extension names, ignoring case and a leading dot, or none for any other extension.
+    pub fn from_extension(extension: &str) -> Option<Self> {
+        match extension.trim_start_matches('.').to_ascii_lowercase().as_str() {
+            "mkv" => Some(Self::Mkv),
+            "mp4" => Some(Self::Mp4),
+            "mov" => Some(Self::Mov),
+            _ => None,
+        }
+    }
+
+    /// Whether a clean stop must rewrite the file: MP4 and MOV are written fragmented, MKV is final as written.
+    pub fn needs_finalize(self) -> bool {
+        matches!(self, Self::Mp4 | Self::Mov)
+    }
 }
 
 /// Why a container, codec and audio codec cannot be combined.
@@ -370,6 +385,16 @@ mod tests {
         assert_eq!(Container::Mkv.extension(), "mkv");
         assert_eq!(Container::Mp4.extension(), "mp4");
         assert_eq!(Container::Mov.extension(), "mov");
+    }
+
+    #[test]
+    fn a_container_is_found_from_its_extension_and_only_mp4_and_mov_need_finalizing() {
+        assert_eq!(Container::from_extension("MKV"), Some(Container::Mkv));
+        assert_eq!(Container::from_extension(".mp4"), Some(Container::Mp4));
+        assert_eq!(Container::from_extension("mov"), Some(Container::Mov));
+        assert_eq!(Container::from_extension("wav"), None);
+        assert!(!Container::Mkv.needs_finalize());
+        assert!(Container::Mp4.needs_finalize() && Container::Mov.needs_finalize());
     }
 
     #[test]
