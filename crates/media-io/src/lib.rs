@@ -10,6 +10,9 @@
 mod hw;
 
 #[cfg(windows)]
+pub mod bgvideo;
+
+#[cfg(windows)]
 mod amf;
 
 #[cfg(windows)]

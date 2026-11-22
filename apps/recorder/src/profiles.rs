@@ -287,21 +287,63 @@ pub fn delete(dir: &Path, name: &str) -> Result<(), ProfileError> {
     Ok(())
 }
 
-/// Writes the two shipped profiles when the folder holds no readable profile.
+/// The name of the shipped profile this release adds on top of the ones the app always shipped.
+const NEW_SHIPPED_NAME: &str = "Cam only AV1";
+
+/// Writes any shipped profile this install has not written yet: all of them on a first run, only the newly shipped ones on an existing install.
 ///
-/// A broken file that is in the way of a shipped profile is renamed to .json.bad first, never overwritten.
-pub fn init(dir: &Path) -> Result<(), ConfigError> {
-    if !load_all(dir).profiles.is_empty() {
+/// `written` is the list of shipped names already written, kept in the settings. An existing install
+/// whose list is empty gets the previously shipped names seeded into it, so a shipped profile the user
+/// deleted long ago stays deleted and a missing newly shipped profile is added once. A user profile
+/// that already uses a shipped name is recorded as written and never overwritten. The webcam settings
+/// of a newly added [`Profile::cam_only_av1_1080p30`] are copied from the first existing profile that
+/// has the webcam on, else they are None.
+pub fn init(dir: &Path, written: &mut Vec<String>) -> Result<(), ConfigError> {
+    let shipped = Profile::shipped();
+    let loaded = load_all(dir);
+    if loaded.profiles.is_empty() && written.is_empty() {
+        for profile in &shipped {
+            move_broken_file_out_of_the_way(dir, &profile.name)?;
+            save(dir, profile)?;
+        }
+        written.extend(shipped.iter().map(|profile| profile.name.clone()));
         return Ok(());
     }
-    for profile in Profile::shipped() {
-        let path = dir.join(file_name(&profile.name));
-        if path.exists() {
-            let bad = path.with_extension("json.bad");
-            log::warn!("{} is not a usable profile, moving it to {}", path.display(), bad.display());
-            fs::rename(&path, &bad).map_err(|source| ConfigError::Io { path: path.clone(), source })?;
+    if written.is_empty() {
+        // An install from before the list existed: the previously shipped names count as written, so
+        // only the newly shipped profile is added and old deletions stay deletions.
+        written.extend(shipped.iter().filter(|profile| profile.name != NEW_SHIPPED_NAME).map(|profile| profile.name.clone()));
+    }
+    let webcam_source = loaded.profiles.iter().find(|profile| profile.webcam.is_some()).and_then(|profile| profile.webcam.clone());
+    let mut webcam_taken = false;
+    for profile in &shipped {
+        if written.iter().any(|known| known == &profile.name) {
+            continue;
         }
-        save(dir, &profile)?;
+        if loaded.profiles.iter().any(|known| same_file(&known.name, &profile.name)) {
+            // The user already has a profile of this name; record it as written and never touch it.
+            written.push(profile.name.clone());
+            continue;
+        }
+        let mut added = profile.clone();
+        if profile.name == NEW_SHIPPED_NAME && !webcam_taken {
+            added.webcam = webcam_source.clone();
+            webcam_taken = true;
+        }
+        move_broken_file_out_of_the_way(dir, &added.name)?;
+        save(dir, &added)?;
+        written.push(added.name.clone());
+    }
+    Ok(())
+}
+
+/// Renames a broken profile file that is in the way of `name` to .json.bad, so the shipped profile can be written.
+fn move_broken_file_out_of_the_way(dir: &Path, name: &str) -> Result<(), ConfigError> {
+    let path = dir.join(file_name(name));
+    if path.exists() {
+        let bad = path.with_extension("json.bad");
+        log::warn!("{} is not a usable profile, moving it to {}", path.display(), bad.display());
+        fs::rename(&path, &bad).map_err(|source| ConfigError::Io { path: path.clone(), source })?;
     }
     Ok(())
 }
@@ -418,6 +460,7 @@ mod tests {
             save(&dir, &profile)?;
         }
         delete(&dir, "Premiere HEVC 1080p60")?;
+        delete(&dir, "Cam only AV1")?;
         assert!(matches!(delete(&dir, "Tutorial AV1 1440p60"), Err(ProfileError::Last)));
         assert_eq!(load_all(&dir).profiles.len(), 1);
         fs::remove_dir_all(&dir)?;
@@ -434,16 +477,73 @@ mod tests {
     }
 
     #[test]
-    fn init_writes_the_two_shipped_profiles_once() -> Result<(), Box<dyn Error>> {
+    fn init_writes_the_shipped_profiles_once() -> Result<(), Box<dyn Error>> {
         let dir = fresh_dir("init")?;
-        init(&dir)?;
+        let mut written = Vec::new();
+        init(&dir, &mut written)?;
         let loaded = load_all(&dir);
-        assert_eq!(loaded.profiles.len(), 2);
-        assert_eq!(loaded.profiles[0].codec, Codec::Hevc);
-        assert_eq!(loaded.profiles[1].codec, Codec::Av1);
-        delete(&dir, "Premiere HEVC 1080p60")?;
-        init(&dir)?;
+        assert_eq!(loaded.profiles.len(), 3);
+        assert_eq!(loaded.profiles[0].name, "Cam only AV1");
+        assert_eq!(loaded.profiles[0].codec, Codec::Av1);
+        assert_eq!(loaded.profiles[0].layout, crate::config::LayoutKind::CamOnly);
+        assert_eq!(loaded.profiles[0].background.kind, crate::config::BackgroundKind::Color);
+        assert_eq!(loaded.profiles[1].codec, Codec::Hevc);
+        assert_eq!(loaded.profiles[2].codec, Codec::Av1);
+        // A deleted shipped profile whose name is in the written list is never recreated.
+        delete(&dir, "Cam only AV1")?;
+        assert_eq!(written.iter().filter(|name| *name == "Cam only AV1").count(), 1);
+        init(&dir, &mut written)?;
+        let names: Vec<String> = load_all(&dir).profiles.into_iter().map(|profile| profile.name).collect();
+        assert!(!names.contains(&"Cam only AV1".to_owned()), "{names:?}");
+        fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_missing_newly_shipped_profile_is_added_once_to_an_existing_install() -> Result<(), Box<dyn Error>> {
+        let dir = fresh_dir("existing-install")?;
+        save(&dir, &Profile::premiere_hevc_1080p60())?;
+        // An install from before the list existed: only the new profile is added.
+        let mut written = Vec::new();
+        init(&dir, &mut written)?;
+        let names: Vec<String> = load_all(&dir).profiles.into_iter().map(|profile| profile.name).collect();
+        assert_eq!(names, vec!["Cam only AV1".to_owned(), "Premiere HEVC 1080p60".to_owned()]);
+        assert_eq!(written, vec!["Tutorial AV1 1440p60".to_owned(), "Premiere HEVC 1080p60".to_owned(), "Cam only AV1".to_owned()]);
+        // The user deletes the added profile; with the written list kept, it stays deleted.
+        delete(&dir, "Cam only AV1")?;
+        init(&dir, &mut written)?;
         assert_eq!(load_all(&dir).profiles.len(), 1);
+        fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn the_new_shipped_profile_copies_the_webcam_of_the_first_profile_that_has_one() -> Result<(), Box<dyn Error>> {
+        let dir = fresh_dir("webcam-copy")?;
+        save(&dir, &Profile::tutorial_av1_1440p60())?;
+        let webcam = WebcamSettings { camera_name: "Facecam".to_owned(), offset_ms: 40, ..WebcamSettings::default() };
+        let mut with_cam = Profile::premiere_hevc_1080p60();
+        with_cam.webcam = Some(webcam.clone());
+        save(&dir, &with_cam)?;
+        let mut written = Vec::new();
+        init(&dir, &mut written)?;
+        let added = load_all(&dir).profiles.into_iter().find(|profile| profile.name == "Cam only AV1").ok_or("the profile is missing")?;
+        assert_eq!(added.webcam, Some(webcam));
+        fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_user_profile_with_a_shipped_name_is_never_overwritten() -> Result<(), Box<dyn Error>> {
+        let dir = fresh_dir("name-taken")?;
+        let mine = Profile { fps: 24, ..Profile::cam_only_av1_1080p30() };
+        save(&dir, &mine)?;
+        let mut written = Vec::new();
+        init(&dir, &mut written)?;
+        let loaded = load_all(&dir);
+        assert_eq!(loaded.profiles.len(), 1);
+        assert_eq!(loaded.profiles[0].fps, 24);
+        assert!(written.contains(&"Cam only AV1".to_owned()));
         fs::remove_dir_all(&dir)?;
         Ok(())
     }
@@ -452,8 +552,9 @@ mod tests {
     fn init_moves_a_broken_file_out_of_the_way() -> Result<(), Box<dyn Error>> {
         let dir = fresh_dir("init-broken")?;
         fs::write(dir.join("Tutorial AV1 1440p60.json"), "{ not json")?;
-        init(&dir)?;
-        assert_eq!(load_all(&dir).profiles.len(), 2);
+        let mut written = Vec::new();
+        init(&dir, &mut written)?;
+        assert_eq!(load_all(&dir).profiles.len(), 3);
         assert_eq!(fs::read_to_string(dir.join("Tutorial AV1 1440p60.json.bad"))?, "{ not json");
         fs::remove_dir_all(&dir)?;
         Ok(())

@@ -213,6 +213,9 @@ pub struct Settings {
     pub audio: AudioSettings,
     /// Whether the main window is hidden from screen captures; the label popup is always hidden.
     pub hide_from_capture: bool,
+    /// The shipped profile names this install has already written, so a deleted shipped profile is never recreated.
+    #[serde(default)]
+    pub shipped_written: Vec<String>,
 }
 
 /// The folder takes go into: the settings root folder, or else the user's Videos folder joined with Cutmark.
@@ -244,6 +247,7 @@ impl Default for Settings {
             api: ApiSettings::default(),
             audio: AudioSettings::default(),
             hide_from_capture: true,
+            shipped_written: Vec::new(),
         }
     }
 }
@@ -634,6 +638,8 @@ pub enum BackgroundKind {
     Color,
     /// A PNG or JPG image from a file.
     Image,
+    /// A looping MP4 or MKV video from a file, decoded on the GPU.
+    Video,
 }
 
 /// How an image background fills the rectangle it is given; mirrors `capture::BackgroundFit`.
@@ -659,19 +665,31 @@ pub struct BackgroundConfig {
     pub color: [u8; 3],
     /// The path of the image file, used when the kind is Image.
     pub image_path: String,
-    /// How an image fills its rectangle.
+    /// The path of the video file, used when the kind is Video.
+    pub video_path: String,
+    /// How an image or a video fills its rectangle.
     pub fit: BackgroundFit,
 }
 
 impl Default for BackgroundConfig {
     fn default() -> Self {
-        Self { kind: BackgroundKind::None, color: DEFAULT_BACKGROUND_COLOR, image_path: String::new(), fit: BackgroundFit::Cover }
+        Self { kind: BackgroundKind::None, color: DEFAULT_BACKGROUND_COLOR, image_path: String::new(), video_path: String::new(), fit: BackgroundFit::Cover }
     }
 }
 
 impl From<&BackgroundConfig> for capture::BackgroundSettings {
     fn from(config: &BackgroundConfig) -> Self {
-        Self { kind: config.kind.into(), color: config.color, image_path: config.image_path.clone(), fit: config.fit.into() }
+        Self {
+            // The capture compositor knows no video kind; the video is handed to it frame by frame
+            // and the colour is what shows behind or around it.
+            kind: match config.kind {
+                BackgroundKind::Video => capture::BackgroundKind::Color,
+                kind => kind.into(),
+            },
+            color: config.color,
+            image_path: config.image_path.clone(),
+            fit: config.fit.into(),
+        }
     }
 }
 
@@ -679,7 +697,8 @@ impl From<BackgroundKind> for capture::BackgroundKind {
     fn from(kind: BackgroundKind) -> Self {
         match kind {
             BackgroundKind::None => Self::None,
-            BackgroundKind::Color => Self::Color,
+            // The capture compositor draws a video background on top of the colour.
+            BackgroundKind::Color | BackgroundKind::Video => Self::Color,
             BackgroundKind::Image => Self::Image,
         }
     }
@@ -844,9 +863,31 @@ impl Profile {
         }
     }
 
-    /// The two profiles that ship with the app.
-    pub fn shipped() -> [Self; 2] {
-        [Self::tutorial_av1_1440p60(), Self::premiere_hevc_1080p60()]
+    /// Shipped profile: AV1 constant quality, Cam only at 1920x1080 and 30 fps, MKV.
+    pub fn cam_only_av1_1080p30() -> Self {
+        Self {
+            name: "Cam only AV1".to_owned(),
+            codec: Codec::Av1,
+            rate_control: RateControl::ConstantQuality { quality: 70, max_mbps: 30.0 },
+            preset: Preset::Balanced,
+            keyframe_secs: DEFAULT_KEYFRAME_SECS,
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            container: Container::Mkv,
+            aac_tracks: true,
+            mixdown: true,
+            webcam: None,
+            layout: LayoutKind::CamOnly,
+            pip: PipConfig::default(),
+            background: BackgroundConfig { kind: BackgroundKind::Color, ..BackgroundConfig::default() },
+            cam_only_bg: None,
+        }
+    }
+
+    /// The three profiles that ship with the app.
+    pub fn shipped() -> [Self; 3] {
+        [Self::tutorial_av1_1440p60(), Self::premiere_hevc_1080p60(), Self::cam_only_av1_1080p30()]
     }
 
     /// Whether the output size is the size of the captured monitor.
@@ -871,6 +912,7 @@ fn load_or_init_in(dir: &Path, list_devices: impl FnOnce() -> Result<Vec<AudioDe
     fs::create_dir_all(&profiles).map_err(|source| ConfigError::Io { path: profiles.clone(), source })?;
     let settings_path = dir.join("settings.json");
     let (mut settings, saveable) = load_settings(&settings_path)?;
+    let shipped_written_before = settings.shipped_written.clone();
     if saveable {
         // An older settings file that held one profile gives it up to a profile file, once: the next write drops the key.
         let text = fs::read_to_string(&settings_path).unwrap_or_default();
@@ -891,7 +933,15 @@ fn load_or_init_in(dir: &Path, list_devices: impl FnOnce() -> Result<Vec<AudioDe
             Err(err) => log::warn!("could not list the audio devices, so no default tracks were made: {err}"),
         }
     }
-    profiles::init(&profiles)?;
+    // A broken settings file cannot keep the written list, so its additions are not remembered.
+    let mut written = std::mem::take(&mut settings.shipped_written);
+    profiles::init(&profiles, &mut written)?;
+    if saveable {
+        settings.shipped_written = written;
+        if settings.shipped_written != shipped_written_before {
+            write_json(&settings_path, &settings)?;
+        }
+    }
     Ok(settings)
 }
 
@@ -1062,17 +1112,21 @@ mod tests {
     fn first_run_writes_defaults_and_the_shipped_profiles() -> Result<(), Box<dyn Error>> {
         let dir = fresh_dir("first-run")?;
         let settings = load_or_init_in(&dir, no_devices)?;
-        assert_eq!(settings, Settings::default());
+        let expected = ["Tutorial AV1 1440p60", "Premiere HEVC 1080p60", "Cam only AV1"];
+        assert_eq!(settings.shipped_written, expected.map(str::to_owned));
+        assert_eq!(settings, Settings { shipped_written: expected.map(str::to_owned).to_vec(), ..Settings::default() });
 
         let on_disk: Settings = serde_json::from_str(&fs::read_to_string(dir.join("settings.json"))?)?;
-        assert_eq!(on_disk, Settings::default());
+        assert_eq!(on_disk, settings);
 
         let names: Vec<String> = fs::read_dir(dir.join("profiles"))?.filter_map(Result::ok).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-        assert_eq!(names.len(), 2, "{names:?}");
+        assert_eq!(names.len(), 3, "{names:?}");
         assert!(names.iter().all(|name| name.ends_with(".json")), "{names:?}");
 
         let first: Profile = serde_json::from_str(&fs::read_to_string(dir.join("profiles").join("Tutorial AV1 1440p60.json"))?)?;
         assert_eq!(first, Profile::tutorial_av1_1440p60());
+        let cam_only: Profile = serde_json::from_str(&fs::read_to_string(dir.join("profiles").join("Cam only AV1.json"))?)?;
+        assert_eq!(cam_only, Profile::cam_only_av1_1080p30());
         fs::remove_dir_all(&dir)?;
         Ok(())
     }
@@ -1118,8 +1172,15 @@ mod tests {
         let dir = fresh_dir("existing-profiles")?;
         fs::create_dir_all(dir.join("profiles"))?;
         write_json(&dir.join("profiles").join("Mine.json"), &Profile::premiere_hevc_1080p60())?;
+        // An existing install gets the newly shipped profile once; the user's own file is untouched.
         load_or_init_in(&dir, no_devices)?;
-        assert_eq!(fs::read_dir(dir.join("profiles"))?.count(), 1);
+        let names: Vec<String> = fs::read_dir(dir.join("profiles"))?.filter_map(Result::ok).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert!(names.contains(&"Mine.json".to_owned()), "{names:?}");
+        assert!(names.contains(&"Cam only AV1.json".to_owned()), "{names:?}");
+        // The written list is in the settings, so a second run adds nothing more.
+        load_or_init_in(&dir, no_devices)?;
+        assert_eq!(fs::read_dir(dir.join("profiles"))?.count(), 2);
         fs::remove_dir_all(&dir)?;
         Ok(())
     }
@@ -1308,7 +1369,13 @@ mod layout_tests {
         let profile = Profile {
             layout: LayoutKind::Pip,
             pip: PipConfig { anchor: AnchorCorner::TopRight, border_px: 6.0, border_color: [255, 0, 0], ..PipConfig::default() },
-            background: BackgroundConfig { kind: BackgroundKind::Image, color: [10, 20, 30], image_path: "bg.png".to_owned(), fit: BackgroundFit::Contain },
+            background: BackgroundConfig {
+                kind: BackgroundKind::Image,
+                color: [10, 20, 30],
+                image_path: "bg.png".to_owned(),
+                video_path: String::new(),
+                fit: BackgroundFit::Contain,
+            },
             ..Profile::premiere_hevc_1080p60()
         };
         let text = serde_json::to_string(&profile)?;
@@ -1331,13 +1398,30 @@ mod layout_tests {
 
     #[test]
     fn the_saved_background_converts_to_the_compositor_settings() {
-        let config = BackgroundConfig { kind: BackgroundKind::Image, color: [1, 2, 3], image_path: "bg.png".to_owned(), fit: BackgroundFit::Stretch };
+        let config = BackgroundConfig {
+            kind: BackgroundKind::Image,
+            color: [1, 2, 3],
+            image_path: "bg.png".to_owned(),
+            video_path: String::new(),
+            fit: BackgroundFit::Stretch,
+        };
         let settings = capture::BackgroundSettings::from(&config);
         assert_eq!(settings.kind, capture::BackgroundKind::Image);
         assert_eq!(settings.color, [1, 2, 3]);
         assert_eq!(settings.image_path, "bg.png");
         assert_eq!(settings.fit, capture::BackgroundFit::Stretch);
         assert_eq!(capture::BackgroundSettings::from(&BackgroundConfig::default()), capture::BackgroundSettings::default());
+    }
+
+    #[test]
+    fn a_video_background_reaches_the_compositor_as_a_colour() -> Result<(), Box<dyn Error>> {
+        let config = BackgroundConfig { kind: BackgroundKind::Video, video_path: r"C:\clips\bg.mp4".to_owned(), ..BackgroundConfig::default() };
+        let settings = capture::BackgroundSettings::from(&config);
+        assert_eq!(settings.kind, capture::BackgroundKind::Color);
+        let text = serde_json::to_string(&config)?;
+        assert!(text.contains("\"kind\":\"video\"") && text.contains("bg.mp4"), "{text}");
+        assert_eq!(serde_json::from_str::<BackgroundConfig>(&text)?, config);
+        Ok(())
     }
 
     #[test]

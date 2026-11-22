@@ -109,6 +109,19 @@ pub struct ComposedFrame {
     pub seq: u64,
 }
 
+/// One decoded background video frame, drawn with the camera's NV12 path and no key.
+#[derive(Clone)]
+pub struct BgVideoFrame {
+    /// The NV12 texture of the frame, with the shader resource bind flag.
+    pub texture: ID3D11Texture2D,
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// The colour matrix and range of the frame's pixels.
+    pub color: CamColor,
+}
+
 /// The shader constants of one draw; the layout matches the cbuffer in `shaders.hlsl`.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -181,6 +194,12 @@ pub struct Compositor {
     bg_image: Option<image::BackgroundImage>,
     /// The path of the last image that failed to load, so a bad file is not reopened every frame.
     bg_failed: Option<String>,
+    /// The newest background video frame to draw behind the camera, or None for none.
+    bg_video: Option<BgVideoFrame>,
+    /// The two shader views of each background video texture, created once per texture.
+    video_views: Vec<(ID3D11Texture2D, [ID3D11ShaderResourceView; 2])>,
+    /// Whether the failure to make a background video view was already logged.
+    video_error_logged: bool,
     /// A 1x1 texture and its view used to paint the solid background colour.
     solid: (ID3D11Texture2D, ID3D11ShaderResourceView),
     /// The colour currently held by the 1x1 texture.
@@ -250,6 +269,9 @@ impl Compositor {
             bg: BackgroundSettings::default(),
             bg_image: None,
             bg_failed: None,
+            bg_video: None,
+            video_views: Vec::new(),
+            video_error_logged: false,
             solid,
             solid_color: [32, 32, 32],
         })
@@ -290,6 +312,16 @@ impl Compositor {
         Ok(())
     }
 
+    /// Sets the newest background video frame to draw behind the camera, or None for none.
+    ///
+    /// The frame is the video's NV12 texture with its width, height and colour; the caller keeps the
+    /// video open and passes a fresh frame every tick. The compositor holds a clone of the texture
+    /// and makes its shader views once per texture.
+    pub fn set_background_video(&mut self, frame: Option<(&ID3D11Texture2D, u32, u32, CamColor)>) {
+        self.video_error_logged = false;
+        self.bg_video = frame.map(|(texture, width, height, color)| BgVideoFrame { texture: texture.clone(), width, height, color });
+    }
+
     /// Composes one frame into the next output texture and returns it with its sequence number.
     ///
     /// Screen only draws the screen. Cam only draws the background, then the camera fitted to the
@@ -297,7 +329,9 @@ impl Compositor {
     /// then the background inside the camera's shape when the kind is Colour or Image, then the
     /// camera; a kind of None leaves the screen to show through behind a keyed camera. The image of
     /// an Image background comes from [`Compositor::set_background`]; when it is not loaded the
-    /// colour is drawn instead. A picture that is missing is left out.
+    /// colour is drawn instead. A background video frame set with [`Compositor::set_background_video`]
+    /// is drawn where the image would be, with the frame's own colour conversion and the same fit,
+    /// and takes the place of the image while one is set. A picture that is missing is left out.
     ///
     /// The camera is keyed by `key`; with `matte` the keyed camera shows its alpha as black and white instead.
     #[allow(clippy::too_many_arguments)]
@@ -351,9 +385,27 @@ impl Compositor {
         } else {
             None
         };
+        let bg_video = if self.bg.kind != BackgroundKind::None { self.bg_video.clone() } else { None };
+        let video_views = match &bg_video {
+            Some(frame) => match self.video_views(&frame.texture) {
+                Ok(views) => Some(views),
+                Err(error) => {
+                    if !self.video_error_logged {
+                        self.video_error_logged = true;
+                        log::warn!("compositor: the background video cannot be drawn: {error}");
+                    }
+                    None
+                }
+            },
+            None => None,
+        };
         match layout {
             Layout::CamOnly => {
-                if let Some(((image_w, image_h), view)) = &bg_image {
+                if let (Some(frame), Some(views)) = (&bg_video, &video_views) {
+                    let full = RectF::new(0.0, 0.0, self.out_w as f32, self.out_h as f32);
+                    let placed = fit_background(frame.width, frame.height, full, self.bg.fit);
+                    self.draw_video(&placed, frame.color, views, PipShape::Rectangle, 0.0);
+                } else if let Some(((image_w, image_h), view)) = &bg_image {
                     let full = RectF::new(0.0, 0.0, self.out_w as f32, self.out_h as f32);
                     let placed = fit_background(*image_w, *image_h, full, self.bg.fit);
                     self.draw_bgra(placed.dst, view, 0.0, 0.0);
@@ -367,7 +419,10 @@ impl Compositor {
                     let radius = pip.radius_px.max(0.0);
                     let color = self.bg.color;
                     self.draw_solid(cam.dst, color, mode, radius);
-                    if let Some(((image_w, image_h), view)) = &bg_image {
+                    if let (Some(frame), Some(views)) = (&bg_video, &video_views) {
+                        let placed = fit_background(frame.width, frame.height, cam.dst, self.bg.fit);
+                        self.draw_video(&placed, frame.color, views, pip.shape, pip.radius_px);
+                    } else if let Some(((image_w, image_h), view)) = &bg_image {
                         let placed = fit_background(*image_w, *image_h, cam.dst, self.bg.fit);
                         self.draw_bgra(placed.dst, view, mode, radius);
                     }
@@ -498,6 +553,43 @@ impl Compositor {
             let chroma = plane_view(device, texture, DXGI_FORMAT_R8G8_UNORM)?;
             Ok([luma, chroma])
         })
+    }
+
+    /// The two shader views of a background video texture, the Y plane and the UV plane, created once per texture.
+    fn video_views(&mut self, texture: &ID3D11Texture2D) -> Result<[ID3D11ShaderResourceView; 2], CaptureError> {
+        let device = &self.device;
+        cached(&mut self.video_views, texture, || {
+            let luma = plane_view(device, texture, DXGI_FORMAT_R8_UNORM)?;
+            let chroma = plane_view(device, texture, DXGI_FORMAT_R8G8_UNORM)?;
+            Ok([luma, chroma])
+        })
+    }
+
+    /// Draws a background video frame with the camera's NV12 shader: the frame's own colour
+    /// conversion, fitted by [`fit_background`], cut by the given shape with no key and no border.
+    fn draw_video(&self, placed: &layout::BackgroundPlacement, color: CamColor, views: &[ID3D11ShaderResourceView; 2], shape: PipShape, radius_px: f32) {
+        let (coef, range) = color.shader_constants();
+        let params = Params {
+            dst_rect: [placed.dst.left, placed.dst.top, placed.dst.right, placed.dst.bottom],
+            src_uv: [placed.src.left, placed.src.top, placed.src.right, placed.src.bottom],
+            // The alpha slot tells the shader the shape: 1 for a circle, 0 for a rounded rectangle.
+            border_color: [0.0, 0.0, 0.0, if shape == PipShape::Circle { 1.0 } else { 0.0 }],
+            shape: [radius_px.max(0.0), 0.0, self.out_w as f32, self.out_h as f32],
+            yuv_coef: coef,
+            yuv_range: range,
+            key_color: [0.0; 4],
+            key_params: [0.0; 4],
+            key_garbage: [0.0; 4],
+            key_mask: [0.0; 4],
+        };
+        let [luma, chroma] = views;
+        // SAFETY: the context and every object are live; params outlives the copy that UpdateSubresource makes.
+        unsafe {
+            self.context.UpdateSubresource(&self.params, 0, None, std::ptr::from_ref(&params).cast(), 0, 0);
+            self.context.PSSetShader(&self.ps_nv12, None);
+            self.context.PSSetShaderResources(1, Some(&[Some(luma.clone()), Some(chroma.clone())]));
+            self.context.Draw(4, 0);
+        }
     }
 }
 

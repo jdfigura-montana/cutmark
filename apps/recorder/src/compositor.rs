@@ -13,7 +13,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use capture::{BackgroundSettings, CaptureError, Compositor, Gpu, KeySettings, Layout, MonitorCapture, PipSettings, list_monitors};
+use capture::{
+    BackgroundSettings, CamColor, CaptureError, Compositor, Gpu, KeySettings, Layout, MonitorCapture, PipSettings, YuvMatrix, YuvRange, list_monitors,
+};
+use media_io::bgvideo::{LoopingVideo, VideoColor, VideoMatrix, VideoRange};
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 use windows::core::Interface;
 
@@ -55,6 +58,8 @@ pub struct ComposeConfig {
     pub monitor: usize,
     /// Whether the mouse cursor is drawn.
     pub cursor: bool,
+    /// The path of the background video, set only when the background kind is Video.
+    pub video_path: String,
 }
 
 impl Default for ComposeConfig {
@@ -70,7 +75,23 @@ impl Default for ComposeConfig {
             matte: false,
             monitor: 0,
             cursor: true,
+            video_path: String::new(),
         }
+    }
+}
+
+/// Turns a decoded video's colour into the colour the compositor's NV12 path converts with.
+fn cam_color(color: VideoColor) -> CamColor {
+    CamColor {
+        matrix: match color.matrix {
+            VideoMatrix::Bt601 => YuvMatrix::Bt601,
+            VideoMatrix::Bt709 => YuvMatrix::Bt709,
+            VideoMatrix::Bt2020 => YuvMatrix::Bt2020,
+        },
+        range: match color.range {
+            VideoRange::Limited => YuvRange::Limited,
+            VideoRange::Full => YuvRange::Full,
+        },
     }
 }
 
@@ -90,6 +111,7 @@ impl ComposeConfig {
             matte: false,
             monitor,
             cursor,
+            video_path: if profile.background.kind == crate::config::BackgroundKind::Video { profile.background.video_path.clone() } else { String::new() },
         }
     }
 }
@@ -318,6 +340,14 @@ struct Capture {
     cursor: bool,
 }
 
+/// The background video the worker has open.
+struct ActiveVideo {
+    /// The path it was opened for; a different path reopens it.
+    path: String,
+    /// The looping decoder thread.
+    video: LoopingVideo,
+}
+
 /// The state of the compose thread.
 struct Worker {
     shared: Arc<Shared>,
@@ -329,12 +359,16 @@ struct Worker {
     next_tick: Instant,
     /// The number of the last published frame.
     seq: u64,
+    /// The open background video, kept while the configured path stays.
+    bg_video: Option<ActiveVideo>,
+    /// The path of the last background video that failed to open, so a bad file is not reopened every frame.
+    bg_video_failed: Option<String>,
 }
 
 impl Worker {
     /// A worker on the given device with nothing running yet.
     fn new(shared: Arc<Shared>, gpu: Gpu) -> Self {
-        Self { shared, gpu, capture: None, compositor: None, next_tick: Instant::now(), seq: 0 }
+        Self { shared, gpu, capture: None, compositor: None, next_tick: Instant::now(), seq: 0, bg_video: None, bg_video_failed: None }
     }
 
     /// Runs until the stop flag is set.
@@ -399,9 +433,11 @@ impl Worker {
 
     /// Stops the capture and frees the GPU objects while the thread is switched off.
     fn release(&mut self) {
-        if self.capture.is_some() || self.compositor.is_some() {
+        if self.capture.is_some() || self.compositor.is_some() || self.bg_video.is_some() {
             self.capture = None;
             self.compositor = None;
+            self.bg_video = None;
+            self.bg_video_failed = None;
             *lock(&self.shared.latest) = None;
         }
     }
@@ -419,6 +455,15 @@ impl Worker {
         if error.as_deref() != Some(message) {
             log::warn!("compositor: {message}");
             *error = Some(message.to_owned());
+        }
+    }
+
+    /// Records a background warning: the first time a message appears it is also logged.
+    fn warn(shared: &Shared, message: &str) {
+        let mut warning = lock(&shared.warning);
+        if warning.as_deref() != Some(message) {
+            log::warn!("compositor: {message}");
+            *warning = Some(message.to_owned());
         }
     }
 
@@ -462,17 +507,35 @@ impl Worker {
         if let Some(share) = cam {
             compositor.set_cam_color(share.capture.color());
         }
-        // The background image is loaded here, on the compose thread and device, and cached by path.
-        match compositor.set_background(&config.bg) {
-            Ok(()) => *lock(&self.shared.warning) = None,
-            Err(err) => {
-                let message = format!("the background image could not be loaded, using the colour instead: {err}");
-                let mut warning = lock(&self.shared.warning);
-                if warning.as_deref() != Some(message.as_str()) {
-                    log::warn!("compositor: {message}");
-                    *warning = Some(message);
+        // The background video is opened here, on the compose thread and device, and kept while the path stays.
+        let mut video_frame = None;
+        let mut video_error = None;
+        if config.video_path.is_empty() {
+            self.bg_video = None;
+            self.bg_video_failed = None;
+        } else {
+            let open = self.bg_video.as_ref().map(|active| active.path.as_str()) != Some(config.video_path.as_str())
+                && self.bg_video_failed.as_deref() != Some(config.video_path.as_str());
+            if open {
+                self.bg_video = None;
+                match LoopingVideo::open(self.gpu.device(), std::path::Path::new(&config.video_path)) {
+                    Ok(video) => self.bg_video = Some(ActiveVideo { path: config.video_path.clone(), video }),
+                    Err(err) => {
+                        self.bg_video_failed = Some(config.video_path.clone());
+                        video_error = Some(format!("the background video could not be opened, using the colour instead: {err}"));
+                    }
                 }
             }
+            if let Some(active) = &self.bg_video {
+                video_frame = active.video.latest().map(|frame| (frame.texture.clone(), frame.width, frame.height, cam_color(frame.color)));
+            }
+        }
+        compositor.set_background_video(video_frame.as_ref().map(|(texture, width, height, color)| (texture, *width, *height, *color)));
+        // The background image is loaded here, on the compose thread and device, and cached by path.
+        match (video_error, compositor.set_background(&config.bg)) {
+            (Some(message), _) => Worker::warn(&self.shared, &message),
+            (None, Ok(())) => *lock(&self.shared.warning) = None,
+            (None, Err(err)) => Worker::warn(&self.shared, &format!("the background image could not be loaded, using the colour instead: {err}")),
         }
         let composed = compositor
             .compose(screen.as_ref().map(|frame| &frame.texture), cam_frame.as_ref(), &config.layout, &config.pip, &config.key, config.matte)
@@ -536,6 +599,7 @@ mod tests {
             kind: crate::config::BackgroundKind::Image,
             color: [1, 2, 3],
             image_path: "bg.png".to_owned(),
+            video_path: String::new(),
             fit: crate::config::BackgroundFit::Stretch,
         };
         let config = ComposeConfig::from_profile(&profile, (1920, 1080), 0, true);
