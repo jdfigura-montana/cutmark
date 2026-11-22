@@ -7,9 +7,17 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Apps join here when their restyle is done (audio editor in phase 13). The
-/// gallery joins at birth: it is the ui-kit acceptance test (S1 phase 9a).
-const OPT_IN: &[&str] = &["crates/ui-kit/src/widgets", "crates/ui-kit/src/help", "apps/gallery/src", "apps/audio-editor/src"];
+/// Apps and ui-kit files join here: the gallery is the ui-kit acceptance test
+/// (S1 phase 9a), and the top-level ui-kit files that draw UI (S1 phase 14b)
+/// are listed one by one so the rest of the crate stays out of the lint.
+const OPT_IN: &[&str] = &[
+    "crates/ui-kit/src/widgets",
+    "crates/ui-kit/src/help",
+    "crates/ui-kit/src/shortcuts.rs",
+    "crates/ui-kit/src/tour.rs",
+    "apps/gallery/src",
+    "apps/audio-editor/src",
+];
 
 /// Marker that lets a single line opt out of the lint.
 const ALLOW_MARKER: &str = "// style-lint: allow";
@@ -39,10 +47,15 @@ fn scan(dir: &Path) -> Vec<Finding> {
     scan_dir(dir).0
 }
 
-/// Scans every `.rs` file under `dir`, also returning the allowed lines.
+/// Scans a single `.rs` file or every `.rs` file under a directory, also
+/// returning the allowed lines.
 fn scan_dir(dir: &Path) -> (Vec<Finding>, Vec<Allowed>) {
     let mut files = Vec::new();
-    collect_rs_files(dir, &mut files);
+    if dir.is_dir() {
+        collect_rs_files(dir, &mut files);
+    } else {
+        files.push(dir.to_path_buf());
+    }
     files.sort();
     let mut findings = Vec::new();
     let mut allowed = Vec::new();
@@ -152,7 +165,7 @@ fn hardcoded_style_in_opted_in_apps() {
     let root = workspace_root();
     for app in OPT_IN {
         let dir = root.join(app);
-        assert!(dir.is_dir(), "opt-in path {app} does not exist");
+        assert!(dir.exists(), "opt-in path {app} does not exist");
         let findings = scan(&dir);
         let mut listed = String::new();
         for finding in &findings {

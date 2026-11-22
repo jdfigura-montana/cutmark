@@ -4,6 +4,7 @@
 //!
 //! Shared helpers: [`focus::focus_ring`] and [`capsule_radius`].
 
+pub mod about;
 pub mod accent_picker;
 pub mod caption_buttons;
 pub mod chip;
@@ -32,6 +33,7 @@ pub mod track_header;
 pub mod track_row;
 pub mod transport;
 
+pub use about::{AboutInfo, about_dialog};
 pub use accent_picker::{accent_picker, appearance_dialog};
 pub use caption_buttons::{CaptionRects, caption_buttons};
 pub use chip::chip;

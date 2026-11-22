@@ -9,6 +9,10 @@ pub mod search;
 pub mod topic;
 pub mod window;
 
+/// The id of the generated "Keyboard shortcuts" page, so apps route it through
+/// [`help_window`]'s `extra` callback (spec: S1 Help "Shortcut sheet").
+pub const KEYBOARD_PAGE_ID: &str = "keyboard-shortcuts";
+
 pub use context::{context, handle_f1};
 pub use markdown::{Block, Span};
 pub use search::{Hit, search};

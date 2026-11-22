@@ -145,12 +145,17 @@ pub fn show(ui: &mut egui::Ui, state: &mut CoreState, modal_open: bool) {
     // One row of panels at a time: each panel sits in its own vertical scope
     // (an explicit layout, so no grid placer leaks into the panel frames) and
     // keeps its natural width up to the column width.
-    for row in PANELS.chunks(columns) {
+    for (row_index, row) in PANELS.chunks(columns).enumerate() {
         ui.horizontal(|ui| {
-            for panel_fn in row {
+            for (column_index, panel_fn) in row.iter().enumerate() {
                 ui.vertical(|ui| {
                     ui.set_max_width(column_width);
                     panel_fn(ui, state, modal_open);
+                    // The first panel doubles as the tour's "panel" target
+                    // (spec: S1 Help "First-run tour").
+                    if row_index == 0 && column_index == 0 {
+                        ui_kit::tour::anchor(ui, "panel", ui.min_rect());
+                    }
                 });
             }
         });

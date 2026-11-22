@@ -1,14 +1,16 @@
 //! The gallery app shell: the main toolbar (which is the title bar), one
-//! vertical scroll area per page, the status bar, the appearance dialog and
-//! the toasts (spec: Design Language "Style gallery", "Main toolbar",
-//! "Status bar").
+//! vertical scroll area per page, the status bar, the appearance dialog, the
+//! toasts, the generated Keyboard shortcuts page, the demo tour and the About
+//! box (spec: Design Language "Style gallery", "Main toolbar", "Status bar";
+//! S1 Help "Shortcut sheet", "First-run tour").
 
-use eframe::egui;
-use ui_kit::fonts;
+use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
 use ui_kit::help::{self, HelpBook, HelpState};
 use ui_kit::icons::regular;
+use ui_kit::shortcuts::{Shortcut, ShortcutTable};
 use ui_kit::tokens::{color, size, space, typography};
-use ui_kit::{Menu, Theme, Title, appearance, dialog};
+use ui_kit::tour::{self, Tour, TourState, TourStep};
+use ui_kit::{AboutInfo, Menu, Theme, Title, appearance, dialog, fonts};
 
 use crate::core_page;
 use crate::media;
@@ -23,6 +25,55 @@ const APP_MARK_SIZE: f32 = 18.0;
 /// The pages of the toolbar segmented control.
 const PAGES: &[&str] = &["Core", "Media"];
 
+/// The Media page's index: the page where all three tour targets exist.
+const MEDIA_PAGE: usize = 1;
+
+/// The demo tour's steps: the toolbar, a panel and the transport deck.
+const TOUR_STEPS: [TourStep; 3] = [
+    TourStep { target: "toolbar", title: "The title bar", body: "The menus, the page switch and the actions all live here." },
+    TourStep { target: "panel", title: "A panel", body: "Each panel groups the widgets for one job." },
+    TourStep { target: "transport", title: "The transport deck", body: "Play, stop and record from the deck over the timeline." },
+];
+
+/// The gallery's demo tour. Its seen flag marks it shown once (spec: S1 Help
+/// "First-run tour").
+const TOUR: Tour = Tour { app: "gallery", id: "gallery-tour", version: 1, steps: &TOUR_STEPS };
+
+/// The About box's content.
+const ABOUT: AboutInfo = AboutInfo {
+    app_name: "Cutmark Gallery",
+    version: env!("CARGO_PKG_VERSION"),
+    copyright: "Copyright 2026 Cutmark. All rights reserved.",
+    notices: "Inter and JetBrains Mono are licensed under the SIL Open Font License 1.1.\n\
+              Phosphor Icons and the egui-phosphor crate are licensed under MIT or Apache-2.0.\n\
+              egui, eframe and epaint are licensed under MIT or Apache-2.0.\n\n\
+              The font license files ship with the app.",
+};
+
+/// A shortcut with one key, for the sample table.
+fn one_key(modifiers: Modifiers, key: Key) -> Vec<KeyboardShortcut> {
+    vec![KeyboardShortcut::new(modifiers, key)]
+}
+
+/// The gallery's sample shortcuts: 10 entries in 3 groups, so the generated
+/// keyboard page has content to show (spec: S1 Help "Shortcut sheet"). Four of
+/// them drive the gallery itself (Show toast, Help topics, Keyboard shortcuts,
+/// Show the tour); the rest are sample rows.
+fn sample_shortcuts() -> ShortcutTable {
+    ShortcutTable::new(vec![
+        Shortcut { id: "file.new", label: "New project", group: "File", keys: one_key(Modifiers::COMMAND, Key::N), context: "global" },
+        Shortcut { id: "file.open", label: "Open project", group: "File", keys: one_key(Modifiers::COMMAND, Key::O), context: "global" },
+        Shortcut { id: "file.save", label: "Save project", group: "File", keys: one_key(Modifiers::COMMAND, Key::S), context: "global" },
+        Shortcut { id: "file.toast", label: "Show toast", group: "File", keys: one_key(Modifiers::COMMAND, Key::T), context: "global" },
+        Shortcut { id: "edit.undo", label: "Undo", group: "Edit", keys: one_key(Modifiers::COMMAND, Key::Z), context: "global" },
+        Shortcut { id: "edit.redo", label: "Redo", group: "Edit", keys: one_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z), context: "global" },
+        Shortcut { id: "edit.paste", label: "Paste", group: "Edit", keys: one_key(Modifiers::COMMAND, Key::V), context: "global" },
+        Shortcut { id: "help.topics", label: "Help topics", group: "Help", keys: one_key(Modifiers::NONE, Key::F1), context: "global" },
+        Shortcut { id: "help.keyboard", label: "Keyboard shortcuts", group: "Help", keys: one_key(Modifiers::COMMAND, Key::Slash), context: "global" },
+        Shortcut { id: "help.tour", label: "Show the tour", group: "Help", keys: one_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::T), context: "global" },
+    ])
+}
+
 /// The gallery app state.
 pub struct Gallery {
     /// The selected page, an index into [`PAGES`].
@@ -33,6 +84,13 @@ pub struct Gallery {
     media: media::MediaState,
     /// True while the appearance dialog is open.
     appearance_open: bool,
+    /// True while the About box is open.
+    about_open: bool,
+    /// The sample shortcuts: one table feeds the input handling, the menus and
+    /// the generated keyboard page.
+    shortcuts: ShortcutTable,
+    /// The demo tour's running state.
+    tour: TourState,
     /// The gallery's help topics, embedded at build time.
     book: HelpBook,
     /// The help window's open state and Back and Forward history.
@@ -40,14 +98,29 @@ pub struct Gallery {
 }
 
 impl Gallery {
-    /// Fresh gallery: Core page, no dialogs open, help closed.
+    /// Fresh gallery: Core page, no dialogs open, help closed, and the demo
+    /// tour started on a fresh profile (spec: S1 Help "First-run tour").
     pub fn new(book: HelpBook) -> Self {
-        Self { page: 0, core: core_page::CoreState::new(), media: media::MediaState::new(), appearance_open: false, book, help: HelpState::default() }
+        let mut tour = TourState::default();
+        if !tour::help_store::is_seen(TOUR.app, TOUR.id, TOUR.version) {
+            tour.start();
+        }
+        Self {
+            page: 0,
+            core: core_page::CoreState::new(),
+            media: media::MediaState::new(),
+            appearance_open: false,
+            about_open: false,
+            shortcuts: sample_shortcuts(),
+            tour,
+            book,
+            help: HelpState::default(),
+        }
     }
 
     /// True while any modal covers the page (pauses the focus rotation).
     fn modal_open(&self) -> bool {
-        self.appearance_open || self.core.dialog_open.get()
+        self.appearance_open || self.about_open || self.core.dialog_open.get()
     }
 }
 
@@ -56,19 +129,73 @@ impl eframe::App for Gallery {
     /// The toolbar is the top panel, the status bar the bottom panel, so the
     /// page's scroll area ends above the status bar and nothing overlaps.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         // The appearance file feeds the theme; toasts draw on top of everything.
-        appearance::poll(ui.ctx());
-        ui_kit::show_toasts(ui.ctx());
+        appearance::poll(&ctx);
+        ui_kit::show_toasts(&ctx);
         ui.painter().rect_filled(ui.max_rect(), 0.0, color::BG_GROUND);
 
+        // The shortcuts act before anything draws, so a shortcut that opens a
+        // window shows it this frame.
+        self.handle_shortcuts(&ctx);
         self.show_toolbar(ui);
         self.show_status_bar(ui);
         self.show_page(ui);
         self.show_dialogs(ui);
         // F1 reads the tags the pages registered this frame, then the window
         // draws on top of everything.
-        help::handle_f1(ui.ctx(), &mut self.help, &self.book);
-        help::help_window(ui.ctx(), &mut self.help, &self.book, &mut |_id: &str, _ui: &mut egui::Ui| false);
+        help::handle_f1(&ctx, &mut self.help, &self.book);
+        self.show_help(&ctx);
+        self.show_about(&ctx);
+        // The tour's anchors were registered while the page drew, so it draws
+        // last and over everything else.
+        self.show_tour(&ctx);
+    }
+}
+
+impl Gallery {
+    /// Runs the sample shortcuts the gallery acts on. The more specific key is
+    /// checked first, since egui's shortcut matching ignores extra modifiers.
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        if self.shortcuts.pressed(ctx, "help.tour") {
+            self.tour.start();
+        }
+        if self.shortcuts.pressed(ctx, "file.toast") {
+            ui_kit::toast(ctx, "Toast from a shortcut");
+        }
+        if self.shortcuts.pressed(ctx, "help.keyboard") {
+            help::open(&mut self.help, help::KEYBOARD_PAGE_ID);
+        }
+    }
+
+    /// Draws the help window, routing the generated Keyboard shortcuts page
+    /// through the help window's extra callback.
+    fn show_help(&mut self, ctx: &egui::Context) {
+        let shortcuts = &self.shortcuts;
+        let book = &self.book;
+        let help_state = &mut self.help;
+        let filter_id = egui::Id::new("gallery-shortcut-filter");
+        help::help_window(ctx, help_state, book, &mut |id: &str, ui: &mut egui::Ui| {
+            if id != help::KEYBOARD_PAGE_ID {
+                return false;
+            }
+            let mut filter = ui.ctx().data_mut(|data| data.get_temp::<String>(filter_id).unwrap_or_default());
+            ui_kit::shortcuts::shortcut_sheet(ui, shortcuts, &mut filter);
+            ui.ctx().data_mut(|data| data.insert_temp(filter_id, filter));
+            true
+        });
+    }
+
+    /// Draws the About box.
+    fn show_about(&mut self, ctx: &egui::Context) {
+        ui_kit::about_dialog(ctx, &mut self.about_open, &ABOUT);
+    }
+
+    /// Draws the demo tour, and marks it seen when it finishes or is skipped.
+    fn show_tour(&mut self, ctx: &egui::Context) {
+        if tour::show_tour(ctx, &mut self.tour, &TOUR).is_some() {
+            let _ = tour::help_store::mark_seen(TOUR.app, TOUR.id, TOUR.version);
+        }
     }
 }
 
@@ -80,10 +207,14 @@ impl Gallery {
         let page = std::cell::Cell::new(self.page);
         let appearance_open = std::cell::Cell::new(self.appearance_open);
         let open_help = std::cell::Cell::new(false);
+        let open_keyboard = std::cell::Cell::new(false);
+        let show_tour = std::cell::Cell::new(false);
+        let open_about = std::cell::Cell::new(false);
+        let shortcuts = &self.shortcuts;
         egui::Panel::top("gallery-toolbar").exact_size(size::TOOLBAR_MAIN_HEIGHT).frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
             ui_kit::main_toolbar(
                 ui,
-                |ui| left_zone(ui, &page, &appearance_open, &open_help),
+                |ui| left_zone(ui, &page, &appearance_open, &open_help, &open_keyboard, &show_tour, &open_about, shortcuts),
                 |ui| {
                     let caption = format!("ui-kit {UI_KIT_VERSION}");
                     ui_kit::title_block(ui, &Title::Document { name: "Gallery", unsaved: false, caption: Some(&caption) });
@@ -102,11 +233,24 @@ impl Gallery {
                     }
                 },
             );
+            // The whole bar is the tour's "toolbar" target.
+            tour::anchor(ui, "toolbar", ui.max_rect());
         });
         self.page = page.get();
         self.appearance_open = appearance_open.get();
         if open_help.get() {
             self.help.open = true;
+        }
+        if open_keyboard.get() {
+            help::open(&mut self.help, help::KEYBOARD_PAGE_ID);
+        }
+        if show_tour.get() {
+            // Switch to the Media page, where the tour's three targets exist.
+            self.page = MEDIA_PAGE;
+            self.tour.start();
+        }
+        if open_about.get() {
+            self.about_open = true;
         }
     }
 
@@ -147,7 +291,8 @@ impl Gallery {
         });
     }
 
-    /// The sample dialog (opened from the Core page) and the appearance dialog.
+    /// The sample dialog (opened from the Core page), the appearance dialog
+    /// and the About box.
     fn show_dialogs(&mut self, ui: &mut egui::Ui) {
         let mut open = self.core.dialog_open.get();
         dialog::dialog(
@@ -166,17 +311,32 @@ impl Gallery {
         );
         self.core.dialog_open.set(self.core.dialog_open.get() && open);
         ui_kit::appearance_dialog(ui.ctx(), &mut self.appearance_open);
+        ui_kit::about_dialog(ui.ctx(), &mut self.about_open, &ABOUT);
     }
 }
 
 /// The left zone: the app mark placeholder, then the menu bar with File, View
-/// and Help menus of sample items.
-fn left_zone(ui: &mut egui::Ui, page: &std::cell::Cell<usize>, appearance_open: &std::cell::Cell<bool>, open_help: &std::cell::Cell<bool>) {
+/// and Help menus of sample items. The shortcut text comes from the one sample
+/// table, so the menus and the generated page can never drift apart.
+#[allow(clippy::too_many_arguments)]
+fn left_zone(
+    ui: &mut egui::Ui,
+    page: &std::cell::Cell<usize>,
+    appearance_open: &std::cell::Cell<bool>,
+    open_help: &std::cell::Cell<bool>,
+    open_keyboard: &std::cell::Cell<bool>,
+    show_tour: &std::cell::Cell<bool>,
+    open_about: &std::cell::Cell<bool>,
+    shortcuts: &ShortcutTable,
+) {
     app_mark(ui);
     ui.add_space(space::SCALE_8);
+    let toast_key = shortcuts.text(ui.ctx(), "file.toast");
+    let keyboard_key = shortcuts.text(ui.ctx(), "help.keyboard");
+    let tour_key = shortcuts.text(ui.ctx(), "help.tour");
     let mut menus = [
         Menu::new("File", |ui| {
-            if ui.add(egui::Button::new("Show toast").shortcut_text("Ctrl+T")).clicked() {
+            if ui.add(egui::Button::new("Show toast").shortcut_text(toast_key.as_str())).clicked() {
                 ui_kit::toast(ui.ctx(), "Toast from the File menu");
                 ui.close();
             }
@@ -200,6 +360,19 @@ fn left_zone(ui: &mut egui::Ui, page: &std::cell::Cell<usize>, appearance_open: 
         Menu::new("Help", |ui| {
             if ui.add(egui::Button::new("Help topics").shortcut_text("F1")).clicked() {
                 open_help.set(true);
+                ui.close();
+            }
+            if ui.add(egui::Button::new("Keyboard shortcuts").shortcut_text(keyboard_key.as_str())).clicked() {
+                open_keyboard.set(true);
+                ui.close();
+            }
+            if ui.add(egui::Button::new("Show the tour").shortcut_text(tour_key.as_str())).clicked() {
+                show_tour.set(true);
+                ui.close();
+            }
+            ui.separator();
+            if ui.button("About").clicked() {
+                open_about.set(true);
                 ui.close();
             }
         }),

@@ -1,7 +1,13 @@
-//! The gallery's help topics: four sample Markdown files embedded at build
-//! time, so the Help window has content to show (spec: S1 Help "Topic files").
+//! The gallery's help topics: four sample Markdown files plus the generated
+//! "Keyboard shortcuts" page, all embedded at build time (spec: S1 Help
+//! "Topic files", "Shortcut sheet").
 
 use ui_kit::help::{HelpBook, HelpError};
+
+/// The Keyboard shortcuts front matter. Its body is empty: the page is drawn
+/// by `ui_kit::shortcuts::shortcut_sheet` through the help window's `extra`
+/// callback, keyed by `ui_kit::help::KEYBOARD_PAGE_ID`.
+const KEYBOARD_PAGE: &str = "---\nid: keyboard-shortcuts\ntitle: Keyboard shortcuts\nsection: Help\norder: 10\nkeywords: keys, bindings, hotkeys\n---\n";
 
 /// The sample topics, in reading order. The files sit in `apps/gallery/help`
 /// and are embedded, so the app ships no files to read at runtime.
@@ -10,6 +16,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("core-widgets.md", include_str!("../help/core-widgets.md")),
     ("media-widgets.md", include_str!("../help/media-widgets.md")),
     ("appearance.md", include_str!("../help/appearance.md")),
+    ("keyboard-shortcuts.md", KEYBOARD_PAGE),
 ];
 
 /// Parses and checks the sample topics. A broken id or link is a build check
@@ -23,13 +30,14 @@ mod tests {
     use super::*;
     use crate::core_page;
     use crate::media;
+    use ui_kit::help::KEYBOARD_PAGE_ID;
 
-    /// The four sample topics form a valid book.
+    /// The sample topics form a valid book, including the generated page.
     #[test]
     fn the_sample_topics_form_a_valid_book() {
         let book = book().expect("the sample topics are valid");
-        assert_eq!(book.len(), 4);
-        for id in ["getting-started", "core-widgets", "media-widgets", "appearance"] {
+        assert_eq!(book.len(), 5);
+        for id in ["getting-started", "core-widgets", "media-widgets", "appearance", KEYBOARD_PAGE_ID] {
             assert!(book.get(id).is_some(), "the {id} topic must exist");
         }
     }

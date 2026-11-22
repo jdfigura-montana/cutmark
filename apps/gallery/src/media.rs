@@ -184,7 +184,8 @@ impl Default for MediaState {
 pub fn show(ui: &mut egui::Ui, state: &mut MediaState) {
     ui_kit::help::context(ui, CONTEXT_TAG);
     tick(ui, state);
-    timeline_panel(ui, state);
+    let panel_rect = timeline_panel(ui, state);
+    ui_kit::tour::anchor(ui, "panel", panel_rect);
     bottom_row(ui, state);
 }
 
@@ -219,8 +220,9 @@ fn tick(ui: &mut egui::Ui, state: &mut MediaState) {
 }
 
 /// The mock audio timeline panel: toolbar row, ruler with markers, four track
-/// rows and the transport deck floating over them.
-fn timeline_panel(ui: &mut egui::Ui, state: &mut MediaState) {
+/// rows and the transport deck floating over them. Returns the panel's rect,
+/// so the tour can spotlight it.
+fn timeline_panel(ui: &mut egui::Ui, state: &mut MediaState) -> Rect {
     let theme = Theme::get(ui.ctx());
     panel(ui, |ui| {
         let width = ui.available_width();
@@ -277,10 +279,13 @@ fn timeline_panel(ui: &mut egui::Ui, state: &mut MediaState) {
             }
         }
         show_overlays(state, &theme, &painter, ruler_rect, tracks_rect);
-        transport_deck(ui, rect, egui::Id::new("gallery-media-deck"), scrubbing, |ui| {
+        let deck = transport_deck(ui, rect, egui::Id::new("gallery-media-deck"), scrubbing, |ui| {
             deck_contents(ui, state);
         });
-    });
+        ui_kit::tour::anchor(ui, "transport", deck.response.rect);
+    })
+    .response
+    .rect
 }
 
 /// The demo markers at their ruler x positions, for `paint_ruler`.
