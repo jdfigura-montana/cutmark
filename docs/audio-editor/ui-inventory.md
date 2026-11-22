@@ -5,6 +5,16 @@ in this worktree (branch `s1`, cutmark-audio 1.1.0). The restyle phases (S1 spec
 docs/suite/S1-Audio-Editor-ui-kit.md, "Audio editor mapping") work from this file.
 All `file:line` references point at the code on the day this was written.
 
+## After S1
+
+Added at the close of S1 (phase 15, cutmark-audio 1.2.0). The UI now uses ui-kit
+throughout, and the theme shim is gone. The main screens are the title bar with
+menu bar, the media panel, the timeline panel with the transport deck, the master
+panel, the start screen, the help window, the tour and the About box. Everything
+below this section is the historical record of the UI before S1 and no longer
+describes the code.
+
+
 ## 1. Versions
 
 | Where | egui | eframe | egui-phosphor |

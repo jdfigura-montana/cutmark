@@ -1,3 +1,6 @@
+## Phase 15 (2026-11-22)
+S1 phase 15 DONE: audio editor 1.2.0 release close-out; no code changes except the version. See progress.md for the file list and the two open items (COPYRIGHT placeholder, stale crate list in THIRD-PARTY-NOTICES.txt). Font licenses for the installer come from crates/ui-kit/assets/fonts (FontsDir define in installer/cutmark.iss), the single source for Inter and JetBrains Mono. Next: S1 milestone wrap-up (JD).
+
 ## Phase 14f follow-up (2026-11-22)
 S1 phase 14f follow-up DONE (2026-11-22): the four review items JD picked are fixed; nothing else changed.
 - Wording: `master-and-levels` line 28 says "small level meter"; `playback-and-transport` step 3 is "Press P again to resume. Space stops playback and returns the playhead to where playback started." Written with `<kbd>` caps like the rest of the file (the prompt showed them bold).
