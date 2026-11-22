@@ -478,109 +478,85 @@ impl App {
         }
 
         // Editor shortcuts, only when no text field has keyboard focus, and
-        // never while an export locks the project or a take is recorded.
+        // never while an export locks the project or a take is recorded. Every
+        // key comes from the shortcut table (`crate::shortcuts`); entries that
+        // share a logical key are checked most specific first, because egui's
+        // matching ignores an extra Shift or Alt.
         if !ui.ctx().egui_wants_keyboard_input() && !editor.is_locked() && !recording {
-            let (ctrl, shift, n, o, s, e, i, z, y, t, r, a, c, x, v, escape, del, back, g, l, m, comma, period) = ui.input(|i| {
-                (
-                    i.modifiers.ctrl,
-                    i.modifiers.shift,
-                    i.key_pressed(egui::Key::N),
-                    i.key_pressed(egui::Key::O),
-                    i.key_pressed(egui::Key::S),
-                    i.key_pressed(egui::Key::E),
-                    i.key_pressed(egui::Key::I),
-                    i.key_pressed(egui::Key::Z),
-                    i.key_pressed(egui::Key::Y),
-                    i.key_pressed(egui::Key::T),
-                    i.key_pressed(egui::Key::R),
-                    i.key_pressed(egui::Key::A),
-                    i.key_pressed(egui::Key::C),
-                    i.key_pressed(egui::Key::X),
-                    i.key_pressed(egui::Key::V),
-                    i.key_pressed(egui::Key::Escape),
-                    i.key_pressed(egui::Key::Delete),
-                    i.key_pressed(egui::Key::Backspace),
-                    i.key_pressed(egui::Key::G),
-                    i.key_pressed(egui::Key::L),
-                    i.key_pressed(egui::Key::M),
-                    i.key_pressed(egui::Key::Comma),
-                    i.key_pressed(egui::Key::Period),
-                )
-            });
+            let ctx = ui.ctx();
             // A continuous gesture is active: undo/redo keys are ignored.
             let gesture_active = editor.gesture_base.is_some();
-            if ctrl && a {
-                editor.select_all();
-            } else if ctrl && i && !shift {
-                msgs.extend(media_messages(bin_panel::pick_and_import(editor)));
-            } else if ctrl && z && !gesture_active {
-                if shift {
-                    let _ = editor.redo();
-                } else {
-                    let _ = editor.undo();
-                }
-            } else if ctrl && y && !gesture_active {
+            // Ctrl+G, Ctrl+L and Ctrl+R ignore a held Shift, as before.
+            let shift = ui.input(|i| i.modifiers.shift);
+            // These read the table without consuming: the prompt dialogs
+            // drawn after this handler still get their Esc and Space.
+            if !gesture_active && crate::shortcuts::peek(ctx, "redo") {
                 let _ = editor.redo();
-            } else if ctrl && n && !shift {
-                action = ProjectMenuAction::New;
-            } else if ctrl && o && !shift {
-                action = ProjectMenuAction::Open;
-            } else if ctrl && shift && s {
+            } else if !gesture_active && crate::shortcuts::peek(ctx, "undo") {
+                let _ = editor.undo();
+            } else if crate::shortcuts::peek(ctx, "select_all") {
+                editor.select_all();
+            } else if crate::shortcuts::peek(ctx, "process_normalize") {
+                crate::ui::dialogs::normalize::request(ctx);
+            } else if crate::shortcuts::peek(ctx, "fade_in") {
+                if let Err(error) = editor.fade_in() {
+                    *messages = Some(ConfirmDialog::new("Fade", Self::op_message(&error)));
+                }
+            } else if crate::shortcuts::peek(ctx, "fade_out") {
+                if let Err(error) = editor.fade_out() {
+                    *messages = Some(ConfirmDialog::new("Fade", Self::op_message(&error)));
+                }
+            } else if crate::shortcuts::peek(ctx, "save_as") {
                 menu.open_save_as(editor);
-            } else if ctrl && e {
+            } else if crate::shortcuts::peek(ctx, "add_track") {
+                let _ = editor.apply(Action::AddTrack { index: None, name: None });
+            } else if crate::shortcuts::peek(ctx, "new_project") {
+                action = ProjectMenuAction::New;
+            } else if crate::shortcuts::peek(ctx, "open_project") {
+                action = ProjectMenuAction::Open;
+            } else if crate::shortcuts::peek(ctx, "import_media") {
+                msgs.extend(media_messages(bin_panel::pick_and_import(editor)));
+            } else if crate::shortcuts::peek(ctx, "export") {
                 menu.open_export(editor);
-            } else if ctrl && r && !shift {
+            } else if !shift && crate::shortcuts::peek(ctx, "record") {
                 // Record onto the armed track from the playhead; "Arm a track
                 // first" and the like go to the messages dialog.
                 if let Err(error) = editor.start_recording() {
                     msgs.push(Message::recording(error.to_string()));
                 }
-            } else if ctrl && shift && t {
-                let _ = editor.apply(Action::AddTrack { index: None, name: None });
-            } else if ctrl && s {
+            } else if crate::shortcuts::peek(ctx, "save") {
                 menu.save(editor);
-            } else if del || back {
+            } else if crate::shortcuts::peek(ctx, "delete_selection") {
                 Self::delete_selection(editor);
-            } else if escape {
+            } else if crate::shortcuts::peek(ctx, "clear_selection") {
                 editor.clear_selection();
-            } else if r && !ctrl {
+            } else if crate::shortcuts::peek(ctx, "toggle_ripple") {
                 editor.toggle_ripple();
-            } else if n && !ctrl {
+            } else if crate::shortcuts::peek(ctx, "toggle_snap") {
                 editor.toggle_snap();
-            } else if s && !ctrl {
+            } else if crate::shortcuts::peek(ctx, "split_at_playhead") {
                 let _ = editor.split();
-            } else if ctrl && c {
+            } else if crate::shortcuts::peek(ctx, "copy") {
                 editor.copy_selection();
-            } else if ctrl && x && !gesture_active {
+            } else if !gesture_active && crate::shortcuts::peek(ctx, "cut") {
                 let _ = editor.cut_selection();
-            } else if ctrl && v {
+            } else if crate::shortcuts::peek(ctx, "paste") {
                 let _ = editor.paste();
-            } else if ctrl && t {
+            } else if crate::shortcuts::peek(ctx, "trim_to_selection") {
                 let _ = editor.trim_to_selection();
-            } else if m && !ctrl {
+            } else if crate::shortcuts::peek(ctx, "add_marker") {
                 let _ = editor.add_marker_at_playhead();
-            } else if comma && !ctrl {
+            } else if crate::shortcuts::peek(ctx, "previous_marker") {
                 editor.jump_prev_marker();
-            } else if period && !ctrl {
+            } else if crate::shortcuts::peek(ctx, "next_marker") {
                 editor.jump_next_marker();
-            } else if ctrl && g && !shift {
+            } else if !shift && crate::shortcuts::peek(ctx, "process_gain") {
                 // Process keys. egui itself binds none of Ctrl+G / Ctrl+Shift+N
                 // / Ctrl+Shift+I / Ctrl+Shift+O / Ctrl+L, so nothing else
                 // opens on them.
-                crate::ui::dialogs::gain::request_process(ui.ctx());
-            } else if ctrl && shift && n {
-                crate::ui::dialogs::normalize::request(ui.ctx());
-            } else if ctrl && shift && i {
-                if let Err(error) = editor.fade_in() {
-                    *messages = Some(ConfirmDialog::new("Fade", Self::op_message(&error)));
-                }
-            } else if ctrl && shift && o {
-                if let Err(error) = editor.fade_out() {
-                    *messages = Some(ConfirmDialog::new("Fade", Self::op_message(&error)));
-                }
-            } else if ctrl
-                && l
-                && !shift
+                crate::ui::dialogs::gain::request_process(ctx);
+            } else if !shift
+                && crate::shortcuts::peek(ctx, "silence")
                 && let Err(error) = editor.silence()
             {
                 *messages = Some(ConfirmDialog::new("Silence", Self::op_message(&error)));
@@ -591,30 +567,23 @@ impl App {
         // activate). While a take is recorded Space belongs to
         // `handle_recording_keys`.
         if !ui.ctx().egui_wants_keyboard_input() && !recording {
-            ui.input_mut(|i| {
-                if i.key_pressed(egui::Key::Space) && i.modifiers.is_none() {
-                    editor.toggle_play();
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::Space);
-                } else if i.key_pressed(egui::Key::Space)
-                    && i.modifiers.shift
-                    && !i.modifiers.ctrl
-                    && let crate::editor::selection::Selection::Range { start, end, .. } = editor.selection().clone()
-                {
-                    // Play selection: plays the range once, then returns to its
-                    // start. Without a range, Shift+Space does nothing.
+            let keys = crate::shortcuts::table();
+            let ctx = ui.ctx();
+            if keys.pressed(ctx, "play_selection") {
+                // Play selection: plays the range once, then returns to its
+                // start. Without a range, Shift+Space does nothing.
+                if let crate::editor::selection::Selection::Range { start, end, .. } = editor.selection().clone() {
                     editor.play_range(start, end);
-                    i.consume_key(egui::Modifiers::SHIFT, egui::Key::Space);
-                } else if i.key_pressed(egui::Key::P) && i.modifiers.is_none() {
-                    editor.toggle_pause();
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::P);
-                } else if i.key_pressed(egui::Key::Home) && i.modifiers.is_none() {
-                    editor.jump_start();
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::Home);
-                } else if i.key_pressed(egui::Key::End) && i.modifiers.is_none() {
-                    editor.jump_end();
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::End);
                 }
-            });
+            } else if keys.pressed(ctx, "play_pause") {
+                editor.toggle_play();
+            } else if keys.pressed(ctx, "pause") {
+                editor.toggle_pause();
+            } else if keys.pressed(ctx, "jump_to_start") {
+                editor.jump_start();
+            } else if keys.pressed(ctx, "jump_to_end") {
+                editor.jump_end();
+            }
         }
 
         // Background job errors from this frame.
@@ -635,26 +604,23 @@ impl App {
     /// position and Ctrl+S saves the project (the take keeps recording). Ctrl+R
     /// and every other key, Ctrl+N and Ctrl+O included, do nothing.
     fn handle_recording_keys(ui: &egui::Ui, editor: &mut Editor, menu: &mut ProjectMenu) {
-        ui.input_mut(|i| {
-            let ctrl_only = i.modifiers.ctrl && !i.modifiers.shift && !i.modifiers.alt;
-            if ctrl_only && i.key_pressed(egui::Key::S) {
-                menu.save(editor);
-                return;
-            }
-            if i.modifiers.any() {
-                return;
-            }
-            if i.key_pressed(egui::Key::Space) {
-                editor.stop_recording();
-                i.consume_key(egui::Modifiers::NONE, egui::Key::Space);
-            } else if i.key_pressed(egui::Key::Escape) {
-                editor.cancel_recording();
-                i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-            } else if i.key_pressed(egui::Key::M) {
-                let _ = editor.add_marker_at_playhead();
-                i.consume_key(egui::Modifiers::NONE, egui::Key::M);
-            }
-        });
+        let keys = crate::shortcuts::table();
+        let ctx = ui.ctx();
+        let ctrl_only = ui.input(|i| i.modifiers.ctrl && !i.modifiers.shift && !i.modifiers.alt);
+        if ctrl_only && keys.pressed(ctx, "save") {
+            menu.save(editor);
+            return;
+        }
+        if ui.input(|i| i.modifiers.any()) {
+            return;
+        }
+        if keys.pressed(ctx, "record_stop_keep") {
+            editor.stop_recording();
+        } else if keys.pressed(ctx, "record_discard") {
+            editor.cancel_recording();
+        } else if keys.pressed(ctx, "add_marker") {
+            let _ = editor.add_marker_at_playhead();
+        }
     }
 
     /// Renders an ops error for a modal: the ops prefix is stripped so the
@@ -688,10 +654,11 @@ impl App {
 
     /// Handles Ctrl+N (New Project dialog) and Ctrl+O (Open picker) on the start screen.
     fn handle_start_shortcuts(ui: &egui::Ui, start: &mut StartScreen) {
-        let (ctrl, n, o) = ui.input(|i| (i.modifiers.ctrl, i.key_pressed(egui::Key::N), i.key_pressed(egui::Key::O)));
-        if ctrl && n {
+        let keys = crate::shortcuts::table();
+        let ctx = ui.ctx();
+        if keys.pressed(ctx, "new_project") {
             *start = StartScreen::with_new_dialog();
-        } else if ctrl && o {
+        } else if keys.pressed(ctx, "open_project") {
             *start = StartScreen::with_open_request();
         }
     }
@@ -714,6 +681,9 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
     use crate::io::paths::create_layout;
     use crate::model::project::{BitDepth, Project, ViewState};
     use crate::ui::test_util::{Headless, Out};
@@ -1562,5 +1532,159 @@ mod tests {
         assert!(undo.center().y > TITLE_BAR_H && redo.center().y > TITLE_BAR_H, "Undo and Redo left the title bar");
         assert!(undo.right() < redo.left() && redo.right() < ripple.left() && ripple.right() < snap.left(), "Undo, Redo, then the chips, left to right");
         assert!((undo.center().y - ripple.center().y).abs() <= 1.0, "one row");
+    }
+    // ---- Shortcut table: one kittest per group (S1 phase 14c) ----
+
+    /// A kittest harness driving the real app frame over a fresh, dirty
+    /// project in a real folder. The app stays behind an `Rc` so the test can
+    /// read the editor after a key press; keep the returned folder alive.
+    fn shortcut_harness() -> (egui_kittest::Harness<'static>, Rc<RefCell<App>>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = create_layout(dir.path(), "Test 2").expect("layout");
+        let mut editor = Editor::with_project(Project::new("Test 2".to_string(), 48_000, BitDepth::Int24), ViewState::default(), paths);
+        editor.dirty = true;
+        let app = Rc::new(RefCell::new(App { screen: Screen::Editing(Box::new(editor)), ..App::default() }));
+        let draw = Rc::clone(&app);
+        let first_pass = Rc::new(Cell::new(true));
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1280.0, 800.0)).build_ui(move |ui| {
+            // The first pass installs the ui-kit theme and fonts; egui applies
+            // a font change at the start of the next pass.
+            if first_pass.get() {
+                first_pass.set(false);
+                ui_kit::apply(ui.ctx());
+                return;
+            }
+            draw.borrow_mut().run(ui);
+        });
+        harness.step();
+        harness.step();
+        (harness, app, dir)
+    }
+
+    /// Presses `key` with `modifiers` in the harness: one frame per queued
+    /// event, then a frame to settle.
+    fn shortcut(harness: &mut egui_kittest::Harness<'static>, key: egui::Key, modifiers: egui::Modifiers) {
+        harness.key_press_modifiers(modifiers, key);
+        harness.step();
+        harness.step();
+    }
+
+    /// Runs `read` on the editor behind `app` (panics on the start screen).
+    fn with_editor<T>(app: &Rc<RefCell<App>>, read: impl FnOnce(&Editor) -> T) -> T {
+        let app = app.borrow();
+        match &app.screen {
+            Screen::Editing(editor) => read(editor),
+            Screen::Start(_) => panic!("expected the editor screen"),
+        }
+    }
+
+    /// Runs `change` on the editor behind `app` (panics on the start screen).
+    fn with_editor_mut<T>(app: &Rc<RefCell<App>>, change: impl FnOnce(&mut Editor) -> T) -> T {
+        let mut app = app.borrow_mut();
+        match &mut app.screen {
+            Screen::Editing(editor) => change(editor),
+            Screen::Start(_) => panic!("expected the editor screen"),
+        }
+    }
+    /// File: Ctrl+S saves the project.
+    #[test]
+    fn file_group_ctrl_s_saves_the_project() {
+        let (mut harness, app, _dir) = shortcut_harness();
+        assert!(with_editor(&app, |editor| editor.dirty), "starts dirty");
+        shortcut(&mut harness, egui::Key::S, egui::Modifiers::CTRL);
+        assert!(!with_editor(&app, |editor| editor.dirty), "Ctrl+S saved (File)");
+    }
+
+    /// Edit: R toggles ripple.
+    #[test]
+    fn edit_group_r_toggles_ripple() {
+        let (mut harness, app, _dir) = shortcut_harness();
+        assert!(!with_editor(&app, |editor| editor.view.ripple), "ripple starts off");
+        shortcut(&mut harness, egui::Key::R, egui::Modifiers::NONE);
+        assert!(with_editor(&app, |editor| editor.view.ripple), "R turned ripple on (Edit)");
+    }
+
+    /// Playback: Home jumps the playhead to the start.
+    #[test]
+    fn playback_group_home_jumps_to_the_start() {
+        let (mut harness, app, _dir) = shortcut_harness();
+        with_editor_mut(&app, |editor| editor.view.playhead = 48_000);
+        shortcut(&mut harness, egui::Key::Home, egui::Modifiers::NONE);
+        assert_eq!(with_editor(&app, |editor| editor.view.playhead), 0, "Home jumped to the start (Playback)");
+    }
+
+    /// Timeline: M adds a marker at the playhead.
+    #[test]
+    fn timeline_group_m_adds_a_marker() {
+        let (mut harness, app, _dir) = shortcut_harness();
+        with_editor_mut(&app, |editor| editor.view.playhead = 4_800);
+        assert_eq!(with_editor(&app, |editor| editor.project.markers.len()), 0, "no markers yet");
+        shortcut(&mut harness, egui::Key::M, egui::Modifiers::NONE);
+        assert_eq!(with_editor(&app, |editor| editor.project.markers.len()), 1, "M added a marker (Timeline)");
+    }
+
+    /// Tracks: Ctrl+Shift+T adds a track.
+    #[test]
+    fn tracks_group_ctrl_shift_t_adds_a_track() {
+        let (mut harness, app, _dir) = shortcut_harness();
+        assert_eq!(with_editor(&app, |editor| editor.project.tracks.len()), 0, "no tracks yet");
+        shortcut(&mut harness, egui::Key::T, egui::Modifiers::CTRL | egui::Modifiers::SHIFT);
+        assert_eq!(with_editor(&app, |editor| editor.project.tracks.len()), 1, "Ctrl+Shift+T added a track (Tracks)");
+    }
+
+    /// View: backslash zooms back to fit.
+    #[test]
+    fn view_group_backslash_zooms_to_fit() {
+        let (mut harness, app, _dir) = shortcut_harness();
+        // Let the panel layout settle, then take the fit the layout gives now.
+        harness.step();
+        shortcut(&mut harness, egui::Key::Backslash, egui::Modifiers::NONE);
+        let fit = with_editor(&app, |editor| editor.view.samples_per_pixel);
+        with_editor_mut(&app, |editor| editor.view.samples_per_pixel = fit * 1.5);
+        harness.step();
+        shortcut(&mut harness, egui::Key::Backslash, egui::Modifiers::NONE);
+        let zoomed = with_editor(&app, |editor| editor.view.samples_per_pixel);
+        assert!((zoomed - fit).abs() <= fit * 0.001, "backslash zoomed back to fit (View): {zoomed} vs {fit}");
+    }
+
+    /// Help: the two entries are reserved, so F1 and Ctrl+/ do nothing yet.
+    #[test]
+    fn help_group_is_reserved_and_does_nothing_yet() {
+        let table = crate::shortcuts::table();
+        assert!(table.get("help_topics").is_some() && table.get("keyboard_shortcuts").is_some(), "both Help entries exist (Help)");
+        let (mut harness, app, _dir) = shortcut_harness();
+        shortcut(&mut harness, egui::Key::F1, egui::Modifiers::NONE);
+        shortcut(&mut harness, egui::Key::Slash, egui::Modifiers::CTRL);
+        assert_eq!(with_editor(&app, |editor| editor.undo_label()), None, "nothing ran");
+        assert!(with_editor(&app, |editor| editor.dirty), "nothing was saved or closed");
+    }
+
+    /// Typing in a focused text field never triggers the single-key editor
+    /// shortcuts (the handler skips them while a text field has focus).
+    #[test]
+    fn typing_in_a_text_field_does_not_trigger_single_key_shortcuts() {
+        use egui_kittest::kittest::Queryable;
+        let (mut harness, app, _dir) = shortcut_harness();
+        // The Project Settings dialog has the one text field on screen.
+        {
+            let mut app_ref = app.borrow_mut();
+            let app = &mut *app_ref;
+            match &mut app.screen {
+                Screen::Editing(editor) => app.menu.open_settings(editor),
+                Screen::Start(_) => panic!("expected the editor screen"),
+            }
+        }
+        harness.step();
+        harness.step();
+        harness.get_by_role(egui::accesskit::Role::TextInput).click();
+        harness.step();
+        harness.step();
+        assert!(harness.ctx.egui_wants_keyboard_input(), "the name field has the keyboard");
+        harness.get_by_role(egui::accesskit::Role::TextInput).type_text("sm");
+        shortcut(&mut harness, egui::Key::S, egui::Modifiers::NONE);
+        shortcut(&mut harness, egui::Key::M, egui::Modifiers::NONE);
+        assert_eq!(with_editor(&app, |editor| editor.project.markers.len()), 0, "M in a text field added no marker");
+        assert_eq!(with_editor(&app, |editor| editor.project.tracks.len()), 0, "no track was renamed or added");
+        assert_eq!(with_editor(&app, |editor| editor.undo_label()), None, "S in a text field split nothing");
     }
 }

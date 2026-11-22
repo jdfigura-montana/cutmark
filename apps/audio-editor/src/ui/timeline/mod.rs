@@ -456,10 +456,11 @@ fn show_frame(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction,
         apply_fit(editor, lane_width);
     }
     // \ zooms to fit, Ctrl+\ zooms to the selection, wherever the pointer is.
-    if !ui.ctx().egui_wants_keyboard_input() && ui.input(|i| i.key_pressed(egui::Key::Backslash)) {
-        if ui.input(|i| i.modifiers.ctrl) {
+    if !ui.ctx().egui_wants_keyboard_input() {
+        let keys = crate::shortcuts::table();
+        if keys.pressed(ui.ctx(), "zoom_to_selection") {
             apply_view_menu(editor, ViewMenuAction::ZoomToSelection, lane_width);
-        } else {
+        } else if keys.pressed(ui.ctx(), "zoom_to_fit") {
             apply_fit(editor, lane_width);
         }
     }
@@ -606,24 +607,25 @@ fn handle_input(ui: &egui::Ui, editor: &mut Editor, lane_left: f32, lane_width: 
                 editor.set_scroll_y(y);
             }
         }
-
-        // + / - (and = and the numpad keys) zoom by 1.5, anchored on the
-        // playhead if visible, else the view center.
-        let factor = if i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals) {
-            Some(1.5)
-        } else if i.key_pressed(egui::Key::Minus) {
-            Some(1.0 / 1.5)
-        } else {
-            None
-        };
-        if let Some(factor) = factor {
-            let g = Geom { lane_left, lane_width, spp: editor.view.samples_per_pixel, scroll_x: editor.view.scroll_x };
-            let playhead_x = g.sample_to_x(editor.view.playhead);
-            let offset = if playhead_x >= lane_left && playhead_x <= lane_left + lane_width { playhead_x - lane_left } else { lane_width / 2.0 };
-            let (spp, scroll_x) = zoom_at(editor.view.samples_per_pixel, editor.view.scroll_x, factor, offset);
-            editor.set_view_x(spp, clamp_scroll_x(editor, spp, lane_width, scroll_x));
-        }
     });
+
+    // + / - (and = and the numpad keys) zoom by 1.5, anchored on the playhead
+    // if visible, else the view center.
+    let keys = crate::shortcuts::table();
+    let factor = if keys.pressed(ui.ctx(), "zoom_in") {
+        Some(1.5)
+    } else if keys.pressed(ui.ctx(), "zoom_out") {
+        Some(1.0 / 1.5)
+    } else {
+        None
+    };
+    if let Some(factor) = factor {
+        let g = Geom { lane_left, lane_width, spp: editor.view.samples_per_pixel, scroll_x: editor.view.scroll_x };
+        let playhead_x = g.sample_to_x(editor.view.playhead);
+        let offset = if playhead_x >= lane_left && playhead_x <= lane_left + lane_width { playhead_x - lane_left } else { lane_width / 2.0 };
+        let (spp, scroll_x) = zoom_at(editor.view.samples_per_pixel, editor.view.scroll_x, factor, offset);
+        editor.set_view_x(spp, clamp_scroll_x(editor, spp, lane_width, scroll_x));
+    }
 }
 
 /// Largest legal scroll_x for the given zoom, so the view cannot scroll past

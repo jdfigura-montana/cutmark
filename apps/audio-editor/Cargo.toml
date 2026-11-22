@@ -35,6 +35,7 @@ ui-kit = { version = "0.1.0", path = "../../crates/ui-kit" }
 uuid = { workspace = true }
 
 [dev-dependencies]
+egui_kittest.workspace = true
 filetime = "0.2.29"
 tempfile = "3.27.0"
 

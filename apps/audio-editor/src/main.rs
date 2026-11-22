@@ -5,6 +5,7 @@ mod audio;
 mod editor;
 mod io;
 mod model;
+mod shortcuts;
 mod ui;
 mod util;
 

@@ -99,7 +99,7 @@ pub fn show(
     }
 
     // Escape cancels an in-progress reorder.
-    if state.reorder.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if state.reorder.is_some() && crate::shortcuts::peek(ui.ctx(), "cancel_gesture") {
         state.reorder = None;
     }
 
@@ -301,7 +301,7 @@ pub fn show(
                 resp.request_focus();
             }
             if resp.lost_focus() {
-                let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let enter = crate::shortcuts::peek(ui.ctx(), "confirm_edit");
                 if enter && !text.trim().is_empty() && *text != ht.name {
                     let _ = editor.apply(Action::RenameTrack { id: ht.id, name: text.clone() });
                 }
@@ -486,7 +486,7 @@ fn gesture_slider(
     if resp.drag_stopped() {
         editor.end_gesture();
     }
-    if resp.dragged() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if resp.dragged() && crate::shortcuts::peek(ui.ctx(), "cancel_gesture") {
         editor.cancel_gesture();
     }
 }

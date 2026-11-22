@@ -1,3 +1,6 @@
+## Task S1 phase 14c (2026-11-22)
+- One shortcut table in apps/audio-editor/src/shortcuts.rs; input handling, menus and (14d) the sheet read it. Help rows (F1, Ctrl+/) reserved but not bound. Tests 719 (was 704), check.ps1 green, release exe rebuilt.
+- Open for JD eyes: menus now show egui's key names (Plus, Minus, Backslash, Ctrl+Backslash, Comma, Period, Delete, Escape) instead of the old "+", "-", "\\", Ctrl+\\, ",", ".", "Del", "Esc". Same keys, new words; a kit change to symbol caps would undo it.
 ## Task S1 phase 13b (2026-11-21)
 - View > Appearance dialog, THEME shim deleted (metrics module + tokens), style lint opted in for the audio editor. Tests 704, check.ps1 green, release exe rebuilt.
 

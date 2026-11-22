@@ -45,9 +45,8 @@ pub fn handle_bin_drag(ui: &egui::Ui, editor: &mut Editor, g: &Geom, lane_rect: 
         return Vec::new();
     };
     let media_id = payload.media_id;
-    let (pointer, released, cancelled, ctrl) =
-        ui.input(|i| (i.pointer.latest_pos(), i.pointer.any_released(), i.key_pressed(egui::Key::Escape), i.modifiers.ctrl));
-    if cancelled {
+    let (pointer, released, ctrl) = ui.input(|i| (i.pointer.latest_pos(), i.pointer.any_released(), i.modifiers.ctrl));
+    if crate::shortcuts::peek(ui.ctx(), "cancel_gesture") {
         egui::DragAndDrop::clear_payload(ui.ctx());
         return Vec::new();
     }
@@ -714,7 +713,7 @@ fn run_clip_drag(
 /// through to the lane interaction as before.
 pub fn handle_clip_input(ui: &egui::Ui, editor: &mut Editor, g: &Geom, lane_rect: egui::Rect, scroll_y: f32) -> bool {
     let mut state = clip_state(ui.ctx());
-    let (pressed, down, released, secondary, pos, ctrl, alt, shift, esc) = ui.input(|i| {
+    let (pressed, down, released, secondary, pos, ctrl, alt, shift) = ui.input(|i| {
         (
             i.pointer.primary_pressed(),
             i.pointer.primary_down(),
@@ -724,28 +723,26 @@ pub fn handle_clip_input(ui: &egui::Ui, editor: &mut Editor, g: &Geom, lane_rect
             i.modifiers.ctrl,
             i.modifiers.alt,
             i.modifiers.shift,
-            i.key_pressed(egui::Key::Escape),
         )
     });
 
     // Esc while the inline gain editor is open closes it; consumed so the
     // global Esc handler does not also clear the selection.
-    if esc && state.drag.is_none() && state.gain_edit.take().is_some() {
+    if state.drag.is_none() && state.gain_edit.is_some() && crate::shortcuts::pressed(ui.ctx(), "cancel_edit") {
+        state.gain_edit = None;
         save_clip_state(ui.ctx(), &state);
-        ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         return true;
     }
 
     // Esc during a drag cancels the gesture; the key is consumed so the
     // global Esc handler does not also clear the selection.
-    if esc && state.drag.is_some() {
+    if state.drag.is_some() && crate::shortcuts::pressed(ui.ctx(), "cancel_gesture") {
         editor.cancel_gesture();
         state.drag = None;
         state.snap_line = None;
         state.press = None;
         state.gain_edit = None;
         save_clip_state(ui.ctx(), &state);
-        ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         return true;
     }
 
@@ -853,8 +850,8 @@ pub fn draw_clip_menu(ui: &egui::Ui, editor: &mut Editor) -> Vec<String> {
     let Some(menu) = state.menu else {
         return messages;
     };
-    let (esc, clicked, pointer) = ui.input(|i| (i.key_pressed(egui::Key::Escape), i.pointer.any_click(), i.pointer.latest_pos()));
-    if esc {
+    let (clicked, pointer) = ui.input(|i| (i.pointer.any_click(), i.pointer.latest_pos()));
+    if crate::shortcuts::peek(ui.ctx(), "close_menu") {
         state.menu = None;
         save_clip_state(ui.ctx(), &state);
         return messages;
@@ -946,18 +943,17 @@ pub fn draw_gain_edit(ui: &egui::Ui, editor: &mut Editor) -> Vec<String> {
             if !resp.has_focus() {
                 resp.request_focus();
             }
-            let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let enter = resp.lost_focus() && crate::shortcuts::peek(ui.ctx(), "confirm_edit");
             if enter {
                 if let Ok(db) = edit.text.trim().parse::<f32>() {
                     apply = Some(db);
                 }
-            } else if resp.lost_focus() && !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            } else if resp.lost_focus() && !crate::shortcuts::peek(ui.ctx(), "cancel_edit") {
                 // Focus lost to anything else: close without a change.
                 cancel = true;
             }
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if crate::shortcuts::pressed(ui.ctx(), "cancel_edit") {
                 cancel = true;
-                ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
             }
         });
     });

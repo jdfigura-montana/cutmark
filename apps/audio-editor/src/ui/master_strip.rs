@@ -89,7 +89,7 @@ fn fader(ui: &mut egui::Ui, editor: &mut Editor, height: f32) {
     if response.drag_stopped() {
         // egui itself ends the drag when Esc is pressed, so Esc shows up as a
         // stopped drag on the frame of the key press.
-        if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+        if crate::shortcuts::peek(ui.ctx(), "cancel_gesture") {
             editor.cancel_gesture();
         } else {
             editor.end_gesture();

@@ -71,9 +71,10 @@ pub fn error_text(ui: &mut Ui, text: &str) {
     ui.label(RichText::new(text).font(fonts::medium(typography::BODY_SIZE)).color(color::SEM_RECORD));
 }
 
-/// True when Enter went down this frame (the dialogs' confirm key).
+/// True when Enter went down this frame (the dialogs' confirm key, read from
+/// the shortcut table). The press is left for whatever else reads it.
 pub fn enter_pressed(ui: &Ui) -> bool {
-    ui.input(|i| i.key_pressed(egui::Key::Enter))
+    crate::shortcuts::peek(ui.ctx(), "dialog_confirm")
 }
 
 /// The form, wrapped in a vertical ScrollArea that only scrolls when the form

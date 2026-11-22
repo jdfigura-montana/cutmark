@@ -329,7 +329,7 @@ impl BinPanel {
 
     /// Draws the inline rename text field and applies or cancels it.
     fn rename_field(&mut self, ui: &mut egui::Ui, editor: &mut Editor, id: Uuid, messages: &mut Vec<String>) {
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if crate::shortcuts::peek(ui.ctx(), "cancel_edit") {
             self.renaming = None;
             return;
         }
@@ -341,7 +341,7 @@ impl BinPanel {
             }
         }
         if response.lost_focus() {
-            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            if crate::shortcuts::peek(ui.ctx(), "confirm_edit") {
                 match editor.apply(Action::RenameMedia { id, name: self.rename_text.clone() }) {
                     Ok(()) => self.renaming = None,
                     Err(error) => messages.push(error.to_string()),

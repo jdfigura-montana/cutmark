@@ -96,7 +96,7 @@ fn marker_hit(markers: &[Marker], g: &Geom, ruler_rect: egui::Rect, p: egui::Pos
 /// the plain ruler click (playhead) must not also fire.
 pub fn handle_markers(ui: &egui::Ui, editor: &mut Editor, g: &Geom, ruler_rect: egui::Rect) -> bool {
     let mut state = marker_state(ui.ctx());
-    let (pressed, down, released, secondary, pos, alt, esc) = ui.input(|i| {
+    let (pressed, down, released, secondary, pos, alt) = ui.input(|i| {
         (
             i.pointer.primary_pressed(),
             i.pointer.primary_down(),
@@ -104,19 +104,17 @@ pub fn handle_markers(ui: &egui::Ui, editor: &mut Editor, g: &Geom, ruler_rect: 
             i.pointer.secondary_pressed(),
             i.pointer.latest_pos(),
             i.modifiers.alt,
-            i.key_pressed(egui::Key::Escape),
         )
     });
     let mut blocked = state.drag.is_some() || state.menu.is_some();
 
     // Esc during a drag cancels; the key is consumed so the global Esc
     // handler does not also clear the selection.
-    if esc && state.drag.is_some() {
+    if state.drag.is_some() && crate::shortcuts::pressed(ui.ctx(), "cancel_gesture") {
         editor.cancel_gesture();
         state.drag = None;
         state.press = None;
         save_marker_state(ui.ctx(), &state);
-        ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         return true;
     }
 
@@ -294,8 +292,8 @@ pub fn draw_marker_menu(ui: &egui::Ui, editor: &mut Editor) {
     let Some(menu) = state.menu else {
         return;
     };
-    let (esc, clicked, pointer) = ui.input(|i| (i.key_pressed(egui::Key::Escape), i.pointer.any_click(), i.pointer.latest_pos()));
-    if esc {
+    let (clicked, pointer) = ui.input(|i| (i.pointer.any_click(), i.pointer.latest_pos()));
+    if crate::shortcuts::peek(ui.ctx(), "close_menu") {
         state.menu = None;
         save_marker_state(ui.ctx(), &state);
         return;
