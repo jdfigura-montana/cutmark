@@ -25,6 +25,7 @@ const FPS_CHOICES: [u32; 2] = [30, 60];
 const PREVIEW_REFRESH: Duration = Duration::from_secs(2);
 
 /// The line shown under the container picker while MKV is chosen.
+const SOFT_MAX_HINT: &str = "On AMD the max is a soft limit; use VBR for a firm budget.";
 const MKV_HINT: &str = "MKV: Windows Explorer shows no video details for MKV files. Use MP4 for the widest compatibility.";
 
 /// The size and frame rate the AMF probe ran for.
@@ -467,6 +468,9 @@ impl ProfileSection {
                         ui.add(Slider::new(quality, 1..=100));
                     });
                     row(ui, "Max bitrate", &errors, Field::MaxMbps, |ui| mbps_field(ui, max_mbps));
+                    ui.label("");
+                    ui.label(RichText::new(SOFT_MAX_HINT).small().weak());
+                    ui.end_row();
                 }
                 RateControl::ConstantQp { qp_i, qp_p } => {
                     let range_i = qp_range(ranges.and_then(|r| r.qp_i.as_ref()));

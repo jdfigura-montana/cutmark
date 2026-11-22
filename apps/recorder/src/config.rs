@@ -472,7 +472,7 @@ impl Default for WebcamSettings {
             format: WebcamFormat::default(),
             controls: WebcamControls::default(),
             iso: true,
-            iso_rc: RateControl::ConstantQuality { quality: 70, max_mbps: 30.0 },
+            iso_rc: RateControl::VbrPeak { target_mbps: 20.0, max_mbps: 30.0 },
             offset_ms: 0,
             key: KeyConfig::default(),
         }
@@ -1014,7 +1014,7 @@ mod webcam_tests {
         let settings: WebcamSettings = serde_json::from_str("{}")?;
         assert_eq!(settings, WebcamSettings::default());
         assert!(settings.iso);
-        assert_eq!(settings.iso_rc, RateControl::ConstantQuality { quality: 70, max_mbps: 30.0 });
+        assert_eq!(settings.iso_rc, RateControl::VbrPeak { target_mbps: 20.0, max_mbps: 30.0 });
         assert_eq!(settings.offset_ms, 0);
         assert_eq!(settings.controls, WebcamControls::default());
         Ok(())
