@@ -1,3 +1,12 @@
+## Phase 14f (help review)
+S1 phase 14f DONE (2026-11-22): reviewed the 17 topics after JD's edits. His four edits (a Snap step in markers, "or a range" twice in ripple-and-snap, a Ctrl+T trim step in working-with-clips, the angle-bracket note in troubleshooting) are already in HEAD, amended into 14e-1/14e-2; the working tree is clean, so the diff since 3ee67e0 is empty.
+- Nothing needed fixing: every file has valid front matter (both `---` lines, id/title/section/order/keywords, no stray colons), every topic link resolves, bold and `<kbd>` markers are balanced, no construct outside the subset (tables, images, URL links, nested or indented items), and all 35 distinct key-cap combinations (57 uses) match shortcuts.rs.
+- Behaviour the help claims and the code does not do (listed, not changed): `master-and-levels` says each track header has a "small stereo meter"; the header meter is ONE horizontal bar fed by the louder channel (`track_header.rs`: reading = max of both peaks into `level_meter`). `playback-and-transport` step 3 "Press P or Space again to resume" holds only after P; after Space (Stop puts the playhead back at the play start) P does nothing and Space plays from the start.
+- Search order (acceptance 2): "record", "snap" and "undo" hit their topic first; "mp3" hits importing-audio first (keyword, earlier reading order) and exporting second.
+- Observation, out of this layer: the help window draws no page heading (`window.rs::topic_page` renders the body only) and the topics have no `# Title` line, so a topic page shows no title.
+- Tests 727 (Phase 13 had 704); check.ps1 green. No release rebuild: no app source or embedded help text changed.
+
+
 ## Phase 14e (help topic bodies)
 S1 phase 14e-1 and 14e-2 DONE (2026-11-22): all 17 topics now have bodies written from the code (14e-1: Getting started to Undo and Redo; 14e-2: Tracks, Playback and the transport, Zoom and navigation, Master and levels, Exporting, Appearance, Troubleshooting). Front matter ids, sections and orders are unchanged; every stub's keywords were refreshed.
 - Style used: second person, numbered steps with one action each, control names in bold exactly as the app draws them, key caps from shortcuts.rs, one Tip block and one closing See line. No em dashes; the files are pure ASCII.

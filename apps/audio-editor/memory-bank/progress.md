@@ -1,3 +1,8 @@
+## Task S1 phase 14f (2026-11-22)
+- Help review after JD's edits: no front-matter, topic-link, Markdown-subset or key-cap faults, so no topic text changed (his edits were already in the 14e-1/14e-2 amends). Tests 727, check.ps1 green.
+- Open for JD eyes: `master-and-levels` calls the track header meter a "small stereo meter" (it is one bar showing the louder channel); `playback-and-transport` says P or Space resumes, but after Space (Stop) P does nothing; "mp3" search opens Importing audio before Exporting; the help window draws no page title.
+
+
 ## Task S1 phase 14e-2 (2026-11-22)
 - 7 help topic bodies written from the code (Tracks, Playback and the transport, Zoom and navigation, Master and levels, Exporting, Appearance, Troubleshooting) and their keywords updated. Troubleshooting quotes only messages the app really shows (input device, recording, missing media, autosave and recovery, save) with placeholders for dynamic values; "no sound" has no message or recovery path, so the topic does not cover it. Tests 727, check.ps1 green, release exe rebuilt.
 - Open for JD eyes: templated messages use <name>, <N>, <timecode> and <X.X> placeholders; the master help says -60 to +6 dB (ui-kit fader range; the model allows +12).
