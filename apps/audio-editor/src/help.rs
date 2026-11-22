@@ -194,4 +194,15 @@ mod tests {
         assert!(ABOUT.notices.contains("Open Font License"), "the font licenses are embedded");
         assert!(ABOUT.notices.contains("LAME"), "the third-party notices are embedded");
     }
+
+    /// Searching "mp3" puts Exporting first: its keyword outranks the topics
+    /// that only mention MP3 in their body (spec: S1 Help acceptance 2).
+    #[test]
+    fn searching_mp3_ranks_exporting_first() {
+        let book = try_book().expect("the topics are valid");
+        let hits = ui_kit::help::search(&book, "mp3");
+        let first = hits.first().expect("\"mp3\" must match a topic");
+        assert_eq!(book.topics[first.topic].id, "exporting", "\"mp3\" must open Exporting first");
+        assert!(hits.iter().any(|hit| book.topics[hit.topic].id == "importing-audio"), "Importing audio still mentions MP3 in its body");
+    }
 }

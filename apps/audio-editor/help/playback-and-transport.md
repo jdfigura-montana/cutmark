@@ -13,7 +13,7 @@ Play, pause, stop, scrub and jump around the project.
 
 1. Press <kbd>Space</kbd> or click **Play** in the transport deck to play from the playhead.
 2. Press <kbd>Space</kbd> again to stop, or press <kbd>P</kbd> to pause in place.
-3. Press <kbd>P</kbd> or <kbd>Space</kbd> again to resume.
+3. Press <kbd>P</kbd> again to resume. <kbd>Space</kbd> stops playback and returns the playhead to where playback started.
 
 ## Stop
 

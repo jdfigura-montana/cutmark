@@ -29,6 +29,8 @@ const SECTION_HEIGHT: f32 = 24.0;
 const RESULT_PAD: f32 = space::SCALE_4;
 /// Vertical gap between two blocks in a topic.
 const BLOCK_GAP: f32 = space::SCALE_4;
+/// Gap between the topic title and the first body block.
+const TITLE_GAP: f32 = space::SCALE_12;
 /// The search hint shown in the empty field.
 const SEARCH_HINT: &str = "Search help";
 
@@ -291,8 +293,11 @@ fn topic_page(ui: &mut Ui, state: &mut HelpState, book: &HelpBook, extra: &mut d
     state.current = Some(id.clone());
     egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt(("ui_kit_help_topic", id.as_str())).show(ui, |ui| {
         if extra(&topic.id, ui) {
+            // A generated page draws its own heading.
             return;
         }
+        ui.label(egui::RichText::new(topic.title.clone()).font(fonts::semibold(typography::TITLE_SIZE)).color(color::TEXT_PRIMARY));
+        ui.add_space(TITLE_GAP);
         for block in markdown::parse(&topic.body) {
             if let Some(target) = markdown::render(ui, &block) {
                 *requested = Some(target);
@@ -334,6 +339,10 @@ fn go_forward(state: &mut HelpState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    use egui_kittest::Harness;
 
     /// Opening topics pushes them onto Back and clears Forward.
     #[test]
@@ -394,5 +403,57 @@ mod tests {
         });
         output.textures_delta.clear();
         assert!(state.open);
+    }
+
+    /// The topic page draws the title above the body (kittest).
+    #[test]
+    fn the_topic_page_draws_the_title_above_the_body() {
+        let source = "---\nid: one\ntitle: Level meter basics\n---\n\nZebra plain body line.\n";
+        let book = HelpBook::from_sources(&[("one.md", source)]).expect("the test book is valid");
+        let mut state = HelpState::default();
+        open(&mut state, "one");
+        let state = Rc::new(RefCell::new(state));
+        let draw_state = Rc::clone(&state);
+        let first_pass = Rc::new(Cell::new(true));
+        let mut harness = Harness::new_ui(move |ui| {
+            // The first pass installs the ui-kit theme and fonts; egui applies
+            // a font change at the start of the next pass.
+            if first_pass.get() {
+                first_pass.set(false);
+                crate::apply(ui.ctx());
+                return;
+            }
+            let mut extra = |_: &str, _: &mut Ui| false;
+            help_window(ui.ctx(), &mut draw_state.borrow_mut(), &book, &mut extra);
+        });
+        harness.run_steps(3);
+
+        // The topic list on the left shows the same title, so the x check keeps
+        // the assertion about the page: the title sits in the content column.
+        let texts = painted_texts(&harness);
+        let body = texts.iter().find(|(text, _)| text == "Zebra").expect("the body must be drawn");
+        let title = texts.iter().find(|(text, pos)| text == "Level meter basics" && (pos.x - body.1.x).abs() < 1.0);
+        assert!(title.is_some_and(|(_, pos)| pos.y < body.1.y), "the page must draw the topic title above the body, got {texts:?}");
+    }
+
+    /// Every text a frame painted, with its top-left corner, so a test can
+    /// check what a page shows and where.
+    fn painted_texts(harness: &Harness<'static>) -> Vec<(String, Pos2)> {
+        fn walk(shape: &egui::Shape, out: &mut Vec<(String, Pos2)>) {
+            match shape {
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        walk(shape, out);
+                    }
+                }
+                egui::Shape::Text(text) => out.push((text.galley.text().to_owned(), text.pos)),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &harness.output().shapes {
+            walk(&clipped.shape, &mut out);
+        }
+        out
     }
 }

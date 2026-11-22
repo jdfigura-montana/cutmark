@@ -1,10 +1,18 @@
+## Phase 14f follow-up (2026-11-22)
+S1 phase 14f follow-up DONE (2026-11-22): the four review items JD picked are fixed; nothing else changed.
+- Wording: `master-and-levels` line 28 says "small level meter"; `playback-and-transport` step 3 is "Press P again to resume. Space stops playback and returns the playhead to where playback started." Written with `<kbd>` caps like the rest of the file (the prompt showed them bold).
+- Search: "mp3" left importing-audio's keywords (its body still says "MP3", so it stays a hit), so "mp3" now opens exporting first. New test `searching_mp3_ranks_exporting_first` in `help.rs` uses the real book.
+- Page title: `ui-kit help/window.rs::topic_page` draws `topic.title` in semibold `typography::TITLE_SIZE` / `color::TEXT_PRIMARY` above the body, then a 12px `TITLE_GAP`. It is skipped when the `extra` callback drew the page, because the generated Keyboard shortcuts page draws its own SHEET_TITLE heading and would show the title twice.
+- New kittest `help::window::tests::the_topic_page_draws_the_title_above_the_body`: it scans the frame's TextShape galleys and checks the title is painted in the content column above the first body word (the topic list draws the same title on the left, so the x check keeps the assertion about the page). Harness uses `run_steps(3)`, not `run()`: `run()` panics past its 4-step budget.
+- Open for JD eyes: the gallery's 4 help topics still start with a `# Title` line, so a gallery page now shows the title twice (the gallery's topic files were not in this layer).
+- Tests 728 (was 727); check.ps1 green; release exe rebuilt, since the embedded help text changed.
+- Gotcha: `cargo test -p ui-kit` failed to LINK (`unresolved external symbol anon...llvm...` in `shortcuts::shortcut_sheet`) from a stale incremental artifact; `cargo clean -p ui-kit` fixed it. The symbol had nothing to do with the edited files.
+
 ## Phase 14f (help review)
 S1 phase 14f DONE (2026-11-22): reviewed the 17 topics after JD's edits. His four edits (a Snap step in markers, "or a range" twice in ripple-and-snap, a Ctrl+T trim step in working-with-clips, the angle-bracket note in troubleshooting) are already in HEAD, amended into 14e-1/14e-2; the working tree is clean, so the diff since 3ee67e0 is empty.
 - Nothing needed fixing: every file has valid front matter (both `---` lines, id/title/section/order/keywords, no stray colons), every topic link resolves, bold and `<kbd>` markers are balanced, no construct outside the subset (tables, images, URL links, nested or indented items), and all 35 distinct key-cap combinations (57 uses) match shortcuts.rs.
-- Behaviour the help claims and the code does not do (listed, not changed): `master-and-levels` says each track header has a "small stereo meter"; the header meter is ONE horizontal bar fed by the louder channel (`track_header.rs`: reading = max of both peaks into `level_meter`). `playback-and-transport` step 3 "Press P or Space again to resume" holds only after P; after Space (Stop puts the playhead back at the play start) P does nothing and Space plays from the start.
-- Search order (acceptance 2): "record", "snap" and "undo" hit their topic first; "mp3" hits importing-audio first (keyword, earlier reading order) and exporting second.
-- Observation, out of this layer: the help window draws no page heading (`window.rs::topic_page` renders the body only) and the topics have no `# Title` line, so a topic page shows no title.
-- Tests 727 (Phase 13 had 704); check.ps1 green. No release rebuild: no app source or embedded help text changed.
+- The four faults the review listed (the "small stereo meter" wording, the "P or Space again to resume" wording, "mp3" opening importing-audio first, the missing page title) are all fixed in the 14f follow-up above.
+- Tests 727 (Phase 13 had 704); check.ps1 green.
 
 
 ## Phase 14e (help topic bodies)

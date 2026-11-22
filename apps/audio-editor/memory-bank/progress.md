@@ -1,6 +1,11 @@
+## Task S1 phase 14f follow-up (2026-11-22)
+- Wording: master-and-levels says "small level meter"; playback-and-transport step 3 now reads "Press P again to resume. Space stops playback and returns the playhead to where playback started." "mp3" left importing-audio's keywords (its body still mentions MP3) so "mp3" now opens Exporting first, with a new search test in help.rs. ui-kit topic_page draws the topic title in type.title / text.primary with 12px below it, skipped when the `extra` callback drew the page (the generated Keyboard shortcuts page has its own heading); new kittest scans the painted text shapes. Tests 728, check.ps1 green, release exe rebuilt (embedded help text changed).
+- Open for JD eyes: the gallery's 4 help topics still start with a `# Title` line, so a gallery page now shows the title twice; the audio editor topics have none. A stale ui-kit incremental artifact broke the test link step once (`unresolved external symbol anon...`); `cargo clean -p ui-kit` cleared it.
+
+
 ## Task S1 phase 14f (2026-11-22)
 - Help review after JD's edits: no front-matter, topic-link, Markdown-subset or key-cap faults, so no topic text changed (his edits were already in the 14e-1/14e-2 amends). Tests 727, check.ps1 green.
-- Open for JD eyes: `master-and-levels` calls the track header meter a "small stereo meter" (it is one bar showing the louder channel); `playback-and-transport` says P or Space resumes, but after Space (Stop) P does nothing; "mp3" search opens Importing audio before Exporting; the help window draws no page title.
+- The four faults that review listed for JD (wording x2, "mp3" search order, missing page title) are fixed in the 14f follow-up above.
 
 
 ## Task S1 phase 14e-2 (2026-11-22)

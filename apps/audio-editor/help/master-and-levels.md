@@ -25,7 +25,7 @@ A drag is one undo step, named **Master Volume**.
 3. Click the meter to clear the clip lights on the master and every track.
 4. The **Peak** readout shows the highest peak since the last reset. It reads **-inf** before any audio. Click it to reset.
 
-Each track header has its own small stereo meter. The armed track's meter shows the input level instead. Click a track meter to clear its clip lights.
+Each track header has its own small level meter. The armed track's meter shows the input level instead. Click a track meter to clear its clip lights.
 
 The master fader is part of the mix: it changes playback, preview and export.
 
