@@ -1,3 +1,8 @@
+## Task S1 phase 14e-1 (2026-11-22)
+- 10 help topic bodies written from the code (Getting started, Projects, The window, Recording a take, Choosing the input and output device, Importing audio, Working with clips, Ripple and Snap, Markers, Undo and Redo) and their keywords updated; the 7 topics that already had bodies are untouched. Tests 727, check.ps1 green, release exe rebuilt.
+- Open for JD eyes: output device is described as the Windows default (no in-app picker); labels were checked against the source, not a board image; markers are described as dots, not the "triangle" the code names suggest.
+
+
 ## Task S1 phase 14d (2026-11-22)
 - Help menu (Help topics F1, Keyboard shortcuts Ctrl+/, Show the tour, About Cutmark Audio), F1 context tags on the timeline, track headers, transport deck, media, master, start and seven dialogs, the 5-step first-run tour, About with the license texts, and 17 topic stubs in apps/audio-editor/help. Tests 727 (was 719), check.ps1 green, release exe rebuilt.
 - Open for JD eyes: the copyright holder line is the placeholder [COPYRIGHT HOLDER]; the Appearance dialog has no F1 tag (ui-kit draws it); topic bodies all read "Draft coming." until 14e; the About notices page still lists IBM Plex Sans (from THIRD-PARTY-NOTICES.txt) next to the Inter OFL text the app actually ships.

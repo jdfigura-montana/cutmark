@@ -1,3 +1,12 @@
+## Phase 14e (help topic bodies)
+S1 phase 14e-1 DONE (2026-11-22): the 10 stubs from Getting started to Undo and Redo now have bodies written from the code; the other 7 topics already had theirs. Front matter ids, sections and orders are unchanged.
+- Style used: second person, numbered steps with one action each, control names in bold exactly as the app draws them, key caps from shortcuts.rs, one Tip block and one closing See line. No em dashes; the files are pure ASCII.
+- Source-checked facts worth keeping: markers draw as dots on the ruler (MARKER_TRI_W is only the hit width); the bin context menu order is Preview, Relink..., Rename, Reveal in Explorer, Remove from Project; the title bar's unsaved mark is a dot (ui_kit title_block), the OS title's asterisk is hidden by the custom chrome; the name field in New Project, Save As and Project Settings is labelled "Name" (placeholder "Project name"); the master panel title is "Master"; the status bar shows "Ripple on" / "Snap on" only when on; a bin drop never snaps (Ctrl = insert mode); bin rows show name and duration, format and rate live in the tooltip; "Clear missing" and "Recover autosave" are the exact labels.
+- Behaviour the help states: history caps at 1,000 steps and is session-only; undo/redo and Save As refuse while a take records or an export runs (plain Save works); one track armed at a time; snap candidates are 0, the playhead, every marker and every clip edge at 8 px, Alt bypasses; gain drag snaps to 0.1 dB with Shift; Ripple delete closes gaps per track.
+- Tests 727 (unchanged); check.ps1 green; release exe rebuilt 11:44.
+- Open for JD eyes: the help says output goes to the Windows default device (there is no in-app output picker); "Import Media..." is the picker entry and files dropped anywhere in the window import; the "Undo"/"Redo" toolbar controls are icon buttons named by their tooltip.
+
+
 ## Phase 14d (help menu, F1 contexts, tour, About)
 S1 phase 14d DONE (2026-11-22): the Help menu, F1 context help, the 5-step first-run tour, the About box and 17 topic stubs.
 - `src/help.rs` is a new top-level module (data only). One `SOURCES` array of `include_str!` topics from `apps/audio-editor/help/*.md`, plus the generated `keyboard-shortcuts` page (front matter only; its body is drawn by `ui_kit::shortcuts::shortcut_sheet` through the help window's `extra` callback). `try_book()` returns the errors (a test forbids any); `book()` falls back to an empty book, so a broken book never panics at runtime.
