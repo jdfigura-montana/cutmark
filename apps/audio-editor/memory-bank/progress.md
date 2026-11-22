@@ -1,3 +1,8 @@
+## Task S1 phase 14e-2 (2026-11-22)
+- 7 help topic bodies written from the code (Tracks, Playback and the transport, Zoom and navigation, Master and levels, Exporting, Appearance, Troubleshooting) and their keywords updated. Troubleshooting quotes only messages the app really shows (input device, recording, missing media, autosave and recovery, save) with placeholders for dynamic values; "no sound" has no message or recovery path, so the topic does not cover it. Tests 727, check.ps1 green, release exe rebuilt.
+- Open for JD eyes: templated messages use <name>, <N>, <timecode> and <X.X> placeholders; the master help says -60 to +6 dB (ui-kit fader range; the model allows +12).
+
+
 ## Task S1 phase 14e-1 (2026-11-22)
 - 10 help topic bodies written from the code (Getting started, Projects, The window, Recording a take, Choosing the input and output device, Importing audio, Working with clips, Ripple and Snap, Markers, Undo and Redo) and their keywords updated; the 7 topics that already had bodies are untouched. Tests 727, check.ps1 green, release exe rebuilt.
 - Open for JD eyes: output device is described as the Windows default (no in-app picker); labels were checked against the source, not a board image; markers are described as dots, not the "triangle" the code names suggest.
