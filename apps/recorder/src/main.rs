@@ -10,6 +10,7 @@ mod config;
 mod countdown;
 mod engine;
 mod hotkeys;
+mod key_ui;
 mod label_popup;
 mod layout_ui;
 mod marks_ui;

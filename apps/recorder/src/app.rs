@@ -12,6 +12,7 @@ use crate::config::{self, Settings};
 use crate::engine::controller::{Controller, ControllerState, Phase, lock};
 use crate::engine::session::Summary;
 use crate::hotkeys::Hotkeys;
+use crate::key_ui::{self, KeyUiState};
 use crate::label_popup::PopupHandle;
 use crate::layout_ui;
 use crate::marks_ui;
@@ -77,6 +78,8 @@ pub struct RecorderApp {
     preview_active: bool,
     /// The webcam of the active profile: its settings, the open camera, its preview and its controls.
     webcam: WebcamHost,
+    /// The matte view and the eyedropper of the Chroma key section; never saved, and off whenever a take starts.
+    key_ui: KeyUiState,
     /// Where the startup recovery scan delivers its report, until it has.
     recovery_rx: Option<std::sync::mpsc::Receiver<RecoveryReport>>,
     /// What the recovery scan found, until the banner is dismissed.
@@ -188,6 +191,7 @@ impl RecorderApp {
             preview_start_error: None,
             preview_active: true,
             webcam: WebcamHost::new(&cc.egui_ctx),
+            key_ui: KeyUiState::default(),
             recovery_rx,
             recovery: None,
             recovery_details: false,
@@ -396,7 +400,9 @@ impl RecorderApp {
         let Some(thread) = &self.compositor else { return };
         let handle = thread.handle();
         if let Some(profile) = self.profile_store.get(&self.settings.active_profile) {
-            handle.set_config(ComposeConfig::from_profile(profile, self.source_size, self.preview_monitor, self.preview_cursor));
+            let mut config = ComposeConfig::from_profile(profile, self.source_size, self.preview_monitor, self.preview_cursor);
+            config.matte = self.key_ui.matte;
+            handle.set_config(config);
         }
         handle.set_active(window_shown && self.preview_enabled);
     }
@@ -741,6 +747,10 @@ impl eframe::App for RecorderApp {
             ctx.request_repaint_after(RECOVERY_POLL);
         }
         let active = state.phase.has_take();
+        if !key_ui::is_idle(&state) {
+            // The matte view is for tuning only: it goes off as soon as a countdown or a take starts, so a matte frame never reaches a take.
+            self.key_ui.clear();
+        }
         self.hide_to_tray_when_minimized(&ctx, active);
         self.sync_preview(&ctx);
         self.update_preview_activity(&ctx);
@@ -792,7 +802,7 @@ impl eframe::App for RecorderApp {
                 self.show_preview(ui);
                 ui.add_space(8.0);
 
-                webcam_ui::show(ui, &mut self.webcam, &mut self.profile_store, active, &state, &self.controller.sender());
+                webcam_ui::show(ui, &mut self.webcam, &mut self.profile_store, active, &state, &self.controller.sender(), &mut self.key_ui);
                 ui.add_space(8.0);
 
                 layout_ui::show(ui, &mut self.profile_store, &self.settings.active_profile, active);

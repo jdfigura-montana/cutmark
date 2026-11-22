@@ -4,12 +4,14 @@ use std::cell::RefCell;
 use std::time::Duration;
 
 use capture::CameraFormat;
-use egui::{Button, Checkbox, Color32, ComboBox, DragValue, Grid, ProgressBar, Slider, Ui};
+use egui::{Button, Checkbox, Color32, ComboBox, CursorIcon, DragValue, Grid, ProgressBar, Sense, Slider, Ui};
 use media_io::SyncReport;
 
 use crate::config::{ControlSetting, WebcamSettings};
 use crate::engine::bus::{BusSender, Command, CommandKind};
 use crate::engine::controller::{ControllerState, Phase};
+use crate::key_ui::{self, KeyUiState};
+use crate::preview_ui::Pick;
 use crate::profile_ui::{AmfProbe, iso_codec_text, rate_control_editor, rate_errors};
 use crate::profiles::ProfileStore;
 use crate::webcam::WebcamHost;
@@ -37,7 +39,16 @@ thread_local! {
 /// Draws the Webcam section. Everything except the camera controls is read-only while recording.
 ///
 /// The controller `state` and the command `bus` drive the camera sync test at the bottom of the section.
-pub fn show(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore, recording: bool, state: &ControllerState, bus: &BusSender) {
+/// `key_state` is what the Chroma key section below the camera picture keeps between frames.
+pub fn show(
+    ui: &mut Ui,
+    host: &mut WebcamHost,
+    store: &mut ProfileStore,
+    recording: bool,
+    state: &ControllerState,
+    bus: &BusSender,
+    key_state: &mut KeyUiState,
+) {
     ui.heading("Webcam");
     let mut enabled = host.settings(store).is_some();
     if ui.add_enabled(!recording, Checkbox::new(&mut enabled, "Enable")).changed() {
@@ -55,16 +66,28 @@ pub fn show(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore, record
         format_row(ui, host, store);
     });
     ui.add_space(4.0);
-    ui.scope(|ui| {
-        ui.set_max_width(PREVIEW_MAX_WIDTH);
-        host.show_preview(ui);
-    });
+    let picked = preview_click(ui, host, key_state.eyedropper);
     ui.add_space(4.0);
     controls(ui, host, store);
     ui.add_space(4.0);
     iso_group(ui, host, store, recording, &state.active_profile);
     ui.add_space(4.0);
+    key_ui::show(ui, host, store, state, key_state, picked.as_ref());
+    ui.add_space(4.0);
     sync_test(ui, host, store, state, bus);
+}
+
+/// Draws the camera picture, and while the eyedropper is armed returns the pixel under a click on it.
+fn preview_click(ui: &mut Ui, host: &mut WebcamHost, eyedropper: bool) -> Option<Pick> {
+    let scope = ui.scope(|ui| {
+        ui.set_max_width(PREVIEW_MAX_WIDTH);
+        host.show_preview(ui);
+    });
+    if !eyedropper {
+        return None;
+    }
+    let response = ui.interact(scope.response.rect, ui.id().with("webcam-preview-click"), Sense::click()).on_hover_cursor(CursorIcon::Crosshair);
+    if response.clicked() { response.interact_pointer_pos().and_then(|pos| host.pick(pos)) } else { None }
 }
 
 /// The camera dropdown with its Refresh button.

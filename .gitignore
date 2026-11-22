@@ -2,3 +2,10 @@
 /filmcraft/
 /third_party/ffmpeg/dist/
 /third_party/ffmpeg/cache/
+
+# Local probe and test output
+/*.bmp
+/probe_*
+/test_*.mp4
+/test_*.mkv
+/test_*.mov

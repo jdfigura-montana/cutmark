@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use capture::{CameraFormat, CameraInfo, CameraSubtype, ControlInfo, ControlProp, ControlState, Gpu, Preview, WebcamCapture};
 
 use crate::config::{ControlSetting, WebcamControls, WebcamFormat, WebcamSettings};
-use crate::preview_ui::PreviewView;
+use crate::preview_ui::{Pick, PreviewView};
 use crate::profiles::ProfileStore;
 
 /// How often the values of controls that are in auto mode are read back from the camera.
@@ -302,6 +302,12 @@ impl WebcamHost {
             (None, None) if self.opening.is_some() || !self.listed => PreviewView::placeholder(ui, "Opening the camera..."),
             (None, None) => PreviewView::placeholder(ui, "No camera"),
         }
+    }
+
+    /// The pixel of the camera picture under a point of the window, or None when there is no picture there.
+    pub fn pick(&self, pos: egui::Pos2) -> Option<Pick> {
+        self.preview.as_ref()?;
+        self.preview_view.pick(pos)
     }
 
     /// Closes the old profile's camera and takes over the webcam of the new one.

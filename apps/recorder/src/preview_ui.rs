@@ -1,7 +1,7 @@
 //! Draws the live monitor preview in the main area of the window.
 
 use capture::{Preview, PreviewFrame};
-use egui::{Align2, Color32, ColorImage, Context, FontId, Rect, Sense, TextureHandle, TextureOptions, Ui, Vec2, pos2};
+use egui::{Align2, Color32, ColorImage, Context, FontId, Pos2, Rect, Sense, TextureHandle, TextureOptions, Ui, Vec2, pos2};
 
 /// The dark colour around and behind the picture.
 const BACKDROP: Color32 = Color32::from_gray(14);
@@ -26,6 +26,21 @@ pub struct PreviewView {
     shown_size: (u32, u32),
     /// The area size in pixels that was last sent to the preview.
     sent_size: Option<(u32, u32)>,
+    /// The frame that is in the texture, kept so a click can read its pixels.
+    frame: Option<PreviewFrame>,
+    /// Where the picture was last drawn, in points.
+    image_rect: Option<Rect>,
+}
+
+/// A spot on the drawn picture: the frame that was showing and the pixel under the pointer.
+#[derive(Debug, Clone)]
+pub struct Pick {
+    /// The frame that was showing.
+    pub frame: PreviewFrame,
+    /// Pixel column in the frame.
+    pub x: u32,
+    /// Pixel row in the frame.
+    pub y: u32,
 }
 
 impl PreviewView {
@@ -33,6 +48,15 @@ impl PreviewView {
     pub fn reset(&mut self) {
         self.shown_seq = 0;
         self.sent_size = None;
+        self.frame = None;
+        self.image_rect = None;
+    }
+
+    /// The pixel of the picture under a point of the window, or None when the point is off the picture.
+    pub fn pick(&self, pos: Pos2) -> Option<Pick> {
+        let (frame, rect) = (self.frame.as_ref()?, self.image_rect?);
+        let (x, y) = frame_pixel(rect, pos, (frame.width, frame.height))?;
+        Some(Pick { frame: frame.clone(), x, y })
     }
 
     /// Draws the newest preview frame, or "Starting preview..." until one arrives.
@@ -63,7 +87,9 @@ impl PreviewView {
         let size = image * scale;
         let min = area.center() - size / 2.0;
         let snapped = pos2((min.x * pixels_per_point).round() / pixels_per_point, (min.y * pixels_per_point).round() / pixels_per_point);
-        ui.painter().image(texture.id(), Rect::from_min_size(snapped, size), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        let drawn = Rect::from_min_size(snapped, size);
+        ui.painter().image(texture.id(), drawn, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        self.image_rect = Some(drawn);
     }
 
     /// Draws a plain dark area with a message, for when the preview is off or could not start.
@@ -85,7 +111,18 @@ impl PreviewView {
         }
         self.shown_seq = frame.seq;
         self.shown_size = (frame.width, frame.height);
+        self.frame = Some(frame.clone());
     }
+}
+
+/// The frame pixel under a point of the drawn picture, or None when the point is outside it or the picture has no area.
+fn frame_pixel(rect: Rect, pos: Pos2, size: (u32, u32)) -> Option<(u32, u32)> {
+    if !rect.contains(pos) || rect.width() <= 0.0 || rect.height() <= 0.0 || size.0 == 0 || size.1 == 0 {
+        return None;
+    }
+    let x = ((pos.x - rect.min.x) / rect.width() * size.0 as f32) as u32;
+    let y = ((pos.y - rect.min.y) / rect.height() * size.1 as f32) as u32;
+    Some((x.min(size.0 - 1), y.min(size.1 - 1)))
 }
 
 /// Reserves the full width and paints the dark backdrop; returns the area.
