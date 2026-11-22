@@ -40,6 +40,7 @@ impl SaveAsDialog {
             FORM_W,
             &mut open,
             |ui| {
+                ui_kit::help::context(ui, crate::help::CONTEXT_DIALOG_SAVE_AS);
                 super::description(ui, "Copy the project to a new folder and name.");
                 ui_kit::inspector_group(ui, |ui| {
                     ui_kit::inspector_row(

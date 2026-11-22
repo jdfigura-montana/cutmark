@@ -121,6 +121,7 @@ impl ExportDialog {
             FORM_W,
             &mut open,
             |ui| {
+                ui_kit::help::context(ui, crate::help::CONTEXT_DIALOG_EXPORT);
                 super::description(ui, "Render the mix to a WAV or MP3 file.");
                 super::scroll_form(ui, |ui| {
                     ui_kit::inspector_group(ui, |ui| {

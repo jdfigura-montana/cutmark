@@ -9,16 +9,19 @@ use crate::editor::Editor;
 use crate::editor::action::Action;
 use crate::editor::message::{self, Message};
 use crate::editor::transport::TransportState;
+use crate::help;
 use crate::ui::bin_panel::{self, BinPanel};
 use crate::ui::dialogs::confirm::{CloseChoice, CloseConfirmDialog, ConfirmDialog, ExportCloseChoice, ExportCloseDialog, RecordCloseChoice, RecordCloseDialog};
 use crate::ui::dialogs::export::{BANNER_SECONDS, ExportBanner};
 use crate::ui::master_strip;
-use crate::ui::menu::{ProjectMenu, ProjectMenuAction, app_mark};
+use crate::ui::menu::{HelpMenuAction, ProjectMenu, ProjectMenuAction, app_mark};
 use crate::ui::start_screen::StartScreen;
 use crate::ui::status_bar;
 use crate::ui::timeline::{self, ViewMenuAction};
 use crate::ui::widgets::meter::MeterState;
+use ui_kit::help::{HelpBook, HelpState, KEYBOARD_PAGE_ID, handle_f1, help_window, open as help_open};
 use ui_kit::tokens::{color, size, space};
+use ui_kit::tour;
 
 /// The user-visible application name, used for the window title, the start
 /// screen heading and the installer.
@@ -60,6 +63,15 @@ enum PendingClose {
     Close,
 }
 
+/// The menu choices of one editor frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EditorActions {
+    /// The Project menu's chosen action.
+    project: ProjectMenuAction,
+    /// The Help menu's chosen action.
+    help: HelpMenuAction,
+}
+
 /// Root application state shown in the main window.
 pub struct App {
     /// Which screen is currently shown.
@@ -88,6 +100,16 @@ pub struct App {
     start_output: Option<String>,
     /// True once `start_output` has been queried (None then means no device).
     start_output_queried: bool,
+    /// The help window's open state and its Back and Forward history.
+    help: HelpState,
+    /// The app's help topics, embedded at build time.
+    book: HelpBook,
+    /// The first-run tour's running state.
+    tour: tour::TourState,
+    /// True while the About box is open.
+    about_open: bool,
+    /// True once the first editing frame checked whether to show the tour.
+    tour_checked: bool,
 }
 
 impl Default for App {
@@ -104,6 +126,11 @@ impl Default for App {
             close_confirmed: false,
             start_output: None,
             start_output_queried: false,
+            help: HelpState::default(),
+            book: help::book(),
+            tour: tour::TourState::default(),
+            about_open: false,
+            tour_checked: false,
         }
     }
 }
@@ -128,6 +155,7 @@ impl App {
         let mut screen = std::mem::replace(&mut self.screen, Screen::Start(StartScreen::default()));
         let mut opened: Option<Editor> = None;
         let mut action = ProjectMenuAction::None;
+        let mut help_action = HelpMenuAction::None;
         // A close that survived the prompts this frame, applied below.
         let mut resolved: Option<PendingClose> = None;
         match &mut screen {
@@ -147,7 +175,7 @@ impl App {
                 opened = start.show(ui, self.start_output.as_deref());
             }
             Screen::Editing(editor) => {
-                action = Self::show_editor(
+                let chosen = Self::show_editor(
                     ui,
                     editor,
                     &mut self.menu,
@@ -157,6 +185,8 @@ impl App {
                     &mut self.export_banner,
                     self.pending_close.is_some(),
                 );
+                action = chosen.project;
+                help_action = chosen.help;
                 Self::intercept_window_close(ui.ctx(), editor, &mut self.pending_close, self.close_confirmed);
                 resolved = Self::run_close_prompts(&ui.ctx().clone(), editor, &mut self.messages, &mut self.pending_close);
             }
@@ -172,6 +202,13 @@ impl App {
             ProjectMenuAction::Close => self.request_close(&mut screen, PendingClose::Close),
             ProjectMenuAction::Import => {}
         }
+        match help_action {
+            HelpMenuAction::None => {}
+            HelpMenuAction::Topics => help_open(&mut self.help, help::FALLBACK_TOPIC_ID),
+            HelpMenuAction::Shortcuts => help_open(&mut self.help, KEYBOARD_PAGE_ID),
+            HelpMenuAction::Tour => self.tour.start(),
+            HelpMenuAction::About => self.about_open = true,
+        }
         if let Some(pending) = resolved {
             if pending == PendingClose::Quit {
                 self.close_confirmed = true;
@@ -180,7 +217,55 @@ impl App {
                 self.apply_pending(&mut screen, pending);
             }
         }
+        // Help draws over everything, after the screen registered its F1 areas
+        // and tour anchors this frame.
+        self.show_help(ui, matches!(screen, Screen::Editing(_)));
         self.screen = screen;
+    }
+
+    /// Handles F1 and Ctrl+/, starts the first-run tour on the first project
+    /// and draws the help window, the About box and the tour over everything.
+    /// Called after the screen drew, so the F1 areas and the tour anchors it
+    /// reads were registered this frame.
+    fn show_help(&mut self, ui: &egui::Ui, editing: bool) {
+        let ctx = ui.ctx();
+        // The tour shows once, the first time a project opens (spec: S1 Help
+        // "First-run tour"); Help > Show the tour starts it again by hand.
+        if editing && !self.tour_checked {
+            self.tour_checked = true;
+            if !tour::help_store::is_seen(help::TOUR.app, help::TOUR.id, help::TOUR.version) {
+                self.tour.start();
+            }
+        }
+        // F1 opens the topic for the area under the pointer or the focus.
+        handle_f1(ctx, &mut self.help, &self.book);
+        if crate::shortcuts::pressed(ctx, "keyboard_shortcuts") {
+            help_open(&mut self.help, KEYBOARD_PAGE_ID);
+        }
+        self.show_help_window(ctx);
+        ui_kit::about_dialog(ctx, &mut self.about_open, &help::ABOUT);
+        if tour::show_tour(ctx, &mut self.tour, &help::TOUR).is_some() {
+            let _ = tour::help_store::mark_seen(help::TOUR.app, help::TOUR.id, help::TOUR.version);
+        }
+    }
+
+    /// Draws the help window, routing the generated Keyboard shortcuts page
+    /// through the help window's `extra` callback (spec: S1 Help "Shortcut
+    /// sheet").
+    fn show_help_window(&mut self, ctx: &egui::Context) {
+        let book = &self.book;
+        let help_state = &mut self.help;
+        let shortcuts = crate::shortcuts::table();
+        let filter_id = egui::Id::new("audio-editor-shortcut-filter");
+        help_window(ctx, help_state, book, &mut |id: &str, ui: &mut egui::Ui| {
+            if id != KEYBOARD_PAGE_ID {
+                return false;
+            }
+            let mut filter = ui.ctx().data_mut(|data| data.get_temp::<String>(filter_id).unwrap_or_default());
+            ui_kit::shortcuts::shortcut_sheet(ui, shortcuts, &mut filter);
+            ui.ctx().data_mut(|data| data.insert_temp(filter_id, filter));
+            true
+        });
     }
 }
 
@@ -322,7 +407,7 @@ impl App {
         meters: &mut MeterState,
         banner: &mut Option<ExportBanner>,
         close_pending: bool,
-    ) -> ProjectMenuAction {
+    ) -> EditorActions {
         // Pump background jobs and keep repainting while any are running.
         editor.poll_jobs();
         // Retire old mix plans, keep the audio status fresh and mirror the
@@ -385,7 +470,7 @@ impl App {
         // window's drag area.
         let menu_cell = std::cell::RefCell::new(&mut *menu);
         let editor_cell = std::cell::RefCell::new(&mut *editor);
-        let chosen = std::cell::Cell::new((ProjectMenuAction::None, ViewMenuAction::None));
+        let chosen = std::cell::Cell::new((ProjectMenuAction::None, ViewMenuAction::None, HelpMenuAction::None));
         egui::Panel::top("app_bar").exact_size(TOP_BAR_H).frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
             ui_kit::main_toolbar(
                 ui,
@@ -406,11 +491,13 @@ impl App {
                     ui.add_space(space::SCALE_4);
                 },
             );
+            // The whole title bar is the tour's "Menu bar" target.
+            ui_kit::tour::anchor(ui, help::ANCHOR_MENU_BAR, ui.max_rect());
         });
         // The dialogs the menu items opened draw once per frame, outside the
         // toolbar's measuring passes.
         menu.show_dialogs(&ui.ctx().clone(), editor);
-        let (mut action, view_action) = chosen.get();
+        let (mut action, view_action, help_action) = chosen.get();
 
         if action == ProjectMenuAction::Import {
             msgs.extend(media_messages(bin_panel::pick_and_import(editor)));
@@ -595,7 +682,7 @@ impl App {
         if let Some(dialog) = messages {
             dialog.show(&ui.ctx().clone());
         }
-        action
+        EditorActions { project: action, help: help_action }
     }
 
     /// The keys that work while a take is recorded: Space ends the take and
@@ -704,7 +791,8 @@ mod tests {
             let paths = create_layout(dir.path(), "Test 2").expect("layout");
             let mut editor = Editor::with_project(Project::new("Test 2".to_string(), 48_000, BitDepth::Int24), ViewState::default(), paths);
             editor.dirty = true;
-            Rig { h: Headless::new(1280.0, 800.0), app: App { screen: Screen::Editing(Box::new(editor)), ..App::default() }, _dir: dir }
+            // The first-run tour would cover the panels; these tests skip it.
+            Rig { h: Headless::new(1280.0, 800.0), app: App { screen: Screen::Editing(Box::new(editor)), tour_checked: true, ..App::default() }, _dir: dir }
         }
 
         fn frame(&mut self) -> Out {
@@ -797,7 +885,7 @@ mod tests {
     /// an empty track 2 (the test input is armed, nothing records yet).
     fn recording_rig() -> Rig {
         let (editor, dir) = crate::ui::test_util::armed_editor(&[&[(0, 480_000)], &[]], "Test 2");
-        Rig { h: Headless::new(1280.0, 800.0), app: App { screen: Screen::Editing(Box::new(editor)), ..App::default() }, _dir: dir }
+        Rig { h: Headless::new(1280.0, 800.0), app: App { screen: Screen::Editing(Box::new(editor)), tour_checked: true, ..App::default() }, _dir: dir }
     }
 
     /// Runs frames of the real app until `done` holds; fails after 10 s.
@@ -1094,7 +1182,8 @@ mod tests {
     #[test]
     fn the_view_pages_to_follow_the_take_past_the_project_end() {
         let (editor, dir) = crate::ui::test_util::armed_editor(&[&[(0, 10_000)], &[]], "Test 2");
-        let mut rig = Rig { h: Headless::new(1280.0, 800.0), app: App { screen: Screen::Editing(Box::new(editor)), ..App::default() }, _dir: dir };
+        let mut rig =
+            Rig { h: Headless::new(1280.0, 800.0), app: App { screen: Screen::Editing(Box::new(editor)), tour_checked: true, ..App::default() }, _dir: dir };
         {
             let editor = rig.editor_mut();
             editor.view.samples_per_pixel = 100.0;
@@ -1543,7 +1632,7 @@ mod tests {
         let paths = create_layout(dir.path(), "Test 2").expect("layout");
         let mut editor = Editor::with_project(Project::new("Test 2".to_string(), 48_000, BitDepth::Int24), ViewState::default(), paths);
         editor.dirty = true;
-        let app = Rc::new(RefCell::new(App { screen: Screen::Editing(Box::new(editor)), ..App::default() }));
+        let app = Rc::new(RefCell::new(App { screen: Screen::Editing(Box::new(editor)), tour_checked: true, ..App::default() }));
         let draw = Rc::clone(&app);
         let first_pass = Rc::new(Cell::new(true));
         let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1280.0, 800.0)).build_ui(move |ui| {
@@ -1686,5 +1775,99 @@ mod tests {
         assert_eq!(with_editor(&app, |editor| editor.project.markers.len()), 0, "M in a text field added no marker");
         assert_eq!(with_editor(&app, |editor| editor.project.tracks.len()), 0, "no track was renamed or added");
         assert_eq!(with_editor(&app, |editor| editor.undo_label()), None, "S in a text field split nothing");
+    }
+
+    // ---- Help: F1, the tour and the About box ----
+
+    /// One lock for the tests that set the process-wide help dir.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Runs `work` with `CUTMARK_HELP_DIR` pointing at a fresh empty folder, so
+    /// the tour's seen flag starts unset. The tour tests share `ENV_LOCK`, so
+    /// they never see each other's folder.
+    fn with_help_dir<T>(work: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = std::env::temp_dir().join(format!("cutmark-audio-help-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create the help dir");
+        // SAFETY: ENV_LOCK serializes every test that touches this variable.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var("CUTMARK_HELP_DIR", &dir)
+        };
+        let result = work();
+        // SAFETY: as above; the lock is still held here.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::remove_var("CUTMARK_HELP_DIR")
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+        result
+    }
+
+    /// One key press and release pair with no modifiers, for the app frame.
+    fn key_event(key: egui::Key) -> egui::Event {
+        egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }
+    }
+
+    #[test]
+    fn f1_over_the_transport_opens_the_transport_topic() {
+        let mut rig = Rig::new();
+        // Let the panels lay the transport deck out, then point at it.
+        for _ in 0..3 {
+            let _ = rig.frame();
+        }
+        let deck = crate::ui::timeline::deck::rect(&rig.h.ctx).expect("the deck was drawn");
+        let events = vec![egui::Event::PointerMoved(deck.center()), key_event(egui::Key::F1)];
+        let app = &mut rig.app;
+        let _ = rig.h.frame(events, |ui| app.run(ui));
+        assert!(rig.app.help.open, "F1 opened the help window");
+        assert_eq!(rig.app.help.current.as_deref(), Some("playback-and-transport"), "F1 over the deck opened the transport topic");
+    }
+
+    #[test]
+    fn the_tour_shows_once_on_a_fresh_profile() {
+        with_help_dir(|| {
+            let mut rig = Rig::new();
+            // The test harness skips the tour; this test wants the real check.
+            rig.app.tour_checked = false;
+            let _ = rig.frame();
+            assert!(rig.app.tour.open, "a fresh profile starts the tour on the first project frame");
+
+            // Esc skips it, and skipping marks it seen.
+            let app = &mut rig.app;
+            let _ = rig.h.frame(vec![key_event(egui::Key::Escape)], |ui| app.run(ui));
+            assert!(!rig.app.tour.open, "Esc skipped the tour");
+            assert!(
+                ui_kit::tour::help_store::is_seen(crate::help::TOUR.app, crate::help::TOUR.id, crate::help::TOUR.version),
+                "skipping the tour marked it seen"
+            );
+        });
+    }
+
+    #[test]
+    fn the_tour_does_not_show_after_it_is_marked_seen() {
+        with_help_dir(|| {
+            ui_kit::tour::help_store::mark_seen(crate::help::TOUR.app, crate::help::TOUR.id, crate::help::TOUR.version).expect("mark the tour seen");
+            let mut rig = Rig::new();
+            rig.app.tour_checked = false;
+            let _ = rig.frame();
+            assert!(!rig.app.tour.open, "a seen tour does not show again");
+        });
+    }
+
+    #[test]
+    fn about_opens_from_the_help_menu() {
+        let mut rig = Rig::new();
+        let _ = rig.frame();
+        // Help > About Cutmark Audio.
+        let _ = rig.click("Help");
+        let out = rig.click("About Cutmark Audio");
+        assert!(rig.app.about_open, "the Help menu opened the About box");
+        assert!(out.text_rect("About Cutmark Audio").is_some(), "the About dialog is drawn");
+        // The dialog's footer settles a frame after the modal appears.
+        let app = &mut rig.app;
+        let out = rig.h.settle(|ui| app.run(ui));
+        assert!(out.text_rect("Close").is_some(), "the About dialog has its Close button");
     }
 }

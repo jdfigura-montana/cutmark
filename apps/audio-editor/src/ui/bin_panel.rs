@@ -79,6 +79,9 @@ impl BinPanel {
     /// Draws the bin panel; returns human-readable messages for the user.
     pub fn show(&mut self, ui: &mut egui::Ui, editor: &mut Editor) -> Vec<String> {
         let mut messages = Vec::new();
+        // F1 over the panel opens Importing audio; the tour spotlights it.
+        ui_kit::help::context(ui, crate::help::CONTEXT_MEDIA);
+        ui_kit::tour::anchor(ui, crate::help::ANCHOR_MEDIA, ui.max_rect());
 
         // A Reveal in Bin request from another panel: select and scroll to it.
         let reveal_request = ui.ctx().data_mut(|d| d.remove_temp::<Uuid>(egui::Id::new(REVEAL_KEY)));

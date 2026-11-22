@@ -16,6 +16,17 @@ use crate::util::time::samples_to_timecode;
 /// Id of the deck (its egui area and the saved sideways offset).
 const DECK_ID: &str = "transport_deck";
 
+/// Id of the deck rectangle drawn on the last frame in the egui context data.
+#[cfg(test)]
+const RECT_KEY: &str = "transport_deck_rect";
+
+/// The deck rectangle as drawn on the last frame, or None before its first
+/// draw. Test hook, so the F1 context test can point at the deck.
+#[cfg(test)]
+pub fn rect(ctx: &egui::Context) -> Option<egui::Rect> {
+    ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new(RECT_KEY)))
+}
+
 /// True when the deck, as drawn on the last frame, covers `pos`. The pointer
 /// handlers of the lanes use it to leave a press on the deck to the deck.
 pub fn covers(ctx: &egui::Context, pos: egui::Pos2) -> bool {
@@ -34,7 +45,7 @@ fn split_timecode(timecode: &str) -> (&str, &str) {
 /// end it, back and forward are disabled and the timecode shows the record
 /// position. `scrubbing` fades the deck while the pointer scrubs the ruler
 /// near it.
-pub fn show(ui: &egui::Ui, editor: &mut Editor, content_rect: egui::Rect, scrubbing: bool) -> Vec<Message> {
+pub fn show(ui: &mut egui::Ui, editor: &mut Editor, content_rect: egui::Rect, scrubbing: bool) -> Vec<Message> {
     let mut messages = Vec::new();
     let recording = editor.is_recording();
     let live = editor.take_is_live();
@@ -45,7 +56,7 @@ pub fn show(ui: &egui::Ui, editor: &mut Editor, content_rect: egui::Rect, scrubb
     let length = samples_to_timecode(editor.project_length(), rate);
     let (main, fraction) = split_timecode(&timecode);
 
-    ui_kit::transport_deck(ui, content_rect, egui::Id::new(DECK_ID), scrubbing, |ui| {
+    let deck = ui_kit::transport_deck(ui, content_rect, egui::Id::new(DECK_ID), scrubbing, |ui| {
         ui_kit::timecode(ui, main, fraction);
         ui.add_space(space::SCALE_8);
 
@@ -85,6 +96,14 @@ pub fn show(ui: &egui::Ui, editor: &mut Editor, content_rect: egui::Rect, scrubb
         ui.add_space(space::SCALE_8);
         ui.label(egui::RichText::new(length).font(ui_kit::fonts::mono(typography::VALUE_SIZE)).color(color::TEXT_TERTIARY));
     });
+    let deck_rect = deck.response.rect;
+    #[cfg(test)]
+    ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(RECT_KEY), deck_rect));
+    // F1 over the deck opens Playback and the transport; the tour spotlights
+    // the deck. The tag sits on a ui as large as the deck itself, so it wins
+    // over the whole timeline panel behind it.
+    ui_kit::help::context(&ui.new_child(egui::UiBuilder::new().max_rect(deck_rect)), crate::help::CONTEXT_TRANSPORT);
+    ui_kit::tour::anchor(ui, crate::help::ANCHOR_TRANSPORT, deck_rect);
     messages
 }
 

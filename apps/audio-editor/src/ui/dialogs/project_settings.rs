@@ -41,6 +41,7 @@ impl ProjectSettingsDialog {
             FORM_W,
             &mut open,
             |ui| {
+                ui_kit::help::context(ui, crate::help::CONTEXT_DIALOG_PROJECT_SETTINGS);
                 super::description(ui, "Name and default export bit depth of this project.");
                 ui_kit::inspector_group(ui, |ui| {
                     ui_kit::inspector_row(

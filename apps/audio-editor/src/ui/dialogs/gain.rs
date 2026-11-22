@@ -93,6 +93,7 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor) -> Vec<String> {
             NARROW_W,
             &mut open,
             |ui| {
+                ui_kit::help::context(ui, crate::help::CONTEXT_DIALOG_GAIN);
                 super::description(ui, &format!("Gain change ({min:.0} to {max:+.0} dB)"));
                 ui_kit::inspector_group(ui, |ui| {
                     ui_kit::inspector_row(ui, "Amount", |ui| super::db_control(ui, db, (min, max)), None);

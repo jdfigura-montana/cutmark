@@ -1,3 +1,8 @@
+## Task S1 phase 14d (2026-11-22)
+- Help menu (Help topics F1, Keyboard shortcuts Ctrl+/, Show the tour, About Cutmark Audio), F1 context tags on the timeline, track headers, transport deck, media, master, start and seven dialogs, the 5-step first-run tour, About with the license texts, and 17 topic stubs in apps/audio-editor/help. Tests 727 (was 719), check.ps1 green, release exe rebuilt.
+- Open for JD eyes: the copyright holder line is the placeholder [COPYRIGHT HOLDER]; the Appearance dialog has no F1 tag (ui-kit draws it); topic bodies all read "Draft coming." until 14e; the About notices page still lists IBM Plex Sans (from THIRD-PARTY-NOTICES.txt) next to the Inter OFL text the app actually ships.
+
+
 ## Task S1 phase 14c (2026-11-22)
 - One shortcut table in apps/audio-editor/src/shortcuts.rs; input handling, menus and (14d) the sheet read it. Help rows (F1, Ctrl+/) reserved but not bound. Tests 719 (was 704), check.ps1 green, release exe rebuilt.
 - Open for JD eyes: menus now show egui's key names (Plus, Minus, Backslash, Ctrl+Backslash, Comma, Period, Delete, Escape) instead of the old "+", "-", "\\", Ctrl+\\, ",", ".", "Del", "Esc". Same keys, new words; a kit change to symbol caps would undo it.

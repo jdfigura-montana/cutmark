@@ -83,6 +83,7 @@ impl AudioSettingsDialog {
             FORM_W,
             &mut open,
             |ui| {
+                ui_kit::help::context(ui, crate::help::CONTEXT_DIALOG_AUDIO_SETTINGS);
                 super::description(ui, "Input device and recording options for this computer.");
                 ui_kit::inspector_group(ui, |ui| {
                     ui_kit::inspector_row(ui, "Input device", |ui| self.device_combo(ui, editor), None);

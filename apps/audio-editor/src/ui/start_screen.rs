@@ -152,6 +152,8 @@ impl StartScreen {
     /// Draws the start screen; returns the Editor to edit when one opens.
     pub fn show(&mut self, ui: &mut egui::Ui, output_device: Option<&str>) -> Option<Editor> {
         let mut opened = None;
+        // F1 on the start screen opens Getting started.
+        ui_kit::help::context(ui, crate::help::CONTEXT_START);
         if self.enter_open {
             self.enter_open = false;
             self.open_selected(&mut opened);

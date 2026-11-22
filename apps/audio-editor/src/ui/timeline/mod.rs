@@ -312,6 +312,9 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction, m
     // ruler, headers and lanes in the rest.
     let mut messages = Vec::new();
     ui_kit::panel(ui, |ui| {
+        // F1 over the panel (its lanes and ruler) opens Working with clips; the
+        // more specific track-header and transport tags win over this one.
+        ui_kit::help::context(ui, crate::help::CONTEXT_TIMELINE);
         let content_rect = ui.max_rect();
         let lane_width = ui.available_width() - metrics::HEADER_COL_W;
         panel_toolbar(ui, editor, lane_width);
@@ -333,7 +336,7 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction, m
 fn panel_toolbar(ui: &mut egui::Ui, editor: &mut Editor, lane_width: f32) {
     let recording = editor.is_recording();
     let row = egui::vec2(ui.available_width(), size::PANEL_TOOLBAR_HEIGHT);
-    ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+    let bar = ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = space::SCALE_8;
         undo_redo_buttons(ui, editor);
         toolbar_separator(ui);
@@ -377,6 +380,8 @@ fn panel_toolbar(ui: &mut egui::Ui, editor: &mut Editor, lane_width: f32) {
             wave_scale_slider(ui, editor);
         });
     });
+    // The toolbar row is the tour's "Timeline toolbar" target.
+    ui_kit::tour::anchor(ui, crate::help::ANCHOR_TIMELINE_TOOLBAR, bar.response.rect);
 }
 
 /// The Undo and Redo icon buttons at the left of the panel toolbar, wired to
@@ -445,6 +450,9 @@ fn show_frame(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction,
     let lane_width = lane_right - lane_left;
     let ruler_rect = egui::Rect::from_min_max(egui::pos2(lane_left, avail.top()), egui::pos2(lane_right, avail.top() + size::RULER_HEIGHT));
     let header_rect = egui::Rect::from_min_max(egui::pos2(avail.left(), ruler_rect.bottom()), egui::pos2(lane_left, avail.bottom()));
+    // F1 over the track headers opens Tracks; the tour spotlights the column.
+    ui_kit::help::context(&ui.new_child(egui::UiBuilder::new().max_rect(header_rect)), crate::help::CONTEXT_TRACKS);
+    ui_kit::tour::anchor(ui, crate::help::ANCHOR_TRACKS, header_rect);
     let lane_rect = egui::Rect::from_min_max(egui::pos2(lane_left, ruler_rect.bottom()), egui::pos2(lane_right, avail.bottom() - metrics::SCROLLBAR_H));
     let scroll_rect = egui::Rect::from_min_max(egui::pos2(lane_left, lane_rect.bottom()), egui::pos2(lane_right, avail.bottom()));
 

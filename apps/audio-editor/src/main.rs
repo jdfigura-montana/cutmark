@@ -3,6 +3,7 @@
 mod app;
 mod audio;
 mod editor;
+mod help;
 mod io;
 mod model;
 mod shortcuts;

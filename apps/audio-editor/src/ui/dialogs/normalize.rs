@@ -48,6 +48,7 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor) -> Vec<String> {
             NARROW_W,
             &mut open,
             |ui| {
+                ui_kit::help::context(ui, crate::help::CONTEXT_DIALOG_NORMALIZE);
                 super::description(ui, "Raise the loudest peak to the target level.");
                 ui_kit::inspector_group(ui, |ui| {
                     ui_kit::inspector_row(ui, "Target peak", |ui| super::db_control(ui, target, (-60.0, 0.0)), None);

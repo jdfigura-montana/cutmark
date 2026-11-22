@@ -24,6 +24,8 @@ const MIN_STRIP_H: f32 = 80.0;
 /// clicking the peak readout resets it. The fader drags as one undo step,
 /// double-click resets to 0 dB and Esc cancels a drag.
 pub fn show(ui: &mut egui::Ui, editor: &mut Editor, meters: &mut MeterState) {
+    // F1 over the panel opens Master and levels.
+    ui_kit::help::context(ui, crate::help::CONTEXT_MASTER);
     ui_kit::panel(ui, |ui| {
         // The panel fills the area the app gives it.
         ui.set_min_size(ui.available_size());

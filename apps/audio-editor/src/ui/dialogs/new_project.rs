@@ -51,6 +51,7 @@ impl NewProjectDialog {
                 FORM_W,
                 &mut open,
                 |ui| {
+                    ui_kit::help::context(ui, crate::help::CONTEXT_DIALOG_NEW_PROJECT);
                     super::description(ui, "Create a project folder with a timeline and media bin.");
                     ui_kit::inspector_group(ui, |ui| {
                         ui_kit::inspector_row(

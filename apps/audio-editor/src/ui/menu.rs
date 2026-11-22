@@ -29,6 +29,21 @@ pub enum ProjectMenuAction {
     Import,
 }
 
+/// What the user chose in the Help menu this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelpMenuAction {
+    /// Nothing chosen.
+    None,
+    /// Open the help window on the current topic ("Help topics", F1).
+    Topics,
+    /// Open the generated "Keyboard shortcuts" page (Ctrl+/).
+    Shortcuts,
+    /// Show the first-run tour again.
+    Tour,
+    /// Open the About box.
+    About,
+}
+
 /// Thickness of a menu separator line.
 const SEPARATOR_THICKNESS: f32 = 1.0;
 
@@ -88,21 +103,22 @@ pub fn start_menu_bar(ui: &mut egui::Ui) -> ProjectMenuAction {
     action.get()
 }
 
-/// The title bar's menu bar: the Project, Edit, Markers, Process and View
-/// menus as `ui_kit::menu_bar` titles, with the same items, shortcuts, enabled
-/// states and separators the menu button's popover had. Call it once per
-/// frame in the left zone of the main toolbar, after the app mark; it runs the
-/// open menu's closure inside, so `menu` and `editor` are borrowed only while a
-/// menu is open. Returns the Project and View actions the user chose; the
-/// dialogs the items open are drawn by [`ProjectMenu::show_dialogs`] once the
-/// toolbar is done.
+/// The title bar's menu bar: the Project, Edit, Markers, Process, View and
+/// Help menus as `ui_kit::menu_bar` titles, with the same items, shortcuts,
+/// enabled states and separators the menu button's popover had. Call it once
+/// per frame in the left zone of the main toolbar, after the app mark; it runs
+/// the open menu's closure inside, so `menu` and `editor` are borrowed only
+/// while a menu is open. Returns the Project, View and Help actions the user
+/// chose; the dialogs the items open are drawn by [`ProjectMenu::show_dialogs`]
+/// once the toolbar is done.
 pub fn menu_bar(
     ui: &mut egui::Ui,
     menu: &std::cell::RefCell<&mut ProjectMenu>,
     editor: &std::cell::RefCell<&mut Editor>,
-) -> (ProjectMenuAction, ViewMenuAction) {
+) -> (ProjectMenuAction, ViewMenuAction, HelpMenuAction) {
     let action = std::cell::Cell::new(ProjectMenuAction::None);
     let view_action = std::cell::Cell::new(ViewMenuAction::None);
+    let help_action = std::cell::Cell::new(HelpMenuAction::None);
     // While a take is recorded the Edit and Process menus, Import, Export,
     // Save As, both settings dialogs and every Markers item except Add
     // Marker are disabled; Save, New, Open, Close and View stay.
@@ -136,9 +152,31 @@ pub fn menu_bar(
                 view_action.set(chosen);
             }
         }),
+        // Help topics (F1), Keyboard shortcuts (Ctrl+/), Show the tour, then
+        // About (spec: S1 Help "Help menu").
+        ui_kit::Menu::new("Help", |ui| {
+            let ctx = ui.ctx().clone();
+            if ui.add(item(&ctx, "Help topics", "help_topics")).clicked() {
+                help_action.set(HelpMenuAction::Topics);
+                ui.close();
+            }
+            if ui.add(item(&ctx, "Keyboard shortcuts", "keyboard_shortcuts")).clicked() {
+                help_action.set(HelpMenuAction::Shortcuts);
+                ui.close();
+            }
+            if ui.button("Show the tour").clicked() {
+                help_action.set(HelpMenuAction::Tour);
+                ui.close();
+            }
+            menu_sep(ui);
+            if ui.button("About Cutmark Audio").clicked() {
+                help_action.set(HelpMenuAction::About);
+                ui.close();
+            }
+        }),
     ];
     ui_kit::menu_bar(ui, &mut menus);
-    (action.get(), view_action.get())
+    (action.get(), view_action.get(), help_action.get())
 }
 
 /// The Project, Edit and View menus plus their modals (save error, Save As).
@@ -583,7 +621,7 @@ mod tests {
                 let menu_cell = std::cell::RefCell::new(&mut *menu);
                 let editor_cell = std::cell::RefCell::new(&mut **editor);
                 ui.horizontal(|ui| {
-                    let (action, _) = menu_bar(ui, &menu_cell, &editor_cell);
+                    let (action, _, _) = menu_bar(ui, &menu_cell, &editor_cell);
                     if action != ProjectMenuAction::None {
                         actions.push(action);
                     }
@@ -650,6 +688,7 @@ mod tests {
             &[("Gain...", "Ctrl+G"), ("Normalize...", "Ctrl+Shift+N"), ("Fade In", "Ctrl+Shift+I"), ("Fade Out", "Ctrl+Shift+O"), ("Silence", "Ctrl+L")],
         ),
         ("View", &[("Zoom In", "Plus"), ("Zoom Out", "Minus"), ("Zoom to Selection", "Ctrl+Backslash"), ("Zoom to Fit", "Backslash"), ("Appearance...", "")]),
+        ("Help", &[("Help topics", "F1"), ("Keyboard shortcuts", "Ctrl+Slash"), ("Show the tour", ""), ("About Cutmark Audio", "")]),
     ];
 
     #[test]
