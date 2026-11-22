@@ -4,6 +4,7 @@
 
 mod app;
 mod core_page;
+mod help;
 mod media;
 
 use eframe::egui;
@@ -21,7 +22,8 @@ fn main() -> eframe::Result {
         Box::new(|cc| {
             ui_kit::apply(&cc.egui_ctx);
             ui_kit::chrome::install(cc);
-            Ok(Box::new(app::Gallery::new()))
+            let book = help::book().expect("the gallery help topics are valid");
+            Ok(Box::new(app::Gallery::new(book)))
         }),
     )
 }

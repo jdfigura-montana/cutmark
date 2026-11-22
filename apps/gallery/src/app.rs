@@ -5,6 +5,7 @@
 
 use eframe::egui;
 use ui_kit::fonts;
+use ui_kit::help::{self, HelpBook, HelpState};
 use ui_kit::icons::regular;
 use ui_kit::tokens::{color, size, space, typography};
 use ui_kit::{Menu, Theme, Title, appearance, dialog};
@@ -32,23 +33,21 @@ pub struct Gallery {
     media: media::MediaState,
     /// True while the appearance dialog is open.
     appearance_open: bool,
+    /// The gallery's help topics, embedded at build time.
+    book: HelpBook,
+    /// The help window's open state and Back and Forward history.
+    help: HelpState,
 }
 
 impl Gallery {
-    /// Fresh gallery: Core page, no dialogs open.
-    pub fn new() -> Self {
-        Self { page: 0, core: core_page::CoreState::new(), media: media::MediaState::new(), appearance_open: false }
+    /// Fresh gallery: Core page, no dialogs open, help closed.
+    pub fn new(book: HelpBook) -> Self {
+        Self { page: 0, core: core_page::CoreState::new(), media: media::MediaState::new(), appearance_open: false, book, help: HelpState::default() }
     }
 
     /// True while any modal covers the page (pauses the focus rotation).
     fn modal_open(&self) -> bool {
         self.appearance_open || self.core.dialog_open.get()
-    }
-}
-
-impl Default for Gallery {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -66,6 +65,10 @@ impl eframe::App for Gallery {
         self.show_status_bar(ui);
         self.show_page(ui);
         self.show_dialogs(ui);
+        // F1 reads the tags the pages registered this frame, then the window
+        // draws on top of everything.
+        help::handle_f1(ui.ctx(), &mut self.help, &self.book);
+        help::help_window(ui.ctx(), &mut self.help, &self.book, &mut |_id: &str, _ui: &mut egui::Ui| false);
     }
 }
 
@@ -76,10 +79,11 @@ impl Gallery {
     fn show_toolbar(&mut self, ui: &mut egui::Ui) {
         let page = std::cell::Cell::new(self.page);
         let appearance_open = std::cell::Cell::new(self.appearance_open);
+        let open_help = std::cell::Cell::new(false);
         egui::Panel::top("gallery-toolbar").exact_size(size::TOOLBAR_MAIN_HEIGHT).frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
             ui_kit::main_toolbar(
                 ui,
-                |ui| left_zone(ui, &page, &appearance_open),
+                |ui| left_zone(ui, &page, &appearance_open, &open_help),
                 |ui| {
                     let caption = format!("ui-kit {UI_KIT_VERSION}");
                     ui_kit::title_block(ui, &Title::Document { name: "Gallery", unsaved: false, caption: Some(&caption) });
@@ -101,6 +105,9 @@ impl Gallery {
         });
         self.page = page.get();
         self.appearance_open = appearance_open.get();
+        if open_help.get() {
+            self.help.open = true;
+        }
     }
 
     /// The scroll area of the current page, with the window padding and the
@@ -162,9 +169,9 @@ impl Gallery {
     }
 }
 
-/// The left zone: the app mark placeholder, then the menu bar with a File and
-/// a View menu of sample items.
-fn left_zone(ui: &mut egui::Ui, page: &std::cell::Cell<usize>, appearance_open: &std::cell::Cell<bool>) {
+/// The left zone: the app mark placeholder, then the menu bar with File, View
+/// and Help menus of sample items.
+fn left_zone(ui: &mut egui::Ui, page: &std::cell::Cell<usize>, appearance_open: &std::cell::Cell<bool>, open_help: &std::cell::Cell<bool>) {
     app_mark(ui);
     ui.add_space(space::SCALE_8);
     let mut menus = [
@@ -188,6 +195,12 @@ fn left_zone(ui: &mut egui::Ui, page: &std::cell::Cell<usize>, appearance_open: 
                     page.set(index);
                     ui.close();
                 }
+            }
+        }),
+        Menu::new("Help", |ui| {
+            if ui.add(egui::Button::new("Help topics").shortcut_text("F1")).clicked() {
+                open_help.set(true);
+                ui.close();
             }
         }),
     ];

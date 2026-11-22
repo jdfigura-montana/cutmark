@@ -16,6 +16,9 @@ use ui_kit::{
     segmented, slider, status_bar, switch, text_field,
 };
 
+/// The F1 context tag for the Core page (spec: S1 Help "Topic files").
+pub const CONTEXT_TAG: &str = "core";
+
 /// Width of the demo text and search fields, so three cells fit one row.
 const FIELD_WIDTH: f32 = 220.0;
 /// Narrowest width of a color swatch cell, so name and hex never wrap
@@ -133,6 +136,7 @@ impl CoreState {
 /// wrapping grid (three columns when the width allows, else two, 8px gaps);
 /// each panel keeps its natural width up to its column width.
 pub fn show(ui: &mut egui::Ui, state: &mut CoreState, modal_open: bool) {
+    ui_kit::help::context(ui, CONTEXT_TAG);
     if !state.focus_paused && ui.input(|i| i.pointer.any_click()) {
         state.focus_paused = true;
     }

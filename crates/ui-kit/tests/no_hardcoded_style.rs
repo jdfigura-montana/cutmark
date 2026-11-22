@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 /// Apps join here when their restyle is done (audio editor in phase 13). The
 /// gallery joins at birth: it is the ui-kit acceptance test (S1 phase 9a).
-const OPT_IN: &[&str] = &["crates/ui-kit/src/widgets", "apps/gallery/src", "apps/audio-editor/src"];
+const OPT_IN: &[&str] = &["crates/ui-kit/src/widgets", "crates/ui-kit/src/help", "apps/gallery/src", "apps/audio-editor/src"];
 
 /// Marker that lets a single line opt out of the lint.
 const ALLOW_MARKER: &str = "// style-lint: allow";

@@ -15,6 +15,9 @@ use ui_kit::{
     stereo_meter_vertical, timecode, track_header, transport_deck, waveform_color,
 };
 
+/// The F1 context tag for the Media page (spec: S1 Help "Topic files").
+pub const CONTEXT_TAG: &str = "media";
+
 /// Total height of the mock timeline panel.
 const TIMELINE_HEIGHT: f32 = 520.0;
 /// Width of the track header column.
@@ -179,6 +182,7 @@ impl Default for MediaState {
 
 /// Draws the whole Media page: the mock timeline panel, then the widget row.
 pub fn show(ui: &mut egui::Ui, state: &mut MediaState) {
+    ui_kit::help::context(ui, CONTEXT_TAG);
     tick(ui, state);
     timeline_panel(ui, state);
     bottom_row(ui, state);

@@ -18,6 +18,7 @@ pub mod accent;
 pub mod appearance;
 pub mod chrome;
 pub mod fonts;
+pub mod help;
 pub mod icons;
 pub mod meter;
 pub mod palette;
