@@ -135,6 +135,10 @@ pub fn show(
     recent: &VecDeque<Command>,
     api: ApiUi<'_>,
 ) -> Outcome {
+    // Each test frame keeps only its own control rects, so the previous
+    // frame's list is dropped before the sections draw.
+    #[cfg(test)]
+    test_clear_controls();
     // The open gate lives here, not at the call site: the app calls this every
     // frame, and egui::Modal paints the moment `show` runs, so an ungated call
     // drew the dialog even with `open` false, and Close, Esc and the backdrop
@@ -221,21 +225,28 @@ fn split_body(body: Rect, gap: f32) -> (Rect, Rect, Rect) {
 
 /// The General section: the Hide Recorder from screen captures switch.
 fn general_section(ui: &mut Ui, settings: &mut Settings, outcome: &mut Outcome) {
+    let before = settings.hide_from_capture;
     ui_kit::inspector_group(ui, |ui| {
         ui.add_space(space::SCALE_4);
         ui_kit::inspector_row(
             ui,
             "Hide Recorder from screen captures",
             |ui| {
-                if ui_kit::switch(ui, &mut settings.hide_from_capture).changed() {
-                    outcome.settings_changed = true;
-                    outcome.hide_from_capture_changed = true;
-                }
+                let _switch = ui_kit::switch(ui, &mut settings.hide_from_capture);
+                #[cfg(test)]
+                test_record_control(TestControl::HideFromCapture, _switch.rect);
             },
             None,
         );
         ui.add_space(space::SCALE_4);
     });
+    // ui_kit::switch builds its response from a plain ui.interact and never
+    // marks it `changed`, so the flip is detected by comparing the setting
+    // before and after the row.
+    if settings.hide_from_capture != before {
+        outcome.settings_changed = true;
+        outcome.hide_from_capture_changed = true;
+    }
 }
 
 /// One caption line: `type.caption` in `text.tertiary`, wrapping.
@@ -252,9 +263,12 @@ fn recording_section(ui: &mut Ui, settings: &mut Settings, next_take: &NextTake,
             ui,
             "Naming template",
             |ui| {
-                if ui.add(egui::TextEdit::singleline(&mut settings.naming_template).desired_width(ui.available_width())).changed() {
+                let field = ui.add(egui::TextEdit::singleline(&mut settings.naming_template).desired_width(ui.available_width()));
+                if field.changed() {
                     outcome.settings_changed = true;
                 }
+                #[cfg(test)]
+                test_record_control(TestControl::NamingTemplate, field.rect);
             },
             None,
         );
@@ -270,17 +284,22 @@ fn recording_section(ui: &mut Ui, settings: &mut Settings, next_take: &NextTake,
     next_take_response.on_hover_text(&next_take.path);
     ui.add_space(space::SCALE_8);
     let before = settings.countdown_secs;
+    let before_switch = settings.hide_countdown_when_linked;
     ui_kit::inspector_group(ui, |ui| {
         ui.add_space(space::SCALE_4);
         ui_kit::inspector_row(
             ui,
             "Countdown",
             |ui| {
-                egui::ComboBox::from_id_salt("settings-countdown").selected_text(countdown_label(settings.countdown_secs)).show_ui(ui, |ui| {
+                let _combo = egui::ComboBox::from_id_salt("settings-countdown").selected_text(countdown_label(settings.countdown_secs)).show_ui(ui, |ui| {
                     for secs in COUNTDOWN_CHOICES {
-                        ui.selectable_value(&mut settings.countdown_secs, secs, countdown_label(secs));
+                        let _choice = ui.selectable_value(&mut settings.countdown_secs, secs, countdown_label(secs));
+                        #[cfg(test)]
+                        test_record_control(TestControl::CountdownChoice(secs), _choice.rect);
                     }
                 });
+                #[cfg(test)]
+                test_record_control(TestControl::Countdown, _combo.response.rect);
             },
             None,
         );
@@ -288,9 +307,9 @@ fn recording_section(ui: &mut Ui, settings: &mut Settings, next_take: &NextTake,
             ui,
             "Hide my countdown when a prompter is linked",
             |ui| {
-                if ui_kit::switch(ui, &mut settings.hide_countdown_when_linked).changed() {
-                    outcome.settings_changed = true;
-                }
+                let _switch = ui_kit::switch(ui, &mut settings.hide_countdown_when_linked);
+                #[cfg(test)]
+                test_record_control(TestControl::HideCountdown, _switch.rect);
             },
             None,
         );
@@ -299,11 +318,17 @@ fn recording_section(ui: &mut Ui, settings: &mut Settings, next_take: &NextTake,
     if settings.countdown_secs != before {
         outcome.settings_changed = true;
     }
+    // ui_kit::switch never marks its response `changed`, so the flip is
+    // detected by comparing the setting before and after the row.
+    if settings.hide_countdown_when_linked != before_switch {
+        outcome.settings_changed = true;
+    }
 }
 
 /// The Control API section: the switch, the port, the listening and clients values and the
 /// token with Show or Hide, Copy and Regenerate (spec "Settings dialog").
 fn api_section(ui: &mut Ui, settings: &mut Settings, api: ApiUi<'_>, outcome: &mut Outcome) {
+    let before_enabled = settings.api.enabled;
     let (listening, clients) = match api.server {
         Some(server) => (format!("127.0.0.1:{}", server.port()), server.client_count().to_string()),
         None => ("Not running".to_owned(), "0".to_owned()),
@@ -314,9 +339,9 @@ fn api_section(ui: &mut Ui, settings: &mut Settings, api: ApiUi<'_>, outcome: &m
             ui,
             "On",
             |ui| {
-                if ui_kit::switch(ui, &mut settings.api.enabled).changed() {
-                    outcome.settings_changed = true;
-                }
+                let _switch = ui_kit::switch(ui, &mut settings.api.enabled);
+                #[cfg(test)]
+                test_record_control(TestControl::ApiOn, _switch.rect);
             },
             None,
         );
@@ -329,6 +354,8 @@ fn api_section(ui: &mut Ui, settings: &mut Settings, api: ApiUi<'_>, outcome: &m
                     settings.api.port = *api.port_edit;
                     outcome.settings_changed = true;
                 }
+                #[cfg(test)]
+                test_record_control(TestControl::ApiPort, response.rect);
             },
             None,
         );
@@ -354,15 +381,23 @@ fn api_section(ui: &mut Ui, settings: &mut Settings, api: ApiUi<'_>, outcome: &m
                     if ui.button("Copy").clicked() {
                         ui.ctx().copy_text(api_token.to_owned());
                     }
-                    if ui.button("Regenerate").on_hover_text("Makes a new token and disconnects every client").clicked() {
+                    let regenerate = ui.button("Regenerate").on_hover_text("Makes a new token and disconnects every client");
+                    if regenerate.clicked() {
                         outcome.regenerate_token = true;
                     }
+                    #[cfg(test)]
+                    test_record_control(TestControl::Regenerate, regenerate.rect);
                 },
                 None,
             );
         }
         ui.add_space(space::SCALE_4);
     });
+    // ui_kit::switch never marks its response `changed`, so the flip is
+    // detected by comparing the setting before and after the row.
+    if settings.api.enabled != before_enabled {
+        outcome.settings_changed = true;
+    }
 }
 
 /// The Diagnostics section: the recent commands the engine received, newest first.
@@ -481,6 +516,55 @@ fn parse_chord(chord: &str) -> Option<KeyboardShortcut> {
 /// The text for a countdown length in the settings.
 fn countdown_label(secs: u8) -> String {
     if secs == 0 { "Off".to_owned() } else { format!("{secs} seconds") }
+}
+
+// The interactive controls the tests record each frame, keyed by the Settings
+// control they belong to; never built outside tests.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum TestControl {
+    /// The General section's Hide Recorder from screen captures switch.
+    HideFromCapture,
+    /// The Recording section's naming template field.
+    NamingTemplate,
+    /// The Recording section's countdown dropdown button.
+    Countdown,
+    /// One row of the countdown dropdown's popup, by its length in seconds.
+    CountdownChoice(u8),
+    /// The Recording section's hide-my-countdown switch.
+    HideCountdown,
+    /// The Control API section's On switch.
+    ApiOn,
+    /// The Control API section's port value.
+    ApiPort,
+    /// The Control API section's token Regenerate button.
+    Regenerate,
+}
+
+// The control rects the last frame drew, for the headless interaction tests.
+#[cfg(test)]
+thread_local! {
+    static TEST_CONTROLS: std::cell::RefCell<Vec<(TestControl, Rect)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Drops the control rects the previous frame recorded.
+#[cfg(test)]
+fn test_clear_controls() {
+    TEST_CONTROLS.with(|cells| cells.borrow_mut().clear());
+}
+
+/// Records one interactive control's rect.
+#[cfg(test)]
+fn test_record_control(control: TestControl, rect: Rect) {
+    TEST_CONTROLS.with(|cells| cells.borrow_mut().push((control, rect)));
+}
+
+/// The rect the last frame recorded for one control.
+#[cfg(test)]
+fn test_control_rect(control: TestControl) -> Rect {
+    TEST_CONTROLS
+        .with(|cells| cells.borrow().iter().rev().find(|(recorded, _)| *recorded == control).map(|(_, rect)| *rect))
+        .expect("the control was not drawn this frame")
 }
 
 // The content rect and the Hotkeys row rects the last frame drew, for the
@@ -731,5 +815,219 @@ mod tests {
         });
         output.textures_delta.clear();
         output
+    }
+
+    /// The raw input for one frame on the test screen.
+    fn test_raw() -> egui::RawInput {
+        egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))), ..Default::default() }
+    }
+
+    /// The warmed-up state one interaction test starts from: fonts applied, the raw input and
+    /// the slot the Outcome of every frame lands in.
+    fn test_setup() -> (Context, egui::RawInput, std::cell::Cell<Outcome>) {
+        let ctx = egui::Context::default();
+        ui_kit::apply(&ctx);
+        let raw = test_raw();
+        let mut warmup = ctx.run_ui(raw.clone(), |_ui| {});
+        warmup.textures_delta.clear();
+        (ctx, raw, std::cell::Cell::new(Outcome::default()))
+    }
+
+    /// A press and release of the primary pointer button at one position.
+    fn click_at(raw: &egui::RawInput, pos: Pos2) -> egui::RawInput {
+        let mut click = raw.clone();
+        click.events = vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::default() },
+            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::default() },
+        ];
+        click
+    }
+
+    /// Runs one frame of the dialog on the given input, keeping the settings and the port
+    /// buffer across frames and capturing the frame's Outcome.
+    fn interact_frame(
+        ctx: &Context,
+        raw: &egui::RawInput,
+        dialog: &mut SettingsDialog,
+        settings: &mut Settings,
+        port_edit: &mut u16,
+        token: Option<&str>,
+        outcome: &std::cell::Cell<Outcome>,
+    ) -> egui::FullOutput {
+        let hotkeys = Hotkeys { registered: Vec::new(), refused: Vec::new(), altgr: Vec::new(), problems: Vec::new() };
+        let recent: VecDeque<Command> = VecDeque::new();
+        let next_take = NextTake::default();
+        let mut show_token = false;
+        let mut output = ctx.run_ui(raw.clone(), |ui| {
+            let api = ApiUi { server: None, token, show_token: &mut show_token, port_edit };
+            outcome.set(show(ui.ctx(), dialog, settings, &next_take, &hotkeys, &recent, api));
+        });
+        output.textures_delta.clear();
+        output
+    }
+
+    /// The two frames the modal needs before its controls can be clicked.
+    fn warm_frames(
+        ctx: &Context,
+        raw: &egui::RawInput,
+        dialog: &mut SettingsDialog,
+        settings: &mut Settings,
+        port_edit: &mut u16,
+        token: Option<&str>,
+        outcome: &std::cell::Cell<Outcome>,
+    ) {
+        for _ in 0..2 {
+            interact_frame(ctx, raw, dialog, settings, port_edit, token, outcome);
+        }
+    }
+
+    /// Flipping the General section's Hide Recorder from screen captures switch reports both
+    /// outcome flags and flips the settings field, without repeating in the frames after.
+    #[test]
+    fn flipping_hide_from_capture_reports_both_flags_and_flips_the_field() {
+        let (ctx, raw, outcome) = test_setup();
+        let mut dialog = SettingsDialog { open: true, section: Section::General };
+        let mut settings = Settings::default();
+        let mut port_edit = 8765u16;
+        warm_frames(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        let switch = test_control_rect(TestControl::HideFromCapture).center();
+        let before = settings.hide_from_capture;
+        interact_frame(&ctx, &click_at(&raw, switch), &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        let flipped = outcome.get();
+        assert!(flipped.settings_changed, "the switch flip did not report settings_changed");
+        assert!(flipped.hide_from_capture_changed, "the switch flip did not report hide_from_capture_changed");
+        assert_eq!(settings.hide_from_capture, !before, "the switch flip did not reach the settings field");
+        interact_frame(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        let settled = outcome.get();
+        assert!(!settled.settings_changed && !settled.hide_from_capture_changed, "the flip repeated in the frame after");
+        assert_eq!(settings.hide_from_capture, !before, "the flip did not stick");
+    }
+
+    /// Typing into the Recording section's naming template reports the change and reaches the
+    /// settings field.
+    #[test]
+    fn typing_in_the_naming_template_reports_the_change() {
+        let (ctx, raw, outcome) = test_setup();
+        let mut dialog = SettingsDialog { open: true, section: Section::Recording };
+        let mut settings = Settings::default();
+        let mut port_edit = 8765u16;
+        warm_frames(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        let field = test_control_rect(TestControl::NamingTemplate).center();
+        interact_frame(&ctx, &click_at(&raw, field), &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        let before = settings.naming_template.clone();
+        let mut typing = raw.clone();
+        typing.events = vec![egui::Event::Text("X".to_owned())];
+        interact_frame(&ctx, &typing, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        assert!(outcome.get().settings_changed, "typing did not report settings_changed");
+        assert_ne!(settings.naming_template, before, "the typed text did not reach the settings field");
+        assert!(settings.naming_template.contains('X'), "the typed text is missing: {}", settings.naming_template);
+        interact_frame(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        assert!(!outcome.get().settings_changed, "the change repeated in the frame after");
+    }
+
+    /// Choosing a countdown length from the dropdown reports the change and reaches the
+    /// settings field.
+    #[test]
+    fn choosing_a_countdown_length_reports_the_change() {
+        let (ctx, raw, outcome) = test_setup();
+        let mut dialog = SettingsDialog { open: true, section: Section::Recording };
+        let mut settings = Settings::default();
+        let mut port_edit = 8765u16;
+        warm_frames(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        let combo = test_control_rect(TestControl::Countdown).center();
+        interact_frame(&ctx, &click_at(&raw, combo), &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        interact_frame(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        let three = test_control_rect(TestControl::CountdownChoice(3)).center();
+        assert_eq!(settings.countdown_secs, 0, "the dialog changed the countdown on its own");
+        interact_frame(&ctx, &click_at(&raw, three), &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        assert!(outcome.get().settings_changed, "the countdown choice did not report settings_changed");
+        assert_eq!(settings.countdown_secs, 3, "the countdown choice did not reach the settings field");
+        interact_frame(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        assert!(!outcome.get().settings_changed, "the change repeated in the frame after");
+    }
+
+    /// Flipping the Recording section's hide-my-countdown switch reports the change and
+    /// reaches the settings field.
+    #[test]
+    fn flipping_the_prompter_switch_reports_the_change() {
+        let (ctx, raw, outcome) = test_setup();
+        let mut dialog = SettingsDialog { open: true, section: Section::Recording };
+        let mut settings = Settings::default();
+        let mut port_edit = 8765u16;
+        warm_frames(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        let switch = test_control_rect(TestControl::HideCountdown).center();
+        let before = settings.hide_countdown_when_linked;
+        interact_frame(&ctx, &click_at(&raw, switch), &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        assert!(outcome.get().settings_changed, "the switch flip did not report settings_changed");
+        assert_eq!(settings.hide_countdown_when_linked, !before, "the switch flip did not reach the settings field");
+        interact_frame(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        assert_eq!(settings.hide_countdown_when_linked, !before, "the flip did not stick");
+    }
+
+    /// Flipping the Control API section's On switch reports the change and reaches the
+    /// settings field.
+    #[test]
+    fn flipping_the_api_on_switch_reports_the_change() {
+        let (ctx, raw, outcome) = test_setup();
+        let mut dialog = SettingsDialog { open: true, section: Section::ControlApi };
+        let mut settings = Settings::default();
+        let mut port_edit = 8765u16;
+        warm_frames(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        let switch = test_control_rect(TestControl::ApiOn).center();
+        let before = settings.api.enabled;
+        interact_frame(&ctx, &click_at(&raw, switch), &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        assert!(outcome.get().settings_changed, "the switch flip did not report settings_changed");
+        assert_eq!(settings.api.enabled, !before, "the switch flip did not reach the settings field");
+        interact_frame(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        assert_eq!(settings.api.enabled, !before, "the flip did not stick");
+    }
+
+    /// Typing a new port and pressing Enter reports the change and reaches the settings field
+    /// (the port is committed when the field loses focus).
+    #[test]
+    fn editing_the_api_port_reports_the_change_on_commit() {
+        let (ctx, raw, outcome) = test_setup();
+        let mut dialog = SettingsDialog { open: true, section: Section::ControlApi };
+        let mut settings = Settings::default();
+        let mut port_edit = 8765u16;
+        warm_frames(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        let port = test_control_rect(TestControl::ApiPort).center();
+        interact_frame(&ctx, &click_at(&raw, port), &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        // One plain frame: the click gains focus and the old value is selected.
+        interact_frame(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        let mut typing = raw.clone();
+        typing.events = vec![egui::Event::Text("1".to_owned())];
+        interact_frame(&ctx, &typing, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        let mut enter = raw.clone();
+        enter.events = vec![
+            egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::default() },
+            egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: false, repeat: false, modifiers: egui::Modifiers::default() },
+        ];
+        interact_frame(&ctx, &enter, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        assert!(outcome.get().settings_changed, "committing the port did not report settings_changed");
+        assert_eq!(settings.api.port, 1024, "the edited port did not reach the settings field");
+        assert_eq!(port_edit, 1024, "the port buffer did not take the committed value");
+        // egui reports lost_focus for two frames, so the frame after Enter commits
+        // once more; the value must stay the same either way.
+        interact_frame(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        assert_eq!(settings.api.port, 1024, "the port did not stick");
+        assert_eq!(port_edit, 1024, "the port buffer did not stick");
+    }
+
+    /// Clicking the token Regenerate button reports it, without repeating in the frame after.
+    #[test]
+    fn clicking_regenerate_reports_it() {
+        let (ctx, raw, outcome) = test_setup();
+        let mut dialog = SettingsDialog { open: true, section: Section::ControlApi };
+        let mut settings = Settings::default();
+        let mut port_edit = 8765u16;
+        let token = "0123456789abcdef0123456789abcdef";
+        warm_frames(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, Some(token), &outcome);
+        let button = test_control_rect(TestControl::Regenerate).center();
+        interact_frame(&ctx, &click_at(&raw, button), &mut dialog, &mut settings, &mut port_edit, Some(token), &outcome);
+        assert!(outcome.get().regenerate_token, "the Regenerate click was not reported");
+        interact_frame(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, Some(token), &outcome);
+        assert!(!outcome.get().regenerate_token, "the Regenerate click repeated in the frame after");
     }
 }
