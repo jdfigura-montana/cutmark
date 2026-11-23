@@ -1,85 +1,60 @@
-//! The status bar at the bottom of the window: the live numbers while a take runs, the free disk space while idle.
+//! The status bar at the bottom of the window (spec "Status bar"): the state dot and label,
+//! the free disk space, the camera ISO codec note, and the Control API clients on the right.
 
-use crate::engine::controller::{ControllerState, FinalizeProgress, Phase};
-use crate::engine::stats::{CamLine, GIB, TakeStats};
+use egui::{Color32, FontId, Pos2, Sense, Vec2};
 
-/// Draws the status bar's contents: every live number while recording or paused, the free disk space while idle,
-/// and the progress of the rewrite of a finished take's files while that runs.
-pub fn show(ui: &mut egui::Ui, state: &ControllerState) {
-    let live = if state.phase == Phase::Idle { None } else { state.take_stats.as_ref() };
-    ui.horizontal_wrapped(|ui| {
-        if let Some(finalizing) = &state.finalizing {
-            ui.label(finalizing_text(finalizing));
-            ui.add(egui::ProgressBar::new(finalizing.progress.clamp(0.0, 1.0)).desired_width(120.0));
-            ui.separator();
-        }
-        match live {
-            Some(stats) => recording(ui, stats),
-            None => {
-                let free = state.take_stats.as_ref().and_then(|stats| stats.disk_free_bytes).or(state.idle_free_bytes);
-                ui.label(format!("Disk free: {}", format_free(free)));
-            }
-        }
-        // An info line, not a warning: the camera file uses a different codec than the profile.
-        if let Some(info) = crate::engine::cam::info_line() {
-            ui.separator();
-            ui.label(info);
-        }
-    });
-}
+use crate::engine::controller::{ControllerState, Phase};
+use crate::engine::stats::GIB;
 
-/// The status bar's text for the rewrite of a finished take's files: the status and the percentage done.
-fn finalizing_text(finalizing: &FinalizeProgress) -> String {
-    format!("{} {:.0}%", finalizing.status, finalizing.progress.clamp(0.0, 1.0) * 100.0)
-}
+/// Diameter of the state dot.
+const DOT_DIAMETER: f32 = 6.0;
 
-/// The items of a running take, separated by thin lines.
-fn recording(ui: &mut egui::Ui, stats: &TakeStats) {
-    ui.label(format_hms(stats.elapsed_ms / 1000));
-    ui.separator();
-    ui.label(format!("Size {}", format_bytes(stats.bytes)));
-    ui.separator();
-    ui.label(format!("{:.1} Mbps", stats.bitrate_kbps() / 1000.0));
-    ui.separator();
-    ui.label(format!("Disk free: {}", format_free(stats.disk_free_bytes)));
-    ui.separator();
-    ui.label(format!("Left {}", format_left(stats.remaining_secs)));
-    ui.separator();
-    ui.label(format!("Duplicated {}", stats.duplicated));
-    ui.separator();
-    let dropped = format!("Dropped {}", stats.dropped);
-    if stats.dropped > 0 {
-        ui.label(egui::RichText::new(dropped).color(ui.visuals().error_fg_color));
-    } else {
-        ui.label(dropped);
+/// Draws the status bar contents: the state dot and label on the left, then the free disk
+/// space and the camera ISO codec note when present; the Control API client count sits on
+/// the right edge.
+pub fn show(ui: &mut egui::Ui, state: &ControllerState, api_clients: Option<usize>) {
+    use ui_kit::tokens::{color, size, space, typography};
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), size::STATUS_BAR_HEIGHT), Sense::hover());
+    let painter = ui.painter();
+    let font = ui_kit::fonts::medium(typography::CAPTION_SIZE);
+    let text = color::TEXT_TERTIARY;
+    let y = rect.center().y;
+
+    // The state dot and its label; a countdown is a recording that has not begun yet.
+    let (dot, label) = match state.phase {
+        Phase::Idle => (color::SEM_SUCCESS, "Ready"),
+        Phase::Countdown(_) => (color::SEM_RECORD, "Starting"),
+        Phase::Recording => (color::SEM_RECORD, "Recording"),
+        Phase::Paused => (color::SEM_METER_WARN, "Paused"),
+    };
+    let mut x = rect.left() + space::SCALE_4;
+    painter.circle_filled(Pos2::new(x + DOT_DIAMETER / 2.0, y), DOT_DIAMETER / 2.0, dot);
+    x += DOT_DIAMETER + space::SCALE_8;
+    x = draw_text(painter, x, y, label, &font, text);
+
+    // The free disk space, while idle and while a take writes.
+    let free = state.take_stats.as_ref().and_then(|stats| stats.disk_free_bytes).or(state.idle_free_bytes);
+    x = draw_text(painter, x + space::SCALE_12, y, &format!("Disk free: {}", format_free(free)), &font, text);
+
+    // The camera ISO codec note: an info line, not a warning.
+    if let Some(info) = crate::engine::cam::info_line() {
+        draw_text(painter, x + space::SCALE_12, y, &info, &font, text);
     }
-    ui.separator();
-    ui.label(format!("Queue {}", stats.queue_depth));
-    // The camera file's line, only while the camera file is being written.
-    if let Some(cam) = &stats.cam {
-        ui.separator();
-        let text = cam_text(cam);
-        if cam.dropped > 0 {
-            ui.label(egui::RichText::new(text).color(ui.visuals().error_fg_color));
-        } else {
-            ui.label(text);
-        }
+
+    // The Control API clients, on the right edge of the bar.
+    if let Some(clients) = api_clients {
+        let label = format!("{clients} client{}", if clients == 1 { "" } else { "s" });
+        let galley = painter.layout_no_wrap(label, font, text);
+        let pos = Pos2::new(rect.right() - space::SCALE_4 - galley.size().x, y - galley.size().y / 2.0);
+        painter.galley(pos, galley, text);
     }
 }
 
-/// The camera file's line: its frames, the repeated frames and the dropped frames.
-fn cam_text(cam: &CamLine) -> String {
-    format!("Cam {} frames, duplicated {}, dropped {}", cam.frames, cam.duplicated, cam.dropped)
-}
-
-/// Formats a number of seconds as HH:MM:SS.
-fn format_hms(total_seconds: u64) -> String {
-    format!("{:02}:{:02}:{:02}", total_seconds / 3600, total_seconds / 60 % 60, total_seconds % 60)
-}
-
-/// Formats a byte count in MB below one GB and in GB above.
-fn format_bytes(bytes: u64) -> String {
-    if bytes >= GIB { format!("{:.2} GB", bytes as f64 / GIB as f64) } else { format!("{:.1} MB", bytes as f64 / 1_000_000.0) }
+/// Draws one caption text at `x`, vertically centered on `y`, and returns the x after it.
+fn draw_text(painter: &egui::Painter, x: f32, y: f32, label: &str, font: &FontId, text: Color32) -> f32 {
+    let galley = painter.layout_no_wrap(label.to_owned(), font.clone(), text);
+    painter.galley(Pos2::new(x, y - galley.size().y / 2.0), galley.clone(), text);
+    x + galley.size().x
 }
 
 /// Formats free space in GB, or a dash when it is unknown.
@@ -87,42 +62,13 @@ fn format_free(free: Option<u64>) -> String {
     free.map_or_else(|| "--".to_owned(), |bytes| format!("{:.1} GB", bytes as f64 / GIB as f64))
 }
 
-/// Formats the time left as hours and minutes, or a dash when it is unknown.
-fn format_left(seconds: Option<u64>) -> String {
-    match seconds {
-        None => "--".to_owned(),
-        Some(seconds) if seconds >= 3600 => format!("{}h {:02}m", seconds / 3600, seconds / 60 % 60),
-        Some(seconds) => format!("{} min", seconds.div_ceil(60)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn the_numbers_are_formatted_for_the_bar() {
-        assert_eq!(format_hms(3725), "01:02:05");
-        assert_eq!(format_bytes(12_500_000), "12.5 MB");
-        assert_eq!(format_bytes(3 * GIB), "3.00 GB");
+    fn free_space_formats_in_gb_or_dashes_when_unknown() {
         assert_eq!(format_free(None), "--");
         assert_eq!(format_free(Some(5 * GIB)), "5.0 GB");
-        assert_eq!(format_left(None), "--");
-        assert_eq!(format_left(Some(90)), "2 min");
-        assert_eq!(format_left(Some(7500)), "2h 05m");
-    }
-
-    #[test]
-    fn the_finalizing_text_names_the_status_and_the_percentage() {
-        let half = FinalizeProgress { status: crate::engine::controller::FINALIZING, progress: 0.5 };
-        assert_eq!(finalizing_text(&half), "Finalizing 50%");
-        let over = FinalizeProgress { progress: 1.7, ..half };
-        assert_eq!(finalizing_text(&over), "Finalizing 100%");
-    }
-
-    #[test]
-    fn the_camera_line_names_its_frames_duplicates_and_drops() {
-        let cam = CamLine { frames: 900, duplicated: 3, dropped: 1 };
-        assert_eq!(cam_text(&cam), "Cam 900 frames, duplicated 3, dropped 1");
     }
 }

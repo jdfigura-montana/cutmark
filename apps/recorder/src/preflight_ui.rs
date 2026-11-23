@@ -21,6 +21,11 @@ pub struct PreflightSection {
 }
 
 impl PreflightSection {
+    /// Whether the test take's files are kept, so the Capture menu's Run pre-flight item sends the same command as the button.
+    pub fn keep_files(&self) -> bool {
+        self.keep_files
+    }
+
     /// Draws the section and sends a pre-flight command to the bus when the button is clicked.
     pub fn show(&mut self, ui: &mut egui::Ui, state: &ControllerState, bus: &BusSender) {
         ui.heading("Pre-flight");

@@ -33,8 +33,19 @@ fn main() -> anyhow::Result<()> {
 
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
-        viewport: egui::ViewportBuilder::default().with_title("Cutmark Recorder").with_inner_size([900.0, 600.0]),
+        // The suite's undecorated window chrome: the native caption goes, resize borders and
+        // Aero Snap stay, and the title bar is drawn by ui_kit::main_toolbar in the app.
+        viewport: ui_kit::chrome::viewport(egui::ViewportBuilder::default().with_title("Cutmark Recorder").with_inner_size([1280.0, 800.0])),
         ..Default::default()
     };
-    eframe::run_native("Cutmark Recorder", options, Box::new(|cc| Ok(Box::new(app::RecorderApp::new(cc))))).map_err(|err| anyhow::anyhow!("{err}"))
+    eframe::run_native(
+        "Cutmark Recorder",
+        options,
+        Box::new(|cc| {
+            ui_kit::apply(&cc.egui_ctx);
+            ui_kit::chrome::install(cc);
+            Ok(Box::new(app::RecorderApp::new(cc)))
+        }),
+    )
+    .map_err(|err| anyhow::anyhow!("{err}"))
 }

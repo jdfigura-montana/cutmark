@@ -190,6 +190,74 @@ pub fn default_tracks(devices: &[AudioDevice]) -> Vec<TrackSettings> {
     tracks
 }
 
+/// The window mode (spec "Modes"): Setup holds the settings; Record and Review are empty
+/// panels until R7 and R8.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mode {
+    /// Sources, preview and the settings tools.
+    #[default]
+    Setup,
+    /// The recording view, empty until R7.
+    Record,
+    /// The takes view, empty until R8.
+    Review,
+}
+
+impl Mode {
+    /// The modes in the order the switch shows them.
+    pub const ALL: [Mode; 3] = [Mode::Setup, Mode::Record, Mode::Review];
+
+    /// The label the mode switch and the View menu show.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Setup => "Setup",
+            Self::Record => "Record",
+            Self::Review => "Review",
+        }
+    }
+}
+
+/// The mode rules (spec "Mode rules"): starting a recording from anywhere switches to Record
+/// and remembers the mode that was open; stopping returns to it; while a take runs, Setup
+/// and Review are disabled in the mode switch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModeState {
+    /// The mode the window shows.
+    pub mode: Mode,
+    /// The mode to return to when the take ends; none while idle.
+    pre_record: Option<Mode>,
+}
+
+impl ModeState {
+    /// The state the persisted mode gives: `mode` open, nothing to return to.
+    pub fn new(mode: Mode) -> Self {
+        Self { mode, pre_record: None }
+    }
+
+    /// A recording started: Record mode, remembering where the user was.
+    pub fn start(&mut self) {
+        self.pre_record = Some(self.mode);
+        self.mode = Mode::Record;
+    }
+
+    /// The recording ended: back to the mode that was open before it.
+    pub fn stop(&mut self) {
+        if let Some(previous) = self.pre_record.take() {
+            self.mode = previous;
+        }
+    }
+
+    /// Whether the mode switch may move to `to` while `recording`: while a take runs, Setup
+    /// and Review are disabled and Record stays, because it is already open.
+    pub fn can_switch(self, recording: bool, to: Mode) -> bool {
+        if recording {
+            return to == Mode::Record;
+        }
+        true
+    }
+}
+
 /// App settings, stored in settings.json. Missing keys take their defaults.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -213,6 +281,8 @@ pub struct Settings {
     pub audio: AudioSettings,
     /// Whether the main window is hidden from screen captures; the label popup is always hidden.
     pub hide_from_capture: bool,
+    /// The window mode the app reopens in.
+    pub mode: Mode,
     /// The shipped profile names this install has already written, so a deleted shipped profile is never recreated.
     #[serde(default)]
     pub shipped_written: Vec<String>,
@@ -247,6 +317,7 @@ impl Default for Settings {
             api: ApiSettings::default(),
             audio: AudioSettings::default(),
             hide_from_capture: true,
+            mode: Mode::default(),
             shipped_written: Vec::new(),
         }
     }
@@ -1001,6 +1072,64 @@ fn write_then_rename(tmp_path: &Path, path: &Path, bytes: &[u8]) -> io::Result<(
     file.sync_all()?;
     drop(file);
     fs::rename(tmp_path, path)
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+
+    #[test]
+    fn starting_a_recording_from_any_mode_switches_to_record() {
+        let mut setup = ModeState::new(Mode::Setup);
+        setup.start();
+        assert_eq!(setup.mode, Mode::Record);
+        let mut review = ModeState::new(Mode::Review);
+        review.start();
+        assert_eq!(review.mode, Mode::Record);
+        let mut record = ModeState::new(Mode::Record);
+        record.start();
+        assert_eq!(record.mode, Mode::Record);
+    }
+
+    #[test]
+    fn stopping_returns_to_the_mode_that_was_open_before() {
+        let mut setup = ModeState::new(Mode::Setup);
+        setup.start();
+        setup.stop();
+        assert_eq!(setup.mode, Mode::Setup);
+        let mut review = ModeState::new(Mode::Review);
+        review.start();
+        review.stop();
+        assert_eq!(review.mode, Mode::Review);
+        // Stopping twice does nothing; the mode stays where it came back to.
+        setup.stop();
+        assert_eq!(setup.mode, Mode::Setup);
+    }
+
+    #[test]
+    fn setup_and_review_are_disabled_while_a_take_runs() {
+        let state = ModeState::new(Mode::Setup);
+        assert!(!state.can_switch(true, Mode::Setup), "Setup is disabled while recording");
+        assert!(!state.can_switch(true, Mode::Review), "Review is disabled while recording");
+        assert!(state.can_switch(true, Mode::Record), "Record stays selectable");
+        assert!(state.can_switch(false, Mode::Setup));
+        assert!(state.can_switch(false, Mode::Record));
+        assert!(state.can_switch(false, Mode::Review));
+    }
+
+    #[test]
+    fn the_mode_is_persisted_with_the_settings() -> Result<(), Box<dyn std::error::Error>> {
+        let mut settings = Settings::default();
+        assert_eq!(settings.mode, Mode::Setup, "a fresh install opens in Setup");
+        settings.mode = Mode::Review;
+        let text = serde_json::to_string(&settings)?;
+        let back: Settings = serde_json::from_str(&text)?;
+        assert_eq!(back.mode, Mode::Review);
+        // A settings file from before the mode existed opens in Setup.
+        let old: Settings = serde_json::from_str("{}")?;
+        assert_eq!(old.mode, Mode::Setup);
+        Ok(())
+    }
 }
 
 #[cfg(test)]

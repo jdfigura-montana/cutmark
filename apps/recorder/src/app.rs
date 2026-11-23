@@ -1,14 +1,17 @@
 //! The Recorder window: draws what the engine controller publishes and sends it commands and settings.
 
+use std::cell::Cell;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, anyhow};
 use capture::{AudioDevice, CompositeInput, Preview};
+use ui_kit::tokens::{color, size, space, typography};
 
 use crate::api::{ApiServer, token};
 use crate::compositor::{ComposeConfig, CompositorThread};
-use crate::config::{self, Settings};
+use crate::config::{self, Mode, ModeState, Settings};
+use crate::engine::bus::{BusSender, Command, CommandKind, MarkKind};
 use crate::engine::controller::{Controller, ControllerState, Phase, lock};
 use crate::engine::session::Summary;
 use crate::hotkeys::Hotkeys;
@@ -33,6 +36,21 @@ const METER_REFRESH: Duration = Duration::from_millis(33);
 
 /// How often the window looks for the recovery report until it has arrived.
 const RECOVERY_POLL: Duration = Duration::from_millis(250);
+
+/// Side of the app mark square at the left edge of the title bar.
+const APP_MARK: f32 = 14.0;
+
+/// The 1px hairline stroke width.
+const HAIRLINE: f32 = 1.0;
+
+/// Left padding of a panel header's title; with the panel's own 8px padding the title sits 14px from the panel edge.
+const HEADER_PAD: f32 = 6.0;
+
+/// Width of the left Sources panel (spec "Panels": default 270).
+const LEFT_PANEL_W: f32 = 270.0;
+
+/// Width of the right settings panel (spec "Panels": default 340).
+const RIGHT_PANEL_W: f32 = 340.0;
 
 /// The Recorder app: settings, hotkeys, the tray icon and the window over the engine controller.
 pub struct RecorderApp {
@@ -110,6 +128,10 @@ pub struct RecorderApp {
     shutting_down: bool,
     /// The Pre-flight section: its button and the Keep files choice.
     preflight_section: PreflightSection,
+    /// The window mode and the mode the running take returns to (spec "Mode rules").
+    modes: ModeState,
+    /// Whether the controller ran a take, countdown included, on the previous frame.
+    was_running: bool,
 }
 
 impl RecorderApp {
@@ -167,6 +189,7 @@ impl RecorderApp {
             }
         };
         let api_port_edit = settings.api.port;
+        let modes = ModeState::new(settings.mode);
         let mut app = Self {
             sent_settings: settings.clone(),
             hwnd,
@@ -207,6 +230,8 @@ impl RecorderApp {
             api_port_edit,
             shutting_down: false,
             preflight_section: PreflightSection::default(),
+            modes,
+            was_running: false,
         };
         app.sync_preview(&cc.egui_ctx);
         app.sync_api(&cc.egui_ctx);
@@ -614,6 +639,328 @@ impl RecorderApp {
             }
         });
     }
+
+    /// Follows the controller phase (spec "Mode rules"): a take starting, countdown included,
+    /// switches to Record and remembers the mode that was open; the take ending returns to it.
+    /// The mode is persisted with the settings.
+    fn sync_mode(&mut self, state: &ControllerState) {
+        let running = state.phase != Phase::Idle;
+        if running && !self.was_running {
+            self.modes.start();
+        } else if !running && self.was_running {
+            self.modes.stop();
+        }
+        if self.modes.mode != self.settings.mode {
+            self.settings.mode = self.modes.mode;
+            self.settings_dirty = true;
+        }
+        self.was_running = running;
+    }
+
+    /// Moves to `to` when the mode rules allow it; the mode is persisted with the settings.
+    fn set_mode(&mut self, recording: bool, to: Mode) {
+        if self.modes.can_switch(recording, to) && self.modes.mode != to {
+            self.modes.mode = to;
+            self.settings.mode = to;
+            self.settings_dirty = true;
+        }
+    }
+
+    /// Ctrl+1, Ctrl+2 and Ctrl+3 switch to Setup, Record and Review (spec "Menus": View).
+    fn handle_mode_keys(&mut self, ctx: &egui::Context, recording: bool) {
+        for (key, mode) in [(egui::Key::Num1, Mode::Setup), (egui::Key::Num2, Mode::Record), (egui::Key::Num3, Mode::Review)] {
+            if ctx.input(|input| input.modifiers.ctrl && input.key_pressed(key)) {
+                self.set_mode(recording, mode);
+            }
+        }
+    }
+
+    /// The caption next to the project name: the profile, its output size and frame rate (spec "Title bar").
+    fn title_caption(&self) -> String {
+        let profile = self.profile_store.get(&self.settings.active_profile);
+        let size = match profile {
+            Some(profile) if !profile.is_source_size() => format!("{}x{}", profile.width, profile.height),
+            _ => format!("Source {}x{}", self.source_size.0 & !1, self.source_size.1 & !1),
+        };
+        let fps = profile.map_or(0, |profile| profile.fps);
+        format!("{} \u{b7} {} \u{b7} {} fps", self.settings.active_profile, size, fps)
+    }
+
+    /// Draws the 44px title bar (spec "Title bar", rev 3): the app mark and the menus on the
+    /// left, the project name with its caption in the center, and the mode switch on the
+    /// right; the separator and the caption buttons are the toolbar's own. A mode the user
+    /// picked in the View menu or the switch is reported through `mode_picked`.
+    fn title_bar(&self, ui: &mut egui::Ui, running: bool, state: &ControllerState, mode_picked: &Cell<Option<Mode>>) {
+        let bus = self.controller.sender();
+        let project = self.settings.project.clone();
+        let caption = self.title_caption();
+        let chords = Chords::of(&self.hotkeys);
+        let project_folder = project_folder(&self.settings);
+        // The pre-flight button is enabled while idle and not already running; the sync test
+        // also needs the camera file on, exactly like the buttons in the parked column.
+        let idle = state.phase == Phase::Idle && state.preflight.is_none();
+        let sync_ready = idle && state.sync_test.is_none() && self.webcam.settings(&self.profile_store).is_some_and(|settings| settings.iso);
+        let keep_files = self.preflight_section.keep_files();
+        let mode = self.modes.mode;
+        let mode_labels = Mode::ALL.map(Mode::label);
+        let selected = Cell::new(Mode::ALL.iter().position(|candidate| *candidate == mode).unwrap_or(0));
+
+        ui_kit::main_toolbar(
+            ui,
+            |ui| {
+                app_mark(ui);
+                let file = ui_kit::Menu::new("File", |ui| {
+                    if menu_item(ui, "Open project folder", "").clicked() {
+                        open_folder(&project_folder);
+                        ui.close();
+                    }
+                    ui.separator();
+                    ui.add_enabled_ui(false, |ui| menu_item(ui, "Settings", "Ctrl+,").on_disabled_hover_text("Arrives with the Settings dialog (R6)"));
+                    ui.separator();
+                    if menu_item(ui, "Exit", "").clicked() {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                        ui.close();
+                    }
+                });
+                let capture = ui_kit::Menu::new("Capture", |ui| {
+                    if menu_item(ui, "Start or Stop recording", &chords.start_stop).clicked() {
+                        send(&bus, CommandKind::StartStop);
+                        ui.close();
+                    }
+                    if menu_item(ui, "Pause or Resume", &chords.pause_resume).clicked() {
+                        send(&bus, CommandKind::PauseResume);
+                        ui.close();
+                    }
+                    ui.separator();
+                    if menu_item(ui, "Add mark", &chords.mark).clicked() {
+                        send(&bus, CommandKind::Mark(MarkKind::Silent));
+                        ui.close();
+                    }
+                    if menu_item(ui, "Add mark with label", &chords.mark_label).clicked() {
+                        send(&bus, CommandKind::Mark(MarkKind::WithLabel));
+                        ui.close();
+                    }
+                    if menu_item(ui, "Mute mic", &chords.mute_mic).clicked() {
+                        // The mic is assumed to sit on track 0, like the hotkey does.
+                        send(&bus, CommandKind::Mute { track: 0 });
+                        ui.close();
+                    }
+                    ui.separator();
+                    ui.add_enabled_ui(idle, |ui| {
+                        if menu_item(ui, "Run pre-flight", "").clicked() {
+                            send(&bus, CommandKind::Preflight { keep_files });
+                            ui.close();
+                        }
+                    });
+                    ui.add_enabled_ui(sync_ready, |ui| {
+                        if menu_item(ui, "Camera sync test", "").clicked() {
+                            send(&bus, CommandKind::SyncTest);
+                            ui.close();
+                        }
+                    });
+                });
+                let view = ui_kit::Menu::new("View", |ui| {
+                    ui.add_enabled_ui(!running, |ui| {
+                        if menu_item(ui, "Setup", "Ctrl+1").clicked() {
+                            mode_picked.set(Some(Mode::Setup));
+                            ui.close();
+                        }
+                    });
+                    if menu_item(ui, "Record", "Ctrl+2").clicked() {
+                        mode_picked.set(Some(Mode::Record));
+                        ui.close();
+                    }
+                    ui.add_enabled_ui(!running, |ui| {
+                        if menu_item(ui, "Review", "Ctrl+3").clicked() {
+                            mode_picked.set(Some(Mode::Review));
+                            ui.close();
+                        }
+                    });
+                });
+                // Help gets its items with the Help phase; the menu itself is here already.
+                let help = ui_kit::Menu::new("Help", |_ui| {});
+                ui_kit::menu_bar(ui, &mut [file, capture, view, help]);
+            },
+            |ui| {
+                ui_kit::title_block(ui, &ui_kit::Title::Document { name: &project, unsaved: false, caption: Some(&caption) });
+            },
+            |ui| {
+                ui.add_enabled_ui(!running, |ui| {
+                    let mut chosen = selected.get();
+                    ui_kit::segmented(ui, "mode-switch", &mut chosen, &mode_labels);
+                    selected.set(chosen);
+                });
+            },
+        );
+
+        // The switch wrote its selection into the cell; report a change through `mode_picked`.
+        let picked = Mode::ALL.get(selected.get()).copied().unwrap_or(mode);
+        if picked != mode {
+            mode_picked.set(Some(picked));
+        }
+    }
+
+    /// The Setup layout (spec "Window layout" and "Setup mode"): the Sources panel on the
+    /// left, the Preview in the center and the parked settings column on the right, with the
+    /// 8px window padding and gaps.
+    fn setup_panels(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
+        let gap = space::WINDOW_GAP as i8;
+        egui::Panel::left("setup-sources")
+            .resizable(false)
+            .exact_size(LEFT_PANEL_W)
+            .frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin { left: gap, right: 0, top: gap, bottom: gap }))
+            .show(ui, sources_panel);
+        egui::Panel::right("setup-settings")
+            .resizable(false)
+            .exact_size(RIGHT_PANEL_W)
+            .frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin { left: 0, right: gap, top: gap, bottom: gap }))
+            .show(ui, |ui| self.settings_panel(ui, ctx, state));
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin { left: gap, right: gap, top: gap, bottom: gap }))
+            .show(ui, |ui| self.preview_panel(ui));
+    }
+
+    /// The right Setup panel: the parked settings column inside a vertical ScrollArea (the
+    /// ui-kit overlay scrollbar comes from ui_kit::apply's global scroll style).
+    fn settings_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
+        ui_kit::panel(ui, |ui| {
+            ui.set_min_size(ui.available_size());
+            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| self.parked_column(ui, ctx, state));
+        });
+    }
+
+    /// The center Preview panel: the header and today's preview filling the rest of the panel.
+    fn preview_panel(&mut self, ui: &mut egui::Ui) {
+        ui_kit::panel(ui, |ui| {
+            ui.set_min_size(ui.available_size());
+            panel_header(ui, "Preview");
+            ui.add_space(space::SCALE_8);
+            self.show_preview(ui);
+        });
+    }
+
+    /// The Record and Review placeholder: an empty panel with a centered caption (spec step R2).
+    fn placeholder_panel(&mut self, ui: &mut egui::Ui) {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin::same(space::WINDOW_GAP as i8))).show(
+            ui,
+            |ui| {
+                ui_kit::panel(ui, |ui| {
+                    ui.set_min_size(ui.available_size());
+                    let galley =
+                        ui.painter().layout_no_wrap("Coming in Phase 13".to_owned(), ui_kit::fonts::medium(typography::CAPTION_SIZE), color::TEXT_TERTIARY);
+                    let center = ui.max_rect().center();
+                    ui.painter().galley(center - galley.size() / 2.0, galley, color::TEXT_TERTIARY);
+                });
+            },
+        );
+    }
+
+    /// PARKED: emptied by R3 to R6. Today's whole settings column, unchanged, waiting for the
+    /// tool panels (R3 to R5) and the Settings dialog (R6) to take its rows.
+    fn parked_column(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
+        let warn = ui.visuals().warn_fg_color;
+        let error = ui.visuals().error_fg_color;
+        ui.heading("Cutmark Recorder");
+        ui.label(format!("Active profile: {}", self.settings.active_profile));
+        ui.add_space(8.0);
+
+        if self.capture_exclusion_failed {
+            ui.colored_label(warn, "This window may appear in recordings");
+        }
+        if let Some(message) = &state.error {
+            ui.colored_label(error, format!("Recording error: {message}"));
+        }
+        if let Some(notice) = &state.audio_notice {
+            ui.colored_label(warn, notice);
+        }
+        for banner in &state.banners {
+            ui.colored_label(warn, banner);
+        }
+        for problem in &self.hotkeys.problems {
+            ui.colored_label(warn, problem);
+        }
+        if let Some(problem) = self.preview_problem() {
+            ui.colored_label(warn, format!("Preview: {problem}"));
+        }
+        if let Some(problem) = self.webcam.warning() {
+            ui.colored_label(warn, format!("Webcam: {problem}"));
+        }
+        if let Some(problem) = &self.api_error {
+            ui.colored_label(warn, problem);
+        }
+        self.recovery_banner(ui);
+        ui.add_space(8.0);
+
+        ui.checkbox(&mut self.preview_enabled, "Preview");
+        if ui.checkbox(&mut self.settings.hide_from_capture, "Hide Recorder from screen captures").changed() {
+            self.apply_hide_from_capture();
+        }
+        ui.add_space(8.0);
+
+        let active = state.phase.has_take();
+        webcam_ui::show(ui, &mut self.webcam, &mut self.profile_store, active, state, &self.controller.sender(), &mut self.key_ui);
+        ui.add_space(8.0);
+
+        layout_ui::show(ui, &mut self.profile_store, &self.settings.active_profile, active);
+        ui.add_space(8.0);
+
+        marks_ui::show(ui, &state.recent_marks);
+        ui.add_space(8.0);
+
+        if active {
+            self.recording_panel(ui, state);
+            ctx.request_repaint_after(METER_REFRESH);
+        } else if let Phase::Countdown(left) = state.phase {
+            ui.heading(format!("Starting in {left}"));
+        } else {
+            if self.profile_section.blocked() {
+                ui.colored_label(error, "Idle. Starting is blocked until the profile errors below are fixed");
+            } else {
+                ui.label("Idle");
+            }
+            if let Some(summary) = &state.summary {
+                self.summary_panel(ui, summary);
+            }
+        }
+        ui.add_space(8.0);
+
+        let mut profile_outcome = ProfileOutcome::default();
+        self.profile_section.show(ui, &mut self.profile_store, &mut self.settings, self.source_size, active, &mut profile_outcome);
+        self.profile_store.save_when_due(ctx);
+        if profile_outcome.active_changed {
+            self.controller.set_settings(self.settings.clone());
+            self.save_settings();
+        }
+        ui.add_space(8.0);
+
+        self.countdown_section(ui);
+        ui.add_space(8.0);
+
+        self.preflight_section.show(ui, state, &self.controller.sender());
+        ui.add_space(8.0);
+
+        self.api_section(ui);
+        ui.add_space(8.0);
+
+        let live_tracks = if active { Some(&self.live_tracks) } else { None };
+        let changed = tracks_ui::tracks_panel(ui, &mut self.settings.audio, &self.devices, live_tracks, active);
+        self.push_settings_if_changed();
+        self.on_tracks_changed(ctx, changed);
+        ui.add_space(8.0);
+
+        ui.heading("Hotkeys");
+        self.hotkey_grid(ui);
+        ui.add_space(8.0);
+
+        ui.heading("Recent commands");
+        if state.recent.is_empty() {
+            ui.label("None yet. Press a hotkey.");
+        } else {
+            for command in state.recent.iter().rev() {
+                ui.label(format!("{:?}", command.kind));
+            }
+        }
+    }
 }
 
 /// Hides the window from screen capture or shows it to capture again; false when that failed or there is no window handle.
@@ -724,6 +1071,91 @@ fn format_hms(total_seconds: u64) -> String {
     format!("{:02}:{:02}:{:02}", total_seconds / 3600, total_seconds / 60 % 60, total_seconds % 60)
 }
 
+/// The hotkey chords the Capture menu shows as its shortcuts; empty when a chord is not registered.
+struct Chords {
+    start_stop: String,
+    pause_resume: String,
+    mark: String,
+    mark_label: String,
+    mute_mic: String,
+}
+
+impl Chords {
+    /// Reads the registered chords for the Capture menu's actions.
+    fn of(hotkeys: &Hotkeys) -> Self {
+        let chord = |action: &str| hotkeys.registered.iter().find(|hotkey| hotkey.action == action).map_or_else(String::new, |hotkey| hotkey.chord.clone());
+        Self {
+            start_stop: chord("start_stop"),
+            pause_resume: chord("pause_resume"),
+            mark: chord("mark"),
+            mark_label: chord("mark_label"),
+            mute_mic: chord("mute_mic"),
+        }
+    }
+}
+
+/// The app mark at the left edge of the title bar: a small rounded square in the accent color.
+fn app_mark(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(APP_MARK, APP_MARK), egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        ui.painter().rect_filled(rect, ui_kit::tokens::radius::SEGMENT, ui_kit::tokens::accent::ACCENT);
+    }
+}
+
+/// A panel header row (44 tall): the title in the semibold body font, with a hairline along
+/// the bottom of the row that runs edge to edge of the panel (spec "Panel header").
+fn panel_header(ui: &mut egui::Ui, title: &str) {
+    let row = egui::vec2(ui.available_width(), size::PANEL_TOOLBAR_HEIGHT);
+    let inner = ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.add_space(HEADER_PAD);
+        ui.add(egui::Label::new(egui::RichText::new(title).font(ui_kit::fonts::semibold(typography::BODY_SIZE)).color(color::TEXT_PRIMARY)).selectable(false));
+    });
+    let rect = inner.response.rect;
+    ui.painter().hline(rect.x_range().expand(space::PANEL_PADDING), rect.bottom(), egui::Stroke::new(HAIRLINE, color::STROKE_HAIRLINE));
+}
+
+/// The left Sources panel: the header and an empty body for now; R5 fills it (spec "Setup mode").
+fn sources_panel(ui: &mut egui::Ui) {
+    ui_kit::panel(ui, |ui| {
+        ui.set_min_size(ui.available_size());
+        panel_header(ui, "Sources");
+        ui.add_space(space::SCALE_8);
+    });
+}
+
+/// One menu item: the label in the body font, then the hotkey in the mono value style
+/// (spec "Menus": the items show the existing hotkeys as their shortcuts).
+fn menu_item(ui: &mut egui::Ui, label: &str, chord: &str) -> egui::Response {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(label, 0.0, egui::TextFormat::simple(ui_kit::fonts::medium(typography::BODY_SIZE), color::TEXT_PRIMARY));
+    if !chord.is_empty() {
+        job.append(chord, space::SCALE_12, egui::TextFormat::simple(ui_kit::fonts::mono(typography::VALUE_SIZE), color::TEXT_TERTIARY));
+    }
+    ui.add(egui::Button::new(job))
+}
+
+/// Sends one command to the controller bus with the current QPC time, logging when the bus has ended.
+fn send(bus: &BusSender, kind: CommandKind) {
+    let command = Command::new(kind, capture::qpc_now());
+    if bus.send(command).is_err() {
+        log::warn!("the command was not sent because the controller has ended");
+    }
+}
+
+/// The project folder: the recording root joined with the project name made safe (the takes rule).
+fn project_folder(settings: &Settings) -> std::path::PathBuf {
+    let name = crate::takes::sanitize(&settings.project);
+    let name = if name.is_empty() { crate::config::DEFAULT_PROJECT.to_owned() } else { name };
+    config::takes_root(settings).join(name)
+}
+
+/// Opens a folder in Explorer; a failure is logged, not shown.
+fn open_folder(folder: &std::path::Path) {
+    if let Err(err) = std::process::Command::new("explorer").arg(folder).spawn() {
+        log::warn!("could not open {}: {err}", folder.display());
+    }
+}
+
 impl eframe::App for RecorderApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -757,116 +1189,27 @@ impl eframe::App for RecorderApp {
         let window_shown = !ctx.input(|input| input.viewport().minimized).unwrap_or(false);
         self.webcam.sync(&mut self.profile_store, &self.settings.active_profile, window_shown);
         self.sync_compositor(window_shown);
+        // The mode rules (spec "Modes"): a take starting or ending moves the mode.
+        self.sync_mode(&state);
 
-        egui::Panel::bottom("status-bar").show(ui, |ui| status_ui::show(ui, &state));
-
-        egui::CentralPanel::default().show(ui, |ui| {
-            ui.heading("Cutmark Recorder");
-            ui.label(format!("Active profile: {}", self.settings.active_profile));
-            ui.add_space(8.0);
-
-            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                let warn = ui.visuals().warn_fg_color;
-                let error = ui.visuals().error_fg_color;
-                if self.capture_exclusion_failed {
-                    ui.colored_label(warn, "This window may appear in recordings");
-                }
-                if let Some(message) = &state.error {
-                    ui.colored_label(error, format!("Recording error: {message}"));
-                }
-                if let Some(notice) = &state.audio_notice {
-                    ui.colored_label(warn, notice);
-                }
-                for banner in &state.banners {
-                    ui.colored_label(warn, banner);
-                }
-                for problem in &self.hotkeys.problems {
-                    ui.colored_label(warn, problem);
-                }
-                if let Some(problem) = self.preview_problem() {
-                    ui.colored_label(warn, format!("Preview: {problem}"));
-                }
-                if let Some(problem) = self.webcam.warning() {
-                    ui.colored_label(warn, format!("Webcam: {problem}"));
-                }
-                if let Some(problem) = &self.api_error {
-                    ui.colored_label(warn, problem);
-                }
-                self.recovery_banner(ui);
-                ui.add_space(8.0);
-
-                ui.checkbox(&mut self.preview_enabled, "Preview");
-                if ui.checkbox(&mut self.settings.hide_from_capture, "Hide Recorder from screen captures").changed() {
-                    self.apply_hide_from_capture();
-                }
-                self.show_preview(ui);
-                ui.add_space(8.0);
-
-                webcam_ui::show(ui, &mut self.webcam, &mut self.profile_store, active, &state, &self.controller.sender(), &mut self.key_ui);
-                ui.add_space(8.0);
-
-                layout_ui::show(ui, &mut self.profile_store, &self.settings.active_profile, active);
-                ui.add_space(8.0);
-
-                marks_ui::show(ui, &state.recent_marks);
-                ui.add_space(8.0);
-
-                if active {
-                    self.recording_panel(ui, &state);
-                    ctx.request_repaint_after(METER_REFRESH);
-                } else if let Phase::Countdown(left) = state.phase {
-                    ui.heading(format!("Starting in {left}"));
-                } else {
-                    if self.profile_section.blocked() {
-                        ui.colored_label(error, "Idle. Starting is blocked until the profile errors below are fixed");
-                    } else {
-                        ui.label("Idle");
-                    }
-                    if let Some(summary) = &state.summary {
-                        self.summary_panel(ui, summary);
-                    }
-                }
-                ui.add_space(8.0);
-
-                let mut profile_outcome = ProfileOutcome::default();
-                self.profile_section.show(ui, &mut self.profile_store, &mut self.settings, self.source_size, active, &mut profile_outcome);
-                self.profile_store.save_when_due(&ctx);
-                if profile_outcome.active_changed {
-                    self.controller.set_settings(self.settings.clone());
-                    self.save_settings();
-                }
-                ui.add_space(8.0);
-
-                self.countdown_section(ui);
-                ui.add_space(8.0);
-
-                self.preflight_section.show(ui, &state, &self.controller.sender());
-                ui.add_space(8.0);
-
-                self.api_section(ui);
-                ui.add_space(8.0);
-
-                let live_tracks = if active { Some(&self.live_tracks) } else { None };
-                let changed = tracks_ui::tracks_panel(ui, &mut self.settings.audio, &self.devices, live_tracks, active);
-                self.push_settings_if_changed();
-                self.on_tracks_changed(&ctx, changed);
-                ui.add_space(8.0);
-
-                ui.heading("Hotkeys");
-                self.hotkey_grid(ui);
-                ui.add_space(8.0);
-
-                ui.heading("Recent commands");
-                if state.recent.is_empty() {
-                    ui.label("None yet. Press a hotkey.");
-                } else {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for command in state.recent.iter().rev() {
-                            ui.label(format!("{:?}", command.kind));
-                        }
-                    });
-                }
-            });
+        // The 26px status bar (spec "Status bar"): state, disk free, camera note, API clients.
+        egui::Panel::bottom("status-bar").frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
+            let clients = self.api.as_ref().map(|server| server.client_count());
+            status_ui::show(ui, &state, clients);
         });
+
+        // The 44px title bar (spec "Title bar", rev 3); it reports a picked mode through the cell.
+        let running = state.phase != Phase::Idle;
+        let mode_picked = Cell::new(None::<Mode>);
+        egui::Panel::top("title-bar").frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| self.title_bar(ui, running, &state, &mode_picked));
+        if let Some(to) = mode_picked.get() {
+            self.set_mode(running, to);
+        }
+        self.handle_mode_keys(&ctx, running);
+
+        match self.modes.mode {
+            Mode::Setup => self.setup_panels(ui, &ctx, &state),
+            Mode::Record | Mode::Review => self.placeholder_panel(ui),
+        }
     }
 }
