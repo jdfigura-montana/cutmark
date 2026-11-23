@@ -4,7 +4,6 @@
 
 use super::cam::CamSummary;
 use super::session::{Summary, TrackPeak};
-use crate::platform::NotificationState;
 
 /// The text the controller state shows while a pre-flight runs.
 pub const RUNNING: &str = "Pre-flight running";
@@ -18,9 +17,11 @@ pub const CLIPPING_FROM_DBFS: f32 = -0.1;
 /// The label the Do Not Disturb check uses in the report.
 pub const DND_LABEL: &str = "Do Not Disturb";
 
-/// The result of one check, or of the whole pre-flight; later variants are worse.
+/// The result of one check, or of the whole pre-flight; Info is a neutral note and the later variants are worse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Status {
+    /// A neutral note that never moves the overall result.
+    Info,
     /// Nothing to worry about.
     Pass,
     /// Worth a look, but the recording would work.
@@ -33,6 +34,7 @@ impl Status {
     /// The word the window shows for this result.
     pub fn label(self) -> &'static str {
         match self {
+            Self::Info => "Info",
             Self::Pass => "Pass",
             Self::Warn => "Warn",
             Self::Fail => "Fail",
@@ -78,14 +80,13 @@ pub fn judge_with_cam(summary: &Summary, cam: Option<&CamSummary>, fps: u32) -> 
     PreflightReport { overall, lines }
 }
 
-/// Maps the system Do Not Disturb state to a check line: On passes, Off and Unknown warn, it never fails.
-pub fn dnd_line(state: NotificationState) -> CheckLine {
-    let (status, detail) = match state {
-        NotificationState::On => (Status::Pass, "on".to_owned()),
-        NotificationState::Off => (Status::Warn, "Notifications can pop up in your recording".to_owned()),
-        NotificationState::Unknown => (Status::Warn, "Could not read Do Not Disturb; check it is on".to_owned()),
-    };
-    CheckLine { label: DND_LABEL.to_owned(), status, detail }
+/// The Do Not Disturb reminder line: Windows has no API that reports the state, so it stays a neutral note.
+pub fn dnd_line() -> CheckLine {
+    CheckLine {
+        label: DND_LABEL.to_owned(),
+        status: Status::Info,
+        detail: "Reminder: turn on Do Not Disturb (Win+N) so notifications stay out of your recording".to_owned(),
+    }
 }
 
 /// The status of the 95th percentile encode time against the frame budget, both in milliseconds.
@@ -299,26 +300,19 @@ mod tests {
     }
 
     #[test]
-    fn dnd_off_warns_that_notifications_can_pop_up() {
-        let line = dnd_line(NotificationState::Off);
+    fn the_dnd_line_is_an_info_reminder() {
+        let line = dnd_line();
         assert_eq!(line.label, DND_LABEL);
-        assert_eq!(line.status, Status::Warn);
-        assert_eq!(line.detail, "Notifications can pop up in your recording");
+        assert_eq!(line.status, Status::Info);
+        assert_eq!(line.detail, "Reminder: turn on Do Not Disturb (Win+N) so notifications stay out of your recording");
     }
 
     #[test]
-    fn dnd_on_passes_and_unknown_warns_with_a_check_hint() {
-        assert_eq!(dnd_line(NotificationState::On).status, Status::Pass);
-        assert_eq!(dnd_line(NotificationState::On).detail, "on");
-        let unknown = dnd_line(NotificationState::Unknown);
-        assert_eq!(unknown.status, Status::Warn);
-        assert_eq!(unknown.detail, "Could not read Do Not Disturb; check it is on");
-    }
-
-    #[test]
-    fn the_dnd_check_never_fails_the_overall_result() {
-        for state in [NotificationState::On, NotificationState::Off, NotificationState::Unknown] {
-            assert_ne!(dnd_line(state).status, Status::Fail);
-        }
+    fn the_dnd_reminder_never_counts_toward_the_overall_result() {
+        assert_ne!(dnd_line().status, Status::Pass);
+        assert_ne!(dnd_line().status, Status::Warn);
+        assert_ne!(dnd_line().status, Status::Fail);
+        // Info sorts below Pass, so an Info line can never raise the overall result.
+        assert!(Status::Info < Status::Pass);
     }
 }

@@ -298,7 +298,7 @@ One egui window on eframe's wgpu renderer, in the suite's dark theme from `ui-ki
 
 - One button records 5 seconds with the current profile to a temp folder.
 - Reports dropped frames, average encode time against the frame budget, and peak dBFS per track, with a pass or fail.
-- Also checks the system Do Not Disturb state and warns when notifications can pop up in the recording; the Recorder never toggles the setting.
+- Also shows a reminder to turn on Do Not Disturb (Win+N) before recording, because Windows has no public API that reports it; the Recorder never toggles the setting.
 - Temp files deleted unless you choose to keep them.
 
 ## Local control API

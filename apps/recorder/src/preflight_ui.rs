@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::engine::bus::{BusSender, Command, CommandKind};
 use crate::engine::controller::{ControllerState, Phase, PreflightResult};
 use crate::engine::preflight::{DND_LABEL, Status, dnd_line};
-use crate::platform::{notification_state, open_notification_settings};
+use crate::platform::open_notification_settings;
 
 /// The colour of a passing result; the theme has no green of its own.
 const PASS_GREEN: egui::Color32 = egui::Color32::from_rgb(70, 190, 100);
@@ -44,9 +44,10 @@ impl PreflightSection {
     }
 }
 
-/// The colour that goes with a status: green, yellow or red.
+/// The colour that goes with a status: plain text, green, yellow or red.
 fn colour(ui: &egui::Ui, status: Status) -> egui::Color32 {
     match status {
+        Status::Info => ui.visuals().text_color(),
         Status::Pass => PASS_GREEN,
         Status::Warn => ui.visuals().warn_fg_color,
         Status::Fail => ui.visuals().error_fg_color,
@@ -65,12 +66,12 @@ fn show_result(ui: &mut egui::Ui, result: &PreflightResult) {
             ui.label(&line.detail);
             ui.end_row();
         }
-        let dnd = dnd_line(notification_state());
+        let dnd = dnd_line();
         ui.strong(DND_LABEL);
         ui.colored_label(colour(ui, dnd.status), dnd.status.label());
         ui.horizontal(|ui| {
             ui.label(&dnd.detail);
-            if dnd.status != Status::Pass && ui.button("Open notification settings").clicked() {
+            if ui.button("Open notification settings").clicked() {
                 open_notification_settings();
             }
         });
