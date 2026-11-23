@@ -115,6 +115,35 @@ fn right_arrow_moves_the_selection_when_focused() {
     assert_eq!(selected.get(), 1, "the Right arrow must move the selection");
 }
 
+/// Clicking the third tool strip cell selects its tool.
+#[test]
+fn clicking_the_third_tool_strip_cell_selects_it() {
+    let selected = Rc::new(Cell::new(0usize));
+    let state = selected.clone();
+    let mut harness = new_harness(move |ui| {
+        let mut value = state.get();
+        ui_kit::tool_strip(
+            ui,
+            &mut value,
+            &[
+                (0, ui_kit::icons::regular::CURSOR, "Select"),
+                (1, ui_kit::icons::regular::SCISSORS, "Razor"),
+                (2, ui_kit::icons::regular::CROP, "Crop"),
+                (3, ui_kit::icons::regular::TEXT_T, "Text"),
+                (4, ui_kit::icons::regular::WAVE_SINE, "Fade"),
+            ],
+        );
+        state.set(value);
+    });
+    harness.run();
+    harness.fit_contents();
+    harness.run();
+
+    harness.get_by_label("Crop").click();
+    harness.run();
+    assert_eq!(selected.get(), 2, "clicking the third cell must select its tool");
+}
+
 /// The primary button reports clicks.
 #[test]
 fn the_primary_button_reports_clicks() {

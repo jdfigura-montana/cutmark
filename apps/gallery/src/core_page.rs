@@ -13,7 +13,7 @@ use ui_kit::icons::regular;
 use ui_kit::tokens::{color, size, space, typography};
 use ui_kit::{
     SliderKind, Theme, chip, icon_button, inspector_group, inspector_header, inspector_row, list_row, panel, primary_button, scroll_thumb, search_field,
-    segmented, slider, status_bar, switch, text_field,
+    segmented, slider, status_bar, switch, text_field, tool_strip,
 };
 
 /// The F1 context tag for the Core page (spec: S1 Help "Topic files").
@@ -78,6 +78,8 @@ pub struct CoreState {
     segments4: usize,
     /// The inspector row's 2-segment control's selection.
     inspector_mode: usize,
+    /// The tool strip demo's selected tool.
+    tools: usize,
     /// The off chip (the idle, hover and press copies share it).
     chip: bool,
     /// The on chip (the focused copy shares it).
@@ -115,6 +117,7 @@ impl CoreState {
             segments3: 0,
             segments4: 0,
             inspector_mode: 0,
+            tools: 0,
             chip: false,
             chip_on: true,
             switch: false,
@@ -171,6 +174,7 @@ const PANELS: &[PanelFn] = &[
     |ui, state, modal_open| primary_button_panel(ui, state, modal_open),
     |ui, state, modal_open| icon_button_panel(ui, state, modal_open),
     |ui, state, modal_open| segmented_panel(ui, state, modal_open),
+    |ui, state, _modal_open| tool_strip_panel(ui, state),
     |ui, state, modal_open| chip_panel(ui, state, modal_open),
     |ui, state, modal_open| switch_panel(ui, state, modal_open),
     |ui, state, modal_open| slider_panel(ui, state, modal_open),
@@ -294,6 +298,25 @@ fn segmented_panel(ui: &mut egui::Ui, state: &mut CoreState, modal_open: bool) {
                     segmented(ui, "core-segments-3-disabled", &mut state.segments3, &["Edit", "Mix", "Master"]);
                 });
             });
+        });
+    });
+}
+
+/// The tool strip: five sample editing tools (spec "Components": "Tool strip").
+fn tool_strip_panel(ui: &mut egui::Ui, state: &mut CoreState) {
+    demo_panel(ui, "Tool strip", |ui| {
+        state_cell(ui, "five tools", |ui| {
+            tool_strip(
+                ui,
+                &mut state.tools,
+                &[
+                    (0, regular::CURSOR, "Select"),
+                    (1, regular::SCISSORS, "Razor"),
+                    (2, regular::CROP, "Crop"),
+                    (3, regular::TEXT_T, "Text"),
+                    (4, regular::WAVE_SINE, "Fade"),
+                ],
+            );
         });
     });
 }

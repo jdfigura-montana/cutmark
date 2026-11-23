@@ -29,6 +29,7 @@ pub mod text_field;
 pub mod timeline;
 pub mod title_block;
 pub mod toast;
+pub mod tool_strip;
 pub mod track_header;
 pub mod track_row;
 pub mod transport;
@@ -61,6 +62,7 @@ pub use timeline::{
 };
 pub use title_block::{Title, title_block};
 pub use toast::{set_toast_time, show_toasts, toast};
+pub use tool_strip::tool_strip;
 pub use track_header::{Toggle, ToggleKind, track_header};
 pub use track_row::{paint_track_area_empty, paint_track_header_column, paint_track_row};
 pub use transport::{DeckState, PlayKind, deck_button, play_button, timecode, transport_deck};
