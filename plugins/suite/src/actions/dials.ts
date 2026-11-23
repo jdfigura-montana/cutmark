@@ -46,7 +46,7 @@ function findTrack(state: AppState, n: number): TrackState | undefined {
 }
 
 /** Zoom dial: rotate zooms the view, press fits the project, strip shows the zoom percent and bar. */
-@action({ UUID: "com.cutmark.suite.audio.dial_zoom" })
+@action({ UUID: "com.cutmark.suite.audio.dial-zoom" })
 export class ZoomDial extends DialBase {
 	/** Builds the dial. */
 	constructor() {
@@ -75,7 +75,7 @@ export class ZoomDial extends DialBase {
 }
 
 /** Jog dial: rotate jogs the playhead, press toggles fine / coarse, touch tap plays or stops. */
-@action({ UUID: "com.cutmark.suite.audio.dial_jog" })
+@action({ UUID: "com.cutmark.suite.audio.dial-jog" })
 export class JogDial extends DialBase {
 	/** The jog size each visible dial is in. */
 	private readonly sizeByDial = new WeakMap<Dial, "fine" | "coarse">();
@@ -118,7 +118,7 @@ export class JogDial extends DialBase {
 }
 
 /** Track volume dial: rotate steps the track's volume, press mutes it; the strip dims while muted. */
-@action({ UUID: "com.cutmark.suite.audio.dial_track_volume" })
+@action({ UUID: "com.cutmark.suite.audio.dial-track-volume" })
 export class TrackVolumeDial extends DialBase {
 	/** The track number each visible dial is configured for. */
 	private readonly trackByDial = new WeakMap<Dial, number>();
@@ -176,7 +176,7 @@ export class TrackVolumeDial extends DialBase {
 }
 
 /** Markers dial: rotate jumps to the previous / next marker, press adds one at the playhead. */
-@action({ UUID: "com.cutmark.suite.audio.dial_markers" })
+@action({ UUID: "com.cutmark.suite.audio.dial-markers" })
 export class MarkersDial extends DialBase {
 	/** Builds the dial. */
 	constructor() {

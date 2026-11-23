@@ -12,7 +12,7 @@ import { TrackKeyAction } from "./track-key";
 type Key = KeyAction<CommandKeySettings>;
 
 /** Play key: play icon, stop icon while playing or recording. */
-@action({ UUID: "com.cutmark.suite.audio.play_pause" })
+@action({ UUID: "com.cutmark.suite.audio.play-pause" })
 export class PlayStopKey extends CommandKeyAction {
 	/** Builds the key. */
 	constructor() {
@@ -53,7 +53,7 @@ export class RecordKey extends CommandKeyAction {
 }
 
 /** Jump to start key. */
-@action({ UUID: "com.cutmark.suite.audio.jump_to_start" })
+@action({ UUID: "com.cutmark.suite.audio.jump-start" })
 export class JumpToStartKey extends CommandKeyAction {
 	/** Builds the key. */
 	constructor() {
@@ -62,7 +62,7 @@ export class JumpToStartKey extends CommandKeyAction {
 }
 
 /** Jump to end key. */
-@action({ UUID: "com.cutmark.suite.audio.jump_to_end" })
+@action({ UUID: "com.cutmark.suite.audio.jump-end" })
 export class JumpToEndKey extends CommandKeyAction {
 	/** Builds the key. */
 	constructor() {
@@ -71,7 +71,7 @@ export class JumpToEndKey extends CommandKeyAction {
 }
 
 /** Add marker key. */
-@action({ UUID: "com.cutmark.suite.audio.add_marker" })
+@action({ UUID: "com.cutmark.suite.audio.add-marker" })
 export class AddMarkerKey extends CommandKeyAction {
 	/** Builds the key. */
 	constructor() {
@@ -80,7 +80,7 @@ export class AddMarkerKey extends CommandKeyAction {
 }
 
 /** Previous marker key. */
-@action({ UUID: "com.cutmark.suite.audio.previous_marker" })
+@action({ UUID: "com.cutmark.suite.audio.previous-marker" })
 export class PreviousMarkerKey extends CommandKeyAction {
 	/** Builds the key. */
 	constructor() {
@@ -89,7 +89,7 @@ export class PreviousMarkerKey extends CommandKeyAction {
 }
 
 /** Next marker key. */
-@action({ UUID: "com.cutmark.suite.audio.next_marker" })
+@action({ UUID: "com.cutmark.suite.audio.next-marker" })
 export class NextMarkerKey extends CommandKeyAction {
 	/** Builds the key. */
 	constructor() {
@@ -126,7 +126,7 @@ export class RedoKey extends CommandKeyAction {
 }
 
 /** Split at playhead key. */
-@action({ UUID: "com.cutmark.suite.audio.split_at_playhead" })
+@action({ UUID: "com.cutmark.suite.audio.split-at-playhead" })
 export class SplitAtPlayheadKey extends CommandKeyAction {
 	/** Builds the key. */
 	constructor() {
@@ -135,7 +135,7 @@ export class SplitAtPlayheadKey extends CommandKeyAction {
 }
 
 /** Ripple toggle: on state in the accent blue. */
-@action({ UUID: "com.cutmark.suite.audio.toggle_ripple" })
+@action({ UUID: "com.cutmark.suite.audio.toggle-ripple" })
 export class RippleKey extends CommandKeyAction {
 	/** Builds the key. */
 	constructor() {
@@ -148,7 +148,7 @@ export class RippleKey extends CommandKeyAction {
 }
 
 /** Snap toggle: on state in the accent blue. */
-@action({ UUID: "com.cutmark.suite.audio.toggle_snap" })
+@action({ UUID: "com.cutmark.suite.audio.toggle-snap" })
 export class SnapKey extends CommandKeyAction {
 	/** Builds the key. */
 	constructor() {
@@ -170,7 +170,7 @@ export class SaveKey extends CommandKeyAction {
 }
 
 /** Track Mute key: lit in the accent blue while the track is muted. */
-@action({ UUID: "com.cutmark.suite.audio.track_mute" })
+@action({ UUID: "com.cutmark.suite.audio.track-mute" })
 export class TrackMuteKey extends TrackKeyAction {
 	/** Builds the key. */
 	constructor() {
@@ -183,7 +183,7 @@ export class TrackMuteKey extends TrackKeyAction {
 }
 
 /** Track Solo key: lit in the yellow while the track is soloed. */
-@action({ UUID: "com.cutmark.suite.audio.track_solo" })
+@action({ UUID: "com.cutmark.suite.audio.track-solo" })
 export class TrackSoloKey extends TrackKeyAction {
 	/** Builds the key. */
 	constructor() {
@@ -196,7 +196,7 @@ export class TrackSoloKey extends TrackKeyAction {
 }
 
 /** Track Arm key: lit in the record red while the track is record-armed. */
-@action({ UUID: "com.cutmark.suite.audio.track_arm" })
+@action({ UUID: "com.cutmark.suite.audio.track-arm" })
 export class TrackArmKey extends TrackKeyAction {
 	/** Builds the key. */
 	constructor() {
