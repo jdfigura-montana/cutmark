@@ -135,6 +135,13 @@ pub fn show(
     recent: &VecDeque<Command>,
     api: ApiUi<'_>,
 ) -> Outcome {
+    // The open gate lives here, not at the call site: the app calls this every
+    // frame, and egui::Modal paints the moment `show` runs, so an ungated call
+    // drew the dialog even with `open` false, and Close, Esc and the backdrop
+    // only flipped the flag while the modal kept being redrawn.
+    if !dialog.open {
+        return Outcome::default();
+    }
     let mut outcome = Outcome::default();
     let mut open = dialog.open;
     let mut closed = false;
@@ -619,5 +626,110 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The app starts with the dialog closed: with `open` false no frame paints the
+    /// modal, and the dialog stays closed (the open state is never persisted).
+    #[test]
+    fn the_dialog_starts_closed_and_draws_nothing() {
+        let ctx = egui::Context::default();
+        ui_kit::apply(&ctx);
+        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))), ..Default::default() };
+        let mut warmup = ctx.run_ui(raw.clone(), |_ui| {});
+        warmup.textures_delta.clear();
+        let mut dialog = SettingsDialog::default();
+        for frame in 0..3u8 {
+            let output = dialog_frame(&ctx, &raw, &mut dialog);
+            assert!(!dialog.open, "frame {frame}: the dialog opened by itself");
+            assert!(output.shapes.is_empty(), "frame {frame}: the dialog painted while it is closed");
+        }
+    }
+
+    /// Clicking Close closes the dialog: the open flag is false afterwards and the
+    /// modal stops painting, and it stays closed in the frames after.
+    #[test]
+    fn clicking_close_closes_the_dialog_and_it_stays_closed() {
+        let ctx = egui::Context::default();
+        ui_kit::apply(&ctx);
+        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))), ..Default::default() };
+        let mut warmup = ctx.run_ui(raw.clone(), |_ui| {});
+        warmup.textures_delta.clear();
+        let screen = ctx.input(|input| input.content_rect());
+        let mut dialog = SettingsDialog { open: true, section: Section::General };
+        // The modal paints nothing on its very first frame; measure from the next one.
+        let _ = dialog_frame(&ctx, &raw, &mut dialog);
+        let drawn = dialog_frame(&ctx, &raw, &mut dialog);
+        let painted = painted_dialog(&drawn, screen).expect("the open dialog did not paint");
+        // The Close button sits at the right end of the footer row: the 1px hairline
+        // plus the 24px modal padding in from the dialog's right edge, and half the
+        // 32px footer row above the dialog's bottom edge.
+        let close = Pos2::new(painted.right() - 25.0 - 30.0, painted.bottom() - 25.0 - 16.0);
+        let mut click = raw.clone();
+        click.events = vec![
+            egui::Event::PointerMoved(close),
+            egui::Event::PointerButton { pos: close, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::default() },
+            egui::Event::PointerButton { pos: close, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::default() },
+        ];
+        dialog_frame(&ctx, &click, &mut dialog);
+        assert!(!dialog.open, "clicking Close did not close the dialog");
+        for frame in 0..2u8 {
+            let output = dialog_frame(&ctx, &raw, &mut dialog);
+            assert!(!dialog.open, "frame {frame} after Close: the dialog reopened");
+            assert!(output.shapes.is_empty(), "frame {frame} after Close: the dialog painted again");
+        }
+    }
+
+    /// Esc closes the dialog and it stays closed in the frames after.
+    #[test]
+    fn escape_closes_the_dialog_and_it_stays_closed() {
+        let ctx = egui::Context::default();
+        ui_kit::apply(&ctx);
+        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))), ..Default::default() };
+        let mut warmup = ctx.run_ui(raw.clone(), |_ui| {});
+        warmup.textures_delta.clear();
+        let mut dialog = SettingsDialog { open: true, section: Section::General };
+        // The modal paints nothing on its very first frame; measure from the next one.
+        let _ = dialog_frame(&ctx, &raw, &mut dialog);
+        let drawn = dialog_frame(&ctx, &raw, &mut dialog);
+        assert!(painted_dialog(&drawn, ctx.input(|input| input.content_rect())).is_some(), "the open dialog did not paint");
+        let mut esc = raw.clone();
+        esc.events = vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::default() }];
+        dialog_frame(&ctx, &esc, &mut dialog);
+        assert!(!dialog.open, "Esc did not close the dialog");
+        for frame in 0..2u8 {
+            let output = dialog_frame(&ctx, &raw, &mut dialog);
+            assert!(!dialog.open, "frame {frame} after Esc: the dialog reopened");
+            assert!(output.shapes.is_empty(), "frame {frame} after Esc: the dialog painted again");
+        }
+    }
+
+    /// The union of the dialog's painted shapes without the modal's full-screen backdrop,
+    /// or None when the dialog did not paint.
+    fn painted_dialog(output: &egui::FullOutput, screen: Rect) -> Option<Rect> {
+        let nearly = screen.shrink(8.0);
+        output
+            .shapes
+            .iter()
+            .map(|clipped| clipped.shape.visual_bounding_rect())
+            .filter(|rect| {
+                rect.is_finite() && !(rect.min.x <= nearly.min.x && rect.min.y <= nearly.min.y && rect.max.x >= nearly.max.x && rect.max.y >= nearly.max.y)
+            })
+            .reduce(Rect::union)
+    }
+
+    /// Runs one frame of the dialog on the given raw input and reports the frame output.
+    fn dialog_frame(ctx: &Context, raw: &egui::RawInput, dialog: &mut SettingsDialog) -> egui::FullOutput {
+        let mut settings = Settings::default();
+        let hotkeys = Hotkeys { registered: Vec::new(), refused: Vec::new(), altgr: Vec::new(), problems: Vec::new() };
+        let recent: VecDeque<Command> = VecDeque::new();
+        let next_take = NextTake::default();
+        let mut show_token = false;
+        let mut port_edit = 8765u16;
+        let mut output = ctx.run_ui(raw.clone(), |ui| {
+            let api = ApiUi { server: None, token: None, show_token: &mut show_token, port_edit: &mut port_edit };
+            show(ui.ctx(), dialog, &mut settings, &next_take, &hotkeys, &recent, api);
+        });
+        output.textures_delta.clear();
+        output
     }
 }

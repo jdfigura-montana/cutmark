@@ -1452,6 +1452,12 @@ fn menu_item(ui: &mut egui::Ui, label: &str, chord: &str) -> egui::Response {
     ui.add(egui::Button::new(job))
 }
 
+/// Whether Ctrl+, must open the Settings dialog right now: the chord is pressed this frame,
+/// the dialog is closed and no widget (a text field above all) holds the keyboard focus.
+fn settings_key_pressed(ctx: &egui::Context, dialog_open: bool) -> bool {
+    !dialog_open && ctx.memory(|memory| memory.focused().is_none()) && ctx.input(|input| input.modifiers.ctrl && input.key_pressed(egui::Key::Comma))
+}
+
 /// Sends one command to the controller bus with the current QPC time, logging when the bus has ended.
 pub(crate) fn send(bus: &BusSender, kind: CommandKind) {
     let command = Command::new(kind, capture::qpc_now());
@@ -1526,8 +1532,9 @@ impl eframe::App for RecorderApp {
             self.set_mode(running, to);
         }
         self.handle_mode_keys(&ctx, running);
-        // File > Settings (Ctrl+,) opens the Settings dialog (spec "Menus").
-        if ctx.input(|input| input.modifiers.ctrl && input.key_pressed(egui::Key::Comma)) {
+        // File > Settings (Ctrl+,) opens the Settings dialog (spec "Menus"): only on the
+        // press itself, never while the dialog is open or a text field holds the focus.
+        if settings_key_pressed(&ctx, self.settings_dialog.open) {
             self.settings_dialog.open = true;
         }
 
@@ -1598,5 +1605,37 @@ mod tests {
         assert_eq!(right.width(), RIGHT_PANEL_W, "the right column keeps the settings panel width");
         assert_eq!(left.width(), LEFT_PANEL_W, "the left column keeps the Sources panel width");
         assert_eq!(center.left(), left.right() + gap, "the center column starts after the left column");
+    }
+
+    /// Ctrl+, opens the Settings dialog only on the press itself, while the dialog is
+    /// closed and no text field holds the keyboard focus.
+    #[test]
+    fn ctrl_comma_opens_the_dialog_only_on_a_press_while_it_is_closed_and_unfocused() {
+        let pressed = |dialog_open: bool, focused: bool, ctrl: bool| {
+            let ctx = egui::Context::default();
+            ui_kit::apply(&ctx);
+            let modifiers = if ctrl { egui::Modifiers::CTRL } else { egui::Modifiers::NONE };
+            let mut events = Vec::new();
+            if ctrl {
+                events.push(egui::Event::ModifiersChanged(egui::Modifiers::CTRL));
+            }
+            events.push(egui::Event::Key { key: egui::Key::Comma, physical_key: None, pressed: true, repeat: false, modifiers });
+            let raw = egui::RawInput { events, ..Default::default() };
+            let seen = std::cell::Cell::new(false);
+            let mut buffer = String::new();
+            let ctx_ref = &ctx;
+            let mut output = ctx.run_ui(raw, |ui| {
+                if focused {
+                    egui::TextEdit::singleline(&mut buffer).show(ui).response.request_focus();
+                }
+                seen.set(settings_key_pressed(ctx_ref, dialog_open));
+            });
+            output.textures_delta.clear();
+            seen.get()
+        };
+        assert!(pressed(false, false, true), "Ctrl+, opens the dialog while it is closed and nothing is focused");
+        assert!(!pressed(true, false, true), "Ctrl+, is ignored while the dialog is already open");
+        assert!(!pressed(false, true, true), "Ctrl+, is ignored while a text field has the focus");
+        assert!(!pressed(false, false, false), "a bare comma does not open the dialog");
     }
 }
