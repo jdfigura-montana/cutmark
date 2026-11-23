@@ -1492,6 +1492,7 @@ dependencies = [
  "eframe",
  "egui",
  "env_logger",
+ "ffmpeg-next",
  "global-hotkey",
  "hound",
  "log",

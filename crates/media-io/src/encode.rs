@@ -280,6 +280,12 @@ impl EncodedPacket {
         Self { packet }
     }
 
+    /// Wraps a hand-made packet so tests in other crates can feed the muxer without an encoder.
+    #[doc(hidden)]
+    pub fn from_raw_packet(packet: Packet) -> Self {
+        Self { packet }
+    }
+
     /// The presentation timestamp, in the encoder's time base.
     pub fn pts(&self) -> Option<i64> {
         self.packet.pts()
