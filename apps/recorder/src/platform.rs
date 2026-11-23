@@ -4,6 +4,66 @@ use std::path::PathBuf;
 
 use raw_window_handle::HasWindowHandle;
 
+/// Whether Windows currently suppresses toast notifications, that is, whether Do Not Disturb is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationState {
+    /// Notifications are suppressed: Do Not Disturb is on.
+    On,
+    /// Notifications can appear: Do Not Disturb is off.
+    Off,
+    /// The state could not be read.
+    Unknown,
+}
+
+/// Reads the Do Not Disturb state: On when Windows suppresses notifications, Off when it accepts them.
+pub fn notification_state() -> NotificationState {
+    notification_state_raw().0
+}
+
+/// Reads the Do Not Disturb state with the raw SHQueryUserNotificationState value, for diagnostics.
+pub fn notification_state_raw() -> (NotificationState, i32) {
+    #[cfg(windows)]
+    {
+        notification_state_win32()
+    }
+    #[cfg(not(windows))]
+    {
+        (NotificationState::Unknown, 0)
+    }
+}
+
+/// Calls SHQueryUserNotificationState and maps quiet time, busy, full screen and presentation mode to On.
+#[cfg(windows)]
+#[allow(unsafe_code, reason = "SHQueryUserNotificationState: a shell query that only fills its out enum parameter")]
+fn notification_state_win32() -> (NotificationState, i32) {
+    use windows::Win32::UI::Shell::{
+        QUNS_ACCEPTS_NOTIFICATIONS, QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_QUIET_TIME, QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState,
+    };
+
+    // SAFETY: the call only writes the returned notification state enum and takes no pointers.
+    match unsafe { SHQueryUserNotificationState() } {
+        Ok(state) => {
+            let mapped = if state == QUNS_ACCEPTS_NOTIFICATIONS {
+                NotificationState::Off
+            } else if matches!(state, QUNS_QUIET_TIME | QUNS_BUSY | QUNS_RUNNING_D3D_FULL_SCREEN | QUNS_PRESENTATION_MODE) {
+                NotificationState::On
+            } else {
+                NotificationState::Unknown
+            };
+            (mapped, state.0)
+        }
+        Err(_) => (NotificationState::Unknown, 0),
+    }
+}
+
+/// Opens the Windows notification settings page; the Recorder never changes the setting itself.
+pub fn open_notification_settings() {
+    #[cfg(windows)]
+    if let Err(err) = std::process::Command::new("explorer").arg("ms-settings:notifications").spawn() {
+        log::warn!("could not open the notification settings: {err}");
+    }
+}
+
 /// Opens a file picker filtered to PNG and JPG images; None when it fails or the user cancels.
 pub fn pick_image_file() -> Option<PathBuf> {
     #[cfg(windows)]

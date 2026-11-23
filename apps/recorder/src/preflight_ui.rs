@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use crate::engine::bus::{BusSender, Command, CommandKind};
 use crate::engine::controller::{ControllerState, Phase, PreflightResult};
-use crate::engine::preflight::Status;
+use crate::engine::preflight::{DND_LABEL, Status, dnd_line};
+use crate::platform::{notification_state, open_notification_settings};
 
 /// The colour of a passing result; the theme has no green of its own.
 const PASS_GREEN: egui::Color32 = egui::Color32::from_rgb(70, 190, 100);
@@ -64,6 +65,16 @@ fn show_result(ui: &mut egui::Ui, result: &PreflightResult) {
             ui.label(&line.detail);
             ui.end_row();
         }
+        let dnd = dnd_line(notification_state());
+        ui.strong(DND_LABEL);
+        ui.colored_label(colour(ui, dnd.status), dnd.status.label());
+        ui.horizontal(|ui| {
+            ui.label(&dnd.detail);
+            if dnd.status != Status::Pass && ui.button("Open notification settings").clicked() {
+                open_notification_settings();
+            }
+        });
+        ui.end_row();
     });
     if let Some(folder) = &result.kept_folder {
         ui.label(format!("Files kept in {}", folder.display()));
