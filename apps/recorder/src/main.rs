@@ -13,6 +13,7 @@ mod hotkeys;
 mod key_ui;
 mod label_popup;
 mod layout_ui;
+#[allow(dead_code)] // the Marks list returns in R7's Live panel and R8's Review right panel
 mod marks_ui;
 mod platform;
 mod preflight_ui;
@@ -20,6 +21,7 @@ mod preview_ui;
 mod profile_ui;
 mod profiles;
 mod recovery;
+mod settings_ui;
 mod status_ui;
 mod sync_flash;
 mod takes;

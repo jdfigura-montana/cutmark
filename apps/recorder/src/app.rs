@@ -1,6 +1,6 @@
 //! The Recorder window: draws what the engine controller publishes and sends it commands and settings.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -18,13 +18,13 @@ use crate::hotkeys::Hotkeys;
 use crate::key_ui::{self, KeyUiState};
 use crate::label_popup::PopupHandle;
 use crate::layout_ui;
-use crate::marks_ui;
 use crate::platform;
 use crate::preflight_ui::PreflightSection;
 use crate::preview_ui::PreviewView;
 use crate::profile_ui::{ProfileOutcome, ProfileSection};
 use crate::profiles::ProfileStore;
 use crate::recovery::{self, RecoveryReport};
+use crate::settings_ui::{self, ApiUi, NextTake, Section, SettingsDialog};
 use crate::status_ui;
 use crate::tools_ui::{self, Tool};
 use crate::tracks_ui::{self, LiveTrackStats, TracksChanged};
@@ -105,8 +105,6 @@ pub struct RecorderApp {
     recovery_rx: Option<std::sync::mpsc::Receiver<RecoveryReport>>,
     /// What the recovery scan found, until the banner is dismissed.
     recovery: Option<RecoveryReport>,
-    /// Whether the recovery banner lists the recovered take names.
-    recovery_details: bool,
     /// The profile dropdown, its buttons and every encoder option.
     profile_section: ProfileSection,
     /// The profiles in memory: the one place the Profile and Webcam sections edit, with one debounced save.
@@ -137,6 +135,8 @@ pub struct RecorderApp {
     modes: ModeState,
     /// Whether the controller ran a take, countdown included, on the previous frame.
     was_running: bool,
+    /// The Settings dialog: whether it is open and the section its right side shows.
+    settings_dialog: SettingsDialog,
 }
 
 impl RecorderApp {
@@ -224,7 +224,6 @@ impl RecorderApp {
             tool,
             recovery_rx,
             recovery: None,
-            recovery_details: false,
             profile_section,
             profile_store,
             source_size,
@@ -240,6 +239,7 @@ impl RecorderApp {
             sources_card_height: 0.0,
             modes,
             was_running: false,
+            settings_dialog: SettingsDialog::default(),
         };
         app.sync_preview(&cc.egui_ctx);
         app.sync_api(&cc.egui_ctx);
@@ -282,44 +282,78 @@ impl RecorderApp {
         }
     }
 
-    /// Draws the Control API section: the switch, the port, the token and the number of connected clients.
-    fn api_section(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Control API");
-        ui.checkbox(&mut self.settings.api.enabled, "On");
-        ui.horizontal(|ui| {
-            ui.label("Port");
-            let response = ui.add(egui::DragValue::new(&mut self.api_port_edit).range(1024..=65535).speed(0.0));
-            if response.lost_focus() || response.drag_stopped() {
-                self.settings.api.port = self.api_port_edit;
-            }
-        });
-        match &self.api {
-            Some(server) => {
-                ui.label(format!("Listening on 127.0.0.1:{}", server.port()));
-                ui.label(format!("Connected clients: {}", server.client_count()));
-            }
-            None => {
-                ui.label("Not running");
+    /// The banner strip at the top of the center panel (spec "Mapping"): one row per active
+    /// warning banner, the recovered-marks banner with its Details popover and Dismiss button,
+    /// and the "Starting is blocked" reason. Returns whether any row was drawn.
+    fn banner_strip(&mut self, ui: &mut egui::Ui, state: &ControllerState) -> bool {
+        let mut rows: Vec<BannerRow> = Vec::new();
+        if self.capture_exclusion_failed {
+            rows.push(BannerRow::Warn("This window may appear in recordings".to_owned()));
+        }
+        if let Some(message) = &state.error {
+            rows.push(BannerRow::Error(format!("Recording error: {message}")));
+        }
+        if let Some(notice) = &state.audio_notice {
+            rows.push(BannerRow::Warn(notice.clone()));
+        }
+        for banner in &state.banners {
+            rows.push(BannerRow::Warn(banner.clone()));
+        }
+        for problem in &self.hotkeys.problems {
+            rows.push(BannerRow::Warn(problem.clone()));
+        }
+        if let Some(problem) = self.preview_problem() {
+            rows.push(BannerRow::Warn(format!("Preview: {problem}")));
+        }
+        if let Some(problem) = self.webcam.warning() {
+            rows.push(BannerRow::Warn(format!("Webcam: {problem}")));
+        }
+        if let Some(problem) = &self.api_error {
+            rows.push(BannerRow::Warn(problem.clone()));
+        }
+        if state.phase == Phase::Idle && self.profile_section.blocked() {
+            rows.push(BannerRow::Error("Starting is blocked until the profile errors are fixed".to_owned()));
+        }
+        let recovered: Vec<String> = self.recovery.as_ref().map(|report| report.recovered.clone()).unwrap_or_default();
+        let recovery_errors: Vec<String> =
+            self.recovery.as_ref().map(|report| report.errors.iter().map(|error| format!("Marks recovery: {error}")).collect()).unwrap_or_default();
+        if rows.is_empty() && recovered.is_empty() && recovery_errors.is_empty() {
+            return false;
+        }
+        for row in &rows {
+            match row {
+                BannerRow::Warn(message) => {
+                    banner_row(ui, color::SEM_METER_WARN, message, None, false);
+                }
+                BannerRow::Error(message) => {
+                    banner_row(ui, color::SEM_RECORD, message, None, false);
+                }
             }
         }
-        let Some(api_token) = self.api_token.clone() else { return };
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Token");
-            let shown = if self.api_show_token { api_token.clone() } else { "*".repeat(api_token.chars().count().min(24)) };
-            ui.add(egui::Label::new(egui::RichText::new(shown).monospace()).wrap());
-        });
-        ui.horizontal(|ui| {
-            if ui.button(if self.api_show_token { "Hide" } else { "Show" }).clicked() {
-                self.api_show_token = !self.api_show_token;
+        if !recovered.is_empty() {
+            let (_, details, dismiss) =
+                banner_row(ui, color::SEM_METER_WARN, &format!("Recovered marks for {} take(s)", recovered.len()), Some("Details"), true);
+            if let Some(details) = details {
+                egui::Popup::menu(&details).show(|ui| {
+                    for name in &recovered {
+                        ui.label(name);
+                    }
+                });
             }
-            if ui.button("Copy").clicked() {
-                ui.ctx().copy_text(api_token);
+            if dismiss.is_some_and(|response| response.clicked()) {
+                self.recovery = None;
             }
-            if ui.button("Regenerate").on_hover_text("Makes a new token and disconnects every client").clicked() {
-                self.api_regenerate = true;
-                ui.ctx().request_repaint();
+        }
+        if !recovery_errors.is_empty() {
+            let dismissable = recovered.is_empty();
+            for message in &recovery_errors {
+                let (_, _, dismiss) = banner_row(ui, color::SEM_METER_WARN, message, None, dismissable);
+                if dismissable && dismiss.is_some_and(|response| response.clicked()) {
+                    self.recovery = None;
+                }
             }
-        });
+        }
+        true
     }
 
     /// Takes in the recovery report once the background scan has delivered it.
@@ -332,43 +366,6 @@ impl RecorderApp {
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => self.recovery_rx = None,
-        }
-    }
-
-    /// Draws the recovery banners: an info banner for recovered takes and a warning for errors, with a dismiss button.
-    fn recovery_banner(&mut self, ui: &mut egui::Ui) {
-        let Some(report) = &self.recovery else { return };
-        let warn = ui.visuals().warn_fg_color;
-        let mut details = self.recovery_details;
-        let mut dismiss = false;
-        if !report.recovered.is_empty() {
-            ui.horizontal(|ui| {
-                ui.colored_label(ui_kit::palette::ACCENT, format!("Recovered marks for {} take(s)", report.recovered.len()));
-                if ui.small_button(if details { "Hide details" } else { "Details" }).clicked() {
-                    details = !details;
-                }
-                if ui.small_button("Dismiss").clicked() {
-                    dismiss = true;
-                }
-            });
-            if details {
-                for name in &report.recovered {
-                    ui.label(format!("    {name}"));
-                }
-            }
-        }
-        if !report.errors.is_empty() {
-            for error in &report.errors {
-                ui.colored_label(warn, format!("Marks recovery: {error}"));
-            }
-            if report.recovered.is_empty() && ui.small_button("Dismiss").clicked() {
-                dismiss = true;
-            }
-        }
-        self.recovery_details = details;
-        if dismiss {
-            self.recovery = None;
-            self.recovery_details = false;
         }
     }
 
@@ -610,44 +607,6 @@ impl RecorderApp {
         ui.add_space(8.0);
     }
 
-    /// Draws the countdown settings: how long it counts, and whether a linked Prompter's own countdown replaces it.
-    fn countdown_section(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Countdown");
-        egui::ComboBox::from_label("Countdown before recording").selected_text(countdown_label(self.settings.countdown_secs)).show_ui(ui, |ui| {
-            for secs in COUNTDOWN_CHOICES {
-                ui.selectable_value(&mut self.settings.countdown_secs, secs, countdown_label(secs));
-            }
-        });
-        ui.checkbox(&mut self.settings.hide_countdown_when_linked, "Hide my countdown when a prompter is linked");
-    }
-
-    /// Draws the hotkey list with each chord's status.
-    fn hotkey_grid(&self, ui: &mut egui::Ui) {
-        let warn = ui.visuals().warn_fg_color;
-        let error = ui.visuals().error_fg_color;
-        egui::Grid::new("hotkeys").num_columns(3).striped(true).show(ui, |ui| {
-            ui.strong("Chord");
-            ui.strong("Action");
-            ui.strong("Status");
-            ui.end_row();
-            for hotkey in &self.hotkeys.registered {
-                ui.monospace(&hotkey.chord);
-                ui.label(&hotkey.action);
-                match self.hotkeys.altgr.iter().find(|conflict| conflict.action == hotkey.action) {
-                    Some(conflict) => ui.colored_label(warn, format!("AltGr types '{}'", conflict.typed)),
-                    None => ui.label("OK"),
-                };
-                ui.end_row();
-            }
-            for hotkey in &self.hotkeys.refused {
-                ui.monospace(&hotkey.chord);
-                ui.label(&hotkey.action);
-                ui.colored_label(error, "Taken by another program").on_hover_text(&hotkey.reason);
-                ui.end_row();
-            }
-        });
-    }
-
     /// Follows the controller phase (spec "Mode rules"): a take starting, countdown included,
     /// switches to Record and remembers the mode that was open; the take ending returns to it.
     /// The mode is persisted with the settings.
@@ -696,11 +655,17 @@ impl RecorderApp {
 
     /// Draws the 44px title bar (spec "Title bar", rev 3): the app mark and the menus on the
     /// left, the project name with its caption in the center, and the mode switch on the
-    /// right; the separator and the caption buttons are the toolbar's own. A mode the user
-    /// picked in the View menu or the switch is reported through `mode_picked`.
-    fn title_bar(&self, ui: &mut egui::Ui, running: bool, state: &ControllerState, mode_picked: &Cell<Option<Mode>>) {
+    /// right; the separator and the caption buttons are the toolbar's own. Clicking the project
+    /// name opens the rename popover; a mode the user picked in the View menu or the switch is
+    /// reported through `mode_picked`.
+    fn title_bar(&mut self, ui: &mut egui::Ui, running: bool, state: &ControllerState, mode_picked: &Cell<Option<Mode>>) {
         let bus = self.controller.sender();
         let project = self.settings.project.clone();
+        // The rename popover edits a buffer; the settings keep it after the toolbar returns.
+        let edited_project = RefCell::new(self.settings.project.clone());
+        let project_changed = Cell::new(false);
+        let open_settings = Cell::new(false);
+        let open_appearance = Cell::new(false);
         let caption = self.title_caption();
         let chords = Chords::of(&self.hotkeys);
         let project_folder = project_folder(&self.settings);
@@ -723,7 +688,10 @@ impl RecorderApp {
                         ui.close();
                     }
                     ui.separator();
-                    ui.add_enabled_ui(false, |ui| menu_item(ui, "Settings", "Ctrl+,").on_disabled_hover_text("Arrives with the Settings dialog (R6)"));
+                    if menu_item(ui, "Settings", "Ctrl+,").clicked() {
+                        open_settings.set(true);
+                        ui.close();
+                    }
                     ui.separator();
                     if menu_item(ui, "Exit", "").clicked() {
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -784,13 +752,31 @@ impl RecorderApp {
                             ui.close();
                         }
                     });
+                    ui.separator();
+                    if menu_item(ui, "Appearance", "").clicked() {
+                        open_appearance.set(true);
+                        ui.close();
+                    }
                 });
                 // Help gets its items with the Help phase; the menu itself is here already.
                 let help = ui_kit::Menu::new("Help", |_ui| {});
                 ui_kit::menu_bar(ui, &mut [file, capture, view, help]);
             },
             |ui| {
+                let rename = ui.interact(ui.max_rect(), egui::Id::new("project-rename"), egui::Sense::click());
                 ui_kit::title_block(ui, &ui_kit::Title::Document { name: &project, unsaved: false, caption: Some(&caption) });
+                egui::Popup::menu(&rename).width(320.0).show(|ui| {
+                    ui.set_min_width(280.0);
+                    ui.label("Project");
+                    let edit = ui.add(egui::TextEdit::singleline(&mut *edited_project.borrow_mut()).desired_width(f32::INFINITY));
+                    if edit.changed() {
+                        project_changed.set(true);
+                    }
+                    // Enter confirms the rename and closes the popover.
+                    if edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                        ui.close();
+                    }
+                });
             },
             |ui| {
                 ui.add_enabled_ui(!running, |ui| {
@@ -800,6 +786,20 @@ impl RecorderApp {
                 });
             },
         );
+
+        // The rename popover wrote the project like the old Project field did.
+        if project_changed.get() {
+            self.settings.project = edited_project.into_inner();
+            self.push_settings_if_changed();
+            self.save_settings();
+        }
+        if open_settings.get() {
+            self.settings_dialog.open = true;
+        }
+        if open_appearance.get() {
+            self.settings_dialog.open = true;
+            self.settings_dialog.section = Section::Appearance;
+        }
 
         // The switch wrote its selection into the cell; report a change through `mode_picked`.
         let picked = Mode::ALL.get(selected.get()).copied().unwrap_or(mode);
@@ -817,7 +817,7 @@ impl RecorderApp {
             let active = state.phase.has_take();
             column(ui, left, |ui| self.sources_panel(ui, state));
             column(ui, right, |ui| self.settings_panel(ui, ctx, state));
-            column(ui, center, |ui| self.preview_panel(ui, active));
+            column(ui, center, |ui| self.preview_panel(ui, state, active));
         });
     }
 
@@ -937,9 +937,12 @@ impl RecorderApp {
         self.profile_store.save_when_due(ctx);
     }
 
-    /// The center Preview panel (spec "Setup mode"): the panel toolbar (rev 3, 44 tall) over
-    /// today's preview filling the rest of the panel.
-    fn preview_panel(&mut self, ui: &mut egui::Ui, active: bool) {
+    /// The center Preview panel (spec "Setup mode"): the banner strip, the panel toolbar
+    /// (rev 3, 44 tall) and today's preview filling the rest of the panel.
+    fn preview_panel(&mut self, ui: &mut egui::Ui, state: &ControllerState, active: bool) {
+        if self.banner_strip(ui, state) {
+            ui.add_space(space::SCALE_8);
+        }
         let mut outcome = ProfileOutcome::default();
         self.preview_toolbar(ui, active, &mut outcome);
         ui.add_space(space::SCALE_8);
@@ -994,103 +997,31 @@ impl RecorderApp {
         }
     }
 
-    /// The Record and Review placeholder: one full-width panel with a centered caption (spec step R2).
-    fn placeholder_panel(&mut self, ui: &mut egui::Ui) {
+    /// The Record and Review placeholder: the banner strip over a centered caption (spec step R2).
+    fn placeholder_panel(&mut self, ui: &mut egui::Ui, state: &ControllerState) {
         egui::CentralPanel::default().frame(window_frame()).show(ui, |ui| {
             column(ui, ui.max_rect(), |ui| {
+                self.banner_strip(ui, state);
                 let galley =
                     ui.painter().layout_no_wrap("Coming in Phase 13".to_owned(), ui_kit::fonts::medium(typography::CAPTION_SIZE), color::TEXT_TERTIARY);
-                let center = ui.max_rect().center();
+                let center = ui.available_rect_before_wrap().center();
                 ui.painter().galley(center - galley.size() / 2.0, galley, color::TEXT_TERTIARY);
             });
         });
     }
 
-    /// PARKED: holds what R6 still takes. The camera and key controls moved to their tools, the
-    /// Layout, Output and Camera ISO file groups to the Output tool, the audio tracks to the
-    /// Audio tool, and the pre-flight card to the Sources panel; the rest waits for the Settings
-    /// dialog (R6).
+    /// PARKED: emptied by R7. Only the recording panel, the countdown heading, the idle line
+    /// and the last take summary stay (spec step R6); everything else moved to the Settings
+    /// dialog, the tools, the Sources panel or the banner strip.
     fn parked_column(&mut self, ui: &mut egui::Ui, state: &ControllerState) {
-        let warn = ui.visuals().warn_fg_color;
-        let error = ui.visuals().error_fg_color;
-        ui.heading("Cutmark Recorder");
-        ui.label(format!("Active profile: {}", self.settings.active_profile));
-        ui.add_space(8.0);
-
-        if self.capture_exclusion_failed {
-            ui.colored_label(warn, "This window may appear in recordings");
-        }
-        if let Some(message) = &state.error {
-            ui.colored_label(error, format!("Recording error: {message}"));
-        }
-        if let Some(notice) = &state.audio_notice {
-            ui.colored_label(warn, notice);
-        }
-        for banner in &state.banners {
-            ui.colored_label(warn, banner);
-        }
-        for problem in &self.hotkeys.problems {
-            ui.colored_label(warn, problem);
-        }
-        if let Some(problem) = self.preview_problem() {
-            ui.colored_label(warn, format!("Preview: {problem}"));
-        }
-        if let Some(problem) = self.webcam.warning() {
-            ui.colored_label(warn, format!("Webcam: {problem}"));
-        }
-        if let Some(problem) = &self.api_error {
-            ui.colored_label(warn, problem);
-        }
-        self.recovery_banner(ui);
-        ui.add_space(8.0);
-
-        if ui.checkbox(&mut self.settings.hide_from_capture, "Hide Recorder from screen captures").changed() {
-            self.apply_hide_from_capture();
-        }
-        ui.add_space(8.0);
-
-        let active = state.phase.has_take();
-        marks_ui::show(ui, &state.recent_marks);
-        ui.add_space(8.0);
-
-        if active {
+        if state.phase.has_take() {
             self.recording_panel(ui, state);
         } else if let Phase::Countdown(left) = state.phase {
             ui.heading(format!("Starting in {left}"));
         } else {
-            if self.profile_section.blocked() {
-                ui.colored_label(error, "Idle. Starting is blocked until the profile errors below are fixed");
-            } else {
-                ui.label("Idle");
-            }
+            ui.label("Idle");
             if let Some(summary) = &state.summary {
                 self.summary_panel(ui, summary);
-            }
-        }
-        ui.add_space(8.0);
-
-        // PARKED: the Project and Naming template fields until the Settings dialog takes them in R6.
-        let mut profile_outcome = ProfileOutcome::default();
-        self.profile_section.naming_fields(ui, &mut self.settings, &mut profile_outcome);
-        self.on_profile_outcome(&profile_outcome);
-        ui.add_space(8.0);
-
-        self.countdown_section(ui);
-        ui.add_space(8.0);
-
-        self.api_section(ui);
-        ui.add_space(8.0);
-
-        ui.heading("Hotkeys");
-        self.hotkey_grid(ui);
-        ui.add_space(8.0);
-
-        ui.heading("Recent commands");
-        if state.recent.is_empty() {
-            ui.label("None yet. Press a hotkey.");
-        } else {
-            for command in state.recent.iter().rev() {
-                ui.label(format!("{:?}", command.kind));
             }
         }
     }
@@ -1106,14 +1037,6 @@ fn apply_capture_exclusion(hwnd: Option<isize>, exclude: bool) -> bool {
             false
         }
     }
-}
-
-/// The countdown lengths the settings offer, in seconds; 0 is off.
-const COUNTDOWN_CHOICES: [u8; 3] = [0, 3, 5];
-
-/// The text for a countdown length in the settings.
-fn countdown_label(secs: u8) -> String {
-    if secs == 0 { "Off".to_owned() } else { format!("{secs} seconds") }
 }
 
 /// The tray icon state that matches a controller phase.
@@ -1308,6 +1231,45 @@ fn group_caption(ui: &mut egui::Ui, text: &str) {
     ui.add(egui::Label::new(egui::RichText::new(text).font(ui_kit::fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY)).selectable(false));
 }
 
+/// One row of the banner strip: the kind decides the dot color (spec "Mapping").
+enum BannerRow {
+    /// A warning with a `sem.meter.warn` dot.
+    Warn(String),
+    /// An error with a `sem.record` dot.
+    Error(String),
+}
+
+/// One banner row: a colored dot, the message, and the optional Details and Dismiss buttons
+/// on the right, reading left to right. Returns the row, Details and Dismiss responses.
+fn banner_row(
+    ui: &mut egui::Ui,
+    dot: egui::Color32,
+    message: &str,
+    details_label: Option<&str>,
+    dismiss: bool,
+) -> (egui::Response, Option<egui::Response>, Option<egui::Response>) {
+    let mut details = None;
+    let mut dismiss_response = None;
+    let row = ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(DOT_DIAMETER, DOT_DIAMETER), egui::Sense::hover());
+        ui.painter().circle_filled(rect.center(), DOT_DIAMETER / 2.0, dot);
+        ui.add(
+            egui::Label::new(egui::RichText::new(message).font(ui_kit::fonts::medium(typography::BODY_SIZE)).color(color::TEXT_PRIMARY))
+                .selectable(false)
+                .truncate(),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if dismiss {
+                dismiss_response = Some(ui.small_button("Dismiss"));
+            }
+            if let Some(label) = details_label {
+                details = Some(ui.small_button(label));
+            }
+        });
+    });
+    (row.response, details, dismiss_response)
+}
+
 /// The window-body frame all three modes share: the ground fill with the 8px window gap on
 /// every side (spec "Window layout").
 fn window_frame() -> egui::Frame {
@@ -1423,10 +1385,42 @@ impl eframe::App for RecorderApp {
             self.set_mode(running, to);
         }
         self.handle_mode_keys(&ctx, running);
+        // File > Settings (Ctrl+,) opens the Settings dialog (spec "Menus").
+        if ctx.input(|input| input.modifiers.ctrl && input.key_pressed(egui::Key::Comma)) {
+            self.settings_dialog.open = true;
+        }
 
         match self.modes.mode {
             Mode::Setup => self.setup_panels(ui, &ctx, &state),
-            Mode::Record | Mode::Review => self.placeholder_panel(ui),
+            Mode::Record | Mode::Review => self.placeholder_panel(ui, &state),
+        }
+
+        // The Settings dialog (spec "Settings dialog"): File > Settings (Ctrl+,) and
+        // View > Appearance open it, Esc closes it.
+        let next_take = if self.settings_dialog.open {
+            let (_label, path) = self.profile_section.next_take(&self.profile_store, &self.settings);
+            NextTake { path }
+        } else {
+            NextTake::default()
+        };
+        let outcome = settings_ui::show(
+            &ctx,
+            &mut self.settings_dialog,
+            &mut self.settings,
+            &next_take,
+            &self.hotkeys,
+            &state.recent,
+            ApiUi { server: self.api.as_ref(), token: self.api_token.as_deref(), show_token: &mut self.api_show_token, port_edit: &mut self.api_port_edit },
+        );
+        if outcome.settings_changed {
+            self.push_settings_if_changed();
+            self.save_settings();
+        }
+        if outcome.hide_from_capture_changed {
+            self.apply_hide_from_capture();
+        }
+        if outcome.regenerate_token {
+            self.api_regenerate = true;
         }
     }
 }

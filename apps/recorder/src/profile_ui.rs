@@ -419,25 +419,6 @@ impl ProfileSection {
         }
     }
 
-    /// PARKED: the Project and Naming template fields with their tokens hint. They are global
-    /// settings, and the Settings dialog takes them in R6.
-    pub fn naming_fields(&mut self, ui: &mut Ui, settings: &mut Settings, outcome: &mut ProfileOutcome) {
-        ui.heading("Naming");
-        let mut changed = false;
-        egui::Grid::new("naming-fields").num_columns(2).show(ui, |ui| {
-            ui.label("Project");
-            changed |= ui.add(TextEdit::singleline(&mut settings.project).desired_width(240.0)).changed();
-            ui.end_row();
-            ui.label("Naming template");
-            changed |= ui.add(TextEdit::singleline(&mut settings.naming_template).desired_width(320.0)).changed();
-            ui.end_row();
-        });
-        ui.colored_label(ui_kit::palette::TEXT_MUTED, "Tokens: {project} {date} {time} {take} {profile}. Both fields apply to every profile.");
-        if changed {
-            outcome.active_changed = true;
-        }
-    }
-
     /// The next take for the preview toolbar: its short label ("takeNN" when the take name ends
     /// with one) and the full video file path, or an error message in the path's place.
     ///
