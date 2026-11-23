@@ -4,9 +4,11 @@
 //! Playback arrives with R9, so the center shows a placeholder with the take's
 //! name: media-io can decode live frames but offers no cheap one-frame decode
 //! of a file, so there is no thumbnail yet. Clicking a mark does nothing for
-//! the same reason; the seek comes with the playback.
+//! the same reason; the seek comes with the playback. The Actions group and
+//! the delete confirmation dialog report through [`TakeAction`] and the app
+//! does the file work.
 
-use egui::{Align, Color32, Layout, Rect, RichText, Ui, vec2};
+use egui::{Align, Button, Color32, Layout, Rect, RichText, Ui, vec2};
 use marks::MarkType;
 use ui_kit::tokens::{color, radius, size, space, typography};
 use ui_kit::{MarkerKind, inspector_group, inspector_row, marker_color};
@@ -29,6 +31,39 @@ pub enum TakesAction {
     OpenFolder,
     /// Rescan the takes.
     Refresh,
+}
+
+/// What the take panel's Actions group did this frame (spec "Review mode").
+#[derive(Debug, PartialEq)]
+pub enum TakeAction {
+    /// Nothing was clicked.
+    None,
+    /// Open Explorer with the take's main file selected.
+    ShowInFolder,
+    /// Confirm the rename to this name; the app validates it and renames every file.
+    Rename(String),
+}
+
+/// The take panel's editing state: the open rename field and the delete dialog.
+#[derive(Default)]
+pub struct TakePanelState {
+    /// The rename buffer while the take's name is being edited.
+    pub renaming: Option<String>,
+    /// Whether the rename field already took focus, so focus is only requested once.
+    rename_focused: bool,
+    /// The reason the last rename was refused, shown under the field.
+    pub rename_error: Option<String>,
+    /// Whether the delete confirmation dialog is open.
+    pub confirm_delete: bool,
+}
+
+impl TakePanelState {
+    /// Closes the rename field and clears its reason, after a rename or when the take goes away.
+    pub fn close_rename(&mut self) {
+        self.renaming = None;
+        self.rename_focused = false;
+        self.rename_error = None;
+    }
 }
 
 /// The left Takes panel (spec "Review mode"): the header with the folder and
@@ -129,11 +164,14 @@ fn fit_16_9(available: Rect) -> Rect {
 }
 
 /// The right take info panel (spec "Review mode"): the header with the take's
-/// name and date, then the File group and the sidecar's marks.
-pub fn take_panel(ui: &mut Ui, take: Option<&Take>) {
-    take_header(ui, take);
+/// name and date, then the File group, the sidecar's marks and the Actions
+/// group at the bottom. Returns what the Actions group or the rename field
+/// did; `recording` disables Rename and Delete while a take runs.
+pub fn take_panel(ui: &mut Ui, days: &[Day], selected: Option<&str>, state: &mut TakePanelState, recording: bool) -> TakeAction {
+    let take = review::find(days, selected);
+    let mut action = take_header(ui, take, state).map_or(TakeAction::None, TakeAction::Rename);
     ui.add_space(space::SCALE_8);
-    let Some(take) = take else { return };
+    let Some(take) = take else { return action };
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         ui.set_max_width(ui.available_width());
         group_caption(ui, "File");
@@ -170,23 +208,87 @@ pub fn take_panel(ui: &mut Ui, take: Option<&Take>) {
             let _ = ui_kit::list_row(ui, false, Some(mark_dot(mark.mark_type)), &label, Some(&trailing));
         }
         ui.add_space(space::SCALE_8);
+        group_caption(ui, "Actions");
+        actions_group(ui, take, state, recording, &mut action);
+        ui.add_space(space::SCALE_8);
+    });
+    action
+}
+
+/// The Actions group at the bottom of the take panel (spec "Review mode"):
+/// Show in folder, Rename and Delete take as text buttons; Rename and Delete
+/// are disabled while a take runs.
+fn actions_group(ui: &mut Ui, take: &Take, state: &mut TakePanelState, recording: bool, action: &mut TakeAction) {
+    inspector_group(ui, |ui| {
+        ui.add_space(space::SCALE_4);
+        ui.horizontal(|ui| {
+            if ui.button("Show in folder").clicked() {
+                *action = TakeAction::ShowInFolder;
+            }
+            ui.add_enabled_ui(!recording, |ui| {
+                if ui.button("Rename").clicked() {
+                    state.renaming = Some(take.name.clone());
+                    state.rename_focused = false;
+                    state.rename_error = None;
+                }
+                let delete = Button::new(RichText::new("Delete take").color(color::SEM_RECORD));
+                if ui.add(delete).clicked() {
+                    state.confirm_delete = true;
+                }
+            });
+        });
+        ui.add_space(space::SCALE_4);
     });
 }
 
-/// The take info header row (44 tall): the take's name over its start date,
-/// with the hairline along the bottom of the row.
-fn take_header(ui: &mut Ui, take: Option<&Take>) {
-    let row = vec2(ui.available_width(), size::PANEL_TOOLBAR_HEIGHT);
+/// The take info header row: the take's name over its start date, with the
+/// hairline along the bottom of the row. While the name is being edited the
+/// name is an inline text field instead: Enter confirms (the new name is
+/// returned), Esc cancels, and a refused name shows its reason under the field.
+fn take_header(ui: &mut Ui, take: Option<&Take>, state: &mut TakePanelState) -> Option<String> {
+    let mut submitted = None;
+    let mut cancelled = false;
+    let renaming = state.renaming.is_some() && take.is_some();
+    // The field grows past the 44px row, so the fixed height is only reserved
+    // when the plain name is shown.
+    let height = if renaming { 0.0 } else { size::PANEL_TOOLBAR_HEIGHT };
+    let row = vec2(ui.available_width(), height);
     let inner = ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Center), |ui| {
         ui.add_space(HEADER_PAD);
         ui.vertical(|ui| {
-            let name = take.map_or_else(|| "No take selected".to_owned(), |take| take.name.clone());
-            ui.add(
-                egui::Label::new(RichText::new(name).font(ui_kit::fonts::semibold(typography::BODY_SIZE)).color(color::TEXT_PRIMARY))
-                    .selectable(false)
-                    .truncate(),
-            );
-            if let Some(take) = take {
+            match take {
+                Some(take) => match &mut state.renaming {
+                    Some(buffer) => {
+                        let edit = ui.add(egui::TextEdit::singleline(buffer).desired_width(ui.available_width()));
+                        if !state.rename_focused {
+                            edit.request_focus();
+                            state.rename_focused = true;
+                        }
+                        if edit.lost_focus() {
+                            let (enter, escape) = ui.input(|input| (input.key_pressed(egui::Key::Enter), input.key_pressed(egui::Key::Escape)));
+                            if escape {
+                                cancelled = true;
+                            } else if enter {
+                                submitted = Some(buffer.clone());
+                            }
+                        }
+                    }
+                    None => {
+                        ui.add(
+                            egui::Label::new(RichText::new(take.name.clone()).font(ui_kit::fonts::semibold(typography::BODY_SIZE)).color(color::TEXT_PRIMARY))
+                                .selectable(false)
+                                .truncate(),
+                        );
+                    }
+                },
+                None => {
+                    ui.add(
+                        egui::Label::new(RichText::new("No take selected").font(ui_kit::fonts::semibold(typography::BODY_SIZE)).color(color::TEXT_PRIMARY))
+                            .selectable(false),
+                    );
+                }
+            }
+            if !renaming && let Some(take) = take {
                 ui.add(
                     egui::Label::new(
                         RichText::new(take.start.format("%b %d, %Y").to_string())
@@ -196,10 +298,17 @@ fn take_header(ui: &mut Ui, take: Option<&Take>) {
                     .selectable(false),
                 );
             }
+            if let Some(reason) = &state.rename_error {
+                ui.colored_label(ui.visuals().error_fg_color, reason);
+            }
         });
     });
+    if cancelled {
+        state.close_rename();
+    }
     let rect = inner.response.rect;
     ui.painter().hline(rect.x_range().expand(space::PANEL_PADDING), rect.bottom(), egui::Stroke::new(HAIRLINE, color::STROKE_HAIRLINE));
+    submitted
 }
 
 /// One read-only inspector row with its value.
@@ -241,4 +350,51 @@ fn type_name(mark_type: MarkType, original: Option<&str>) -> String {
             MarkType::System => "System".to_owned(),
         },
     }
+}
+
+/// The delete confirmation dialog (spec "Review mode"): every file of the take
+/// with its size, Cancel and "Move to Recycle Bin". Returns whether the move
+/// was confirmed this frame; the app does the file work.
+pub fn delete_dialog(ctx: &egui::Context, take: Option<&Take>, open: &mut bool) -> bool {
+    let mut confirmed = false;
+    if !*open {
+        return false;
+    }
+    let Some(take) = take else {
+        *open = false;
+        return false;
+    };
+    // The buttons report through cells; the dialog itself closes `open` on Esc
+    // and a backdrop click, so the closures must not capture it.
+    let closed = std::cell::Cell::new(false);
+    ui_kit::dialog(
+        ctx,
+        egui::Id::new("review-delete-take"),
+        "Delete take",
+        &mut *open,
+        |ui| {
+            ui.label(format!("Move the files of \u{201c}{}\u{201d} to the Recycle Bin?", take.name));
+            ui.add_space(space::SCALE_8);
+            egui::ScrollArea::vertical().max_height(220.0).auto_shrink(false).show(ui, |ui| {
+                ui.set_max_width(ui.available_width());
+                for file in &take.files {
+                    let name = file.path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+                    ui.label(format!("{name} ({})", review::format_size(file.size)));
+                }
+            });
+        },
+        |ui| {
+            if ui.button("Cancel").clicked() {
+                closed.set(true);
+            }
+            if ui_kit::primary_button(ui, "Move to Recycle Bin").clicked() {
+                closed.set(true);
+                confirmed = true;
+            }
+        },
+    );
+    if closed.get() {
+        *open = false;
+    }
+    confirmed
 }

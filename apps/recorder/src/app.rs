@@ -153,6 +153,8 @@ pub struct RecorderApp {
     review_dirty: bool,
     /// The finished take the stop toast offers a Review action for, until the toast is gone.
     review_take_pending: Option<String>,
+    /// The Review take panel's editing state: the rename field and the delete dialog.
+    take_panel: review_ui::TakePanelState,
 }
 
 impl RecorderApp {
@@ -261,6 +263,7 @@ impl RecorderApp {
             review_selected: None,
             review_dirty: true,
             review_take_pending: None,
+            take_panel: review_ui::TakePanelState::default(),
         };
         app.sync_preview(&cc.egui_ctx);
         app.sync_api(&cc.egui_ctx);
@@ -1020,9 +1023,9 @@ impl RecorderApp {
     }
 
     /// The Review layout (spec "Review mode"): the takes list on the left, the
-    /// take's picture in the center and the take info on the right. The scan
-    /// runs when Review opens, when a take finishes and on the header's
-    /// refresh button; playback arrives with R9.
+    /// take's picture in the center and the take info with its Actions group on
+    /// the right. The scan runs when Review opens, when a take finishes and on
+    /// the header's refresh button; playback arrives with R9.
     fn review_panels(&mut self, ui: &mut egui::Ui, state: &ControllerState) {
         if self.review_dirty {
             self.review_dirty = false;
@@ -1041,10 +1044,25 @@ impl RecorderApp {
                 }
                 review_ui::center(ui, &self.review_days, self.review_selected.as_deref());
             });
-            column(ui, right, |ui| {
-                review_ui::take_panel(ui, review::find(&self.review_days, self.review_selected.as_deref()));
+            let recording = state.phase != Phase::Idle;
+            column(ui, right, |ui| match review_ui::take_panel(ui, &self.review_days, self.review_selected.as_deref(), &mut self.take_panel, recording) {
+                review_ui::TakeAction::ShowInFolder => {
+                    if let Some(video) = review::find(&self.review_days, self.review_selected.as_deref()).map(|take| take.video.clone()) {
+                        platform::show_in_folder(&video);
+                    }
+                }
+                review_ui::TakeAction::Rename(new_name) => self.rename_selected_take(new_name),
+                review_ui::TakeAction::None => {}
             });
         });
+        // The delete confirmation dialog (spec "Review mode"): every file of the
+        // take with its size, Cancel and Move to Recycle Bin.
+        if self.take_panel.confirm_delete {
+            let take = review::find(&self.review_days, self.review_selected.as_deref());
+            if review_ui::delete_dialog(ui.ctx(), take, &mut self.take_panel.confirm_delete) {
+                self.delete_selected_take();
+            }
+        }
     }
 
     /// Rescans the project folder for takes and keeps the selected take when
@@ -1055,6 +1073,53 @@ impl RecorderApp {
         if !names.iter().any(|name| Some(name) == self.review_selected.as_ref()) {
             self.review_selected = names.first().cloned();
         }
+    }
+
+    /// Renames every file of the selected take after checking the new name;
+    /// a refused name keeps the field open with its reason under it.
+    fn rename_selected_take(&mut self, new_name: String) {
+        let Some(take) = review::find(&self.review_days, self.review_selected.as_deref()) else {
+            self.take_panel.close_rename();
+            return;
+        };
+        let old_name = take.name.clone();
+        let others: Vec<String> =
+            self.review_days.iter().flat_map(|day| day.takes.iter().map(|take| take.name.clone())).filter(|name| name != &old_name).collect();
+        let outcome = review::check_take_name(&new_name, &others).and_then(|()| review::rename_take(take, &new_name));
+        if let Err(reason) = outcome {
+            self.take_panel.rename_error = Some(reason);
+            return;
+        }
+        log::info!("renamed the take {old_name} to {new_name}");
+        self.review_selected = Some(new_name);
+        self.take_panel.close_rename();
+        self.rescan_review();
+    }
+
+    /// Moves every file of the selected take to the Recycle Bin and selects
+    /// the take that takes its place in the list (the newest when there is
+    /// no next one).
+    fn delete_selected_take(&mut self) {
+        let Some(take) = review::find(&self.review_days, self.review_selected.as_deref()) else {
+            return;
+        };
+        let name = take.name.clone();
+        let files: Vec<std::path::PathBuf> = take.files.iter().map(|file| file.path.clone()).collect();
+        let index = self
+            .review_days
+            .iter()
+            .flat_map(|day| day.takes.iter().map(|take| take.name.clone()))
+            .position(|name| Some(name) == self.review_selected)
+            .unwrap_or(0);
+        if let Err(err) = trash::delete_all(&files) {
+            log::warn!("could not move {name} to the Recycle Bin: {err}");
+            return;
+        }
+        log::info!("moved the take {name} to the Recycle Bin");
+        self.review_dirty = true;
+        self.rescan_review();
+        let names: Vec<String> = self.review_days.iter().flat_map(|day| day.takes.iter().map(|take| take.name.clone())).collect();
+        self.review_selected = names.get(index).or_else(|| names.first()).cloned();
     }
 
     /// The Record layout (spec "Modes" and "Record mode"): the recording preview in a center

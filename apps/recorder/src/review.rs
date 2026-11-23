@@ -8,6 +8,11 @@
 //! otherwise. media-io exposes no file probe, so the duration comes from the
 //! sidecar's recording length and a take without a sidecar shows none; no
 //! new dependency was added for this.
+//!
+//! The rename and delete actions (spec "Review mode", the right panel's
+//! Actions group) live here too: renaming moves every file of a take to a new
+//! stem and rewrites the file name references inside the sidecar, deleting
+//! hands the files to the Recycle Bin through the `trash` crate.
 
 use std::collections::HashMap;
 use std::fs;
@@ -202,6 +207,103 @@ fn group_by_day(takes: Vec<Take>) -> Vec<Day> {
     days
 }
 
+/// The characters Windows forbids in file and folder names.
+const FORBIDDEN_CHARS: [char; 9] = ['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
+
+/// The device names Windows reserves, with their trailing digits.
+const RESERVED_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7",
+    "LPT8", "LPT9",
+];
+
+/// Checks a new take name: not empty, no characters Windows forbids, no
+/// reserved device name, no trailing dot or space, and no existing take with
+/// the same name (Windows file names ignore case). Returns the reason the
+/// name must be refused.
+pub fn check_take_name(new_name: &str, existing_takes: &[String]) -> Result<(), String> {
+    if new_name.trim().is_empty() {
+        return Err("The name cannot be empty".to_owned());
+    }
+    if let Some(ch) = new_name.chars().find(|ch| FORBIDDEN_CHARS.contains(ch) || ch.is_control()) {
+        return Err(format!("The name cannot contain the character {ch:?}"));
+    }
+    if new_name.ends_with('.') || new_name.ends_with(' ') {
+        return Err("The name cannot end with a dot or a space".to_owned());
+    }
+    let base = new_name.split('.').next().unwrap_or(new_name);
+    if RESERVED_NAMES.iter().any(|reserved| reserved.eq_ignore_ascii_case(base)) {
+        return Err(format!("{base} is reserved by Windows"));
+    }
+    if existing_takes.iter().any(|existing| existing.eq_ignore_ascii_case(new_name)) {
+        return Err("A take with this name already exists".to_owned());
+    }
+    Ok(())
+}
+
+/// Renames every file of the take to `new_name` and rewrites the file name
+/// references inside the marks sidecar. When a rename or the sidecar update
+/// fails, the renames already done are rolled back and the reason is returned.
+pub fn rename_take(take: &Take, new_name: &str) -> Result<(), String> {
+    let mut renames: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for file in &take.files {
+        let name = file.path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+        let Some(rest) = name.strip_prefix(take.name.as_str()) else {
+            return Err(format!("{name} does not start with the take's name"));
+        };
+        renames.push((file.path.clone(), file.path.with_file_name(format!("{new_name}{rest}"))));
+    }
+    let mut done: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for (from, to) in renames {
+        if from == to {
+            continue;
+        }
+        if to.exists() {
+            roll_back(&done);
+            return Err(format!("{} already exists", to.display()));
+        }
+        if let Err(err) = fs::rename(&from, &to) {
+            log::warn!("could not rename {}: {err}", from.display());
+            roll_back(&done);
+            return Err(format!("{} could not be renamed", from.display()));
+        }
+        done.push((from, to));
+    }
+    // The sidecar records the take's file names; give it the new stem too.
+    let sidecar = done.iter().find(|(from, _)| from.to_string_lossy().ends_with(".marks.json")).map(|(_, to)| to.clone());
+    if let Some(sidecar) = sidecar
+        && let Err(err) = rewrite_sidecar(&sidecar, &take.name, new_name)
+    {
+        log::warn!("could not rewrite {}: {err}", sidecar.display());
+        roll_back(&done);
+        return Err("the marks sidecar could not be updated".to_owned());
+    }
+    Ok(())
+}
+
+/// Renames the already renamed files back, last first, logging the ones that could not be undone.
+fn roll_back(done: &[(PathBuf, PathBuf)]) {
+    for (from, to) in done.iter().rev() {
+        if let Err(err) = fs::rename(to, from) {
+            log::warn!("could not roll back the rename of {}: {err}", to.display());
+        }
+    }
+}
+
+/// Replaces every occurrence of the old take stem in the sidecar's text (the
+/// recorded media paths carry it) and writes the result through a temp file
+/// in the same folder that is renamed over the sidecar.
+fn rewrite_sidecar(sidecar: &Path, old_stem: &str, new_stem: &str) -> std::io::Result<()> {
+    let text = fs::read_to_string(sidecar)?;
+    let name = sidecar.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let temp = sidecar.with_file_name(format!("{name}.tmp"));
+    fs::write(&temp, text.replace(old_stem, new_stem))?;
+    if let Err(err) = fs::rename(&temp, sidecar) {
+        let _ = fs::remove_file(&temp);
+        return Err(err);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::io;
@@ -220,6 +322,11 @@ mod tests {
 
     /// A minimal valid sidecar: `marks` marks, started at `started_at`, one media file of `duration_ms`.
     fn sidecar_json(started_at: &str, duration_ms: u64, marks: usize) -> String {
+        sidecar_json_media(started_at, duration_ms, marks, "take.mkv")
+    }
+
+    /// [`sidecar_json`] with a media path of its own, like a real take's sidecar recording its file name.
+    fn sidecar_json_media(started_at: &str, duration_ms: u64, marks: usize, media_path: &str) -> String {
         let entries: Vec<String> = (0..marks)
             .map(|index| {
                 format!(
@@ -229,7 +336,7 @@ mod tests {
             })
             .collect();
         format!(
-            "{{\n  \"schema_version\": 1,\n  \"session\": {{\n    \"id\": \"0196f3a2-7c10-7b3e-9a41-2d5e8f1c6b07\",\n    \"started_at\": \"{started_at}\",\n    \"ended_at\": \"{started_at}\",\n    \"recovered\": false,\n    \"writer\": {{ \"app\": \"cutmark-recorder\", \"version\": \"1.2.0\" }}\n  }},\n  \"media\": [\n    {{\n      \"index\": 0,\n      \"path\": \"take.mkv\",\n      \"offset_ms\": 0,\n      \"duration_ms\": {duration_ms}\n    }}\n  ],\n  \"marks\": [\n{}\n  ]\n}}",
+            "{{\n  \"schema_version\": 1,\n  \"session\": {{\n    \"id\": \"0196f3a2-7c10-7b3e-9a41-2d5e8f1c6b07\",\n    \"started_at\": \"{started_at}\",\n    \"ended_at\": \"{started_at}\",\n    \"recovered\": false,\n    \"writer\": {{ \"app\": \"cutmark-recorder\", \"version\": \"1.2.0\" }}\n  }},\n  \"media\": [\n    {{\n      \"index\": 0,\n      \"path\": \"{media_path}\",\n      \"offset_ms\": 0,\n      \"duration_ms\": {duration_ms}\n    }}\n  ],\n  \"marks\": [\n{}\n  ]\n}}",
             entries.join(",\n")
         )
     }
@@ -346,5 +453,77 @@ mod tests {
         assert_eq!(format_size(1_500_000_000), "1.5 GB");
         assert_eq!(format_size(2_500_000), "2.5 MB");
         assert_eq!(format_size(1_500), "1.5 KB");
+    }
+
+    #[test]
+    fn renaming_a_take_moves_every_file_and_updates_the_sidecar() -> Result<(), Box<dyn std::error::Error>> {
+        let root = fresh_dir("review-rename")?;
+        let project = root.join("Show");
+        let folder = project.join("2026-11-20_10-00-00_take01");
+        fs::create_dir_all(&folder)?;
+        let stem = "2026-11-20_10-00-00_take01";
+        for suffix in [".mkv", ".iso", ".wav", ".marks.json", "_marks.md", "_marks.csv"] {
+            fs::write(folder.join(format!("{stem}{suffix}")), b"data")?;
+        }
+        fs::write(folder.join(format!("{stem}.marks.json")), sidecar_json_media("2026-11-20T12:00:00.000Z", 1_000, 1, &format!("{stem}.mkv")))?;
+        let days = scan(&project);
+        assert_eq!(days[0].takes[0].name, stem);
+
+        let new_name = "2026-11-20_10-05-00_take01b";
+        rename_take(&days[0].takes[0], new_name)?;
+        for suffix in [".mkv", ".iso", ".wav", ".marks.json", "_marks.md", "_marks.csv"] {
+            assert!(!folder.join(format!("{stem}{suffix}")).exists(), "{suffix} was moved");
+            assert!(folder.join(format!("{new_name}{suffix}")).exists(), "{suffix} has the new name");
+        }
+        let sidecar = fs::read_to_string(folder.join(format!("{new_name}.marks.json")))?;
+        assert!(sidecar.contains(&format!("\"path\": \"{new_name}.mkv\"")), "the sidecar's media path follows the rename");
+        assert!(!sidecar.contains(stem), "no old file name reference is left in the sidecar");
+        fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_name_another_take_uses_or_windows_forbids_is_refused() {
+        let existing = ["2026-11-20_10-00-00_take01".to_owned()];
+        assert!(check_take_name("2026-11-20_10-00-00_take02", &existing).is_ok());
+        assert!(check_take_name("2026-11-20_10-00-00_take01", &existing).is_err(), "an existing take collides");
+        assert!(check_take_name("2026-11-20_10-00-00_TAKE01", &existing).is_err(), "file names on Windows ignore case");
+        assert!(check_take_name("", &existing).is_err(), "an empty name is refused");
+        assert!(check_take_name("take:01", &existing).is_err(), "a colon is forbidden");
+        assert!(check_take_name("take01 ", &existing).is_err(), "a trailing space is refused");
+        assert!(check_take_name("take01.", &existing).is_err(), "a trailing dot is refused");
+        assert!(check_take_name("com1", &existing).is_err(), "a reserved device name is refused");
+    }
+
+    #[test]
+    fn a_failed_rename_rolls_the_files_already_moved_back() -> Result<(), Box<dyn std::error::Error>> {
+        let root = fresh_dir("review-rollback")?;
+        let project = root.join("Show");
+        let folder = project.join("2026-11-20_10-00-00_take01");
+        fs::create_dir_all(&folder)?;
+        let stem = "2026-11-20_10-00-00_take01";
+        for suffix in [".mkv", ".iso", ".wav", ".marks.json"] {
+            fs::write(folder.join(format!("{stem}{suffix}")), b"data")?;
+        }
+        fs::write(folder.join(format!("{stem}.marks.json")), sidecar_json_media("2026-11-20T12:00:00.000Z", 1_000, 0, &format!("{stem}.mkv")))?;
+        // A directory where a later target would go makes that rename fail once
+        // the earlier files have already moved (files sort .iso, .marks.json,
+        // .mkv, .wav, so .wav is the blocked one).
+        fs::create_dir_all(folder.join("new_name.wav"))?;
+        let days = scan(&project);
+        let result = rename_take(&days[0].takes[0], "new_name");
+        assert!(result.is_err(), "the blocked rename must fail");
+        let reason = result.err().unwrap_or_default();
+        assert!(reason.contains("new_name.wav"), "the reason names the blocked file: {reason}");
+        for suffix in [".mkv", ".iso", ".wav", ".marks.json"] {
+            assert!(folder.join(format!("{stem}{suffix}")).exists(), "{suffix} was rolled back");
+        }
+        // The blocking directory stays; no file was left under the new name.
+        assert!(folder.join("new_name.wav").is_dir(), "the blocking directory is untouched");
+        for suffix in [".mkv", ".iso", ".marks.json"] {
+            assert!(!folder.join(format!("new_name{suffix}")).exists(), "{suffix} was not left half-renamed");
+        }
+        fs::remove_dir_all(&root)?;
+        Ok(())
     }
 }

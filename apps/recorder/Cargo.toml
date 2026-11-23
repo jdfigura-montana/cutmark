@@ -41,6 +41,7 @@ rubato = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
+trash = "5.4.0"
 tray-icon = "0.26.1"
 tungstenite.workspace = true
 ui-kit = { version = "0.1.0", path = "../../crates/ui-kit" }

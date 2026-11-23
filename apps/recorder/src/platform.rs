@@ -4,6 +4,16 @@ use std::path::PathBuf;
 
 use raw_window_handle::HasWindowHandle;
 
+/// Opens Explorer with `path` selected; works for files and folders, and a failure is logged, not shown.
+pub fn show_in_folder(path: &std::path::Path) {
+    #[cfg(windows)]
+    if let Err(err) = std::process::Command::new("explorer").arg(format!("/select,{}", path.display())).spawn() {
+        log::warn!("could not open Explorer for {}: {err}", path.display());
+    }
+    #[cfg(not(windows))]
+    let _ = path;
+}
+
 /// Opens the Windows notification settings page; the Recorder never changes the setting itself.
 pub fn open_notification_settings() {
     #[cfg(windows)]
