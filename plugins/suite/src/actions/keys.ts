@@ -1,11 +1,12 @@
 //! The Cutmark Audio key actions, one per row of the Keys table
-//! (docs/audio-editor/1.3-StreamDeck.md "Keys"); track keys and the Audio
-//! command action arrive in R4.
+//! (docs/audio-editor/1.3-StreamDeck.md "Keys"); the Audio command
+//! action lives in audio-command.ts.
 
 import { action, type KeyAction } from "@elgato/streamdeck";
 
-import type { AppState } from "../connection";
+import type { AppState, TrackState } from "../connection";
 import { CommandKeyAction, type CommandKeySettings } from "./command-key";
+import { TrackKeyAction } from "./track-key";
 
 /** The key action type the subclasses render with. */
 type Key = KeyAction<CommandKeySettings>;
@@ -165,5 +166,44 @@ export class SaveKey extends CommandKeyAction {
 	/** Builds the key. */
 	constructor() {
 		super("save", "save");
+	}
+}
+
+/** Track Mute key: lit in the accent blue while the track is muted. */
+@action({ UUID: "com.cutmark.suite.audio.track_mute" })
+export class TrackMuteKey extends TrackKeyAction {
+	/** Builds the key. */
+	constructor() {
+		super("track.mute", "track-mute");
+	}
+
+	protected override isLit(track: TrackState): boolean {
+		return track.mute === true;
+	}
+}
+
+/** Track Solo key: lit in the yellow while the track is soloed. */
+@action({ UUID: "com.cutmark.suite.audio.track_solo" })
+export class TrackSoloKey extends TrackKeyAction {
+	/** Builds the key. */
+	constructor() {
+		super("track.solo", "track-solo");
+	}
+
+	protected override isLit(track: TrackState): boolean {
+		return track.solo === true;
+	}
+}
+
+/** Track Arm key: lit in the record red while the track is record-armed. */
+@action({ UUID: "com.cutmark.suite.audio.track_arm" })
+export class TrackArmKey extends TrackKeyAction {
+	/** Builds the key. */
+	constructor() {
+		super("track.arm", "track-arm");
+	}
+
+	protected override isLit(track: TrackState): boolean {
+		return track.arm === true;
 	}
 }

@@ -28,10 +28,29 @@ export type AppState = {
 	ripple?: boolean;
 	snap?: boolean;
 	zoom_label?: string;
+
+	/** The project's tracks, lowest number first. */
+	tracks?: TrackState[];
 };
 
 /** A command the app accepts, as listed by the `welcome` message. */
 export type CommandInfo = { id: string; label: string };
+
+/** One track, from the state's `tracks` array (docs/audio-editor/1.3-StreamDeck.md "State published"). */
+export type TrackState = {
+	/** The 1-based track number. */
+	n?: number;
+	/** The track's name. */
+	name?: string;
+	/** Whether the track is muted. */
+	mute?: boolean;
+	/** Whether the track is soloed. */
+	solo?: boolean;
+	/** Whether the track is record-armed. */
+	arm?: boolean;
+	/** The track's volume in dB. */
+	volume_db?: number;
+};
 
 /** An `error` message from the app, optionally about one command. */
 export type RemoteError = { code: string; message: string; id?: string };

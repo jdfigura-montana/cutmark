@@ -2,11 +2,12 @@
 //! key renders from the app's state (spec: Remote Control "Plugin", 1.3-StreamDeck "Keys").
 
 import { type KeyAction, type KeyDownEvent, type WillAppearEvent, type WillDisappearEvent, SingletonAction } from "@elgato/streamdeck";
+import type { JsonObject } from "@elgato/utils";
 
 import type { AppConnection, AppState, RemoteError } from "../connection";
 
-/** Settings shared by all Cutmark keys; the R3 keys carry none (track keys add fields in R4). */
-export type CommandKeySettings = Record<string, never>;
+/** Settings of a Cutmark key, read with guards; the R3 keys carry none (track keys add `track`, the Audio command adds `command`). */
+export type CommandKeySettings = JsonObject;
 
 /**
  * Base for keys that send one remote command. While the app is not running the key
@@ -20,7 +21,9 @@ export abstract class CommandKeyAction extends SingletonAction<CommandKeySetting
 	/** Path (without extension) of the dimmed icon shown when the app is not running or blocked. */
 	protected readonly dimmedIcon: string;
 
-	private conn: AppConnection | undefined;
+	/** The app connection, set by `use`. */
+	protected conn: AppConnection | undefined;
+
 	private readonly keys = new Set<KeyAction<CommandKeySettings>>();
 
 	/**
@@ -41,7 +44,7 @@ export abstract class CommandKeyAction extends SingletonAction<CommandKeySetting
 			for (const key of [...this.keys]) this.render(key);
 		});
 		conn.onError((error: RemoteError) => {
-			if (error.id !== this.command) return;
+			if (!this.isOwnError(error)) return;
 			for (const key of [...this.keys]) void key.showAlert();
 		});
 	}
@@ -66,11 +69,21 @@ export abstract class CommandKeyAction extends SingletonAction<CommandKeySetting
 			conn.launch();
 			return;
 		}
+		this.sendRunning(conn, ev.payload.settings);
+	}
+
+	/** Sends the key's command while the app runs; subclasses override this to read settings. */
+	protected sendRunning(conn: AppConnection, _settings: CommandKeySettings): void {
 		conn.send(this.command);
 	}
 
+	/** Whether an `error` message belongs to this key's command; subclasses override for dynamic commands. */
+	protected isOwnError(error: RemoteError): boolean {
+		return error.id === this.command;
+	}
+
 	/** Redraws one key from the connection state. */
-	private render(key: KeyAction<CommandKeySettings>): void {
+	protected render(key: KeyAction<CommandKeySettings>): void {
 		const conn = this.conn;
 		if (!conn) return;
 		if (conn.updateMode) {
