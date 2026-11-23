@@ -1,13 +1,13 @@
 //! ui::timeline::clip_view: drawing and hit-testing a single clip.
 
+use crate::ui::timeline::metrics;
 use eframe::egui::{self, Stroke};
+use ui_kit::tokens::{color, radius, space, typography};
 
 use crate::editor::record::RecordStatus;
 use crate::io::import::Loaded;
 use crate::model::clip::Clip;
 use crate::util::time::samples_to_timecode;
-
-use crate::ui::theme::{THEME, Theme};
 
 use super::Geom;
 
@@ -41,7 +41,7 @@ pub enum Zone {
 
 /// The clip body: everything below the header strip.
 pub fn body_rect(clip_rect: egui::Rect) -> egui::Rect {
-    let header_h = THEME.header_strip_h.min(clip_rect.height());
+    let header_h = metrics::HEADER_STRIP_H.min(clip_rect.height());
     egui::Rect::from_min_max(egui::pos2(clip_rect.left(), clip_rect.top() + header_h), egui::pos2(clip_rect.right(), clip_rect.bottom()))
 }
 
@@ -75,23 +75,23 @@ pub fn fade_handle_rect(clip: &Clip, clip_rect: egui::Rect, spp: f64, fade_out: 
     let fade = if fade_out { clip.fade_out } else { clip.fade_in };
     let fade_px = (fade as f64 / spp.max(f64::EPSILON)) as f32;
     let center_x = if fade_out { (clip_rect.right() - fade_px).max(clip_rect.left()) } else { (clip_rect.left() + fade_px).min(clip_rect.right()) };
-    let half = THEME.fade_handle_sz * 0.5 + THEME.fade_handle_grab;
+    let half = metrics::FADE_HANDLE_SZ * 0.5 + metrics::FADE_HANDLE_GRAB;
     egui::Rect::from_center_size(egui::pos2(center_x, body.top()), egui::vec2(half * 2.0, half * 2.0))
 }
 
 /// Screen rect of the gain value text area at the right of the header strip
 /// (the double-click target for typing a gain value).
 pub fn gain_text_rect(clip_rect: egui::Rect) -> egui::Rect {
-    let header_h = THEME.header_strip_h.min(clip_rect.height());
-    let width = THEME.gain_text_w.min(clip_rect.width());
+    let header_h = metrics::HEADER_STRIP_H.min(clip_rect.height());
+    let width = metrics::GAIN_TEXT_W.min(clip_rect.width());
     egui::Rect::from_min_max(egui::pos2(clip_rect.right() - width, clip_rect.top()), egui::pos2(clip_rect.right(), clip_rect.top() + header_h))
 }
 
 /// On-screen rectangle of a clip over its track lane (the lane minus 2 px margins).
 pub fn clip_rect(clip: &Clip, g: &Geom, track_rect: egui::Rect) -> egui::Rect {
     egui::Rect::from_min_max(
-        egui::pos2(g.sample_to_x(clip.start), track_rect.top() + THEME.clip_margin),
-        egui::pos2(g.sample_to_x(clip.end()), track_rect.bottom() - THEME.clip_margin),
+        egui::pos2(g.sample_to_x(clip.start), track_rect.top() + metrics::CLIP_MARGIN),
+        egui::pos2(g.sample_to_x(clip.end()), track_rect.bottom() - metrics::CLIP_MARGIN),
     )
 }
 
@@ -100,8 +100,8 @@ pub fn clip_rect(clip: &Clip, g: &Geom, track_rect: egui::Rect) -> egui::Rect {
 /// bottom margins as a clip.
 pub fn live_rect(start: u64, frames: u64, g: &Geom, track_rect: egui::Rect) -> egui::Rect {
     egui::Rect::from_min_max(
-        egui::pos2(g.sample_to_x(start), track_rect.top() + THEME.clip_margin),
-        egui::pos2(g.sample_to_x(start.saturating_add(frames)), track_rect.bottom() - THEME.clip_margin),
+        egui::pos2(g.sample_to_x(start), track_rect.top() + metrics::CLIP_MARGIN),
+        egui::pos2(g.sample_to_x(start.saturating_add(frames)), track_rect.bottom() - metrics::CLIP_MARGIN),
     )
 }
 
@@ -120,11 +120,11 @@ pub fn hit_test(clip: &Clip, clip_rect: egui::Rect, spp: f64, pos: egui::Pos2) -
     if !clip_rect.contains(pos) {
         return None;
     }
-    if clip_rect.width() >= THEME.header_strip_h {
-        if pos.x <= clip_rect.left() + THEME.trim_edge_w {
+    if clip_rect.width() >= metrics::HEADER_STRIP_H {
+        if pos.x <= clip_rect.left() + metrics::TRIM_EDGE_W {
             return Some(Zone::LeftEdge);
         }
-        if pos.x >= clip_rect.right() - THEME.trim_edge_w {
+        if pos.x >= clip_rect.right() - metrics::TRIM_EDGE_W {
             return Some(Zone::RightEdge);
         }
     }
@@ -132,26 +132,31 @@ pub fn hit_test(clip: &Clip, clip_rect: egui::Rect, spp: f64, pos: egui::Pos2) -
     let gy = gain_line_y(clip, clip_rect);
     if pos.x >= body.left()
         && pos.x <= body.right()
-        && pos.y >= body.top() - THEME.gain_hit_px
-        && pos.y <= body.bottom() + THEME.gain_hit_px
-        && (pos.y - gy).abs() <= THEME.gain_hit_px
+        && pos.y >= body.top() - metrics::GAIN_HIT_PX
+        && pos.y <= body.bottom() + metrics::GAIN_HIT_PX
+        && (pos.y - gy).abs() <= metrics::GAIN_HIT_PX
     {
         return Some(Zone::GainLine);
     }
-    if pos.y <= clip_rect.top() + THEME.header_strip_h.min(clip_rect.height()) { Some(Zone::Header) } else { Some(Zone::Body) }
+    if pos.y <= clip_rect.top() + metrics::HEADER_STRIP_H.min(clip_rect.height()) { Some(Zone::Header) } else { Some(Zone::Body) }
 }
+
+/// Opacity of everything on a muted track (spec "Clip": 45%).
+const MUTED_OPACITY: f32 = 0.45;
 
 /// Draws one clip over its track lane.
 ///
-/// `track_rect` is the clip's track lane in window points; the clip body fills
-/// the lane minus 2 px at the top and bottom. Clips outside the visible sample
+/// `track_rect` is the clip's track lane in window points; the clip fills the
+/// lane minus 2 px at the top and bottom. Clips outside the visible sample
 /// range are skipped; clips narrower than 3 px draw as a single 1 px line.
-/// The clip takes its body, header and waveform color from the track color of
-/// `track_index`. Offline media gets a red fill and a "Media offline" label.
-/// `media` is the loaded audio for the clip's bin entry, `None` when offline
-/// or not loaded; its waveform fills the body below the header strip. Selected
-/// clips draw with a bright border. The clip gain line and the fade curves
-/// draw over the waveform; `hover` highlights the hovered handle.
+/// The clip body, rim and selected state come from ui-kit's `paint_clip`
+/// (audio kind); a muted track dims the whole clip. Offline media gets a red
+/// body and a "Media offline" label. `media` is the loaded audio for the
+/// clip's bin entry, `None` when offline or not loaded; its waveform fills
+/// the content area below the header strip. The clip name and gain text sit
+/// in the header strip, pinned to the visible edges when the clip runs off
+/// the lanes. The clip gain line and the fade curves draw over the waveform;
+/// `hover` highlights the hovered handle.
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
     painter: &egui::Painter,
@@ -161,7 +166,6 @@ pub fn draw(
     media: Option<&Loaded>,
     g: &Geom,
     track_rect: egui::Rect,
-    track_index: usize,
     wave_scale: f32,
     selected: bool,
     hover: Option<Zone>,
@@ -174,33 +178,39 @@ pub fn draw(
     }
     let rect = clip_rect(clip, g, track_rect);
 
-    // Clips on muted tracks draw at 45% opacity: every color below is
-    // alpha-scaled through this closure.
-    let scale = if muted { 0.45 } else { 1.0 };
+    // Everything the ui-kit clip does not paint is alpha-scaled through this
+    // closure on a muted track.
+    let scale = if muted { MUTED_OPACITY } else { 1.0 };
     let dim = |color: egui::Color32| color.gamma_multiply(scale);
 
-    // Track color of this clip: translucent body, stronger header strip and a
-    // solid waveform stroke.
-    let tc = dim(THEME.track_color(track_index));
-    let body_fill = egui::Color32::from_rgba_unmultiplied(tc.r(), tc.g(), tc.b(), (f32::from(THEME.clip_body_alpha) * scale) as u8);
-    let header_fill = egui::Color32::from_rgba_unmultiplied(tc.r(), tc.g(), tc.b(), (f32::from(THEME.clip_header_alpha) * scale) as u8);
-
     // Extremely narrow clip: a single 1 px line, no text.
-    if rect.width() < THEME.thin_clip_w {
-        painter.line_segment([egui::pos2(rect.left(), rect.top()), egui::pos2(rect.left(), rect.bottom())], egui::Stroke::new(THEME.hairline, body_fill));
+    if rect.width() < metrics::THIN_CLIP_W {
+        painter.line_segment(
+            [egui::pos2(rect.left(), rect.top()), egui::pos2(rect.left(), rect.bottom())],
+            egui::Stroke::new(metrics::HAIRLINE, dim(color::TEXT_TERTIARY)),
+        );
         return;
     }
 
-    let header_h = THEME.header_strip_h.min(rect.height());
+    let header_h = metrics::HEADER_STRIP_H.min(rect.height());
     let header_rect = egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.min.y + header_h));
     let body = egui::Rect::from_min_max(egui::pos2(rect.min.x, header_rect.max.y), rect.max);
 
-    painter.rect_filled(body, THEME.clip_radius, if offline { dim(THEME.offline_body) } else { body_fill });
-    painter.rect_filled(header_rect, THEME.clip_radius, if offline { dim(THEME.offline_header) } else { header_fill });
+    // The ui-kit clip: body, rim, selected tint and the muted dimming. The
+    // name is drawn below (it pins and truncates), so the label is empty.
+    let theme = ui_kit::Theme::get(painter.ctx());
+    let look = ui_kit::ClipLook { selected, dimmed: muted, ..ui_kit::ClipLook::new("", ui_kit::ClipKind::Audio) };
+    let content = ui_kit::paint_clip(painter, rect, &look, &theme);
+    if offline {
+        let inset = rect.shrink(metrics::SELECTION_BORDER_W);
+        painter.rect_filled(inset, radius::CLIP_AUDIO - metrics::SELECTION_BORDER_W, dim(color::SEM_RECORD.gamma_multiply(metrics::OFFLINE_BODY_ALPHA)));
+    }
 
-    // Waveform in the body (below the header), for online, loaded media.
+    // Waveform in the content area (below the header strip), for online,
+    // loaded media.
     if !offline && let Some(loaded) = media {
-        super::waveform::draw(painter, clip, loaded, g, body, wave_scale, tc, muted);
+        let wave_rect = egui::Rect::from_min_max(egui::pos2(content.left(), body.top()), content.right_bottom());
+        super::waveform::draw(painter, clip, loaded, g, wave_rect, wave_scale, ui_kit::waveform_color(selected, &theme), muted);
     }
 
     // Clip gain line and fade curves, over the waveform.
@@ -208,39 +218,30 @@ pub fn draw(
         draw_gain_and_fades(painter, clip, g, rect, body, hover, muted, gain_active);
     }
 
-    // Unselected: 1 px inner border in the track color; selected: 2 px accent.
-    let border = if selected {
-        egui::Stroke::new(THEME.selection_border_w, dim(THEME.selection_border))
-    } else {
-        egui::Stroke::new(THEME.hairline, egui::Color32::from_rgba_unmultiplied(tc.r(), tc.g(), tc.b(), (0x55 as f32 * scale) as u8))
-    };
-    painter.rect_stroke(rect, THEME.clip_radius, border, egui::StrokeKind::Inside);
-
     // Header text: the name pinned to the visible left edge and the gain
     // pinned to the visible right edge when the clip runs off the lanes, so
     // both stay readable; the name truncates with an ellipsis before the gain.
-    let text_color = dim(if offline { THEME.offline_text } else { THEME.clip_text_color });
+    let text_color = dim(color::TEXT_PRIMARY);
     let clipped = painter.with_clip_rect(rect);
     let gain_text = format!("{:+.1} dB", clip.gain_db);
-    let gain_font = Theme::mono(THEME.clip_gain_size);
-    let gain_galley = painter.layout_no_wrap(gain_text, gain_font, text_color);
+    let gain_galley = painter.layout_no_wrap(gain_text, ui_kit::fonts::mono(typography::VALUE_SIZE), text_color);
     // Visible right edge of the lanes: the gain pins here when the clip's
     // right edge is scrolled out of view.
     let lane_right = g.lane_left + g.lane_width;
-    let gain_right = if rect.right() > lane_right { lane_right - THEME.clip_text_pad } else { rect.right() - THEME.clip_text_pad };
+    let gain_right = if rect.right() > lane_right { lane_right - space::SCALE_8 } else { rect.right() - space::SCALE_8 };
     let gain_left = gain_right - gain_galley.size().x;
     // Visible left edge: the name pins here (16 px in) when the clip's left
     // edge is scrolled out of view.
-    let name_x = if rect.left() < g.lane_left { g.lane_left + THEME.clip_name_pin } else { rect.left() + THEME.clip_text_pad };
-    let name_max_w = gain_left - name_x - THEME.clip_name_gap;
-    if name_max_w > THEME.clip_name_min_w {
+    let name_x = if rect.left() < g.lane_left { g.lane_left + metrics::CLIP_NAME_PIN } else { rect.left() + space::SCALE_8 };
+    let name_max_w = gain_left - name_x - metrics::CLIP_NAME_GAP;
+    if name_max_w > metrics::CLIP_NAME_MIN_W {
         let name_galley = fit_galley(painter, media_name, clip_name_font(), text_color, name_max_w);
         clipped.galley(egui::pos2(name_x, header_rect.center().y - name_galley.size().y * 0.5), name_galley, text_color);
     }
     // The gain value at the right of the header is the double-click target.
     clipped.galley(egui::pos2(gain_left, header_rect.center().y - gain_galley.size().y * 0.5), gain_galley, text_color);
     if offline {
-        clipped.text(body.center(), egui::Align2::CENTER_CENTER, "Media offline", egui::FontId::proportional(THEME.clip_name_size), dim(THEME.offline_text));
+        clipped.text(body.center(), egui::Align2::CENTER_CENTER, "Media offline", clip_name_font(), dim(color::TEXT_PRIMARY));
     }
 }
 
@@ -259,33 +260,33 @@ pub fn draw_live(painter: &egui::Painter, status: &RecordStatus<'_>, rate: u32, 
         return;
     }
     let rect = live_rect(status.start, status.frames, g, track_rect);
-    let red = THEME.record_red;
-    let tint = |alpha: u8| egui::Color32::from_rgba_unmultiplied(red.r(), red.g(), red.b(), alpha);
+    let red = color::SEM_RECORD;
+    let tint = |alpha: f32| red.gamma_multiply(alpha);
 
-    if rect.width() < THEME.thin_clip_w {
-        painter.line_segment([rect.left_top(), rect.left_bottom()], Stroke::new(THEME.hairline, red));
+    if rect.width() < metrics::THIN_CLIP_W {
+        painter.line_segment([rect.left_top(), rect.left_bottom()], Stroke::new(metrics::HAIRLINE, red));
         return;
     }
 
-    let header_h = THEME.header_strip_h.min(rect.height());
+    let header_h = metrics::HEADER_STRIP_H.min(rect.height());
     let header_rect = egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.min.y + header_h));
     let body = egui::Rect::from_min_max(egui::pos2(rect.min.x, header_rect.max.y), rect.max);
-    painter.rect_filled(body, THEME.clip_radius, tint(THEME.clip_body_alpha));
-    painter.rect_filled(header_rect, THEME.clip_radius, tint(THEME.clip_header_alpha));
+    painter.rect_filled(body, metrics::CLIP_RADIUS, tint(metrics::CLIP_BODY_ALPHA));
+    painter.rect_filled(header_rect, metrics::CLIP_RADIUS, tint(metrics::CLIP_HEADER_ALPHA));
     super::waveform::draw_live(painter, status, g, body, wave_scale, red);
-    painter.rect_stroke(rect, THEME.clip_radius, Stroke::new(THEME.hairline, red), egui::StrokeKind::Inside);
+    painter.rect_stroke(rect, metrics::CLIP_RADIUS, Stroke::new(metrics::HAIRLINE, red), egui::StrokeKind::Inside);
 
     // Header text, pinned to the visible edges like a clip's: "Recording" on
     // the left, the elapsed time on the right.
-    let text_color = THEME.clip_text_color;
+    let text_color = color::TEXT_PRIMARY;
     let clipped = painter.with_clip_rect(rect);
-    let elapsed = painter.layout_no_wrap(samples_to_timecode(status.frames, rate), Theme::mono(THEME.clip_gain_size), text_color);
+    let elapsed = painter.layout_no_wrap(samples_to_timecode(status.frames, rate), ui_kit::fonts::mono(metrics::CLIP_GAIN_SIZE), text_color);
     let lane_right = g.lane_left + g.lane_width;
-    let time_right = if rect.right() > lane_right { lane_right - THEME.clip_text_pad } else { rect.right() - THEME.clip_text_pad };
+    let time_right = if rect.right() > lane_right { lane_right - metrics::CLIP_TEXT_PAD } else { rect.right() - metrics::CLIP_TEXT_PAD };
     let time_left = time_right - elapsed.size().x;
-    let name_x = if rect.left() < g.lane_left { g.lane_left + THEME.clip_name_pin } else { rect.left() + THEME.clip_text_pad };
-    let name_max_w = time_left - name_x - THEME.clip_name_gap;
-    if name_max_w > THEME.clip_name_min_w {
+    let name_x = if rect.left() < g.lane_left { g.lane_left + metrics::CLIP_NAME_PIN } else { rect.left() + metrics::CLIP_TEXT_PAD };
+    let name_max_w = time_left - name_x - metrics::CLIP_NAME_GAP;
+    if name_max_w > metrics::CLIP_NAME_MIN_W {
         let name = fit_galley(painter, "Recording", clip_name_font(), text_color, name_max_w);
         clipped.galley(egui::pos2(name_x, header_rect.center().y - name.size().y * 0.5), name, text_color);
     }
@@ -294,7 +295,7 @@ pub fn draw_live(painter: &egui::Painter, status: &RecordStatus<'_>, rate: u32, 
 
 /// Font of the clip name in the header strip.
 fn clip_name_font() -> egui::FontId {
-    egui::FontId::proportional(THEME.clip_name_size)
+    ui_kit::fonts::medium(typography::MICRO_SIZE)
 }
 
 /// Lays out `text` in `font`; when it is wider than `max_w`, the longest
@@ -355,19 +356,16 @@ fn draw_gain_and_fades(
     if gy >= body.top() - 0.5 && gy <= body.bottom() + 0.5 {
         let gain_active = hover == Some(Zone::GainLine) || gain_active;
         let stroke = if gain_active {
-            Stroke::new(2.0, dim(THEME.gain_line))
+            Stroke::new(2.0, dim(color::TEXT_PRIMARY))
         } else {
-            Stroke::new(
-                THEME.hairline,
-                egui::Color32::from_rgba_unmultiplied(THEME.gain_line.r(), THEME.gain_line.g(), THEME.gain_line.b(), (76.0 * scale) as u8),
-            )
+            Stroke::new(metrics::HAIRLINE, color::TEXT_PRIMARY.gamma_multiply(metrics::GAIN_LINE_IDLE_ALPHA * scale))
         };
         clipped.line_segment([egui::pos2(body.left(), gy), egui::pos2(body.right(), gy)], stroke);
     }
 
     let shade = egui::Stroke::NONE;
-    let shade_fill = dim(THEME.fade_shade);
-    let curve = egui::Stroke::new(1.2, dim(THEME.gain_curve));
+    let shade_fill = dim(color::BG_GROUND.gamma_multiply(metrics::FADE_SHADE_ALPHA));
+    let curve = egui::Stroke::new(1.2, dim(color::TEXT_PRIMARY.gamma_multiply(metrics::GAIN_CURVE_ALPHA)));
     if clip.fade_in > 0 {
         let fx = (rect.left() + (clip.fade_in as f64 / g.spp.max(f64::EPSILON)) as f32).min(rect.right());
         // Outside the curve: the triangle above the fade-in line.
@@ -391,10 +389,10 @@ fn draw_gain_and_fades(
     for (zone, fade_out) in [(Zone::FadeInHandle, false), (Zone::FadeOutHandle, true)] {
         // The square always sits on the clip's real top corner.
         let corner_x = if fade_out { rect.right() } else { rect.left() };
-        let square = egui::Rect::from_center_size(egui::pos2(corner_x, body.top()), egui::vec2(THEME.fade_handle_sz, THEME.fade_handle_sz));
-        let fill = if hover == Some(zone) { dim(THEME.fade_handle_hover) } else { dim(THEME.fade_handle_fill) };
-        clipped.rect_filled(square, THEME.corner_r, fill);
-        clipped.rect_stroke(square, THEME.corner_r, egui::Stroke::new(THEME.hairline, dim(THEME.fade_handle_stroke)), egui::StrokeKind::Inside);
+        let square = egui::Rect::from_center_size(egui::pos2(corner_x, body.top()), egui::vec2(metrics::FADE_HANDLE_SZ, metrics::FADE_HANDLE_SZ));
+        let fill = if hover == Some(zone) { dim(ui_kit::Theme::get(clipped.ctx()).accent.accent) } else { dim(color::TEXT_PRIMARY) };
+        clipped.rect_filled(square, metrics::CORNER_R, fill);
+        clipped.rect_stroke(square, metrics::CORNER_R, egui::Stroke::new(metrics::HAIRLINE, dim(color::BG_GROUND)), egui::StrokeKind::Inside);
     }
 }
 
@@ -413,7 +411,7 @@ mod tests {
             let mut h = crate::ui::test_util::Headless::new(400.0, 200.0);
             let mut result = None;
             let _ = h.frame(Vec::new(), |ui| {
-                let galley = fit_galley(ui.painter(), text, clip_name_font(), THEME.clip_text_color, max_w);
+                let galley = fit_galley(ui.painter(), text, clip_name_font(), color::TEXT_PRIMARY, max_w);
                 result = Some((galley.text().to_string(), galley.size().x));
             });
             result.expect("the frame ran")
@@ -482,8 +480,8 @@ mod tests {
         let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(200.0, 80.0));
         let grab = fade_handle_rect(&clip, rect, 100.0, false);
         let p = grab.center();
-        assert!(p.x <= rect.left() + THEME.trim_edge_w, "handle must be at the left edge");
-        assert!(p.y <= rect.top() + THEME.header_strip_h, "handle must be in the header row");
+        assert!(p.x <= rect.left() + metrics::TRIM_EDGE_W, "handle must be at the left edge");
+        assert!(p.y <= rect.top() + metrics::HEADER_STRIP_H, "handle must be in the header row");
         assert_eq!(hit_test(&clip, rect, 100.0, p), Some(Zone::FadeInHandle));
     }
 
@@ -500,7 +498,7 @@ mod tests {
     fn gain_line_y_maps_db_across_the_body() {
         // Body height 84 px: +24 dB at the body top, -60 dB at the bottom and
         // 0 dB at 24/84 of the height.
-        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(200.0, 84.0 + THEME.header_strip_h));
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(200.0, 84.0 + metrics::HEADER_STRIP_H));
         let body = body_rect(rect);
         assert!((body.height() - 84.0).abs() < 1e-4);
         let top = gain_line_y(&test_clip(24.0, 0, 0), rect);
@@ -517,10 +515,32 @@ mod tests {
     #[test]
     fn gain_line_hit_zone_around_the_line() {
         let clip = test_clip(-36.0, 0, 0);
-        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(200.0, 84.0 + THEME.header_strip_h));
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(200.0, 84.0 + metrics::HEADER_STRIP_H));
         let gy = gain_line_y(&clip, rect);
         assert_eq!(hit_test(&clip, rect, 100.0, egui::pos2(100.0, gy)), Some(Zone::GainLine));
-        assert_eq!(hit_test(&clip, rect, 100.0, egui::pos2(100.0, gy + THEME.gain_hit_px + 0.5)), Some(Zone::Body));
+        assert_eq!(hit_test(&clip, rect, 100.0, egui::pos2(100.0, gy + metrics::GAIN_HIT_PX + 0.5)), Some(Zone::Body));
+    }
+
+    #[test]
+    fn a_muted_track_dims_the_clip_and_a_selected_clip_takes_the_accent() {
+        let g = live_geom();
+        let lane = live_lane();
+        let clip = test_clip(0.0, 0, 0);
+        let theme = ui_kit::Theme::default();
+        let mut h = crate::ui::test_util::Headless::new(1280.0, 400.0);
+        let fills = |h: &mut crate::ui::test_util::Headless, selected: bool, muted: bool| {
+            h.frame(Vec::new(), |ui| {
+                draw(ui.painter(), &clip, "Take", false, None, &g, lane, 1.0, selected, None, muted, false);
+            })
+            .rects()
+            .into_iter()
+            .map(|r| r.fill)
+            .collect::<Vec<_>>()
+        };
+        assert!(fills(&mut h, false, false).contains(&color::BG_CLIP), "a plain clip is bg.clip");
+        let dimmed = color::BG_CLIP.gamma_multiply(MUTED_OPACITY);
+        assert!(fills(&mut h, false, true).contains(&dimmed), "a muted track dims the clip to 45%");
+        assert!(fills(&mut h, true, false).contains(&theme.accent.tint), "a selected clip is the accent tint");
     }
 
     // ---- The live take ----
@@ -542,8 +562,8 @@ mod tests {
         assert_eq!(rect.left(), g.sample_to_x(11_000));
         assert_eq!(rect.left(), 300.0, "(11,000 - 1,000) / 50 px in");
         assert_eq!(rect.width(), 100.0, "5,000 frames at 50 spp");
-        assert_eq!(rect.top(), lane.top() + THEME.clip_margin);
-        assert_eq!(rect.bottom(), lane.bottom() - THEME.clip_margin);
+        assert_eq!(rect.top(), lane.top() + metrics::CLIP_MARGIN);
+        assert_eq!(rect.bottom(), lane.bottom() - metrics::CLIP_MARGIN);
         assert_eq!(live_rect(11_000, 0, &g, lane).width(), 0.0);
     }
 
@@ -557,27 +577,25 @@ mod tests {
         let clip = test_clip(0.0, 0, 0);
         let out = h.frame(Vec::new(), |ui| {
             // A normal clip on another lane for comparison, then the take.
-            draw(ui.painter(), &clip, "Normal", false, None, &g, lane.translate(egui::vec2(0.0, 120.0)), 0, 1.0, false, None, false, false);
+            draw(ui.painter(), &clip, "Normal", false, None, &g, lane.translate(egui::vec2(0.0, 120.0)), 1.0, false, None, false, false);
             draw_live(ui.painter(), &status, 48_000, &g, lane, 1.0);
         });
         assert!(out.text_rect("Recording").is_some(), "header name");
         assert!(out.text_rect("00:00:01.000").is_some(), "elapsed time");
 
         // 48,000 frames at 100 spp: 480 px, with a solid record_red border.
-        let border = out.rects().into_iter().find(|r| r.stroke.color == THEME.record_red && r.stroke.width > 0.0).expect("the record_red border");
+        let border = out.rects().into_iter().find(|r| r.stroke.color == color::SEM_RECORD && r.stroke.width > 0.0).expect("the record_red border");
         assert_eq!(border.rect, live_rect(0, 48_000, &g, lane));
         assert!((border.rect.width() - 480.0).abs() < 0.01);
 
         // The body is record_red at the same alpha as a normal clip's body.
-        let red = THEME.record_red;
-        let live_body = egui::Color32::from_rgba_unmultiplied(red.r(), red.g(), red.b(), THEME.clip_body_alpha);
-        let live_header = egui::Color32::from_rgba_unmultiplied(red.r(), red.g(), red.b(), THEME.clip_header_alpha);
+        let red = color::SEM_RECORD;
+        let live_body = red.gamma_multiply(metrics::CLIP_BODY_ALPHA);
+        let live_header = red.gamma_multiply(metrics::CLIP_HEADER_ALPHA);
         let fills: Vec<_> = out.rects().into_iter().map(|r| r.fill).collect();
         assert!(fills.contains(&live_body), "body {live_body:?}");
         assert!(fills.contains(&live_header), "header {live_header:?}");
-        let tc = THEME.track_color(0);
-        let normal_body = egui::Color32::from_rgba_unmultiplied(tc.r(), tc.g(), tc.b(), THEME.clip_body_alpha);
-        assert!(fills.contains(&normal_body), "the normal clip's body alpha");
+        assert!(fills.contains(&color::BG_CLIP), "the normal clip's ui-kit body");
     }
 
     #[test]
@@ -590,7 +608,7 @@ mod tests {
             draw_live(ui.painter(), &none, 48_000, &g, lane, 1.0);
         });
         assert!(out.text_rect("Recording").is_none(), "no header yet");
-        assert!(out.rects().iter().all(|r| r.stroke.color != THEME.record_red));
+        assert!(out.rects().iter().all(|r| r.stroke.color != color::SEM_RECORD));
 
         // Scrolled far past the take: nothing is drawn.
         let far = Geom { scroll_x: 10_000_000, ..live_geom() };

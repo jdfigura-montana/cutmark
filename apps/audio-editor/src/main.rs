@@ -3,8 +3,10 @@
 mod app;
 mod audio;
 mod editor;
+mod help;
 mod io;
 mod model;
+mod shortcuts;
 mod ui;
 mod util;
 
@@ -21,12 +23,15 @@ fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_title(crate::app::APP_NAME)
-            .with_inner_size([1400.0, 850.0])
-            .with_min_inner_size([1100.0, 700.0])
-            .with_drag_and_drop(true)
-            .with_icon(window_icon()),
+        viewport: ui_kit::chrome::viewport(
+            eframe::egui::ViewportBuilder::default()
+                .with_title(crate::app::APP_NAME)
+                .with_inner_size([1400.0, 850.0])
+                .with_drag_and_drop(true)
+                .with_icon(window_icon()),
+        )
+        // The app's own minimum beats the suite default chrome::viewport sets.
+        .with_min_inner_size([1100.0, 700.0]),
         ..Default::default()
     };
     // The app id doubles as the eframe persistence key.
@@ -34,7 +39,8 @@ fn main() -> eframe::Result<()> {
         crate::app::APP_NAME,
         options,
         Box::new(|cc| {
-            crate::ui::theme::apply(&cc.egui_ctx);
+            ui_kit::apply(&cc.egui_ctx);
+            ui_kit::chrome::install(cc);
             Ok(Box::new(crate::app::App::default()))
         }),
     )

@@ -1,11 +1,13 @@
 //! ui::dialogs::project_settings: the Project Settings dialog.
 
+use std::cell::Cell;
+
 use eframe::egui;
 
+use super::FORM_W;
 use crate::editor::Editor;
 use crate::editor::action::Action;
 use crate::model::project::BitDepth;
-use crate::ui::theme::THEME;
 
 /// Modal dialog for editing the project name and default export bit depth.
 pub struct ProjectSettingsDialog {
@@ -28,47 +30,63 @@ impl ProjectSettingsDialog {
     /// Shows the dialog; applies Action::SetProjectSettings through the Editor
     /// on OK and closes on success.
     pub fn show(&mut self, ctx: &egui::Context, editor: &mut Editor) {
-        let mut cancel = false;
-        let response = super::modal("project_settings_dialog").show(ctx, |ui| {
-            super::card_width(ui, THEME.dialog_w);
-            super::title(ui, "Project Settings");
-            ui.add_space(THEME.space_xs);
-            super::description(ui, "Name and default export bit depth of this project.");
-            super::before_form(ui);
-            super::form_row(ui, "Name", |ui| {
-                super::text_field(ui, &mut self.name, "ps_name");
-            });
-            super::form_row(ui, "Bit depth", |ui| {
-                super::segmented(
-                    ui,
-                    "ps_depth",
-                    &[(BitDepth::Int16, "16-bit"), (BitDepth::Int24, "24-bit"), (BitDepth::Float32, "32-bit float")],
-                    &mut self.bit_depth,
-                );
-            });
-            if let Some(error) = &self.error {
-                ui.label(egui::RichText::new(error).color(THEME.error_soft));
-            }
-            let can_apply = !self.name.trim().is_empty();
-            super::footer(ui, |ui| {
-                if super::footer_button(ui, "OK", super::FooterButton::Primary, can_apply).clicked() {
-                    self.try_apply(editor);
+        let mut open = true;
+        let (mut clicked, mut enter, mut cancel) = (false, false, false);
+        let can_apply = Cell::new(false);
+        let ProjectSettingsDialog { name, bit_depth, error, .. } = self;
+        super::dialog(
+            ctx,
+            "project_settings_dialog",
+            "Project Settings",
+            FORM_W,
+            &mut open,
+            |ui| {
+                ui_kit::help::context(ui, crate::help::CONTEXT_DIALOG_PROJECT_SETTINGS);
+                super::description(ui, "Name and default export bit depth of this project.");
+                ui_kit::inspector_group(ui, |ui| {
+                    ui_kit::inspector_row(
+                        ui,
+                        "Name",
+                        |ui| {
+                            ui_kit::text_field(ui, name, "Project name");
+                        },
+                        None,
+                    );
+                    ui_kit::inspector_row(
+                        ui,
+                        "Bit depth",
+                        |ui| {
+                            super::choice(
+                                ui,
+                                "ps_depth",
+                                &[(BitDepth::Int16, "16-bit"), (BitDepth::Int24, "24-bit"), (BitDepth::Float32, "32-bit float")],
+                                bit_depth,
+                            )
+                        },
+                        None,
+                    );
+                });
+                if let Some(error) = &*error {
+                    super::error_text(ui, error);
                 }
-                if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
+                can_apply.set(!name.trim().is_empty());
+                // Enter confirms (when valid).
+                enter = super::enter_pressed(ui) && can_apply.get();
+            },
+            |ui| {
+                if super::secondary_button(ui, "Cancel").clicked() {
                     cancel = true;
                 }
-            });
-            // Enter confirms (when valid).
-            if ui.input(|i| i.key_pressed(egui::Key::Enter)) && can_apply {
-                self.try_apply(editor);
-            }
-        });
-        // Esc or the backdrop cancels.
-        if response.should_close() {
-            cancel = true;
-        }
-        if cancel {
+                if super::primary_button(ui, "OK", can_apply.get()).clicked() {
+                    clicked = true;
+                }
+            },
+        );
+        // Cancel, Esc or the backdrop closes the dialog.
+        if cancel || !open {
             *self = ProjectSettingsDialog { open: false, name: String::new(), bit_depth: BitDepth::Int24, error: None };
+        } else if clicked || enter {
+            self.try_apply(editor);
         }
     }
 

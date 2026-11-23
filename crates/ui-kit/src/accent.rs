@@ -200,6 +200,20 @@ pub fn default_accent() -> Accent {
     derive(tokens::accent::PRESET_BLUE)
 }
 
+/// Converts an sRGB color to OKLCH as `[l, c, h]`: lightness 0 to 1, chroma,
+/// hue in degrees (0 to 360). Used by the accent picker's wheel and slider.
+pub fn to_oklch(pick: Color32) -> [f32; 3] {
+    let color = srgb_to_oklch(pick);
+    [color.l, color.c, color.h]
+}
+
+/// The sRGB color for OKLCH `(l, c, h)`: lightness 0 to 1, chroma, hue in
+/// degrees. Colors outside the sRGB gamut come back with chroma reduced and
+/// hue and lightness fixed (the wheel paints out-of-gamut areas this way).
+pub fn from_oklch(l: f32, c: f32, h: f32) -> Color32 {
+    oklch_to_color32(Oklch { l, c, h })
+}
+
 /// Returns the WCAG 2.x contrast ratio between two sRGB colors (1.0 to 21.0).
 pub fn contrast(a: Color32, b: Color32) -> f32 {
     let luminance = |color: Color32| 0.212_6 * channel_to_linear(color.r()) + 0.715_2 * channel_to_linear(color.g()) + 0.072_2 * channel_to_linear(color.b());
@@ -308,6 +322,28 @@ mod tests {
         let accent = derive(Color32::from_rgb(0x80, 0x80, 0x80)).accent;
         let (r, g, b) = (accent.r(), accent.g(), accent.b());
         assert!(r.abs_diff(g) <= 1 && g.abs_diff(b) <= 1, "gray became RGB ({r}, {g}, {b})");
+    }
+
+    /// The OKLCH helpers round-trip a preset color within 1 per channel.
+    #[test]
+    fn oklch_helpers_round_trip_a_preset() {
+        for (_, pick) in presets() {
+            let [l, c, h] = to_oklch(pick);
+            let back = from_oklch(l, c, h);
+            let within = back.r().abs_diff(pick.r()) <= 1 && back.g().abs_diff(pick.g()) <= 1 && back.b().abs_diff(pick.b()) <= 1;
+            assert!(within, "#{:02X}{:02X}{:02X} round-tripped to #{:02X}{:02X}{:02X}", pick.r(), pick.g(), pick.b(), back.r(), back.g(), back.b());
+        }
+    }
+
+    /// `from_oklch` maps huge out-of-gamut chroma back into sRGB: the result
+    /// reads back with a smaller chroma, hue and lightness preserved.
+    #[test]
+    fn from_oklch_maps_out_of_gamut_into_the_srgb_gamut() {
+        let mapped = from_oklch(0.5, 0.4, 30.0);
+        let [l, c, h] = to_oklch(mapped);
+        assert!(c < 0.4, "chroma {c} must be reduced below the requested 0.4");
+        assert!((l - 0.5).abs() < 0.02, "lightness {l} must stay near 0.5");
+        assert!((h - 30.0).abs() < 2.0, "hue {h} must stay near 30 degrees");
     }
 
     /// Blue's derived values match the defaults in design/tokens.json within 1

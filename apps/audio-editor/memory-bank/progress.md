@@ -1,3 +1,79 @@
+## Task S1 phase 15 (2026-11-22)
+- Close-out: cutmark-audio 1.2.0 (Cargo.toml, Cargo.lock, README version line, installer usage comment). Installer ships OFL-Inter.txt and OFL-JetBrainsMono.txt from crates/ui-kit/assets/fonts (the dead apps/audio-editor/assets/fonts folder, Plex files and Plex license included, is deleted); licenses/ gains Phosphor-MIT.txt; THIRD-PARTY-NOTICES.txt, licenses/THIRD_PARTY.txt, README and gen_notices.py list Inter, JetBrains Mono and Phosphor. New apps/audio-editor/CHANGELOG.md, "After S1" section at the top of docs/audio-editor/ui-inventory.md. Installer dist\CutMark-Setup-1.2.0.exe, 54,947,081 bytes (52.4 MB; it now carries the FFmpeg DLLs), exe File/Product version 1.2.0. check.ps1 green (cutmark-audio tests included).
+- Open for JD: COPYRIGHT in help.rs is still the placeholder "[COPYRIGHT HOLDER]" (the prompt's <COPYRIGHT LINE> was not filled in). The crate list in THIRD-PARTY-NOTICES.txt is stale (still lists mp3lame and the LAME note, no FFmpeg entry); gen_notices.py's preamble is already correct, so rerunning it fixes the file.
+
+## Task S1 phase 14f follow-up (2026-11-22)
+- Wording: master-and-levels says "small level meter"; playback-and-transport step 3 now reads "Press P again to resume. Space stops playback and returns the playhead to where playback started." "mp3" left importing-audio's keywords (its body still mentions MP3) so "mp3" now opens Exporting first, with a new search test in help.rs. ui-kit topic_page draws the topic title in type.title / text.primary with 12px below it, skipped when the `extra` callback drew the page (the generated Keyboard shortcuts page has its own heading); new kittest scans the painted text shapes. Tests 728, check.ps1 green, release exe rebuilt (embedded help text changed).
+- Open for JD eyes: the gallery's 4 help topics still start with a `# Title` line, so a gallery page now shows the title twice; the audio editor topics have none. A stale ui-kit incremental artifact broke the test link step once (`unresolved external symbol anon...`); `cargo clean -p ui-kit` cleared it.
+
+
+## Task S1 phase 14f (2026-11-22)
+- Help review after JD's edits: no front-matter, topic-link, Markdown-subset or key-cap faults, so no topic text changed (his edits were already in the 14e-1/14e-2 amends). Tests 727, check.ps1 green.
+- The four faults that review listed for JD (wording x2, "mp3" search order, missing page title) are fixed in the 14f follow-up above.
+
+
+## Task S1 phase 14e-2 (2026-11-22)
+- 7 help topic bodies written from the code (Tracks, Playback and the transport, Zoom and navigation, Master and levels, Exporting, Appearance, Troubleshooting) and their keywords updated. Troubleshooting quotes only messages the app really shows (input device, recording, missing media, autosave and recovery, save) with placeholders for dynamic values; "no sound" has no message or recovery path, so the topic does not cover it. Tests 727, check.ps1 green, release exe rebuilt.
+- Open for JD eyes: templated messages use <name>, <N>, <timecode> and <X.X> placeholders; the master help says -60 to +6 dB (ui-kit fader range; the model allows +12).
+
+
+## Task S1 phase 14e-1 (2026-11-22)
+- 10 help topic bodies written from the code (Getting started, Projects, The window, Recording a take, Choosing the input and output device, Importing audio, Working with clips, Ripple and Snap, Markers, Undo and Redo) and their keywords updated; the 7 topics that already had bodies are untouched. Tests 727, check.ps1 green, release exe rebuilt.
+- Open for JD eyes: output device is described as the Windows default (no in-app picker); labels were checked against the source, not a board image; markers are described as dots, not the "triangle" the code names suggest.
+
+
+## Task S1 phase 14d (2026-11-22)
+- Help menu (Help topics F1, Keyboard shortcuts Ctrl+/, Show the tour, About Cutmark Audio), F1 context tags on the timeline, track headers, transport deck, media, master, start and seven dialogs, the 5-step first-run tour, About with the license texts, and 17 topic stubs in apps/audio-editor/help. Tests 727 (was 719), check.ps1 green, release exe rebuilt.
+- Open for JD eyes: the copyright holder line is the placeholder [COPYRIGHT HOLDER]; the Appearance dialog has no F1 tag (ui-kit draws it); topic bodies all read "Draft coming." until 14e; the About notices page still lists IBM Plex Sans (from THIRD-PARTY-NOTICES.txt) next to the Inter OFL text the app actually ships.
+
+
+## Task S1 phase 14c (2026-11-22)
+- One shortcut table in apps/audio-editor/src/shortcuts.rs; input handling, menus and (14d) the sheet read it. Help rows (F1, Ctrl+/) reserved but not bound. Tests 719 (was 704), check.ps1 green, release exe rebuilt.
+- Open for JD eyes: menus now show egui's key names (Plus, Minus, Backslash, Ctrl+Backslash, Comma, Period, Delete, Escape) instead of the old "+", "-", "\\", Ctrl+\\, ",", ".", "Del", "Esc". Same keys, new words; a kit change to symbol caps would undo it.
+## Task S1 phase 13b (2026-11-21)
+- View > Appearance dialog, THEME shim deleted (metrics module + tokens), style lint opted in for the audio editor. Tests 704, check.ps1 green, release exe rebuilt.
+
+## Task S1 phase 13a (2026-11-21)
+- Dialogs on ui-kit: ui_kit::dialog frame, inspector rows, segmented, text_field, slider, switch and primary_button; dialogs/mod.rs shrunk to thin helpers; bin remove confirm and start recovery dialog moved too. Tests 703 (unchanged). Open for JD eyes: footer order is now Cancel then primary, no red destructive buttons, label column is gone (controls sit after their label), whole-control greying for one-input devices and no-range scope, dialog widths 420/500 are my reading (no board image), Export em dash caption left unchanged.
+
+## Task S1 phase 12b (2026-11-21)
+- Master panel on ui-kit panel, stereo meter with scale and fader; master_strip.rs off the theme shim; fader_bare and meter drawing helpers deleted (widget files stay, other code still uses them). Tests 703 (was 697), check.ps1 green. Open for JD eyes: fader range is now ui-kit's -60..+6 (was -60..+12), the bars show RMS like before but there is no peak-hold line, the peak value no longer turns red above 0 dB, panel width 136, no board image for this panel.
+
+## Task S1 phase 12a (2026-11-21)
+- Media panel restyled: ui-kit panel, 44 header with Sort (glass menu) and Import icon buttons, list rows with 28 tile and duration, glass context menu, empty state with Import button. bin_panel.rs off the theme shim. Tests 697 (was 692). Open for JD eyes: left panel frame in app.rs changed to ground + 8 px gap; row details (usage, rate, format) moved to a tooltip; no board image for this panel, so tile fill (bg.control) is my reading.
+
+## Task S1 R4 (2026-11-21)
+- Start screen rebuilt to rev 3 (hero + recent panels, title bar File menu, Delete key, footer hints). Tests 692 (was 679), check.ps1 green. Release exe not rebuilt (app was running). Open for JD eyes: no board image was readable, so tile/card colors, band placement and the selected-tile look are my reading of the spec; no View or Help menu (nothing for them to hold).
+
+## Task S1 R3 (2026-11-21)
+- Track area structure: header column strip with "Tracks" corner, stroke.track lines under rows and the Add track row, bg.track.empty below it, selected header bg.track.header.selected. Tests 679, check.ps1 green. Details in activeContext.
+
+## Task S1 phase 11c (2026-11-21)
+Transport deck, percent zoom readout, wave scale slider, Add track row; toolbar.rs deleted. Tests 672 (was 669): record and play/stop tests rewritten for the deck, +deck jump test, +add row and wave slider test, +timecode split test. Open for JD eyes: deck width and fade, no Loop button (no loop feature), end button kept after Record.
+
+## Task S1 phase 11b fixes (2026-11-21)
+Header layout by height (one row below the two-row threshold, all toggles visible from 40 px), Vol/Pan labels and values, toggle and grip tooltips, SliderKind::Bipolar for pan, clip lights clear only on a meter click. Tests: cutmark-audio 669 (was 665), ui-kit widgets +2. Dropped the " dB" unit from the slider value text for width (the tooltip keeps it).
+
+## Task S1 phase 11b (2026-11-21)
+Track headers, lanes, clips, waveforms, interaction visuals, scrollbar DONE (details in activeContext). Tests 665 (was 663): -1 track_color test (concept deleted), +3 (lane shading, muted/selected clip fills, volume slider gesture). No marquee gesture exists in the app, so paint_marquee is unused (the inventory's "marquee dashed rect" is the new-track drop row, kept dashed). Open for JD's eyes: header at 40 to 54 px height clips the ui-kit toggles; sliders only show when they fit (about 86 px and up, was 64); clip name/gain pinning; glass look of the clip menu and gain edit.
+
+## Task S1 phase 11a (2026-11-21)
+Timeline panel, panel toolbar, ruler, markers, playhead DONE (details in activeContext). Tests 663 (was 660): zoom slider mapping, zoom readout, chip click test. No edit tools exist in the app, so item 2's segmented control was not built. Open: wave scale slider still in toolbar.rs (old fader widget), left for 11c with the transport deck.
+
+## Task S1 phase 10c (2026-11-21)
+Start screen in the new look DONE: app.rs show_start_bar left zone = menu::start_title (new: app_mark + "Cutmark Audio" in type.headline; new APP_SHORT_NAME const), no Undo/Redo/Export; center/right empty. start_screen.rs: centered 560x560 panel (THEME.start_panel_w/h new; card_margin/radius/shadow/pad reused) with app_mark (pub(crate) in menu.rs), title in type.title, primary_button New + local secondary_button Open, caption drop-hint/error line, "Recent projects" + "N of 10" + right-aligned Clear missing ui.link, ui_kit::list_row rows (trailing date or "Missing") with icon_button X beside each row (allocate_ui at width - ICON_BUTTON - SCALE_2), ScrollArea. Keyboard: Up/Down select (sel highlight), Enter opens DEFERRED a frame (enter_open) so the recovery modal never also reads the same Enter. Drops + all Phase 0 start actions unchanged. status_bar::show_start = ui_kit::status_bar + right-aligned "No project open" overlay (Reveal-link pattern). Deleted: start_bar_heights/start_bar_w/start_bar_pitch and all painted-bar/old-card helpers; other 41 THEME start_* fields #[allow(dead_code)] until phase 13. Tests 660 hold; check.ps1 ALL CHECKS PASSED; release exe fresh (08:27). Left for JD's visual pass: panel width/height feel, X-button spacing beside rows, secondary-button look.
+
+
+Main toolbar, menu popover, status bar DONE: the 10a menu bar row removed. ProjectMenu::button (icon_button, phosphor LIST) + ProjectMenu::popover (one egui::Popup::menu, the five menus as ui.menu_button submenus with identical items/shortcuts/enabled states, dialogs moved in; shortcut hints type.value text.tertiary) \u2014 drawn once per frame AFTER the toolbar panel, the button response carried out of the right-zone closure in a RefCell (drawing inside the closures would draw the popup twice: main_toolbar's invisible measuring passes still run Popup's own Area). Left zone: menu::project_title (app mark placeholder, type.headline name + 8 px text.secondary painted dot when dirty, "48 kHz / 24-bit" caption via status_bar::format_caption, truncate at NAME_MAX_W 240) + Undo/Redo icon buttons (ARROW_COUNTER_CLOCKWISE/ARROW_CLOCKWISE) with ui.add_enabled_ui on undo_label()/redo_label(). Right zone: menu button then primary_button("Export") -> open_export. Center empty; LEFT_ZONE_MAX_W gone. Status bar: ui_kit::status_bar, sentence case ("Playhead"/"Rec", "Sel a to b (len)", "Exported name", "Ripple on"/"Snap on" only when on, "48 kHz", "24-bit"; Reveal link right-aligned overlay; show_start untouched). THEME menu_right_pad/unsaved_dot_d #[allow(dead_code)]. Tests 657 -> 660: menu.rs harness MenuRig (click LIST glyph -> submenu -> item; project_status tests became project_title tests), app.rs +3 (toolbar undo/redo incl. disabled state, Export button opens the dialog, sentence-case ripple/snap readouts). check.ps1 ALL CHECKS PASSED; release exe fresh + smoke-launched; visual pass (dot spacing, glass popover, Reveal link, disabled icon look) left for JD.
+
+
+## Task S1 phase 10a (2026-11-21)
+Audio editor shell onto ui_kit::apply and the custom window chrome DONE: main.rs viewport through ui_kit::chrome::viewport (app min 1100x700 re-asserted after the call) and creator = ui_kit::apply + chrome::install; theme.rs is the S1 shim (required module doc; every name/type kept; apply/font_definitions/F12 debug window/Plex consts deleted; colors from ui_kit::tokens per the palette mapping, alpha accent colors via accent_alpha(), app-specific colors stay literal; sizes/radii mapped only where tokens match so the layout does not move; fonts are Inter/JetBrains Mono via ui_kit::apply, named weight families = ui_kit::fonts consts). app.rs: appearance::poll + show_toasts every frame; the 30px menu panel replaced by a 52px ui_kit::main_toolbar bar (left zone = menu.show via RefCell/Cell, capped at 560 so the right-aligned project status keeps caption drag space); empty main_toolbar bar on the start screen; F12 window deleted. dialogs/mod.rs footer_button_width measures with an invisible sizing pass (egui 0.36 atom-layout button widths beat text+padding by 1.09px with Inter). Test gotchas in activeContext: Fonts::has_glyph is first-face-only (not fallback-aware). cargo test 657 passed; check.ps1 ALL CHECKS PASSED; release exe fresh + smoke-launched; drags/snap/close left for JD's visual pass.
+
+## Task S1 phase 9 fixes (2026-11-21)
+## Task S1 phase 9 fixes (2026-11-21)
+Widget IDs, icon variants, toolbar order, gallery layout DONE: segmented() takes an id_salt and main_toolbar measures in push_id sizing passes (no more red "First/Second use of widget ID" overlays; detected headlessly by scanning harness output shapes for "use of widget ID"); egui-phosphor regular+fill both enabled and registered under distinct keys with ui_kit::icons::{regular, fill} and fonts::icon_regular/icon_fill (line icons regular, transport fill; the cuts share codepoints so the widget's font picks the render); main_toolbar right zone reads icon buttons then primary, caption buttons far right, every zone vertically centered in the 52px bar; transport_deck anchors to its content_rect (was screen-bottom, overlapped the status bar); gallery toolbar/status bar are Panel::top/bottom and the page a CentralPanel; Core page panels in a wrapping grid (manual chunks rows, columns sized to the widest natural panel 700px, because egui 0.36 Grid leaks its placer into Frame children and state_cell verticals claim zero width). New tests: id_clash.rs (5 kittest tests), fonts both-variants test. check.ps1 ALL CHECKS PASSED. egui 0.36 gotchas in activeContext.md.
+
 ## Task S1 phase 1 (2026-11-19)
 UI inventory DONE, docs only: docs/audio-editor/ui-inventory.md (versions, glow, every ui/ file, theme values, hard-coded style outside theme.rs, custom widgets, all shortcuts, dialogs and screens, ui-kit pub items and its users, gaps vs the S1 spec's "Audio editor mapping" table). Surprises: the app is already on eframe wgpu (no glow anywhere, stale glow notes in S0-Workspace.md and check.ps1); the audio editor uses no ui_kit; ui-kit palette has 21 color constants, the S1 spec says 25. check.ps1 green. Details in activeContext.md.
 

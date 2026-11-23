@@ -1439,7 +1439,7 @@ dependencies = [
 
 [[package]]
 name = "cutmark-audio"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1450,6 +1450,7 @@ dependencies = [
  "directories",
  "eframe",
  "egui-phosphor",
+ "egui_kittest",
  "ffmpeg-next",
  "filetime",
  "hound",
@@ -1463,8 +1464,18 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "trash",
+ "ui-kit",
  "uuid",
  "winresource",
+]
+
+[[package]]
+name = "cutmark-gallery"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui-phosphor",
+ "ui-kit",
 ]
 
 [[package]]
@@ -6867,8 +6878,12 @@ dependencies = [
  "eframe",
  "egui",
  "egui-phosphor",
+ "egui_kittest",
+ "log",
+ "raw-window-handle",
  "serde",
  "serde_json",
+ "windows 0.62.2",
 ]
 
 [[package]]

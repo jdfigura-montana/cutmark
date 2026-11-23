@@ -3,9 +3,9 @@
 
 use eframe::egui;
 
+use super::FORM_W;
 use crate::editor::Editor;
 use crate::io::config::{AppConfig, MAX_LATENCY_OFFSET_MS, MIN_LATENCY_OFFSET_MS, RecordChannels};
-use crate::ui::theme::THEME;
 
 /// Modal dialog for the app-wide audio input settings.
 pub struct AudioSettingsDialog {
@@ -74,56 +74,63 @@ impl AudioSettingsDialog {
     /// Shows the dialog. OK (or Enter) saves through the Editor and closes on
     /// success; Cancel, Esc and the backdrop discard the changes.
     pub fn show(&mut self, ctx: &egui::Context, editor: &mut Editor) {
-        let mut cancel = false;
-        let mut apply = false;
-        let response = super::modal("audio_settings_dialog").show(ctx, |ui| {
-            super::card_width(ui, THEME.dialog_w);
-            super::title(ui, "Audio Settings");
-            ui.add_space(THEME.space_xs);
-            super::description(ui, "Input device and recording options for this computer.");
-            super::before_form(ui);
-            super::form_row(ui, "Input device", |ui| self.device_combo(ui, editor));
-            super::form_row(ui, "Record channels", |ui| {
-                let second = has_second_channel(self.device_channels);
-                super::segmented_enabled(
-                    ui,
-                    "as_channels",
-                    &[
-                        (RecordChannels::Mono1, "Mono (input 1)", true),
-                        (RecordChannels::Mono2, "Mono (input 2)", second),
-                        (RecordChannels::Stereo, "Stereo", second),
-                    ],
-                    &mut self.channels,
-                );
-            });
-            super::form_row(ui, "Latency offset", |ui| {
-                super::ms_control(ui, "as_latency", &mut self.latency_ms, (MIN_LATENCY_OFFSET_MS, MAX_LATENCY_OFFSET_MS));
-            });
-            if let Some(error) = &self.error {
-                ui.label(egui::RichText::new(error).color(THEME.error));
-            }
-            super::footer(ui, |ui| {
-                if super::footer_button(ui, "OK", super::FooterButton::Primary, true).clicked() {
-                    apply = true;
+        let mut open = true;
+        let (mut clicked, mut enter, mut cancel) = (false, false, false);
+        super::dialog(
+            ctx,
+            "audio_settings_dialog",
+            "Audio Settings",
+            FORM_W,
+            &mut open,
+            |ui| {
+                ui_kit::help::context(ui, crate::help::CONTEXT_DIALOG_AUDIO_SETTINGS);
+                super::description(ui, "Input device and recording options for this computer.");
+                ui_kit::inspector_group(ui, |ui| {
+                    ui_kit::inspector_row(ui, "Input device", |ui| self.device_combo(ui, editor), None);
+                    ui_kit::inspector_row(
+                        ui,
+                        "Record channels",
+                        |ui| {
+                            // A device with one input only offers Mono (input 1), which
+                            // is already chosen, so the whole control is inert.
+                            ui.add_enabled_ui(has_second_channel(self.device_channels), |ui| {
+                                super::choice(
+                                    ui,
+                                    "as_channels",
+                                    &[(RecordChannels::Mono1, "Mono (input 1)"), (RecordChannels::Mono2, "Mono (input 2)"), (RecordChannels::Stereo, "Stereo")],
+                                    &mut self.channels,
+                                );
+                            });
+                        },
+                        None,
+                    );
+                    ui_kit::inspector_row(
+                        ui,
+                        "Latency offset",
+                        |ui| super::ms_control(ui, &mut self.latency_ms, (MIN_LATENCY_OFFSET_MS, MAX_LATENCY_OFFSET_MS)),
+                        None,
+                    );
+                });
+                if let Some(error) = &self.error {
+                    super::error_text(ui, error);
                 }
-                if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
+                // Enter confirms.
+                enter = super::enter_pressed(ui);
+            },
+            |ui| {
+                if super::secondary_button(ui, "Cancel").clicked() {
                     cancel = true;
                 }
-            });
-            // Enter confirms.
-            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                apply = true;
-            }
-        });
-        // Esc or the backdrop cancels.
-        if response.should_close() {
-            cancel = true;
-        }
-        if apply && !cancel {
-            self.try_apply(editor);
-        }
-        if cancel {
+                if ui_kit::primary_button(ui, "OK").clicked() {
+                    clicked = true;
+                }
+            },
+        );
+        // Cancel, Esc or the backdrop discards the changes.
+        if cancel || !open {
             self.open = false;
+        } else if clicked || enter {
+            self.try_apply(editor);
         }
     }
 
@@ -137,20 +144,11 @@ impl AudioSettingsDialog {
             Some(name) => format!("{name} (not found)"),
         };
         let before = self.device.clone();
-        ui.scope(|ui| {
-            // The combo button is as tall as a text field.
-            ui.spacing_mut().interact_size.y = THEME.field_h;
-            egui::ComboBox::from_id_salt("as_device")
-                .width(width)
-                .truncate()
-                .selected_text(shown)
-                .popup_style(crate::ui::theme::menu_item_style.into())
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.device, None, default_label(self.default_name.as_deref()));
-                    for name in &self.devices {
-                        ui.selectable_value(&mut self.device, Some(name.clone()), name);
-                    }
-                });
+        egui::ComboBox::from_id_salt("as_device").width(width).truncate().selected_text(shown).show_ui(ui, |ui| {
+            ui.selectable_value(&mut self.device, None, default_label(self.default_name.as_deref()));
+            for name in &self.devices {
+                ui.selectable_value(&mut self.device, Some(name.clone()), name);
+            }
         });
         if self.device != before {
             self.device_channels = editor.input_device_channels(self.device.as_deref());
@@ -260,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn the_card_is_420_wide_with_ok_then_cancel_flush_right_8px_apart() {
+    fn the_card_is_form_wide_with_cancel_then_ok_flush_right_8px_apart() {
         let mut h = Headless::new(1280.0, 800.0);
         let dir = tempfile::tempdir().unwrap();
         let mut editor = editor_with_devices(dir.path().join("config.json"));
@@ -268,18 +266,16 @@ mod tests {
         let out = h.settle(|ui| dialog.show(ui.ctx(), &mut editor));
 
         let card = card(&out);
-        assert!((card.width() - THEME.dialog_w).abs() < TOL, "card is {} wide", card.width());
+        assert!((card.width() - FORM_W).abs() < TOL, "card is {} wide", card.width());
         assert!(card.top() > 0.0 && card.bottom() < 800.0, "card on screen");
 
-        // Same footer as the other dialogs: "OK  Cancel", 8 px apart, the
-        // last button flush with the content edge, equal card padding.
-        let line = out.footer_line().expect("footer divider");
-        let (pad_left, pad_right) = (line.left() - card.left(), card.right() - line.right());
-        assert!((pad_left - pad_right).abs() < TOL, "{pad_left} vs {pad_right}");
+        // Same footer as the other dialogs: "Cancel  OK", 8 px apart, the
+        // primary button last and flush with the content edge.
+        let line = out.dialog_content().expect("dialog card");
         let (ok, cancel) = (button(&out, "OK"), button(&out, "Cancel"));
-        assert!(ok.center().x < cancel.center().x, "OK then Cancel");
-        assert!((cancel.left() - ok.right() - THEME.space_md).abs() < TOL, "gap is {}", cancel.left() - ok.right());
-        assert!((cancel.right() - line.right()).abs() < TOL);
+        assert!(cancel.center().x < ok.center().x, "Cancel then OK");
+        assert!((ok.left() - cancel.right() - ui_kit::tokens::space::SCALE_8).abs() < TOL, "gap is {}", ok.left() - cancel.right());
+        assert!((ok.right() - line.right()).abs() < TOL);
 
         // Everything sits inside the card, top to bottom.
         let rows: Vec<egui::Rect> = ["Audio Settings", "Input device", "Record channels", "Latency offset"]
@@ -376,13 +372,13 @@ mod tests {
         assert!(!dialog.is_closed(), "stays open");
         let error = dialog.error.clone().expect("the save error");
         // The error is set while handling the click, so it paints one frame
-        // later: in red, inside the card, and the card stays 420 wide.
+        // later: in red, inside the card, and the card keeps its width.
         let out = h.settle(|ui| dialog.show(ui.ctx(), &mut editor));
         let shown = out.texts().into_iter().find(|t| t.text == error).expect("the error is painted in the dialog");
-        assert_eq!(shown.color, THEME.error);
+        assert_eq!(shown.color, ui_kit::tokens::color::SEM_RECORD);
         let card = card(&out);
         assert!(card.contains_rect(shown.rect), "{:?} inside {card:?}", shown.rect);
-        assert!((card.width() - THEME.dialog_w).abs() < TOL);
+        assert!((card.width() - FORM_W).abs() < TOL);
     }
 
     #[test]

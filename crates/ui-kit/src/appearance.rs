@@ -75,7 +75,7 @@ fn load_from_str(text: &str) -> Theme {
         return Theme::default();
     }
     let Some(pick) = parse_hex(&file.accent_pick) else { return Theme::default() };
-    Theme { accent: crate::accent::derive(pick), glass: file.glass }
+    Theme { accent: crate::accent::derive(pick), glass: file.glass, reduce_motion: false }
 }
 
 /// Parses a `#RRGGBB` pick (the `#` optional) into an sRGB color.
@@ -133,6 +133,7 @@ pub fn poll_at(ctx: &egui::Context, now: Instant) {
         if modified != state.last_seen_modified {
             state.last_seen_modified = modified;
             Theme::set(ctx, load());
+            crate::refresh(ctx);
         }
     }
     ctx.data_mut(|data| data.insert_temp(id, state));

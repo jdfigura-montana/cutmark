@@ -2,8 +2,8 @@
 
 use eframe::egui;
 
+use super::NARROW_W;
 use crate::editor::Editor;
-use crate::ui::theme::THEME;
 
 /// Temp-storage key holding the open Normalize dialog.
 const DIALOG_KEY: &str = "normalize_dialog";
@@ -36,41 +36,52 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor) -> Vec<String> {
     let Some(mut dialog) = ctx.data_mut(|d| d.remove_temp::<NormalizeDialog>(egui::Id::new(DIALOG_KEY))) else {
         return Vec::new();
     };
-    let mut ok = false;
+    let (mut clicked, mut enter, mut cancel) = (false, false, false);
     if dialog.open {
-        let response = super::modal("normalize_dialog").show(ctx, |ui| {
-            super::card_width(ui, THEME.dialog_w);
-            super::title(ui, "Normalize");
-            ui.add_space(THEME.space_xs);
-            super::description(ui, "Raise the loudest peak to the target level.");
-            super::before_form(ui);
-            super::form_row(ui, "Target peak", |ui| {
-                super::db_control(ui, "normalize_dbfs", &mut dialog.target_dbfs, (-60.0, 0.0));
-            });
-            super::bare_row(ui, |ui| {
-                ui.checkbox(&mut dialog.per_track, "Normalize each track separately");
-            });
-            if let Some(error) = &dialog.error {
-                ui.label(egui::RichText::new(error).color(THEME.error));
-            }
-            super::footer(ui, |ui| {
-                if super::footer_button(ui, "OK", super::FooterButton::Primary, true).clicked() {
-                    ok = true;
+        let mut open = true;
+        let error = dialog.error.clone();
+        let (target, per_track) = (&mut dialog.target_dbfs, &mut dialog.per_track);
+        super::dialog(
+            ctx,
+            "normalize_dialog",
+            "Normalize",
+            NARROW_W,
+            &mut open,
+            |ui| {
+                ui_kit::help::context(ui, crate::help::CONTEXT_DIALOG_NORMALIZE);
+                super::description(ui, "Raise the loudest peak to the target level.");
+                ui_kit::inspector_group(ui, |ui| {
+                    ui_kit::inspector_row(ui, "Target peak", |ui| super::db_control(ui, target, (-60.0, 0.0)), None);
+                    ui_kit::inspector_row(
+                        ui,
+                        "Normalize each track separately",
+                        |ui| {
+                            ui_kit::switch(ui, per_track);
+                        },
+                        None,
+                    );
+                });
+                if let Some(error) = &error {
+                    super::error_text(ui, error);
                 }
-                if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
-                    dialog.open = false;
+                // Enter confirms.
+                enter = super::enter_pressed(ui);
+            },
+            |ui| {
+                if super::secondary_button(ui, "Cancel").clicked() {
+                    cancel = true;
                 }
-            });
-            // Enter confirms.
-            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                ok = true;
-            }
-        });
-        // Esc or the backdrop cancels.
-        if response.should_close() {
+                if ui_kit::primary_button(ui, "OK").clicked() {
+                    clicked = true;
+                }
+            },
+        );
+        // Cancel, Esc or the backdrop dismisses the dialog.
+        if cancel || !open {
             dialog.open = false;
         }
     }
+    let ok = clicked || enter;
     if ok && dialog.open {
         dialog.error = None;
         match editor.normalize(dialog.target_dbfs, dialog.per_track) {

@@ -9,28 +9,32 @@ use crate::editor::Editor;
 use crate::editor::action::Action;
 use crate::editor::message::{self, Message};
 use crate::editor::transport::TransportState;
+use crate::help;
 use crate::ui::bin_panel::{self, BinPanel};
 use crate::ui::dialogs::confirm::{CloseChoice, CloseConfirmDialog, ConfirmDialog, ExportCloseChoice, ExportCloseDialog, RecordCloseChoice, RecordCloseDialog};
 use crate::ui::dialogs::export::{BANNER_SECONDS, ExportBanner};
 use crate::ui::master_strip;
-use crate::ui::menu::{ProjectMenu, ProjectMenuAction};
+use crate::ui::menu::{HelpMenuAction, ProjectMenu, ProjectMenuAction, app_mark};
 use crate::ui::start_screen::StartScreen;
 use crate::ui::status_bar;
-use crate::ui::theme::THEME;
 use crate::ui::timeline::{self, ViewMenuAction};
-use crate::ui::toolbar;
 use crate::ui::widgets::meter::MeterState;
+use ui_kit::help::{HelpBook, HelpState, KEYBOARD_PAGE_ID, handle_f1, help_window, open as help_open};
+use ui_kit::tokens::{color, size, space};
+use ui_kit::tour;
 
 /// The user-visible application name, used for the window title, the start
 /// screen heading and the installer.
 pub const APP_NAME: &str = "CutMark Audio Editor";
 
-/// Height of the top menu bar panel.
-const MENU_BAR_H: f32 = 30.0;
-/// Height of the toolbar panel.
-const TOOLBAR_H: f32 = 48.0;
+/// The short app name shown in the start screen's toolbar title area and its
+/// panel heading.
+pub const APP_SHORT_NAME: &str = "Cutmark Audio";
+
+/// Height of the 44px main toolbar (the window's title bar).
+const TOP_BAR_H: f32 = size::TOOLBAR_MAIN_HEIGHT;
 /// Height of the bottom status bar panel.
-const STATUS_BAR_H: f32 = 26.0;
+const STATUS_BAR_H: f32 = size::STATUS_BAR_HEIGHT;
 
 /// Wraps plain panel messages (import, relink, bin and timeline edits) as
 /// "Media" messages for the messages dialog.
@@ -57,6 +61,15 @@ enum PendingClose {
     Open,
     /// Return to the start screen.
     Close,
+}
+
+/// The menu choices of one editor frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EditorActions {
+    /// The Project menu's chosen action.
+    project: ProjectMenuAction,
+    /// The Help menu's chosen action.
+    help: HelpMenuAction,
 }
 
 /// Root application state shown in the main window.
@@ -87,6 +100,16 @@ pub struct App {
     start_output: Option<String>,
     /// True once `start_output` has been queried (None then means no device).
     start_output_queried: bool,
+    /// The help window's open state and its Back and Forward history.
+    help: HelpState,
+    /// The app's help topics, embedded at build time.
+    book: HelpBook,
+    /// The first-run tour's running state.
+    tour: tour::TourState,
+    /// True while the About box is open.
+    about_open: bool,
+    /// True once the first editing frame checked whether to show the tour.
+    tour_checked: bool,
 }
 
 impl Default for App {
@@ -103,6 +126,11 @@ impl Default for App {
             close_confirmed: false,
             start_output: None,
             start_output_queried: false,
+            help: HelpState::default(),
+            book: help::book(),
+            tour: tour::TourState::default(),
+            about_open: false,
+            tour_checked: false,
         }
     }
 }
@@ -118,14 +146,16 @@ impl App {
     /// drive the real frame without an `eframe::Frame`.
     fn run(&mut self, ui: &mut egui::Ui) {
         self.update_title(ui);
-        // Debug-only F12 window showing the egui style.
-        #[cfg(debug_assertions)]
-        crate::ui::theme::debug_window(ui.ctx());
+        // The appearance file feeds the runtime theme (shared with the whole
+        // suite); toasts draw on top of everything.
+        ui_kit::appearance::poll(ui.ctx());
+        ui_kit::show_toasts(ui.ctx());
         // Work on the screen outside self so menu, editor and screen can be
         // borrowed separately within one frame.
         let mut screen = std::mem::replace(&mut self.screen, Screen::Start(StartScreen::default()));
         let mut opened: Option<Editor> = None;
         let mut action = ProjectMenuAction::None;
+        let mut help_action = HelpMenuAction::None;
         // A close that survived the prompts this frame, applied below.
         let mut resolved: Option<PendingClose> = None;
         match &mut screen {
@@ -137,10 +167,15 @@ impl App {
                 if !ui.ctx().egui_wants_keyboard_input() && !start.dialog_is_open() {
                     Self::handle_start_shortcuts(ui, start);
                 }
+                match Self::show_start_bar(ui) {
+                    ProjectMenuAction::New => *start = StartScreen::with_new_dialog(),
+                    ProjectMenuAction::Open => *start = StartScreen::with_open_request(),
+                    _ => {}
+                }
                 opened = start.show(ui, self.start_output.as_deref());
             }
             Screen::Editing(editor) => {
-                action = Self::show_editor(
+                let chosen = Self::show_editor(
                     ui,
                     editor,
                     &mut self.menu,
@@ -150,6 +185,8 @@ impl App {
                     &mut self.export_banner,
                     self.pending_close.is_some(),
                 );
+                action = chosen.project;
+                help_action = chosen.help;
                 Self::intercept_window_close(ui.ctx(), editor, &mut self.pending_close, self.close_confirmed);
                 resolved = Self::run_close_prompts(&ui.ctx().clone(), editor, &mut self.messages, &mut self.pending_close);
             }
@@ -165,6 +202,13 @@ impl App {
             ProjectMenuAction::Close => self.request_close(&mut screen, PendingClose::Close),
             ProjectMenuAction::Import => {}
         }
+        match help_action {
+            HelpMenuAction::None => {}
+            HelpMenuAction::Topics => help_open(&mut self.help, help::FALLBACK_TOPIC_ID),
+            HelpMenuAction::Shortcuts => help_open(&mut self.help, KEYBOARD_PAGE_ID),
+            HelpMenuAction::Tour => self.tour.start(),
+            HelpMenuAction::About => self.about_open = true,
+        }
         if let Some(pending) = resolved {
             if pending == PendingClose::Quit {
                 self.close_confirmed = true;
@@ -173,7 +217,55 @@ impl App {
                 self.apply_pending(&mut screen, pending);
             }
         }
+        // Help draws over everything, after the screen registered its F1 areas
+        // and tour anchors this frame.
+        self.show_help(ui, matches!(screen, Screen::Editing(_)));
         self.screen = screen;
+    }
+
+    /// Handles F1 and Ctrl+/, starts the first-run tour on the first project
+    /// and draws the help window, the About box and the tour over everything.
+    /// Called after the screen drew, so the F1 areas and the tour anchors it
+    /// reads were registered this frame.
+    fn show_help(&mut self, ui: &egui::Ui, editing: bool) {
+        let ctx = ui.ctx();
+        // The tour shows once, the first time a project opens (spec: S1 Help
+        // "First-run tour"); Help > Show the tour starts it again by hand.
+        if editing && !self.tour_checked {
+            self.tour_checked = true;
+            if !tour::help_store::is_seen(help::TOUR.app, help::TOUR.id, help::TOUR.version) {
+                self.tour.start();
+            }
+        }
+        // F1 opens the topic for the area under the pointer or the focus.
+        handle_f1(ctx, &mut self.help, &self.book);
+        if crate::shortcuts::pressed(ctx, "keyboard_shortcuts") {
+            help_open(&mut self.help, KEYBOARD_PAGE_ID);
+        }
+        self.show_help_window(ctx);
+        ui_kit::about_dialog(ctx, &mut self.about_open, &help::ABOUT);
+        if tour::show_tour(ctx, &mut self.tour, &help::TOUR).is_some() {
+            let _ = tour::help_store::mark_seen(help::TOUR.app, help::TOUR.id, help::TOUR.version);
+        }
+    }
+
+    /// Draws the help window, routing the generated Keyboard shortcuts page
+    /// through the help window's `extra` callback (spec: S1 Help "Shortcut
+    /// sheet").
+    fn show_help_window(&mut self, ctx: &egui::Context) {
+        let book = &self.book;
+        let help_state = &mut self.help;
+        let shortcuts = crate::shortcuts::table();
+        let filter_id = egui::Id::new("audio-editor-shortcut-filter");
+        help_window(ctx, help_state, book, &mut |id: &str, ui: &mut egui::Ui| {
+            if id != KEYBOARD_PAGE_ID {
+                return false;
+            }
+            let mut filter = ui.ctx().data_mut(|data| data.get_temp::<String>(filter_id).unwrap_or_default());
+            ui_kit::shortcuts::shortcut_sheet(ui, shortcuts, &mut filter);
+            ui.ctx().data_mut(|data| data.insert_temp(filter_id, filter));
+            true
+        });
     }
 }
 
@@ -280,6 +372,29 @@ impl App {
         Some(pending)
     }
 
+    /// The 44px title bar on the start screen: the app mark and the File menu
+    /// on the left, the app name in the center, nothing on the right (no
+    /// Export while no project is open), and it is still the window's drag
+    /// area and the caption buttons' home. Returns the File menu action.
+    fn show_start_bar(ui: &mut egui::Ui) -> ProjectMenuAction {
+        let chosen = std::cell::Cell::new(ProjectMenuAction::None);
+        egui::Panel::top("start_bar").exact_size(TOP_BAR_H).frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
+            ui_kit::main_toolbar(
+                ui,
+                |ui| {
+                    app_mark(ui);
+                    ui.add_space(space::SCALE_8);
+                    chosen.set(crate::ui::menu::start_menu_bar(ui));
+                },
+                |ui| {
+                    ui_kit::title_block(ui, &ui_kit::Title::App(APP_SHORT_NAME));
+                },
+                |_| {},
+            );
+        });
+        chosen.get()
+    }
+
     /// Draws the editor layout, handles the menus and the editor shortcuts.
     /// `close_pending` is true while a close prompt is up.
     #[allow(clippy::too_many_arguments)]
@@ -292,7 +407,7 @@ impl App {
         meters: &mut MeterState,
         banner: &mut Option<ExportBanner>,
         close_pending: bool,
-    ) -> ProjectMenuAction {
+    ) -> EditorActions {
         // Pump background jobs and keep repainting while any are running.
         editor.poll_jobs();
         // Retire old mix plans, keep the audio status fresh and mirror the
@@ -349,54 +464,86 @@ impl App {
         }
 
         let mut msgs: Vec<Message> = Vec::new();
-        // Top: menu bar (one 30 px panel) with the Project, Edit, Markers,
-        // Process and View menus in a single row, then the toolbar row.
-        let mut action = ProjectMenuAction::None;
-        let mut view_action = ViewMenuAction::None;
-        egui::Panel::top("menu_bar")
-            .exact_size(MENU_BAR_H)
-            .frame(egui::Frame::new().fill(THEME.bar_bg).inner_margin(egui::Margin { left: 8, ..Default::default() }))
-            .show(ui, |ui| {
-                (action, view_action) = menu.show(ui, editor);
-            });
+        // Top: the 44px main toolbar (the title bar): app mark and the menu
+        // bar on the left, the project title in the center, Export on the
+        // right, then the separator and the caption buttons. It is also the
+        // window's drag area.
+        let menu_cell = std::cell::RefCell::new(&mut *menu);
+        let editor_cell = std::cell::RefCell::new(&mut *editor);
+        let chosen = std::cell::Cell::new((ProjectMenuAction::None, ViewMenuAction::None, HelpMenuAction::None));
+        egui::Panel::top("app_bar").exact_size(TOP_BAR_H).frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
+            ui_kit::main_toolbar(
+                ui,
+                |ui| {
+                    app_mark(ui);
+                    ui.add_space(space::SCALE_8);
+                    chosen.set(crate::ui::menu::menu_bar(ui, &menu_cell, &editor_cell));
+                },
+                |ui| {
+                    let editor = editor_cell.borrow();
+                    let caption = status_bar::format_caption(editor.project.sample_rate, editor.project.export_bit_depth, editor.project.tracks.len());
+                    ui_kit::title_block(ui, &ui_kit::Title::Document { name: &editor.project.name, unsaved: editor.dirty, caption: Some(&caption) });
+                },
+                |ui| {
+                    if ui_kit::primary_button(ui, "Export").clicked() {
+                        menu_cell.borrow_mut().open_export(&editor_cell.borrow());
+                    }
+                    ui.add_space(space::SCALE_4);
+                },
+            );
+            // The whole title bar is the tour's "Menu bar" target.
+            ui_kit::tour::anchor(ui, help::ANCHOR_MENU_BAR, ui.max_rect());
+        });
+        // The dialogs the menu items opened draw once per frame, outside the
+        // toolbar's measuring passes.
+        menu.show_dialogs(&ui.ctx().clone(), editor);
+        let (mut action, view_action, help_action) = chosen.get();
 
         if action == ProjectMenuAction::Import {
             msgs.extend(media_messages(bin_panel::pick_and_import(editor)));
             action = ProjectMenuAction::None;
         }
-        egui::Panel::top("toolbar")
-            .exact_size(TOOLBAR_H)
-            .frame(egui::Frame::new().fill(THEME.panel_bg).inner_margin(egui::Margin { left: 8, ..Default::default() }))
-            .show(ui, |ui| {
-                msgs.extend(toolbar::show(ui, editor));
-            });
-
         // Bottom: status bar.
         egui::Panel::bottom("status_bar")
             .exact_size(STATUS_BAR_H)
-            .frame(egui::Frame::new().fill(THEME.bar_bg).inner_margin(egui::Margin { left: 8, ..Default::default() }))
+            .frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin { left: 8, ..Default::default() }))
             .show(ui, |ui| {
                 status_bar::show(ui, editor, banner.as_ref());
             });
 
-        // Right: Master strip, fixed width.
-        egui::Panel::right("master_strip").resizable(false).exact_size(116.0).frame(egui::Frame::new().fill(THEME.panel_bg)).show(ui, |ui| {
-            master_strip::show(ui, editor, meters);
-        });
+        // Right: Master panel on the ground, fixed width, with the window gap
+        // on its right, top and bottom.
+        let gap = space::WINDOW_GAP as i8;
+        egui::Panel::right("master_strip")
+            .resizable(false)
+            .exact_size(136.0)
+            .frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin { left: 0, top: gap, bottom: gap, right: gap }))
+            .show(ui, |ui| {
+                ui.take_available_space();
+                master_strip::show(ui, editor, meters);
+            });
 
-        // Left: Media Bin panel, resizable between 200 and 400 px, 236 default.
-        egui::Panel::left("media_bin").resizable(true).default_size(236.0).size_range(200.0..=400.0).frame(egui::Frame::new().fill(THEME.panel_bg)).show(
-            ui,
-            |ui| {
+        // Left: Media panel on the ground, resizable between 200 and 400 px,
+        // 236 default, with the window gap on its left, top and bottom.
+        let gap = space::WINDOW_GAP as i8;
+        egui::Panel::left("media_bin")
+            .resizable(true)
+            .default_size(236.0)
+            .size_range(200.0..=400.0)
+            .frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin { left: gap, top: gap, bottom: gap, right: 0 }))
+            .show(ui, |ui| {
                 ui.take_available_space();
                 msgs.extend(media_messages(bin.show(ui, editor)));
+            });
+
+        // Center: the timeline panel on the ground, 8px window padding all
+        // round, filling the remainder.
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin::same(space::WINDOW_GAP as i8))).show(
+            ui,
+            |ui| {
+                msgs.extend(timeline::show(ui, editor, view_action, meters));
             },
         );
-
-        // Center: timeline, filling the remainder.
-        egui::CentralPanel::default().show(ui, |ui| {
-            msgs.extend(media_messages(timeline::show(ui, editor, view_action, meters)));
-        });
 
         // Files dropped anywhere on the window go to the importer.
         let dropped: Vec<PathBuf> = ui.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
@@ -418,109 +565,85 @@ impl App {
         }
 
         // Editor shortcuts, only when no text field has keyboard focus, and
-        // never while an export locks the project or a take is recorded.
+        // never while an export locks the project or a take is recorded. Every
+        // key comes from the shortcut table (`crate::shortcuts`); entries that
+        // share a logical key are checked most specific first, because egui's
+        // matching ignores an extra Shift or Alt.
         if !ui.ctx().egui_wants_keyboard_input() && !editor.is_locked() && !recording {
-            let (ctrl, shift, n, o, s, e, i, z, y, t, r, a, c, x, v, escape, del, back, g, l, m, comma, period) = ui.input(|i| {
-                (
-                    i.modifiers.ctrl,
-                    i.modifiers.shift,
-                    i.key_pressed(egui::Key::N),
-                    i.key_pressed(egui::Key::O),
-                    i.key_pressed(egui::Key::S),
-                    i.key_pressed(egui::Key::E),
-                    i.key_pressed(egui::Key::I),
-                    i.key_pressed(egui::Key::Z),
-                    i.key_pressed(egui::Key::Y),
-                    i.key_pressed(egui::Key::T),
-                    i.key_pressed(egui::Key::R),
-                    i.key_pressed(egui::Key::A),
-                    i.key_pressed(egui::Key::C),
-                    i.key_pressed(egui::Key::X),
-                    i.key_pressed(egui::Key::V),
-                    i.key_pressed(egui::Key::Escape),
-                    i.key_pressed(egui::Key::Delete),
-                    i.key_pressed(egui::Key::Backspace),
-                    i.key_pressed(egui::Key::G),
-                    i.key_pressed(egui::Key::L),
-                    i.key_pressed(egui::Key::M),
-                    i.key_pressed(egui::Key::Comma),
-                    i.key_pressed(egui::Key::Period),
-                )
-            });
+            let ctx = ui.ctx();
             // A continuous gesture is active: undo/redo keys are ignored.
             let gesture_active = editor.gesture_base.is_some();
-            if ctrl && a {
-                editor.select_all();
-            } else if ctrl && i && !shift {
-                msgs.extend(media_messages(bin_panel::pick_and_import(editor)));
-            } else if ctrl && z && !gesture_active {
-                if shift {
-                    let _ = editor.redo();
-                } else {
-                    let _ = editor.undo();
-                }
-            } else if ctrl && y && !gesture_active {
+            // Ctrl+G, Ctrl+L and Ctrl+R ignore a held Shift, as before.
+            let shift = ui.input(|i| i.modifiers.shift);
+            // These read the table without consuming: the prompt dialogs
+            // drawn after this handler still get their Esc and Space.
+            if !gesture_active && crate::shortcuts::peek(ctx, "redo") {
                 let _ = editor.redo();
-            } else if ctrl && n && !shift {
-                action = ProjectMenuAction::New;
-            } else if ctrl && o && !shift {
-                action = ProjectMenuAction::Open;
-            } else if ctrl && shift && s {
+            } else if !gesture_active && crate::shortcuts::peek(ctx, "undo") {
+                let _ = editor.undo();
+            } else if crate::shortcuts::peek(ctx, "select_all") {
+                editor.select_all();
+            } else if crate::shortcuts::peek(ctx, "process_normalize") {
+                crate::ui::dialogs::normalize::request(ctx);
+            } else if crate::shortcuts::peek(ctx, "fade_in") {
+                if let Err(error) = editor.fade_in() {
+                    *messages = Some(ConfirmDialog::new("Fade", Self::op_message(&error)));
+                }
+            } else if crate::shortcuts::peek(ctx, "fade_out") {
+                if let Err(error) = editor.fade_out() {
+                    *messages = Some(ConfirmDialog::new("Fade", Self::op_message(&error)));
+                }
+            } else if crate::shortcuts::peek(ctx, "save_as") {
                 menu.open_save_as(editor);
-            } else if ctrl && e {
+            } else if crate::shortcuts::peek(ctx, "add_track") {
+                let _ = editor.apply(Action::AddTrack { index: None, name: None });
+            } else if crate::shortcuts::peek(ctx, "new_project") {
+                action = ProjectMenuAction::New;
+            } else if crate::shortcuts::peek(ctx, "open_project") {
+                action = ProjectMenuAction::Open;
+            } else if crate::shortcuts::peek(ctx, "import_media") {
+                msgs.extend(media_messages(bin_panel::pick_and_import(editor)));
+            } else if crate::shortcuts::peek(ctx, "export") {
                 menu.open_export(editor);
-            } else if ctrl && r && !shift {
+            } else if !shift && crate::shortcuts::peek(ctx, "record") {
                 // Record onto the armed track from the playhead; "Arm a track
                 // first" and the like go to the messages dialog.
                 if let Err(error) = editor.start_recording() {
                     msgs.push(Message::recording(error.to_string()));
                 }
-            } else if ctrl && shift && t {
-                let _ = editor.apply(Action::AddTrack { index: None, name: None });
-            } else if ctrl && s {
+            } else if crate::shortcuts::peek(ctx, "save") {
                 menu.save(editor);
-            } else if del || back {
+            } else if crate::shortcuts::peek(ctx, "delete_selection") {
                 Self::delete_selection(editor);
-            } else if escape {
+            } else if crate::shortcuts::peek(ctx, "clear_selection") {
                 editor.clear_selection();
-            } else if r && !ctrl {
+            } else if crate::shortcuts::peek(ctx, "toggle_ripple") {
                 editor.toggle_ripple();
-            } else if n && !ctrl {
+            } else if crate::shortcuts::peek(ctx, "toggle_snap") {
                 editor.toggle_snap();
-            } else if s && !ctrl {
+            } else if crate::shortcuts::peek(ctx, "split_at_playhead") {
                 let _ = editor.split();
-            } else if ctrl && c {
+            } else if crate::shortcuts::peek(ctx, "copy") {
                 editor.copy_selection();
-            } else if ctrl && x && !gesture_active {
+            } else if !gesture_active && crate::shortcuts::peek(ctx, "cut") {
                 let _ = editor.cut_selection();
-            } else if ctrl && v {
+            } else if crate::shortcuts::peek(ctx, "paste") {
                 let _ = editor.paste();
-            } else if ctrl && t {
+            } else if crate::shortcuts::peek(ctx, "trim_to_selection") {
                 let _ = editor.trim_to_selection();
-            } else if m && !ctrl {
+            } else if crate::shortcuts::peek(ctx, "add_marker") {
                 let _ = editor.add_marker_at_playhead();
-            } else if comma && !ctrl {
+            } else if crate::shortcuts::peek(ctx, "previous_marker") {
                 editor.jump_prev_marker();
-            } else if period && !ctrl {
+            } else if crate::shortcuts::peek(ctx, "next_marker") {
                 editor.jump_next_marker();
-            } else if ctrl && g && !shift {
+            } else if !shift && crate::shortcuts::peek(ctx, "process_gain") {
                 // Process keys. egui itself binds none of Ctrl+G / Ctrl+Shift+N
                 // / Ctrl+Shift+I / Ctrl+Shift+O / Ctrl+L, so nothing else
                 // opens on them.
-                crate::ui::dialogs::gain::request_process(ui.ctx());
-            } else if ctrl && shift && n {
-                crate::ui::dialogs::normalize::request(ui.ctx());
-            } else if ctrl && shift && i {
-                if let Err(error) = editor.fade_in() {
-                    *messages = Some(ConfirmDialog::new("Fade", Self::op_message(&error)));
-                }
-            } else if ctrl && shift && o {
-                if let Err(error) = editor.fade_out() {
-                    *messages = Some(ConfirmDialog::new("Fade", Self::op_message(&error)));
-                }
-            } else if ctrl
-                && l
-                && !shift
+                crate::ui::dialogs::gain::request_process(ctx);
+            } else if !shift
+                && crate::shortcuts::peek(ctx, "silence")
                 && let Err(error) = editor.silence()
             {
                 *messages = Some(ConfirmDialog::new("Silence", Self::op_message(&error)));
@@ -531,30 +654,23 @@ impl App {
         // activate). While a take is recorded Space belongs to
         // `handle_recording_keys`.
         if !ui.ctx().egui_wants_keyboard_input() && !recording {
-            ui.input_mut(|i| {
-                if i.key_pressed(egui::Key::Space) && i.modifiers.is_none() {
-                    editor.toggle_play();
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::Space);
-                } else if i.key_pressed(egui::Key::Space)
-                    && i.modifiers.shift
-                    && !i.modifiers.ctrl
-                    && let crate::editor::selection::Selection::Range { start, end, .. } = editor.selection().clone()
-                {
-                    // Play selection: plays the range once, then returns to its
-                    // start. Without a range, Shift+Space does nothing.
+            let keys = crate::shortcuts::table();
+            let ctx = ui.ctx();
+            if keys.pressed(ctx, "play_selection") {
+                // Play selection: plays the range once, then returns to its
+                // start. Without a range, Shift+Space does nothing.
+                if let crate::editor::selection::Selection::Range { start, end, .. } = editor.selection().clone() {
                     editor.play_range(start, end);
-                    i.consume_key(egui::Modifiers::SHIFT, egui::Key::Space);
-                } else if i.key_pressed(egui::Key::P) && i.modifiers.is_none() {
-                    editor.toggle_pause();
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::P);
-                } else if i.key_pressed(egui::Key::Home) && i.modifiers.is_none() {
-                    editor.jump_start();
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::Home);
-                } else if i.key_pressed(egui::Key::End) && i.modifiers.is_none() {
-                    editor.jump_end();
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::End);
                 }
-            });
+            } else if keys.pressed(ctx, "play_pause") {
+                editor.toggle_play();
+            } else if keys.pressed(ctx, "pause") {
+                editor.toggle_pause();
+            } else if keys.pressed(ctx, "jump_to_start") {
+                editor.jump_start();
+            } else if keys.pressed(ctx, "jump_to_end") {
+                editor.jump_end();
+            }
         }
 
         // Background job errors from this frame.
@@ -566,7 +682,7 @@ impl App {
         if let Some(dialog) = messages {
             dialog.show(&ui.ctx().clone());
         }
-        action
+        EditorActions { project: action, help: help_action }
     }
 
     /// The keys that work while a take is recorded: Space ends the take and
@@ -575,26 +691,23 @@ impl App {
     /// position and Ctrl+S saves the project (the take keeps recording). Ctrl+R
     /// and every other key, Ctrl+N and Ctrl+O included, do nothing.
     fn handle_recording_keys(ui: &egui::Ui, editor: &mut Editor, menu: &mut ProjectMenu) {
-        ui.input_mut(|i| {
-            let ctrl_only = i.modifiers.ctrl && !i.modifiers.shift && !i.modifiers.alt;
-            if ctrl_only && i.key_pressed(egui::Key::S) {
-                menu.save(editor);
-                return;
-            }
-            if i.modifiers.any() {
-                return;
-            }
-            if i.key_pressed(egui::Key::Space) {
-                editor.stop_recording();
-                i.consume_key(egui::Modifiers::NONE, egui::Key::Space);
-            } else if i.key_pressed(egui::Key::Escape) {
-                editor.cancel_recording();
-                i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-            } else if i.key_pressed(egui::Key::M) {
-                let _ = editor.add_marker_at_playhead();
-                i.consume_key(egui::Modifiers::NONE, egui::Key::M);
-            }
-        });
+        let keys = crate::shortcuts::table();
+        let ctx = ui.ctx();
+        let ctrl_only = ui.input(|i| i.modifiers.ctrl && !i.modifiers.shift && !i.modifiers.alt);
+        if ctrl_only && keys.pressed(ctx, "save") {
+            menu.save(editor);
+            return;
+        }
+        if ui.input(|i| i.modifiers.any()) {
+            return;
+        }
+        if keys.pressed(ctx, "record_stop_keep") {
+            editor.stop_recording();
+        } else if keys.pressed(ctx, "record_discard") {
+            editor.cancel_recording();
+        } else if keys.pressed(ctx, "add_marker") {
+            let _ = editor.add_marker_at_playhead();
+        }
     }
 
     /// Renders an ops error for a modal: the ops prefix is stripped so the
@@ -628,10 +741,11 @@ impl App {
 
     /// Handles Ctrl+N (New Project dialog) and Ctrl+O (Open picker) on the start screen.
     fn handle_start_shortcuts(ui: &egui::Ui, start: &mut StartScreen) {
-        let (ctrl, n, o) = ui.input(|i| (i.modifiers.ctrl, i.key_pressed(egui::Key::N), i.key_pressed(egui::Key::O)));
-        if ctrl && n {
+        let keys = crate::shortcuts::table();
+        let ctx = ui.ctx();
+        if keys.pressed(ctx, "new_project") {
             *start = StartScreen::with_new_dialog();
-        } else if ctrl && o {
+        } else if keys.pressed(ctx, "open_project") {
             *start = StartScreen::with_open_request();
         }
     }
@@ -654,6 +768,9 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
     use crate::io::paths::create_layout;
     use crate::model::project::{BitDepth, Project, ViewState};
     use crate::ui::test_util::{Headless, Out};
@@ -674,7 +791,8 @@ mod tests {
             let paths = create_layout(dir.path(), "Test 2").expect("layout");
             let mut editor = Editor::with_project(Project::new("Test 2".to_string(), 48_000, BitDepth::Int24), ViewState::default(), paths);
             editor.dirty = true;
-            Rig { h: Headless::new(1280.0, 800.0), app: App { screen: Screen::Editing(Box::new(editor)), ..App::default() }, _dir: dir }
+            // The first-run tour would cover the panels; these tests skip it.
+            Rig { h: Headless::new(1280.0, 800.0), app: App { screen: Screen::Editing(Box::new(editor)), tour_checked: true, ..App::default() }, _dir: dir }
         }
 
         fn frame(&mut self) -> Out {
@@ -767,7 +885,7 @@ mod tests {
     /// an empty track 2 (the test input is armed, nothing records yet).
     fn recording_rig() -> Rig {
         let (editor, dir) = crate::ui::test_util::armed_editor(&[&[(0, 480_000)], &[]], "Test 2");
-        Rig { h: Headless::new(1280.0, 800.0), app: App { screen: Screen::Editing(Box::new(editor)), ..App::default() }, _dir: dir }
+        Rig { h: Headless::new(1280.0, 800.0), app: App { screen: Screen::Editing(Box::new(editor)), tour_checked: true, ..App::default() }, _dir: dir }
     }
 
     /// Runs frames of the real app until `done` holds; fails after 10 s.
@@ -926,7 +1044,8 @@ mod tests {
         assert!(!rig.editor().is_recording());
         assert!(out.text_rect("Arm a track first").is_some(), "the messages dialog says why");
         assert!(out.text_rect("Recording").is_some(), "the dialog is titled Recording");
-        assert!(out.text_rect("Media").is_none(), "and no longer Media");
+        let media = out.texts().into_iter().filter(|t| t.text == "Media").count();
+        assert_eq!(media, 1, "only the Media panel header says Media, not the dialog");
     }
 
     #[test]
@@ -1027,7 +1146,7 @@ mod tests {
 
     /// The painted live clip: the rect with the solid `record_red` border.
     fn live_clip_rect(out: &Out) -> Option<egui::Rect> {
-        out.rects().into_iter().find(|r| r.stroke.color == THEME.record_red && r.stroke.width > 0.0).map(|r| r.rect)
+        out.rects().into_iter().find(|r| r.stroke.color == color::SEM_RECORD && r.stroke.width > 0.0).map(|r| r.rect)
     }
 
     #[test]
@@ -1044,7 +1163,9 @@ mod tests {
         start_take(&mut rig, 24_000);
         let out = rig.frame();
 
-        let lane_left = out.rects().into_iter().filter(|r| r.fill == THEME.lane_a).map(|r| r.rect.left()).fold(f32::INFINITY, f32::min);
+        // The shaded rows of the header column and the lanes: the lanes sit to the right.
+        let lane_left =
+            out.rects().into_iter().filter(|r| r.fill == ui_kit::tokens::color::BG_TRACK_ALT).map(|r| r.rect.left()).fold(f32::NEG_INFINITY, f32::max);
         let live = live_clip_rect(&out).expect("the live clip is painted");
         assert!((live.left() - (lane_left + 200.0)).abs() < 0.01, "starts at the record start: {} vs {}", live.left(), lane_left + 200.0);
         assert!((live.width() - 240.0).abs() < 0.01, "24,000 frames at 100 spp: {}", live.width());
@@ -1061,7 +1182,8 @@ mod tests {
     #[test]
     fn the_view_pages_to_follow_the_take_past_the_project_end() {
         let (editor, dir) = crate::ui::test_util::armed_editor(&[&[(0, 10_000)], &[]], "Test 2");
-        let mut rig = Rig { h: Headless::new(1280.0, 800.0), app: App { screen: Screen::Editing(Box::new(editor)), ..App::default() }, _dir: dir };
+        let mut rig =
+            Rig { h: Headless::new(1280.0, 800.0), app: App { screen: Screen::Editing(Box::new(editor)), tour_checked: true, ..App::default() }, _dir: dir };
         {
             let editor = rig.editor_mut();
             editor.view.samples_per_pixel = 100.0;
@@ -1085,46 +1207,49 @@ mod tests {
             let _ = rig.frame();
             rig.frame()
         };
-        assert!(idle.text_rect("PLAYHEAD").is_some());
-        assert!(idle.text_rect("REC").is_none());
+        assert!(idle.text_rect("Playhead 00:00:01.000").is_some());
+        assert!(idle.texts().iter().all(|t| !t.text.starts_with("Rec ")));
 
         start_take(&mut rig, 24_000);
         let out = rig.frame();
-        // Toolbar: the record position 1.5 s; status bar: elapsed 0.5 s.
-        assert!(out.text_rect("00:00:01.500").is_some(), "toolbar timecode");
-        assert!(out.text_rect("00:00:00.500").is_some(), "elapsed time");
-        let rec = out.texts().into_iter().find(|t| t.text == "REC").expect("REC readout");
-        assert_eq!(rec.color, THEME.record_red);
-        assert!(out.text_rect("PLAYHEAD").is_none(), "REC replaces PLAYHEAD");
+        // Deck: the record position 1.5 s (fraction in its own run); status
+        // bar: elapsed 0.5 s.
+        assert!(out.text_rect("00:00:01").is_some() && out.text_rect(".500").is_some(), "deck timecode");
+        let rec = out.texts().into_iter().find(|t| t.text.starts_with("Rec ")).expect("the Rec readout");
+        assert_eq!(rec.text, "Rec 00:00:00.500", "the elapsed time");
+        assert_eq!(rec.color, ui_kit::tokens::color::TEXT_TERTIARY, "the component's caption color");
+        assert!(out.text_rect("Playhead 00:00:01.000").is_none(), "Rec replaces Playhead");
     }
 
-    /// The toolbar's glyphs (above y = 80), left to right.
+    /// The transport deck's glyphs (it floats near the window bottom), left to
+    /// right.
     fn toolbar_glyphs(out: &Out, glyph: &str) -> Vec<crate::ui::test_util::TextItem> {
-        let mut found: Vec<_> = out.texts().into_iter().filter(|t| t.text == glyph && t.rect.center().y < 80.0).collect();
+        let mut found: Vec<_> = out.texts().into_iter().filter(|t| t.text == glyph && t.rect.center().y > 600.0).collect();
         found.sort_by(|a, b| a.rect.center().x.total_cmp(&b.rect.center().x));
         found
     }
 
-    /// The red disc of the Record button: a filled circle of its diameter.
-    fn record_disc(out: &Out) -> Option<egui::epaint::CircleShape> {
-        out.circles().into_iter().find(|c| c.fill == THEME.record_red && (c.radius * 2.0 - THEME.record_btn_d).abs() < 0.01)
+    /// The Record capsule: the 56 x 44 `sem.record` pill of the deck.
+    fn record_capsule(out: &Out) -> Option<egui::epaint::RectShape> {
+        out.rects().into_iter().find(|r| r.fill == color::SEM_RECORD && r.rect.size() == egui::vec2(56.0, 44.0) && r.rect.center().y > 600.0)
     }
 
     #[test]
-    fn the_record_button_toggles_the_take_and_is_red_while_recording() {
+    fn the_record_button_toggles_the_take_and_shows_stop_while_recording() {
         let mut rig = recording_rig();
         for _ in 0..3 {
             let _ = rig.frame();
         }
         let out = rig.frame();
         let glyphs = toolbar_glyphs(&out, egui_phosphor::fill::RECORD);
-        assert_eq!(glyphs.len(), 1, "one Record button in the toolbar");
-        assert_eq!(glyphs[0].color, THEME.record_red, "red glyph when idle");
-        assert!(record_disc(&out).is_none(), "no red fill when idle");
-        // After Stop in the transport group, before End.
+        assert_eq!(glyphs.len(), 1, "one Record button in the deck");
+        assert_eq!(glyphs[0].color, egui::Color32::WHITE, "white glyph on the red capsule");
+        assert!(record_capsule(&out).is_some(), "the capsule is always sem.record");
+        // After Stop in the deck, before the end button.
         let stop = toolbar_glyphs(&out, egui_phosphor::fill::STOP);
         let end = toolbar_glyphs(&out, egui_phosphor::fill::SKIP_FORWARD);
-        assert!(stop.last().unwrap().rect.center().x < glyphs[0].rect.center().x);
+        assert_eq!(stop.len(), 1, "only the Stop button shows Stop when idle");
+        assert!(stop[0].rect.center().x < glyphs[0].rect.center().x);
         assert!(glyphs[0].rect.center().x < end[0].rect.center().x);
 
         // Click: the take starts.
@@ -1134,13 +1259,10 @@ mod tests {
         assert!(rig.editor().take_is_live(), "the button started the take");
         crate::ui::test_util::feed_take(rig.editor_mut(), 4_800, 0.5, 4_800);
         let out = rig.frame();
-        let disc = record_disc(&out).expect("record_red fill while recording");
-        let glyph = &toolbar_glyphs(&out, egui_phosphor::fill::RECORD)[0];
-        assert_eq!(glyph.color, THEME.on_record_glyph, "white glyph");
-        assert!((disc.center - glyph.rect.center()).length() < 1.5);
-        // While recording the Play slot shows Stop.
+        assert!(toolbar_glyphs(&out, egui_phosphor::fill::RECORD).is_empty(), "the capsule shows Stop while recording");
+        // The Stop button and the capsule both show Stop; Play stays Play.
         assert_eq!(toolbar_glyphs(&out, egui_phosphor::fill::STOP).len(), 2);
-        assert!(toolbar_glyphs(&out, egui_phosphor::fill::PLAY).is_empty());
+        assert_eq!(toolbar_glyphs(&out, egui_phosphor::fill::PLAY).len(), 1);
 
         // Click again: the take ends and is kept.
         let app = &mut rig.app;
@@ -1149,25 +1271,73 @@ mod tests {
         frames_until(&mut rig, "the take to be placed", |r| !r.editor().is_recording());
         assert!(bin_names(&rig).contains(&"Take 1".to_string()));
         let out = rig.frame();
-        assert!(record_disc(&out).is_none(), "red fill is gone");
+        assert_eq!(toolbar_glyphs(&out, egui_phosphor::fill::RECORD).len(), 1, "Record again");
     }
 
     #[test]
-    fn the_play_and_stop_buttons_keep_the_take_while_recording() {
-        for slot in [0, 1] {
+    fn the_play_stop_and_record_buttons_keep_the_take_while_recording() {
+        // Slots: Play, the Stop button, the Record capsule (showing Stop).
+        for slot in [0, 1, 2] {
             let mut rig = recording_rig();
             start_take(&mut rig, 4_800);
             let out = rig.frame();
-            // Play (showing Stop) and Stop are the two STOP glyphs.
-            let stops = toolbar_glyphs(&out, egui_phosphor::fill::STOP);
-            assert_eq!(stops.len(), 2);
-            let at = stops[slot].rect.center();
+            let at = match slot {
+                0 => toolbar_glyphs(&out, egui_phosphor::fill::PLAY)[0].rect.center(),
+                n => toolbar_glyphs(&out, egui_phosphor::fill::STOP)[n - 1].rect.center(),
+            };
             let app = &mut rig.app;
             let _ = rig.h.click(at, |ui| app.run(ui));
             assert!(!rig.editor().take_is_live(), "slot {slot} ended the take");
             frames_until(&mut rig, "the take to be placed", |r| !r.editor().is_recording());
             assert!(bin_names(&rig).contains(&"Take 1".to_string()), "slot {slot}");
         }
+    }
+
+    #[test]
+    fn the_deck_jumps_and_plays_and_leaves_the_lanes_beneath_alone() {
+        let mut rig = recording_rig();
+        for _ in 0..3 {
+            let _ = rig.frame();
+        }
+        rig.editor_mut().view.playhead = 48_000;
+        let out = rig.frame();
+        // Back to start is the first deck glyph, forward the last.
+        let back = toolbar_glyphs(&out, egui_phosphor::fill::SKIP_BACK)[0].rect.center();
+        let forward = toolbar_glyphs(&out, egui_phosphor::fill::SKIP_FORWARD)[0].rect.center();
+        let app = &mut rig.app;
+        let _ = rig.h.click(back, |ui| app.run(ui));
+        assert_eq!(rig.editor().view.playhead, 0, "back to start");
+        let app = &mut rig.app;
+        let _ = rig.h.click(forward, |ui| app.run(ui));
+        assert_eq!(rig.editor().view.playhead, 480_000, "forward to the end");
+        assert_eq!(rig.editor().selection(), &crate::editor::selection::Selection::None, "a press on the deck selects nothing under it");
+    }
+
+    #[test]
+    fn the_add_track_row_adds_a_track_and_the_wave_slider_scales_the_waveforms() {
+        let mut rig = recording_rig();
+        for _ in 0..3 {
+            let _ = rig.frame();
+        }
+        let out = rig.frame();
+        let add = out.text_rect("+ Add track").expect("the add row under the headers");
+        let tracks = rig.editor().project.tracks.len();
+        let app = &mut rig.app;
+        let _ = rig.h.click(add.center(), |ui| app.run(ui));
+        assert_eq!(rig.editor().project.tracks.len(), tracks + 1, "Add track");
+
+        // The waveform icon sits left of its 90 px slider; the slider's right
+        // end is the 16x scale.
+        let icon = out
+            .texts()
+            .into_iter()
+            .find(|t| t.text == egui_phosphor::regular::WAVEFORM && t.rect.center().x > 600.0)
+            .map(|t| t.rect)
+            .expect("the waveform icon in the panel toolbar");
+        assert_eq!(rig.editor().wave_scale(), 1.0);
+        let app = &mut rig.app;
+        let _ = rig.h.click(egui::pos2(icon.right() + 8.0 + 88.0, icon.center().y), |ui| app.run(ui));
+        assert!(rig.editor().wave_scale() > 8.0, "the slider end raises the scale: {}", rig.editor().wave_scale());
     }
 
     /// Drags the primary button from `from` to `to` over a few frames of the
@@ -1205,8 +1375,15 @@ mod tests {
         }
         for (r, expect_range) in [(&mut idle, true), (&mut rig, false)] {
             let out = r.frame();
-            // Track 2 is empty and has the alternate lane shade.
-            let lane = out.rects().into_iter().filter(|rect| rect.fill == THEME.lane_b).map(|rect| rect.rect).next().expect("a lane");
+            // Track 2 is empty and has the alternate row shade: the widest of the
+            // shaded rects is its lane (the header column paints the same shade).
+            let lane = out
+                .rects()
+                .into_iter()
+                .filter(|rect| rect.fill == ui_kit::tokens::color::BG_TRACK_ALT)
+                .map(|rect| rect.rect)
+                .max_by(|a, b| a.width().total_cmp(&b.width()))
+                .expect("a lane");
             let y = lane.center().y;
             drag(r, egui::pos2(lane.left() + 200.0, y), egui::pos2(lane.left() + 400.0, y));
             let selected = !matches!(r.editor().selection(), crate::editor::selection::Selection::None);
@@ -1239,7 +1416,7 @@ mod tests {
         }
         let (keep, discard, cancel) =
             (out.text_rect("Keep Take").unwrap().center().x, out.text_rect("Discard").unwrap().center().x, out.text_rect("Cancel").unwrap().center().x);
-        assert!(keep < discard && discard < cancel, "left to right");
+        assert!(cancel < discard && discard < keep, "left to right, the primary action last");
         assert!(out.text_rect("Save changes to Test 2?").is_none());
 
         let out = rig.click("Keep Take");
@@ -1319,5 +1496,378 @@ mod tests {
         }
         assert!(rig.editor().take_is_live(), "Esc cancelled the prompt only");
         assert!(rig.app.pending_close.is_none());
+    }
+
+    /// Clicks the toolbar icon button whose glyph is `icon`.
+    fn click_icon(rig: &mut Rig, icon: &str) -> Out {
+        let out = rig.frame();
+        let at = out.text_rect(icon).unwrap_or_else(|| panic!("no {icon} button in the toolbar")).center();
+        let app = &mut rig.app;
+        let _ = rig.h.click(at, |ui| app.run(ui));
+        rig.frame()
+    }
+
+    #[test]
+    fn undo_and_redo_work_from_the_toolbar_and_are_disabled_when_there_is_nothing() {
+        let mut rig = Rig::new();
+        // Nothing to undo: the Undo button is dead.
+        let _ = click_icon(&mut rig, ui_kit::icons::regular::ARROW_COUNTER_CLOCKWISE);
+        assert_eq!(rig.editor().project.markers.len(), 0, "a disabled Undo does nothing");
+
+        // M adds a marker (one undo step); Undo removes it, Redo brings it back.
+        tap(&mut rig, egui::Key::M);
+        assert_eq!(rig.editor().project.markers.len(), 1, "the marker was added");
+        let _ = click_icon(&mut rig, ui_kit::icons::regular::ARROW_COUNTER_CLOCKWISE);
+        assert_eq!(rig.editor().project.markers.len(), 0, "Undo removed the marker");
+        assert_eq!(rig.editor().undo_label(), None, "nothing left to undo");
+        let _ = click_icon(&mut rig, ui_kit::icons::regular::ARROW_CLOCKWISE);
+        assert_eq!(rig.editor().project.markers.len(), 1, "Redo restored the marker");
+        assert_eq!(rig.editor().redo_label(), None, "nothing left to redo");
+    }
+
+    #[test]
+    fn the_export_button_opens_the_export_dialog() {
+        let mut rig = Rig::new();
+        assert!(!rig.app.menu.export_dialog_open(), "closed to begin with");
+        let _ = rig.click("Export");
+        assert!(rig.app.menu.export_dialog_open(), "the toolbar Export opened the dialog");
+    }
+
+    #[test]
+    fn the_status_bar_reads_ripple_and_snap_in_sentence_case() {
+        let mut rig = Rig::new();
+        let out = rig.frame();
+        assert!(out.text_rect("48 kHz").is_some(), "the sample rate");
+        assert!(out.text_rect("24-bit").is_some(), "the bit depth");
+        assert!(out.text_rect("Snap on").is_some(), "snap defaults to on");
+        assert!(out.text_rect("Ripple on").is_none(), "ripple defaults to off");
+        assert!(out.text_rect("SNAP ON").is_none() && out.text_rect("RIPPLE OFF").is_none(), "the old all-caps readouts are gone");
+
+        tap(&mut rig, egui::Key::R);
+        let out = rig.frame();
+        assert!(out.text_rect("Ripple on").is_some(), "R turned ripple on");
+        assert!(out.text_rect("Snap on").is_some());
+        tap(&mut rig, egui::Key::N);
+        let out = rig.frame();
+        assert!(out.text_rect("Snap on").is_none(), "N turned snap off");
+        assert!(out.text_rect("Ripple on").is_some());
+    }
+
+    /// The title bar's height: nothing of the panel toolbar sits inside it.
+    const TITLE_BAR_H: f32 = size::TOOLBAR_MAIN_HEIGHT;
+
+    #[test]
+    fn the_title_bar_centers_the_project_name_dot_and_caption() {
+        let mut rig = Rig::new();
+        let _ = rig.frame();
+        let out = rig.frame();
+        let caption = status_bar::format_caption(48_000, BitDepth::Int24, rig.editor().project.tracks.len());
+        assert!(caption.starts_with("48 kHz \u{b7} 24-bit \u{b7} "), "the caption reads rate, depth, tracks: {caption}");
+        assert!(caption.ends_with(" tracks"), "{caption}");
+        let name = out.text_rect("Test 2").expect("the project name");
+        let caption = out.text_rect(&caption).expect("the format caption");
+        let dot = out.circles().into_iter().find(|c| c.fill == ui_kit::tokens::color::TEXT_SECONDARY && c.radius == 3.0).expect("the unsaved dot");
+        assert!(name.right() <= dot.center.x && dot.center.x <= caption.left(), "name, then the dot, then the caption, on one line");
+        for y in [name.center().y, dot.center.y, caption.center().y] {
+            assert!(y < TITLE_BAR_H, "the title block sits in the title bar");
+        }
+        let block = name.union(caption);
+        assert!((block.center().x - 640.0).abs() <= 1.0, "the title block is centered on the window, off by {}", block.center().x - 640.0);
+    }
+
+    #[test]
+    fn no_project_centers_the_app_name_and_the_start_screen_has_only_the_file_menu() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let mut app = App::default();
+        let _ = h.frame(Vec::new(), |ui| app.run(ui));
+        let out = h.frame(Vec::new(), |ui| app.run(ui));
+        let title = out.texts().into_iter().find(|t| t.text == APP_SHORT_NAME && t.rect.center().y < TITLE_BAR_H).expect("the app name in the title bar");
+        assert!((title.rect.center().x - 640.0).abs() <= 1.0, "the app name is centered, off by {}", title.rect.center().x - 640.0);
+        let file = out.text_rect("File").expect("the File menu title");
+        assert!(file.center().y < TITLE_BAR_H && file.right() < title.rect.left(), "File sits in the left zone, before the centered name");
+        assert!(out.text_rect("Edit").is_none() && out.text_rect("Export").is_none(), "only File, and no Export, without a project");
+    }
+
+    #[test]
+    fn the_start_file_menu_has_new_and_open_with_their_shortcuts() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let mut app = App::default();
+        let _ = h.frame(Vec::new(), |ui| app.run(ui));
+        let out = h.frame(Vec::new(), |ui| app.run(ui));
+        let at = out.text_rect("File").expect("the File menu title").center();
+        let _ = h.click(at, |ui| app.run(ui));
+        let out = h.settle(|ui| app.run(ui));
+        // The hero cards repeat "New project", "Ctrl+N" and "Ctrl+O" far below
+        // the title bar: only the popover's copies, just under it, count.
+        let in_popover = |out: &Out, label: &str| out.texts().into_iter().find(|t| t.text == label && t.rect.center().y < 160.0).map(|t| t.rect);
+        for label in ["New project", "Open project...", "Ctrl+N", "Ctrl+O"] {
+            assert!(in_popover(&out, label).is_some(), "the File menu shows {label}");
+        }
+        let item = in_popover(&out, "New project").expect("the New project item").center();
+        let _ = h.click(item, |ui| app.run(ui));
+        let _ = h.settle(|ui| app.run(ui));
+        assert!(matches!(&app.screen, Screen::Start(start) if start.dialog_is_open()), "New project opens the New Project dialog");
+    }
+
+    #[test]
+    fn undo_and_redo_sit_left_of_the_panel_toolbar_chips_not_in_the_title_bar() {
+        let mut rig = Rig::new();
+        let _ = rig.frame();
+        let out = rig.frame();
+        let undo = out.text_rect(ui_kit::icons::regular::ARROW_COUNTER_CLOCKWISE).expect("Undo button");
+        let redo = out.text_rect(ui_kit::icons::regular::ARROW_CLOCKWISE).expect("Redo button");
+        let ripple = out.text_rect("Ripple").expect("Ripple chip");
+        let snap = out.text_rect("Snap").expect("Snap chip");
+        assert!(undo.center().y > TITLE_BAR_H && redo.center().y > TITLE_BAR_H, "Undo and Redo left the title bar");
+        assert!(undo.right() < redo.left() && redo.right() < ripple.left() && ripple.right() < snap.left(), "Undo, Redo, then the chips, left to right");
+        assert!((undo.center().y - ripple.center().y).abs() <= 1.0, "one row");
+    }
+    // ---- Shortcut table: one kittest per group (S1 phase 14c) ----
+
+    /// A kittest harness driving the real app frame over a fresh, dirty
+    /// project in a real folder. The app stays behind an `Rc` so the test can
+    /// read the editor after a key press; keep the returned folder alive.
+    fn shortcut_harness() -> (egui_kittest::Harness<'static>, Rc<RefCell<App>>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = create_layout(dir.path(), "Test 2").expect("layout");
+        let mut editor = Editor::with_project(Project::new("Test 2".to_string(), 48_000, BitDepth::Int24), ViewState::default(), paths);
+        editor.dirty = true;
+        let app = Rc::new(RefCell::new(App { screen: Screen::Editing(Box::new(editor)), tour_checked: true, ..App::default() }));
+        let draw = Rc::clone(&app);
+        let first_pass = Rc::new(Cell::new(true));
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1280.0, 800.0)).build_ui(move |ui| {
+            // The first pass installs the ui-kit theme and fonts; egui applies
+            // a font change at the start of the next pass.
+            if first_pass.get() {
+                first_pass.set(false);
+                ui_kit::apply(ui.ctx());
+                return;
+            }
+            draw.borrow_mut().run(ui);
+        });
+        harness.step();
+        harness.step();
+        (harness, app, dir)
+    }
+
+    /// Presses `key` with `modifiers` in the harness: one frame per queued
+    /// event, then a frame to settle.
+    fn shortcut(harness: &mut egui_kittest::Harness<'static>, key: egui::Key, modifiers: egui::Modifiers) {
+        harness.key_press_modifiers(modifiers, key);
+        harness.step();
+        harness.step();
+    }
+
+    /// Runs `read` on the editor behind `app` (panics on the start screen).
+    fn with_editor<T>(app: &Rc<RefCell<App>>, read: impl FnOnce(&Editor) -> T) -> T {
+        let app = app.borrow();
+        match &app.screen {
+            Screen::Editing(editor) => read(editor),
+            Screen::Start(_) => panic!("expected the editor screen"),
+        }
+    }
+
+    /// Runs `change` on the editor behind `app` (panics on the start screen).
+    fn with_editor_mut<T>(app: &Rc<RefCell<App>>, change: impl FnOnce(&mut Editor) -> T) -> T {
+        let mut app = app.borrow_mut();
+        match &mut app.screen {
+            Screen::Editing(editor) => change(editor),
+            Screen::Start(_) => panic!("expected the editor screen"),
+        }
+    }
+    /// File: Ctrl+S saves the project.
+    #[test]
+    fn file_group_ctrl_s_saves_the_project() {
+        let (mut harness, app, _dir) = shortcut_harness();
+        assert!(with_editor(&app, |editor| editor.dirty), "starts dirty");
+        shortcut(&mut harness, egui::Key::S, egui::Modifiers::CTRL);
+        assert!(!with_editor(&app, |editor| editor.dirty), "Ctrl+S saved (File)");
+    }
+
+    /// Edit: R toggles ripple.
+    #[test]
+    fn edit_group_r_toggles_ripple() {
+        let (mut harness, app, _dir) = shortcut_harness();
+        assert!(!with_editor(&app, |editor| editor.view.ripple), "ripple starts off");
+        shortcut(&mut harness, egui::Key::R, egui::Modifiers::NONE);
+        assert!(with_editor(&app, |editor| editor.view.ripple), "R turned ripple on (Edit)");
+    }
+
+    /// Playback: Home jumps the playhead to the start.
+    #[test]
+    fn playback_group_home_jumps_to_the_start() {
+        let (mut harness, app, _dir) = shortcut_harness();
+        with_editor_mut(&app, |editor| editor.view.playhead = 48_000);
+        shortcut(&mut harness, egui::Key::Home, egui::Modifiers::NONE);
+        assert_eq!(with_editor(&app, |editor| editor.view.playhead), 0, "Home jumped to the start (Playback)");
+    }
+
+    /// Timeline: M adds a marker at the playhead.
+    #[test]
+    fn timeline_group_m_adds_a_marker() {
+        let (mut harness, app, _dir) = shortcut_harness();
+        with_editor_mut(&app, |editor| editor.view.playhead = 4_800);
+        assert_eq!(with_editor(&app, |editor| editor.project.markers.len()), 0, "no markers yet");
+        shortcut(&mut harness, egui::Key::M, egui::Modifiers::NONE);
+        assert_eq!(with_editor(&app, |editor| editor.project.markers.len()), 1, "M added a marker (Timeline)");
+    }
+
+    /// Tracks: Ctrl+Shift+T adds a track.
+    #[test]
+    fn tracks_group_ctrl_shift_t_adds_a_track() {
+        let (mut harness, app, _dir) = shortcut_harness();
+        assert_eq!(with_editor(&app, |editor| editor.project.tracks.len()), 0, "no tracks yet");
+        shortcut(&mut harness, egui::Key::T, egui::Modifiers::CTRL | egui::Modifiers::SHIFT);
+        assert_eq!(with_editor(&app, |editor| editor.project.tracks.len()), 1, "Ctrl+Shift+T added a track (Tracks)");
+    }
+
+    /// View: backslash zooms back to fit.
+    #[test]
+    fn view_group_backslash_zooms_to_fit() {
+        let (mut harness, app, _dir) = shortcut_harness();
+        // Let the panel layout settle, then take the fit the layout gives now.
+        harness.step();
+        shortcut(&mut harness, egui::Key::Backslash, egui::Modifiers::NONE);
+        let fit = with_editor(&app, |editor| editor.view.samples_per_pixel);
+        with_editor_mut(&app, |editor| editor.view.samples_per_pixel = fit * 1.5);
+        harness.step();
+        shortcut(&mut harness, egui::Key::Backslash, egui::Modifiers::NONE);
+        let zoomed = with_editor(&app, |editor| editor.view.samples_per_pixel);
+        assert!((zoomed - fit).abs() <= fit * 0.001, "backslash zoomed back to fit (View): {zoomed} vs {fit}");
+    }
+
+    /// Help: the two entries are reserved, so F1 and Ctrl+/ do nothing yet.
+    #[test]
+    fn help_group_is_reserved_and_does_nothing_yet() {
+        let table = crate::shortcuts::table();
+        assert!(table.get("help_topics").is_some() && table.get("keyboard_shortcuts").is_some(), "both Help entries exist (Help)");
+        let (mut harness, app, _dir) = shortcut_harness();
+        shortcut(&mut harness, egui::Key::F1, egui::Modifiers::NONE);
+        shortcut(&mut harness, egui::Key::Slash, egui::Modifiers::CTRL);
+        assert_eq!(with_editor(&app, |editor| editor.undo_label()), None, "nothing ran");
+        assert!(with_editor(&app, |editor| editor.dirty), "nothing was saved or closed");
+    }
+
+    /// Typing in a focused text field never triggers the single-key editor
+    /// shortcuts (the handler skips them while a text field has focus).
+    #[test]
+    fn typing_in_a_text_field_does_not_trigger_single_key_shortcuts() {
+        use egui_kittest::kittest::Queryable;
+        let (mut harness, app, _dir) = shortcut_harness();
+        // The Project Settings dialog has the one text field on screen.
+        {
+            let mut app_ref = app.borrow_mut();
+            let app = &mut *app_ref;
+            match &mut app.screen {
+                Screen::Editing(editor) => app.menu.open_settings(editor),
+                Screen::Start(_) => panic!("expected the editor screen"),
+            }
+        }
+        harness.step();
+        harness.step();
+        harness.get_by_role(egui::accesskit::Role::TextInput).click();
+        harness.step();
+        harness.step();
+        assert!(harness.ctx.egui_wants_keyboard_input(), "the name field has the keyboard");
+        harness.get_by_role(egui::accesskit::Role::TextInput).type_text("sm");
+        shortcut(&mut harness, egui::Key::S, egui::Modifiers::NONE);
+        shortcut(&mut harness, egui::Key::M, egui::Modifiers::NONE);
+        assert_eq!(with_editor(&app, |editor| editor.project.markers.len()), 0, "M in a text field added no marker");
+        assert_eq!(with_editor(&app, |editor| editor.project.tracks.len()), 0, "no track was renamed or added");
+        assert_eq!(with_editor(&app, |editor| editor.undo_label()), None, "S in a text field split nothing");
+    }
+
+    // ---- Help: F1, the tour and the About box ----
+
+    /// One lock for the tests that set the process-wide help dir.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Runs `work` with `CUTMARK_HELP_DIR` pointing at a fresh empty folder, so
+    /// the tour's seen flag starts unset. The tour tests share `ENV_LOCK`, so
+    /// they never see each other's folder.
+    fn with_help_dir<T>(work: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = std::env::temp_dir().join(format!("cutmark-audio-help-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create the help dir");
+        // SAFETY: ENV_LOCK serializes every test that touches this variable.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var("CUTMARK_HELP_DIR", &dir)
+        };
+        let result = work();
+        // SAFETY: as above; the lock is still held here.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::remove_var("CUTMARK_HELP_DIR")
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+        result
+    }
+
+    /// One key press and release pair with no modifiers, for the app frame.
+    fn key_event(key: egui::Key) -> egui::Event {
+        egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }
+    }
+
+    #[test]
+    fn f1_over_the_transport_opens_the_transport_topic() {
+        let mut rig = Rig::new();
+        // Let the panels lay the transport deck out, then point at it.
+        for _ in 0..3 {
+            let _ = rig.frame();
+        }
+        let deck = crate::ui::timeline::deck::rect(&rig.h.ctx).expect("the deck was drawn");
+        let events = vec![egui::Event::PointerMoved(deck.center()), key_event(egui::Key::F1)];
+        let app = &mut rig.app;
+        let _ = rig.h.frame(events, |ui| app.run(ui));
+        assert!(rig.app.help.open, "F1 opened the help window");
+        assert_eq!(rig.app.help.current.as_deref(), Some("playback-and-transport"), "F1 over the deck opened the transport topic");
+    }
+
+    #[test]
+    fn the_tour_shows_once_on_a_fresh_profile() {
+        with_help_dir(|| {
+            let mut rig = Rig::new();
+            // The test harness skips the tour; this test wants the real check.
+            rig.app.tour_checked = false;
+            let _ = rig.frame();
+            assert!(rig.app.tour.open, "a fresh profile starts the tour on the first project frame");
+
+            // Esc skips it, and skipping marks it seen.
+            let app = &mut rig.app;
+            let _ = rig.h.frame(vec![key_event(egui::Key::Escape)], |ui| app.run(ui));
+            assert!(!rig.app.tour.open, "Esc skipped the tour");
+            assert!(
+                ui_kit::tour::help_store::is_seen(crate::help::TOUR.app, crate::help::TOUR.id, crate::help::TOUR.version),
+                "skipping the tour marked it seen"
+            );
+        });
+    }
+
+    #[test]
+    fn the_tour_does_not_show_after_it_is_marked_seen() {
+        with_help_dir(|| {
+            ui_kit::tour::help_store::mark_seen(crate::help::TOUR.app, crate::help::TOUR.id, crate::help::TOUR.version).expect("mark the tour seen");
+            let mut rig = Rig::new();
+            rig.app.tour_checked = false;
+            let _ = rig.frame();
+            assert!(!rig.app.tour.open, "a seen tour does not show again");
+        });
+    }
+
+    #[test]
+    fn about_opens_from_the_help_menu() {
+        let mut rig = Rig::new();
+        let _ = rig.frame();
+        // Help > About Cutmark Audio.
+        let _ = rig.click("Help");
+        let out = rig.click("About Cutmark Audio");
+        assert!(rig.app.about_open, "the Help menu opened the About box");
+        assert!(out.text_rect("About Cutmark Audio").is_some(), "the About dialog is drawn");
+        // The dialog's footer settles a frame after the modal appears.
+        let app = &mut rig.app;
+        let out = rig.h.settle(|ui| app.run(ui));
+        assert!(out.text_rect("Close").is_some(), "the About dialog has its Close button");
     }
 }

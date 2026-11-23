@@ -1,4 +1,5 @@
-//! ui::menu: the top Project, Edit, Process and View menus.
+//! ui::menu: the toolbar's menu popover (Project, Edit, Markers, Process and
+//! View), the toolbar's document title and the dialogs the menus open.
 
 use eframe::egui;
 use uuid::Uuid;
@@ -9,8 +10,9 @@ use crate::ui::dialogs::confirm::ConfirmDialog;
 use crate::ui::dialogs::export::ExportDialog;
 use crate::ui::dialogs::project_settings::ProjectSettingsDialog;
 use crate::ui::dialogs::save_as::SaveAsDialog;
-use crate::ui::theme::{THEME, Theme};
 use crate::ui::timeline::ViewMenuAction;
+use ui_kit::fonts;
+use ui_kit::tokens::{color, space, typography};
 
 /// What the user chose in the Project menu this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,53 +29,154 @@ pub enum ProjectMenuAction {
     Import,
 }
 
-/// A menu separator: 1 px line in the border color with 4 px vertical margin.
+/// What the user chose in the Help menu this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelpMenuAction {
+    /// Nothing chosen.
+    None,
+    /// Open the help window on the current topic ("Help topics", F1).
+    Topics,
+    /// Open the generated "Keyboard shortcuts" page (Ctrl+/).
+    Shortcuts,
+    /// Show the first-run tour again.
+    Tour,
+    /// Open the About box.
+    About,
+}
+
+/// Thickness of a menu separator line.
+const SEPARATOR_THICKNESS: f32 = 1.0;
+
+/// A menu separator: 1 px line in the hairline color with 4 px vertical margin.
 fn menu_sep(ui: &mut egui::Ui) {
-    ui.add_space(4.0);
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), THEME.hairline), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 0.0, THEME.control_border);
-    ui.add_space(4.0);
+    ui.add_space(space::SCALE_4);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), SEPARATOR_THICKNESS), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, color::STROKE_HAIRLINE);
+    ui.add_space(space::SCALE_4);
 }
 
-/// A menu item button with a right-aligned JetBrains Mono shortcut hint.
-fn item(label: impl Into<String>, hint: &str) -> egui::Button<'static> {
-    egui::Button::new(label.into()).right_text(egui::RichText::new(hint).font(Theme::mono(11.0)).color(THEME.text_faint))
+/// A menu item button with a right-aligned type.value shortcut hint. The hint
+/// is the shortcut table's text for `id`, so menus and the sheet never drift.
+fn item(ctx: &egui::Context, label: impl Into<String>, id: &str) -> egui::Button<'static> {
+    egui::Button::new(label.into())
+        .right_text(egui::RichText::new(crate::shortcuts::text(ctx, id)).font(fonts::mono(typography::VALUE_SIZE)).color(color::TEXT_TERTIARY))
 }
 
-/// The right end of the menu bar: the project name and, while there are
-/// unsaved changes, a painted amber dot and "unsaved", reading left to right
-/// ("Test 2 (dot) unsaved") and ending `menu_right_pad` before the window
-/// edge. The dot is a painted circle, not a font glyph (the UI fonts have no
-/// U+25CF). A name too long for the bar is truncated instead of clipped.
-pub fn project_status(ui: &mut egui::Ui, name: &str, dirty: bool) {
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        ui.add_space(THEME.menu_right_pad);
-        let painter = ui.painter().clone();
-        let font = egui::FontId::proportional(THEME.clip_name_size);
-        let unsaved = dirty.then(|| painter.layout_no_wrap("unsaved".to_string(), font.clone(), THEME.text_muted));
-        let dot = if dirty { THEME.unsaved_dot_d } else { 0.0 };
-        let gap = THEME.space_sm;
-        let tail_w = unsaved.as_ref().map_or(0.0, |text| gap + dot + gap + text.size().x);
-        let mut job = egui::text::LayoutJob::simple_singleline(name.to_string(), font, THEME.text_muted);
-        job.wrap = egui::text::TextWrapping::truncate_at_width((ui.available_width() - tail_w).max(0.0));
-        let name_galley = painter.layout_job(job);
-        let height = unsaved.as_ref().map_or(0.0, |text| text.size().y).max(name_galley.size().y);
-        // One rect for the whole readout, painted left to right inside it.
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(name_galley.size().x + tail_w, height), egui::Sense::hover());
-        let mid = rect.center().y;
-        let mut x = rect.left();
-        let name_w = name_galley.size().x;
-        let name_pos = egui::pos2(x, mid - name_galley.size().y * 0.5);
-        painter.galley(name_pos, name_galley, THEME.text_muted);
-        x += name_w;
-        if let Some(text) = unsaved {
-            x += gap;
-            painter.circle_filled(egui::pos2(x + dot * 0.5, mid), dot * 0.5, THEME.marker_color);
-            x += dot + gap;
-            let text_pos = egui::pos2(x, mid - text.size().y * 0.5);
-            painter.galley(text_pos, text, THEME.text_muted);
+/// The app mark's side (spec rev 3 "Title bar": 18).
+const APP_MARK_SIZE: f32 = 18.0;
+
+/// Draws the app mark placeholder: an accent circle with a notch cut from its
+/// top right (spec "Open questions" item 1: placeholder until a real logo).
+pub(crate) fn app_mark(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(APP_MARK_SIZE, APP_MARK_SIZE), egui::Sense::hover());
+    paint_app_mark(ui, rect, color::BG_GROUND);
+}
+
+/// Paints the app mark into `rect` (a square); `notch` is the color of the
+/// surface behind it, which the cut-out notch shows.
+pub(crate) fn paint_app_mark(ui: &egui::Ui, rect: egui::Rect, notch: egui::Color32) {
+    let c = rect.center();
+    let radius = rect.width() / 2.0;
+    let painter = ui.painter();
+    painter.circle_filled(c, radius, ui_kit::Theme::get(ui.ctx()).accent.accent);
+    painter.rect_filled(egui::Rect::from_min_size(egui::pos2(c.x, c.y - radius), egui::vec2(radius, radius)), 0.0, notch);
+}
+
+/// The start screen's menu bar: File with New project and Open project, the
+/// same two actions (and shortcuts) the start screen has. Returns the action
+/// the user chose (`New` or `Open`). Call it in the left zone of the main
+/// toolbar, after the app mark.
+pub fn start_menu_bar(ui: &mut egui::Ui) -> ProjectMenuAction {
+    let action = std::cell::Cell::new(ProjectMenuAction::None);
+    let ctx = ui.ctx().clone();
+    let mut menus = [ui_kit::Menu::new("File", |ui| {
+        if ui.add(item(&ctx, "New project", "new_project")).clicked() {
+            action.set(ProjectMenuAction::New);
+            ui.close();
         }
-    });
+        if ui.add(item(&ctx, "Open project...", "open_project")).clicked() {
+            action.set(ProjectMenuAction::Open);
+            ui.close();
+        }
+    })];
+    ui_kit::menu_bar(ui, &mut menus);
+    action.get()
+}
+
+/// The title bar's menu bar: the Project, Edit, Markers, Process, View and
+/// Help menus as `ui_kit::menu_bar` titles, with the same items, shortcuts,
+/// enabled states and separators the menu button's popover had. Call it once
+/// per frame in the left zone of the main toolbar, after the app mark; it runs
+/// the open menu's closure inside, so `menu` and `editor` are borrowed only
+/// while a menu is open. Returns the Project, View and Help actions the user
+/// chose; the dialogs the items open are drawn by [`ProjectMenu::show_dialogs`]
+/// once the toolbar is done.
+pub fn menu_bar(
+    ui: &mut egui::Ui,
+    menu: &std::cell::RefCell<&mut ProjectMenu>,
+    editor: &std::cell::RefCell<&mut Editor>,
+) -> (ProjectMenuAction, ViewMenuAction, HelpMenuAction) {
+    let action = std::cell::Cell::new(ProjectMenuAction::None);
+    let view_action = std::cell::Cell::new(ViewMenuAction::None);
+    let help_action = std::cell::Cell::new(HelpMenuAction::None);
+    // While a take is recorded the Edit and Process menus, Import, Export,
+    // Save As, both settings dialogs and every Markers item except Add
+    // Marker are disabled; Save, New, Open, Close and View stay.
+    let mut menus = [
+        ui_kit::Menu::new("Project", |ui| {
+            let editor = &mut **editor.borrow_mut();
+            let recording = editor.is_recording();
+            let chosen = menu.borrow_mut().project_menu(ui, editor, recording);
+            if chosen != ProjectMenuAction::None {
+                action.set(chosen);
+            }
+        }),
+        ui_kit::Menu::new("Edit", |ui| {
+            let editor = &mut **editor.borrow_mut();
+            let recording = editor.is_recording();
+            ProjectMenu::edit_menu(ui, editor, recording);
+        }),
+        ui_kit::Menu::new("Markers", |ui| {
+            let editor = &mut **editor.borrow_mut();
+            let recording = editor.is_recording();
+            ProjectMenu::markers_menu(ui, editor, recording);
+        }),
+        ui_kit::Menu::new("Process", |ui| {
+            let editor = &mut **editor.borrow_mut();
+            let recording = editor.is_recording();
+            menu.borrow_mut().process_menu(ui, editor, recording);
+        }),
+        ui_kit::Menu::new("View", |ui| {
+            let chosen = menu.borrow_mut().view_menu(ui, &editor.borrow());
+            if chosen != ViewMenuAction::None {
+                view_action.set(chosen);
+            }
+        }),
+        // Help topics (F1), Keyboard shortcuts (Ctrl+/), Show the tour, then
+        // About (spec: S1 Help "Help menu").
+        ui_kit::Menu::new("Help", |ui| {
+            let ctx = ui.ctx().clone();
+            if ui.add(item(&ctx, "Help topics", "help_topics")).clicked() {
+                help_action.set(HelpMenuAction::Topics);
+                ui.close();
+            }
+            if ui.add(item(&ctx, "Keyboard shortcuts", "keyboard_shortcuts")).clicked() {
+                help_action.set(HelpMenuAction::Shortcuts);
+                ui.close();
+            }
+            if ui.button("Show the tour").clicked() {
+                help_action.set(HelpMenuAction::Tour);
+                ui.close();
+            }
+            menu_sep(ui);
+            if ui.button("About Cutmark Audio").clicked() {
+                help_action.set(HelpMenuAction::About);
+                ui.close();
+            }
+        }),
+    ];
+    ui_kit::menu_bar(ui, &mut menus);
+    (action.get(), view_action.get(), help_action.get())
 }
 
 /// The Project, Edit and View menus plus their modals (save error, Save As).
@@ -90,319 +193,337 @@ pub struct ProjectMenu {
     /// Export dialog; kept for the whole session so the last choices are
     /// remembered between opens.
     export_dialog: Option<ExportDialog>,
+    /// True while the Appearance dialog (accent and glass) is open.
+    appearance_open: bool,
 }
 
 impl ProjectMenu {
-    /// Shows the menus; returns the Project and View actions the user chose.
-    pub fn show(&mut self, ui: &mut egui::Ui, editor: &mut Editor) -> (ProjectMenuAction, ViewMenuAction) {
+    /// The Project menu's items; returns the action the user chose.
+    fn project_menu(&mut self, menu: &mut egui::Ui, editor: &mut Editor, recording: bool) -> ProjectMenuAction {
+        let ctx = menu.ctx().clone();
         let mut action = ProjectMenuAction::None;
-        let mut view_action = ViewMenuAction::None;
-        // While a take is recorded the Edit and Process menus, Import, Export,
-        // Save As, both settings dialogs and every Markers item except Add
-        // Marker are disabled; Save, New, Open, Close and View stay.
-        let recording = editor.is_recording();
-        // One horizontal menu bar row: menus on the left, project status on
-        // the right.
-        egui::MenuBar::new().config(egui::containers::menu::MenuConfig::new().style(crate::ui::theme::menu_item_style as fn(&mut egui::Style))).ui(ui, |ui| {
-            ui.menu_button("Project", |menu| {
-                if menu.add(item("New", "Ctrl+N")).clicked() {
-                    action = ProjectMenuAction::New;
-                    menu.close();
-                }
-                if menu.add(item("Open...", "Ctrl+O")).clicked() {
-                    action = ProjectMenuAction::Open;
-                    menu.close();
-                }
-                if menu.add(item("Save", "Ctrl+S")).clicked() {
-                    self.save(editor);
-                    menu.close();
-                }
-                if menu.add_enabled(!recording, item("Save As...", "Ctrl+Shift+S")).clicked() {
-                    self.open_save_as(editor);
-                    menu.close();
-                }
-                if menu.add_enabled(!recording, item("Import Media...", "Ctrl+I")).clicked() {
-                    action = ProjectMenuAction::Import;
-                    menu.close();
-                }
-                if !editor.is_locked() && !recording {
-                    if menu.add(item("Export...", "Ctrl+E")).clicked() {
-                        self.open_export(editor);
-                        menu.close();
-                    }
-                } else {
-                    menu.add_enabled(false, item("Export...", "Ctrl+E"));
-                }
-                if menu.button("Close").clicked() {
-                    action = ProjectMenuAction::Close;
-                    menu.close();
-                }
-                if menu.add_enabled(!recording, egui::Button::new("Project Settings...")).clicked() {
-                    self.open_settings(editor);
-                    menu.close();
-                }
-                if menu.add_enabled(!recording, egui::Button::new("Audio Settings...")).clicked() {
-                    self.audio_settings_dialog = Some(AudioSettingsDialog::new_open(editor));
-                    menu.close();
-                }
-            });
-            ui.menu_button("Edit", |menu| {
-                if recording {
-                    menu.disable();
-                }
-                match editor.undo_label() {
-                    Some(label) => {
-                        if menu.add(item(format!("Undo {label}"), "Ctrl+Z")).clicked() {
-                            let _ = editor.undo();
-                            menu.close();
-                        }
-                    }
-                    None => {
-                        menu.add_enabled(false, item("Undo", "Ctrl+Z"));
-                    }
-                }
-                match editor.redo_label() {
-                    Some(label) => {
-                        if menu.add(item(format!("Redo {label}"), "Ctrl+Y")).clicked() {
-                            let _ = editor.redo();
-                            menu.close();
-                        }
-                    }
-                    None => {
-                        menu.add_enabled(false, item("Redo", "Ctrl+Y"));
-                    }
-                }
-                menu_sep(menu);
-                let selection = editor.selection().clone();
-                let has_selection = !matches!(selection, crate::editor::selection::Selection::None);
-                let can_paste = editor.clipboard().is_some_and(|c| c.tracks.iter().any(|t| !t.is_empty()));
-                let can_split = {
-                    let pos = editor.view.playhead;
-                    let range_tracks: Option<Vec<Uuid>> = match &selection {
-                        crate::editor::selection::Selection::Range { tracks, .. } => Some(tracks.clone()),
-                        _ => None,
-                    };
-                    editor.project.tracks.iter().any(|track| {
-                        range_tracks.as_ref().is_none_or(|ids| ids.contains(&track.id)) && track.clips.iter().any(|clip| clip.start < pos && pos < clip.end())
-                    })
-                };
-                let can_trim = matches!(selection, crate::editor::selection::Selection::Range { .. });
-                let can_select_all = !editor.project.tracks.is_empty() && editor.project_length() > 0;
+        if menu.add(item(&ctx, "New", "new_project")).clicked() {
+            action = ProjectMenuAction::New;
+            menu.close();
+        }
+        if menu.add(item(&ctx, "Open...", "open_project")).clicked() {
+            action = ProjectMenuAction::Open;
+            menu.close();
+        }
+        if menu.add(item(&ctx, "Save", "save")).clicked() {
+            self.save(editor);
+            menu.close();
+        }
+        if menu.add_enabled(!recording, item(&ctx, "Save As...", "save_as")).clicked() {
+            self.open_save_as(editor);
+            menu.close();
+        }
+        if menu.add_enabled(!recording, item(&ctx, "Import Media...", "import_media")).clicked() {
+            action = ProjectMenuAction::Import;
+            menu.close();
+        }
+        if !editor.is_locked() && !recording {
+            if menu.add(item(&ctx, "Export...", "export")).clicked() {
+                self.open_export(editor);
+                menu.close();
+            }
+        } else {
+            menu.add_enabled(false, item(&ctx, "Export...", "export"));
+        }
+        if menu.button("Close").clicked() {
+            action = ProjectMenuAction::Close;
+            menu.close();
+        }
+        if menu.add_enabled(!recording, egui::Button::new("Project Settings...")).clicked() {
+            self.open_settings(editor);
+            menu.close();
+        }
+        if menu.add_enabled(!recording, egui::Button::new("Audio Settings...")).clicked() {
+            self.audio_settings_dialog = Some(AudioSettingsDialog::new_open(editor));
+            menu.close();
+        }
+        action
+    }
 
-                if has_selection {
-                    if menu.add(item("Cut", "Ctrl+X")).clicked() {
-                        let _ = editor.cut_selection();
-                        menu.close();
-                    }
-                } else {
-                    menu.add_enabled(false, item("Cut", "Ctrl+X"));
+    /// The Edit menu's items.
+    fn edit_menu(menu: &mut egui::Ui, editor: &mut Editor, recording: bool) {
+        let ctx = menu.ctx().clone();
+        if recording {
+            menu.disable();
+        }
+        match editor.undo_label() {
+            Some(label) => {
+                if menu.add(item(&ctx, format!("Undo {label}"), "undo")).clicked() {
+                    let _ = editor.undo();
+                    menu.close();
                 }
-                if has_selection {
-                    if menu.add(item("Copy", "Ctrl+C")).clicked() {
-                        editor.copy_selection();
-                        menu.close();
-                    }
-                } else {
-                    menu.add_enabled(false, item("Copy", "Ctrl+C"));
+            }
+            None => {
+                menu.add_enabled(false, item(&ctx, "Undo", "undo"));
+            }
+        }
+        match editor.redo_label() {
+            Some(label) => {
+                if menu.add(item(&ctx, format!("Redo {label}"), "redo")).clicked() {
+                    let _ = editor.redo();
+                    menu.close();
                 }
-                if can_paste {
-                    if menu.add(item("Paste", "Ctrl+V")).clicked() {
-                        let _ = editor.paste();
-                        menu.close();
+            }
+            None => {
+                menu.add_enabled(false, item(&ctx, "Redo", "redo"));
+            }
+        }
+        menu_sep(menu);
+        let selection = editor.selection().clone();
+        let has_selection = !matches!(selection, crate::editor::selection::Selection::None);
+        let can_paste = editor.clipboard().is_some_and(|c| c.tracks.iter().any(|t| !t.is_empty()));
+        let can_split = {
+            let pos = editor.view.playhead;
+            let range_tracks: Option<Vec<Uuid>> = match &selection {
+                crate::editor::selection::Selection::Range { tracks, .. } => Some(tracks.clone()),
+                _ => None,
+            };
+            editor.project.tracks.iter().any(|track| {
+                range_tracks.as_ref().is_none_or(|ids| ids.contains(&track.id)) && track.clips.iter().any(|clip| clip.start < pos && pos < clip.end())
+            })
+        };
+        let can_trim = matches!(selection, crate::editor::selection::Selection::Range { .. });
+        let can_select_all = !editor.project.tracks.is_empty() && editor.project_length() > 0;
+
+        if has_selection {
+            if menu.add(item(&ctx, "Cut", "cut")).clicked() {
+                let _ = editor.cut_selection();
+                menu.close();
+            }
+        } else {
+            menu.add_enabled(false, item(&ctx, "Cut", "cut"));
+        }
+        if has_selection {
+            if menu.add(item(&ctx, "Copy", "copy")).clicked() {
+                editor.copy_selection();
+                menu.close();
+            }
+        } else {
+            menu.add_enabled(false, item(&ctx, "Copy", "copy"));
+        }
+        if can_paste {
+            if menu.add(item(&ctx, "Paste", "paste")).clicked() {
+                let _ = editor.paste();
+                menu.close();
+            }
+        } else {
+            menu.add_enabled(false, item(&ctx, "Paste", "paste"));
+        }
+        if has_selection {
+            if menu.add(item(&ctx, "Delete", "delete_selection")).clicked() {
+                match &selection {
+                    crate::editor::selection::Selection::Clips(ids) => {
+                        let _ = editor.apply(crate::editor::action::Action::DeleteClips { clip_ids: ids.clone(), ripple: editor.view.ripple });
                     }
-                } else {
-                    menu.add_enabled(false, item("Paste", "Ctrl+V"));
-                }
-                if has_selection {
-                    if menu.add(item("Delete", "Del")).clicked() {
-                        match &selection {
-                            crate::editor::selection::Selection::Clips(ids) => {
-                                let _ = editor.apply(crate::editor::action::Action::DeleteClips { clip_ids: ids.clone(), ripple: editor.view.ripple });
-                            }
-                            crate::editor::selection::Selection::Range { start, end, tracks } => {
-                                let _ = editor.apply(crate::editor::action::Action::DeleteRange {
-                                    s: *start,
-                                    e: *end,
-                                    track_ids: tracks.clone(),
-                                    ripple: editor.view.ripple,
-                                });
-                                editor.clear_selection();
-                                editor.set_playhead(*start);
-                            }
-                            crate::editor::selection::Selection::None => {}
-                        }
-                        menu.close();
-                    }
-                } else {
-                    menu.add_enabled(false, item("Delete", "Del"));
-                }
-                menu_sep(menu);
-                if can_split {
-                    if menu.add(item("Split", "S")).clicked() {
-                        let _ = editor.split();
-                        menu.close();
-                    }
-                } else {
-                    menu.add_enabled(false, item("Split", "S"));
-                }
-                if can_trim {
-                    if menu.add(item("Trim to Selection", "Ctrl+T")).clicked() {
-                        let _ = editor.trim_to_selection();
-                        menu.close();
-                    }
-                } else {
-                    menu.add_enabled(false, item("Trim to Selection", "Ctrl+T"));
-                }
-                menu_sep(menu);
-                if can_select_all {
-                    if menu.add(item("Select All", "Ctrl+A")).clicked() {
-                        editor.select_all();
-                        menu.close();
-                    }
-                } else {
-                    menu.add_enabled(false, item("Select All", "Ctrl+A"));
-                }
-                if has_selection {
-                    if menu.add(item("Clear Selection", "Esc")).clicked() {
+                    crate::editor::selection::Selection::Range { start, end, tracks } => {
+                        let _ = editor.apply(crate::editor::action::Action::DeleteRange {
+                            s: *start,
+                            e: *end,
+                            track_ids: tracks.clone(),
+                            ripple: editor.view.ripple,
+                        });
                         editor.clear_selection();
-                        menu.close();
+                        editor.set_playhead(*start);
                     }
-                } else {
-                    menu.add_enabled(false, item("Clear Selection", "Esc"));
+                    crate::editor::selection::Selection::None => {}
                 }
-                menu_sep(menu);
-                let mut ripple = editor.view.ripple;
-                if menu.add(egui::Checkbox::new(&mut ripple, "Ripple (R)")).changed() {
-                    editor.toggle_ripple();
+                menu.close();
+            }
+        } else {
+            menu.add_enabled(false, item(&ctx, "Delete", "delete_selection"));
+        }
+        menu_sep(menu);
+        if can_split {
+            if menu.add(item(&ctx, "Split", "split_at_playhead")).clicked() {
+                let _ = editor.split();
+                menu.close();
+            }
+        } else {
+            menu.add_enabled(false, item(&ctx, "Split", "split_at_playhead"));
+        }
+        if can_trim {
+            if menu.add(item(&ctx, "Trim to Selection", "trim_to_selection")).clicked() {
+                let _ = editor.trim_to_selection();
+                menu.close();
+            }
+        } else {
+            menu.add_enabled(false, item(&ctx, "Trim to Selection", "trim_to_selection"));
+        }
+        menu_sep(menu);
+        if can_select_all {
+            if menu.add(item(&ctx, "Select All", "select_all")).clicked() {
+                editor.select_all();
+                menu.close();
+            }
+        } else {
+            menu.add_enabled(false, item(&ctx, "Select All", "select_all"));
+        }
+        if has_selection {
+            if menu.add(item(&ctx, "Clear Selection", "clear_selection")).clicked() {
+                editor.clear_selection();
+                menu.close();
+            }
+        } else {
+            menu.add_enabled(false, item(&ctx, "Clear Selection", "clear_selection"));
+        }
+        menu_sep(menu);
+        let mut ripple = editor.view.ripple;
+        if menu.add(egui::Checkbox::new(&mut ripple, format!("Ripple ({})", crate::shortcuts::text(&ctx, "toggle_ripple")))).changed() {
+            editor.toggle_ripple();
+        }
+        let mut snap = editor.view.snap;
+        if menu.add(egui::Checkbox::new(&mut snap, format!("Snap ({})", crate::shortcuts::text(&ctx, "toggle_snap")))).changed() {
+            editor.toggle_snap();
+        }
+    }
+
+    /// The Markers menu's items.
+    fn markers_menu(menu: &mut egui::Ui, editor: &mut Editor, recording: bool) {
+        let ctx = menu.ctx().clone();
+        if menu.add(item(&ctx, "Add Marker", "add_marker")).clicked() {
+            let _ = editor.add_marker_at_playhead();
+            menu.close();
+        }
+        if menu.add_enabled(!recording, item(&ctx, "Previous Marker", "previous_marker")).clicked() {
+            editor.jump_prev_marker();
+            menu.close();
+        }
+        if menu.add_enabled(!recording, item(&ctx, "Next Marker", "next_marker")).clicked() {
+            editor.jump_next_marker();
+            menu.close();
+        }
+        if let Some(id) = editor.selected_marker().filter(|_| !recording) {
+            if menu.add(item(&ctx, "Delete Marker", "delete_selection")).clicked() {
+                let _ = editor.apply(crate::editor::action::Action::DeleteMarkers { ids: vec![id] });
+                menu.close();
+            }
+        } else {
+            menu.add_enabled(false, item(&ctx, "Delete Marker", "delete_selection"));
+        }
+    }
+
+    /// The Process menu's items.
+    fn process_menu(&mut self, menu: &mut egui::Ui, editor: &mut Editor, recording: bool) {
+        let ctx = menu.ctx().clone();
+        if recording {
+            menu.disable();
+        }
+        let has_target = editor.process_target().is_some();
+        let has_range = matches!(editor.selection(), crate::editor::selection::Selection::Range { .. });
+        if has_target {
+            if menu.add(item(&ctx, "Gain...", "process_gain")).clicked() {
+                crate::ui::dialogs::gain::request_process(menu.ctx());
+                menu.close();
+            }
+        } else {
+            menu.add_enabled(false, item(&ctx, "Gain...", "process_gain"));
+        }
+        if has_target {
+            if menu.add(item(&ctx, "Normalize...", "process_normalize")).clicked() {
+                crate::ui::dialogs::normalize::request(menu.ctx());
+                menu.close();
+            }
+        } else {
+            menu.add_enabled(false, item(&ctx, "Normalize...", "process_normalize"));
+        }
+        if has_target {
+            if menu.add(item(&ctx, "Fade In", "fade_in")).clicked() {
+                if let Err(error) = editor.fade_in() {
+                    self.show_process_error(error);
                 }
-                let mut snap = editor.view.snap;
-                if menu.add(egui::Checkbox::new(&mut snap, "Snap (N)")).changed() {
-                    editor.toggle_snap();
+                menu.close();
+            }
+        } else {
+            menu.add_enabled(false, item(&ctx, "Fade In", "fade_in"));
+        }
+        if has_target {
+            if menu.add(item(&ctx, "Fade Out", "fade_out")).clicked() {
+                if let Err(error) = editor.fade_out() {
+                    self.show_process_error(error);
                 }
-            });
-            ui.menu_button("Markers", |menu| {
-                if menu.add(item("Add Marker", "M")).clicked() {
-                    let _ = editor.add_marker_at_playhead();
-                    menu.close();
+                menu.close();
+            }
+        } else {
+            menu.add_enabled(false, item(&ctx, "Fade Out", "fade_out"));
+        }
+        if has_range {
+            if menu.add(item(&ctx, "Silence", "silence")).clicked() {
+                if let Err(error) = editor.silence() {
+                    self.show_process_error(error);
                 }
-                if menu.add_enabled(!recording, item("Previous Marker", ",")).clicked() {
-                    editor.jump_prev_marker();
-                    menu.close();
-                }
-                if menu.add_enabled(!recording, item("Next Marker", ".")).clicked() {
-                    editor.jump_next_marker();
-                    menu.close();
-                }
-                if let Some(id) = editor.selected_marker().filter(|_| !recording) {
-                    if menu.add(item("Delete Marker", "Del")).clicked() {
-                        let _ = editor.apply(crate::editor::action::Action::DeleteMarkers { ids: vec![id] });
-                        menu.close();
-                    }
-                } else {
-                    menu.add_enabled(false, item("Delete Marker", "Del"));
-                }
-            });
-            ui.menu_button("Process", |menu| {
-                if recording {
-                    menu.disable();
-                }
-                let has_target = editor.process_target().is_some();
-                let has_range = matches!(editor.selection(), crate::editor::selection::Selection::Range { .. });
-                if has_target {
-                    if menu.add(item("Gain...", "Ctrl+G")).clicked() {
-                        crate::ui::dialogs::gain::request_process(menu.ctx());
-                        menu.close();
-                    }
-                } else {
-                    menu.add_enabled(false, item("Gain...", "Ctrl+G"));
-                }
-                if has_target {
-                    if menu.add(item("Normalize...", "Ctrl+Shift+N")).clicked() {
-                        crate::ui::dialogs::normalize::request(menu.ctx());
-                        menu.close();
-                    }
-                } else {
-                    menu.add_enabled(false, item("Normalize...", "Ctrl+Shift+N"));
-                }
-                if has_target {
-                    if menu.add(item("Fade In", "Ctrl+Shift+I")).clicked() {
-                        if let Err(error) = editor.fade_in() {
-                            self.show_process_error(error);
-                        }
-                        menu.close();
-                    }
-                } else {
-                    menu.add_enabled(false, item("Fade In", "Ctrl+Shift+I"));
-                }
-                if has_target {
-                    if menu.add(item("Fade Out", "Ctrl+Shift+O")).clicked() {
-                        if let Err(error) = editor.fade_out() {
-                            self.show_process_error(error);
-                        }
-                        menu.close();
-                    }
-                } else {
-                    menu.add_enabled(false, item("Fade Out", "Ctrl+Shift+O"));
-                }
-                if has_range {
-                    if menu.add(item("Silence", "Ctrl+L")).clicked() {
-                        if let Err(error) = editor.silence() {
-                            self.show_process_error(error);
-                        }
-                        menu.close();
-                    }
-                } else {
-                    menu.add_enabled(false, item("Silence", "Ctrl+L"));
-                }
-            });
-            ui.menu_button("View", |menu| {
-                if menu.add(item("Zoom In", "+")).clicked() {
-                    view_action = ViewMenuAction::ZoomIn;
-                    menu.close();
-                }
-                if menu.add(item("Zoom Out", "-")).clicked() {
-                    view_action = ViewMenuAction::ZoomOut;
-                    menu.close();
-                }
-                if !matches!(editor.selection(), crate::editor::selection::Selection::Range { .. }) {
-                    menu.add_enabled(false, item("Zoom to Selection", "Ctrl+\\"));
-                } else if menu.add(item("Zoom to Selection", "Ctrl+\\")).clicked() {
-                    view_action = ViewMenuAction::ZoomToSelection;
-                    menu.close();
-                }
-                if menu.add(item("Zoom to Fit", "\\")).clicked() {
-                    view_action = ViewMenuAction::ZoomToFit;
-                    menu.close();
-                }
-            });
-            project_status(ui, &editor.project.name, editor.dirty);
-        });
-        let ctx = ui.ctx().clone();
+                menu.close();
+            }
+        } else {
+            menu.add_enabled(false, item(&ctx, "Silence", "silence"));
+        }
+    }
+
+    /// The View menu's items; returns the zoom command the user chose.
+    fn view_menu(&mut self, menu: &mut egui::Ui, editor: &Editor) -> ViewMenuAction {
+        let ctx = menu.ctx().clone();
+        let mut view_action = ViewMenuAction::None;
+        if menu.add(item(&ctx, "Zoom In", "zoom_in")).clicked() {
+            view_action = ViewMenuAction::ZoomIn;
+            menu.close();
+        }
+        if menu.add(item(&ctx, "Zoom Out", "zoom_out")).clicked() {
+            view_action = ViewMenuAction::ZoomOut;
+            menu.close();
+        }
+        if !matches!(editor.selection(), crate::editor::selection::Selection::Range { .. }) {
+            menu.add_enabled(false, item(&ctx, "Zoom to Selection", "zoom_to_selection"));
+        } else if menu.add(item(&ctx, "Zoom to Selection", "zoom_to_selection")).clicked() {
+            view_action = ViewMenuAction::ZoomToSelection;
+            menu.close();
+        }
+        if menu.add(item(&ctx, "Zoom to Fit", "zoom_to_fit")).clicked() {
+            view_action = ViewMenuAction::ZoomToFit;
+            menu.close();
+        }
+        menu_sep(menu);
+        if menu.add(egui::Button::new("Appearance...")).clicked() {
+            self.appearance_open = true;
+            menu.close();
+        }
+        view_action
+    }
+
+    /// Draws the dialogs the menu items opened (Save As, both settings
+    /// dialogs, Export, the save error). Call once per frame, after the main
+    /// toolbar.
+    pub fn show_dialogs(&mut self, ctx: &egui::Context, editor: &mut Editor) {
         if let Some(dialog) = &mut self.save_as_dialog {
-            dialog.show(&ctx, editor);
+            dialog.show(ctx, editor);
             if dialog.is_closed() {
                 self.save_as_dialog = None;
             }
         }
         if let Some(dialog) = &mut self.settings_dialog {
-            dialog.show(&ctx, editor);
+            dialog.show(ctx, editor);
             if dialog.is_closed() {
                 self.settings_dialog = None;
             }
         }
         if let Some(dialog) = &mut self.audio_settings_dialog {
-            dialog.show(&ctx, editor);
+            dialog.show(ctx, editor);
             if dialog.is_closed() {
                 self.audio_settings_dialog = None;
             }
         }
         if let Some(dialog) = &mut self.export_dialog {
-            dialog.show(&ctx, editor);
+            dialog.show(ctx, editor);
         }
         if let Some(dialog) = &mut self.error_dialog {
-            dialog.show(&ctx);
+            dialog.show(ctx);
         }
-        (action, view_action)
+        if self.appearance_open {
+            ui_kit::appearance_dialog(ctx, &mut self.appearance_open);
+        }
     }
 
     /// True while one of the menu's dialogs (save error, Save As, Project or
@@ -413,6 +534,7 @@ impl ProjectMenu {
             || self.save_as_dialog.is_some()
             || self.settings_dialog.is_some()
             || self.audio_settings_dialog.is_some()
+            || self.appearance_open
     }
 
     /// Shows a failed Process menu operation in the error modal, with the
@@ -449,6 +571,14 @@ impl ProjectMenu {
             dialog.reopen();
         }
     }
+
+    /// True while the Export dialog exists. It is kept for the whole session
+    /// (so the last choices are remembered), so this stays true after the
+    /// first open. Test hook for the toolbar's Export button.
+    #[cfg(test)]
+    pub fn export_dialog_open(&self) -> bool {
+        self.export_dialog.is_some()
+    }
 }
 
 #[cfg(test)]
@@ -460,9 +590,6 @@ mod tests {
     use crate::model::project::{BitDepth, Project, ViewState};
     use crate::ui::test_util::{Headless, Out};
 
-    /// Slack for float rounding when comparing painted rectangles.
-    const EPS: f32 = 0.01;
-
     fn editor(name: &str, dirty: bool) -> Editor {
         let mut editor =
             Editor::with_project(Project::new(name.to_string(), 48_000, BitDepth::Int24), ViewState::default(), ProjectPaths { root: PathBuf::from("unused") });
@@ -470,131 +597,212 @@ mod tests {
         editor
     }
 
-    /// The real menu bar, in the same 30 px panel the app uses.
-    fn menu_panel(ui: &mut egui::Ui, menu: &mut ProjectMenu, editor: &mut Editor) {
-        egui::Panel::top("menu_bar")
-            .exact_size(30.0)
-            .frame(egui::Frame::new().fill(THEME.bar_bg).inner_margin(egui::Margin { left: 8, ..Default::default() }))
-            .show(ui, |ui| {
-                let _ = menu.show(ui, editor);
-            });
+    /// The menu bar in a 44px bar plus the dialogs, driven frame by frame the
+    /// way the app draws them: the bar in the panel, the dialogs after it,
+    /// once per frame.
+    struct MenuRig<'a> {
+        /// The menu state with its dialogs.
+        menu: ProjectMenu,
+        /// The edited project.
+        editor: &'a mut Editor,
+        /// The Project actions chosen so far.
+        actions: Vec<ProjectMenuAction>,
     }
 
-    /// One frame of a fresh menu bar.
-    fn menu_bar(h: &mut Headless, editor: &mut Editor) -> Out {
-        let mut menu = ProjectMenu::default();
-        h.frame(Vec::new(), |ui| menu_panel(ui, &mut menu, editor))
+    impl<'a> MenuRig<'a> {
+        fn new(editor: &'a mut Editor) -> Self {
+            Self { menu: ProjectMenu::default(), editor, actions: Vec::new() }
+        }
+
+        /// One frame: the bar with the menu bar, then the dialogs.
+        fn ui(&mut self, ui: &mut egui::Ui) {
+            let Self { menu, editor, actions } = self;
+            egui::Panel::top("menu_bar").exact_size(44.0).frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
+                let menu_cell = std::cell::RefCell::new(&mut *menu);
+                let editor_cell = std::cell::RefCell::new(&mut **editor);
+                ui.horizontal(|ui| {
+                    let (action, _, _) = menu_bar(ui, &menu_cell, &editor_cell);
+                    if action != ProjectMenuAction::None {
+                        actions.push(action);
+                    }
+                });
+            });
+            let ctx = ui.ctx().clone();
+            menu.show_dialogs(&ctx, editor);
+        }
+
+        fn frame(&mut self, h: &mut Headless) -> Out {
+            h.frame(Vec::new(), |ui| self.ui(ui))
+        }
+
+        /// Clicks at `at` and returns the settled frame after the click.
+        fn click(&mut self, h: &mut Headless, at: egui::Pos2) -> Out {
+            let _ = h.click(at, |ui| self.ui(ui));
+            h.settle(|ui| self.ui(ui))
+        }
+
+        /// Moves the pointer to `at` and returns the settled frame.
+        fn hover(&mut self, h: &mut Headless, at: egui::Pos2) -> Out {
+            let _ = h.frame(vec![egui::Event::PointerMoved(at)], |ui| self.ui(ui));
+            h.settle(|ui| self.ui(ui))
+        }
+    }
+
+    /// Every top-level menu with its items and shortcut hints, as the shortcut
+    /// table's text reads them (a hint of "" is an item without a shortcut).
+    const MENUS: &[(&str, &[(&str, &str)])] = &[
+        (
+            "Project",
+            &[
+                ("New", "Ctrl+N"),
+                ("Open...", "Ctrl+O"),
+                ("Save", "Ctrl+S"),
+                ("Save As...", "Ctrl+Shift+S"),
+                ("Import Media...", "Ctrl+I"),
+                ("Export...", "Ctrl+E"),
+                ("Close", ""),
+                ("Project Settings...", ""),
+                ("Audio Settings...", ""),
+            ],
+        ),
+        (
+            "Edit",
+            &[
+                ("Undo", "Ctrl+Z"),
+                ("Redo", "Ctrl+Y"),
+                ("Cut", "Ctrl+X"),
+                ("Copy", "Ctrl+C"),
+                ("Paste", "Ctrl+V"),
+                ("Delete", "Delete"),
+                ("Split", "S"),
+                ("Trim to Selection", "Ctrl+T"),
+                ("Select All", "Ctrl+A"),
+                ("Clear Selection", "Escape"),
+                ("Ripple (R)", ""),
+                ("Snap (N)", ""),
+            ],
+        ),
+        ("Markers", &[("Add Marker", "M"), ("Previous Marker", "Comma"), ("Next Marker", "Period"), ("Delete Marker", "Delete")]),
+        (
+            "Process",
+            &[("Gain...", "Ctrl+G"), ("Normalize...", "Ctrl+Shift+N"), ("Fade In", "Ctrl+Shift+I"), ("Fade Out", "Ctrl+Shift+O"), ("Silence", "Ctrl+L")],
+        ),
+        ("View", &[("Zoom In", "Plus"), ("Zoom Out", "Minus"), ("Zoom to Selection", "Ctrl+Backslash"), ("Zoom to Fit", "Backslash"), ("Appearance...", "")]),
+        ("Help", &[("Help topics", "F1"), ("Keyboard shortcuts", "Ctrl+Slash"), ("Show the tour", ""), ("About Cutmark Audio", "")]),
+    ];
+
+    #[test]
+    fn the_menu_bar_has_every_top_level_menu_and_no_menu_button() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let mut editor = editor("Test", false);
+        let mut rig = MenuRig::new(&mut editor);
+        let out = rig.frame(&mut h);
+        let mut last_x = f32::NEG_INFINITY;
+        for (title, _) in MENUS {
+            let rect = out.text_rect(title).unwrap_or_else(|| panic!("no {title} title in the bar"));
+            assert!(rect.left() > last_x, "{title} follows the previous title, left to right");
+            last_x = rect.left();
+        }
+        assert!(out.text_rect(ui_kit::icons::regular::LIST).is_none(), "the menu (hamburger) button is gone");
+    }
+
+    #[test]
+    fn every_menu_keeps_its_items_and_shortcuts() {
+        for (title, items) in MENUS {
+            let mut h = Headless::new(1280.0, 800.0);
+            let mut editor = editor("Test", false);
+            let mut rig = MenuRig::new(&mut editor);
+            let out = rig.frame(&mut h);
+            let at = out.text_rect(title).unwrap_or_else(|| panic!("no {title} title")).center();
+            let out = rig.click(&mut h, at);
+            for (label, hint) in *items {
+                assert!(out.text_rect(label).is_some(), "{title} menu lost its {label} item");
+                if !hint.is_empty() {
+                    assert!(out.text_rect(hint).is_some(), "{title} > {label} lost its {hint} shortcut hint");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_click_opens_a_menu_hovering_another_title_switches_and_escape_closes() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let mut editor = editor("Test", false);
+        let mut rig = MenuRig::new(&mut editor);
+        let out = rig.frame(&mut h);
+        let project = out.text_rect("Project").expect("Project title").center();
+        let edit = out.text_rect("Edit").expect("Edit title").center();
+        assert!(out.text_rect("Save").is_none(), "closed at rest");
+
+        let out = rig.click(&mut h, project);
+        assert!(out.text_rect("Save").is_some(), "a click opens Project");
+        let out = rig.hover(&mut h, edit);
+        assert!(out.text_rect("Cut").is_some(), "hovering Edit while a menu is open switches to Edit");
+        assert!(out.text_rect("Save").is_none(), "Project closed");
+
+        let escape = egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        let _ = h.frame(vec![escape], |ui| rig.ui(ui));
+        let out = h.settle(|ui| rig.ui(ui));
+        assert!(out.text_rect("Cut").is_none(), "Esc closes the open menu");
     }
 
     #[test]
     fn audio_settings_opens_from_the_project_menu_and_cancel_closes_it() {
         let mut h = Headless::new(1280.0, 800.0);
         let mut editor = editor("Test", false);
-        let mut menu = ProjectMenu::default();
-        let out = h.settle(|ui| menu_panel(ui, &mut menu, &mut editor));
+        let mut rig = MenuRig::new(&mut editor);
+        let out = rig.frame(&mut h);
         assert!(out.text_rect("Audio Settings").is_none());
 
         // Project > Audio Settings...
         let project = out.text_rect("Project").expect("Project menu").center();
-        let _ = h.click(project, |ui| menu_panel(ui, &mut menu, &mut editor));
-        let out = h.settle(|ui| menu_panel(ui, &mut menu, &mut editor));
+        let out = rig.click(&mut h, project);
         let item = out.text_rect("Audio Settings...").expect("the menu item").center();
-        assert!(menu.audio_settings_dialog.is_none());
-        let _ = h.click(item, |ui| menu_panel(ui, &mut menu, &mut editor));
-        assert!(menu.audio_settings_dialog.is_some(), "the dialog opened");
-        let out = h.settle(|ui| menu_panel(ui, &mut menu, &mut editor));
+        assert!(rig.menu.audio_settings_dialog.is_none());
+        let out = rig.click(&mut h, item);
+        assert!(rig.menu.audio_settings_dialog.is_some(), "the dialog opened");
         assert!(out.text_rect("Audio Settings").is_some(), "its title");
 
         // Cancel closes it and leaves the config alone.
         let cancel = out.text_rect("Cancel").expect("Cancel").center();
-        let _ = h.click(cancel, |ui| menu_panel(ui, &mut menu, &mut editor));
-        assert!(menu.audio_settings_dialog.is_none(), "the dialog closed");
-        assert_eq!(editor.config(), &crate::io::config::AppConfig::default());
-        let out = h.settle(|ui| menu_panel(ui, &mut menu, &mut editor));
+        let out = rig.click(&mut h, cancel);
+        assert!(rig.menu.audio_settings_dialog.is_none(), "the dialog closed");
+        assert_eq!(rig.editor.config(), &crate::io::config::AppConfig::default());
         assert!(out.text_rect("Audio Settings").is_none());
     }
 
     #[test]
-    fn unsaved_readout_is_a_painted_dot_between_name_and_text() {
-        for width in [1280.0_f32, 520.0] {
-            let mut h = Headless::new(width, 400.0);
-            let mut editor = editor("Test 2", true);
-            let _ = menu_bar(&mut h, &mut editor);
-            let out = menu_bar(&mut h, &mut editor);
+    fn view_appearance_opens_the_ui_kit_dialog_and_done_closes_it() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let mut editor = editor("Test", false);
+        let mut rig = MenuRig::new(&mut editor);
+        let out = rig.frame(&mut h);
+        assert!(!rig.menu.modal_open());
+        let view = out.text_rect("View").expect("View menu").center();
+        let out = rig.click(&mut h, view);
+        let item = out.text_rect("Appearance...").expect("the menu item").center();
+        let out = rig.click(&mut h, item);
+        assert!(rig.menu.appearance_open && rig.menu.modal_open(), "the dialog opened");
+        assert!(out.text_rect("Appearance").is_some(), "its title");
 
-            let dots: Vec<_> = out.circles().into_iter().filter(|c| c.fill == THEME.marker_color).collect();
-            assert_eq!(dots.len(), 1, "one amber dot at width {width}");
-            let dot = dots[0];
-            assert_eq!(dot.radius * 2.0, THEME.unsaved_dot_d, "6 px dot");
-
-            let name = out.text_rect("Test 2").expect("project name");
-            let unsaved = out.text_rect("unsaved").expect("unsaved text");
-            assert!(name.right() <= dot.center.x - dot.radius + EPS, "name left of the dot");
-            assert!(dot.center.x + dot.radius <= unsaved.left() + EPS, "dot left of the text");
-            assert!((unsaved.right() - (width - THEME.menu_right_pad)).abs() < 1.0, "8 px right padding: text ends at {} of {width}", unsaved.right());
-            assert!(unsaved.right() <= width - THEME.menu_right_pad + EPS, "nothing runs past the padding");
-            assert!(out.texts().iter().all(|t| !t.text.contains('\u{25CF}')), "the dot is painted, never a glyph");
-        }
-    }
-
-    #[test]
-    fn clean_project_shows_only_the_name() {
-        let mut h = Headless::new(1280.0, 400.0);
-        let mut editor = editor("Test 2", false);
-        let _ = menu_bar(&mut h, &mut editor);
-        let out = menu_bar(&mut h, &mut editor);
-        assert!(out.text_rect("Test 2").is_some());
-        assert!(out.text_rect("unsaved").is_none());
-        assert!(out.circles().iter().all(|c| c.fill != THEME.marker_color));
-    }
-
-    #[test]
-    fn a_long_name_is_truncated_not_clipped() {
-        let mut h = Headless::new(520.0, 400.0);
-        let long = "A very long project name that cannot fit the menu bar";
-        let mut editor = editor(long, true);
-        let _ = menu_bar(&mut h, &mut editor);
-        let out = menu_bar(&mut h, &mut editor);
-        let unsaved = out.text_rect("unsaved").expect("unsaved text");
-        assert!(unsaved.right() <= 520.0 - THEME.menu_right_pad + EPS);
-        let name = out.text_rect(long).expect("project name");
-        let full_w =
-            h.ctx.fonts_mut(|fonts| fonts.layout_no_wrap(long.to_string(), egui::FontId::proportional(THEME.clip_name_size), THEME.text_muted).size().x);
-        assert!(name.width() < full_w - 20.0, "name is shortened to {} from {full_w}", name.width());
-        let dot = out.circles().into_iter().find(|c| c.fill == THEME.marker_color).expect("amber dot");
-        assert!(name.right() <= dot.center.x - dot.radius + EPS);
+        let done = out.text_rect("Done").expect("Done").center();
+        let _ = rig.click(&mut h, done);
+        assert!(!rig.menu.appearance_open, "Done closed the dialog");
     }
 
     // ---- While a take is recorded ----
 
-    /// The real menu bar; the Project actions chosen are pushed to `actions`.
-    fn menu_panel_actions(ui: &mut egui::Ui, menu: &mut ProjectMenu, editor: &mut Editor, actions: &mut Vec<ProjectMenuAction>) {
-        egui::Panel::top("menu_bar").exact_size(30.0).frame(egui::Frame::new().fill(THEME.bar_bg)).show(ui, |ui| {
-            let (action, _) = menu.show(ui, editor);
-            if action != ProjectMenuAction::None {
-                actions.push(action);
-            }
-        });
-    }
-
-    /// On a fresh menu bar: opens the menu `title`, clicks `item_text`, and
-    /// returns the menu (to look at its dialogs) and the Project actions chosen.
+    /// On a fresh bar: opens the `title` menu and clicks `item_text`. Returns
+    /// the menu (to look at its dialogs) and the Project actions chosen.
     fn choose(editor: &mut Editor, title: &str, item_text: &str) -> (ProjectMenu, Vec<ProjectMenuAction>) {
         let mut h = Headless::new(1280.0, 800.0);
-        let mut menu = ProjectMenu::default();
-        let mut actions = Vec::new();
-        let out = h.settle(|ui| menu_panel_actions(ui, &mut menu, editor, &mut actions));
+        let mut rig = MenuRig::new(editor);
+        let out = rig.frame(&mut h);
         let at = out.text_rect(title).unwrap_or_else(|| panic!("no {title} menu")).center();
-        let _ = h.click(at, |ui| {
-            menu_panel_actions(ui, &mut menu, editor, &mut actions);
-        });
-        let out = h.settle(|ui| menu_panel_actions(ui, &mut menu, editor, &mut actions));
+        let out = rig.click(&mut h, at);
         let at = out.text_rect(item_text).unwrap_or_else(|| panic!("no {item_text} item in {title}")).center();
-        let _ = h.click(at, |ui| {
-            menu_panel_actions(ui, &mut menu, editor, &mut actions);
-        });
-        let _ = h.settle(|ui| menu_panel_actions(ui, &mut menu, editor, &mut actions));
-        (menu, actions)
+        let _ = rig.click(&mut h, at);
+        (rig.menu, rig.actions)
     }
 
     /// A project with a clip and a range selected; recording when `recording`.

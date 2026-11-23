@@ -78,7 +78,8 @@ impl Headless {
     /// one frame so the theme fonts are loaded.
     pub fn new(width: f32, height: f32) -> Self {
         let ctx = egui::Context::default();
-        crate::ui::theme::apply(&ctx);
+        // The ui-kit theme: the same `apply` the app binary runs.
+        ui_kit::apply(&ctx);
         let mut headless = Headless { ctx, size: egui::vec2(width, height), time: 0.0, modifiers: Modifiers::NONE, reported: Modifiers::NONE };
         headless.frame(Vec::new(), |_| {});
         headless
@@ -218,10 +219,22 @@ impl Out {
         self.rects().into_iter().filter(|r| r.fill.a() > 0 && r.rect.contains(point)).map(|r| r.rect).min_by(|a, b| a.area().total_cmp(&b.area()))
     }
 
-    /// The dialog footer's 1 px divider, whose edges are the card's content
-    /// edges: the widest filled rect that is one point tall.
-    pub fn footer_line(&self) -> Option<Rect> {
-        self.rects().into_iter().filter(|r| r.fill.a() > 0 && r.rect.height() == 1.0).map(|r| r.rect).max_by(|a, b| a.width().total_cmp(&b.width()))
+    /// The content rectangle of the dialog card: the largest filled, outlined
+    /// rectangle (the ui-kit dialog frame) inside its 24 px padding and 1 px
+    /// rim.
+    pub fn dialog_content(&self) -> Option<Rect> {
+        self.rects()
+            .into_iter()
+            .filter(|r| r.stroke.width > 0.0 && r.fill.a() > 0)
+            .map(|r| r.rect)
+            .max_by(|a, b| a.area().total_cmp(&b.area()))
+            .map(|card| card.shrink(ui_kit::tokens::space::SCALE_24 + 1.0))
+    }
+
+    /// True when this frame asked egui for another frame (an animation or an
+    /// explicit repaint request); false when the UI is at rest.
+    pub fn repaint_requested(&self) -> bool {
+        self.0.viewport_output.get(&ViewportId::ROOT).is_some_and(|v| v.repaint_delay != std::time::Duration::MAX)
     }
 
     /// True when the app asked the window to stay open this frame.

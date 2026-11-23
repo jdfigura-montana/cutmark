@@ -102,7 +102,7 @@ fn bad_files_load_the_default() {
 #[test]
 fn save_then_load_round_trips() {
     let _temp = TempAppearance::new("round-trip");
-    let theme = Theme { accent: accent::derive(preset("Violet")), glass: false };
+    let theme = Theme { accent: accent::derive(preset("Violet")), glass: false, reduce_motion: false };
     save_ok(&theme);
     assert_eq!(appearance::load(), theme);
 }
@@ -119,7 +119,7 @@ fn poll_picks_up_a_changed_file() {
     appearance::poll_at(&ctx, start); // baseline: the file does not exist yet
     assert_eq!(Theme::get(&ctx), Theme::default());
 
-    let theme = Theme { accent: accent::derive(preset("Teal")), glass: false };
+    let theme = Theme { accent: accent::derive(preset("Teal")), glass: false, reduce_motion: false };
     save_ok(&theme);
     bump(&_temp.file);
 

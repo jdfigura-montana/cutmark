@@ -1,6 +1,6 @@
 ; Inno Setup script for CutMark Audio Editor.
 ; Build with scripts/build-installer.ps1, which passes the version:
-;   ISCC installer\cutmark.iss /DAppVersion=1.1.0 "/DBinDir=<workspace>\target\release\"
+;   ISCC installer\cutmark.iss /DAppVersion=1.2.0 "/DBinDir=<workspace>\target\release\"
 
 #define AppName "CutMark Audio Editor"
 #define AppExe "cutmark-audio.exe"
@@ -11,6 +11,10 @@
 #endif
 #ifndef BinDir
 #define BinDir "..\..\..\target\release\"
+#endif
+; The font licenses live beside the fonts in the shared ui-kit crate.
+#ifndef FontsDir
+#define FontsDir Root + "..\..\crates\ui-kit\assets\fonts\"
 #endif
 #ifndef FFmpegDir
 #define FFmpegDir Root + "..\..\third_party\ffmpeg\"
@@ -46,8 +50,8 @@ Source: "{#FFmpegDir}dist\bin\*.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#FFmpegDir}BUILDINFO.txt"; DestDir: "{app}\licenses"; DestName: "FFmpeg-BUILDINFO.txt"; Flags: ignoreversion
 Source: "{#FFmpegDir}dist\LICENSE.txt"; DestDir: "{app}\licenses"; DestName: "FFmpeg-LICENSE.txt"; Flags: ignoreversion
 Source: "{#Root}licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs
-Source: "{#Root}assets\fonts\LICENSE-IBMPlex.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
-Source: "{#Root}assets\fonts\OFL-JetBrainsMono.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "{#FontsDir}OFL-Inter.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "{#FontsDir}OFL-JetBrainsMono.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 Source: "{#Root}README.md"; DestDir: "{app}\licenses"; DestName: "README.md"; Flags: ignoreversion
 
 [Tasks]

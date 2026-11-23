@@ -25,11 +25,28 @@ panic = "deny"
 eframe.workspace = true
 egui.workspace = true
 egui-phosphor.workspace = true
+log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
 [build-dependencies]
 serde_json.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# S1 dependency rule 5: ui-kit may hold Windows-only code, for the window chrome only (phase 7).
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+raw-window-handle.workspace = true
+
 [dev-dependencies]
+# The chrome example runs a real window; the library itself sets no renderer.
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }
+egui_kittest.workspace = true
 serde_json.workspace = true
+

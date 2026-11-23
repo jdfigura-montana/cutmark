@@ -1,15 +1,19 @@
 Third-party notices for Audio Editor
 ====================================
 
-Fonts (bundled under assets/fonts, licenses in the same folder):
+Fonts and icons (embedded in the exe by the ui-kit crate):
 
-- IBM Plex Sans (assets/fonts/IBMPlexSans-*.ttf)
-  License: SIL Open Font License 1.1 - assets/fonts/LICENSE-IBMPlex.txt
-  Copyright (c) 2014 IBM Corp.
+- Inter (crates/ui-kit/assets/fonts/Inter-*.ttf)
+  License: SIL Open Font License 1.1 - crates/ui-kit/assets/fonts/OFL-Inter.txt
+  Copyright (c) 2016 The Inter Project Authors
 
-- JetBrains Mono (assets/fonts/JetBrainsMono-*.ttf)
-  License: SIL Open Font License 1.1 - assets/fonts/OFL-JetBrainsMono.txt
+- JetBrains Mono (crates/ui-kit/assets/fonts/JetBrainsMono-*.ttf)
+  License: SIL Open Font License 1.1 - crates/ui-kit/assets/fonts/OFL-JetBrainsMono.txt
   Copyright 2020 The JetBrains Mono Project Authors
+
+- Phosphor Icons, used through the egui-phosphor crate
+  License: MIT - licenses/Phosphor-MIT.txt
+  Copyright (c) 2020 Phosphor Icons
 
 - LAME MP3 encoder, used through the mp3lame-encoder crate
   License: LGPL-3.0 (https://www.gnu.org/licenses/lgpl-3.0.html)

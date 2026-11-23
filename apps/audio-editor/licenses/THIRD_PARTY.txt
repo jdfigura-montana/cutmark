@@ -10,14 +10,21 @@ FFmpeg 9.0.2 libraries (avcodec-63.dll, avdevice-63.dll, avfilter-12.dll,
   and the user may replace them. Build details and the source location are in
   FFmpeg-BUILDINFO.txt (this folder).
 
-IBM Plex Sans (fonts: IBMPlexSans-Regular.ttf, IBMPlexSans-Medium.ttf,
-  IBMPlexSans-SemiBold.ttf)
+Inter (fonts: Inter-Regular.ttf, Inter-Medium.ttf, Inter-SemiBold.ttf)
+  Copyright (c) 2016 The Inter Project Authors
   Licence: SIL Open Font License 1.1
-  Full text: LICENSE-IBMPlex.txt (this folder)
+  Full text: OFL-Inter.txt (this folder)
 
-JetBrains Mono (fonts: JetBrainsMono-Regular.ttf, JetBrainsMono-Medium.ttf)
+JetBrains Mono (fonts: JetBrainsMono-Regular.ttf, JetBrainsMono-Medium.ttf,
+  JetBrainsMono-SemiBold.ttf)
+  Copyright 2020 The JetBrains Mono Project Authors
   Licence: SIL Open Font License 1.1
   Full text: OFL-JetBrainsMono.txt (this folder)
+
+Phosphor Icons, used through the egui-phosphor crate
+  Copyright (c) 2020 Phosphor Icons
+  Licence: MIT
+  Full text: Phosphor-MIT.txt (this folder)
 
 The Rust application code itself is separate from these components; this
 file covers only third-party material bundled in the installer.

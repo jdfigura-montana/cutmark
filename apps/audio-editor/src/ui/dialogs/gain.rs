@@ -5,10 +5,10 @@ use std::sync::Arc;
 use eframe::egui;
 use uuid::Uuid;
 
+use super::NARROW_W;
 use crate::editor::Editor;
 use crate::editor::action::Action;
 use crate::editor::selection::Selection;
-use crate::ui::theme::THEME;
 
 /// Temp-storage key holding the open Clip Gain dialog.
 const DIALOG_KEY: &str = "clip_gain_dialog";
@@ -80,39 +80,45 @@ pub fn show(ctx: &egui::Context, editor: &mut Editor) -> Vec<String> {
         return Vec::new();
     };
     let mut messages = Vec::new();
-    let mut ok = false;
+    let (mut clicked, mut enter, mut cancel) = (false, false, false);
     if dialog.open {
         let (title, (min, max)) = if dialog.mode == GainMode::Gain { ("Gain", (-24.0, 24.0)) } else { ("Clip Gain", (-60.0, 24.0)) };
-        let response = super::modal("gain_dialog").show(ctx, |ui| {
-            super::card_width(ui, THEME.dialog_w);
-            super::title(ui, title);
-            ui.add_space(THEME.space_xs);
-            super::description(ui, &format!("Gain change ({min:.0} to {max:+.0} dB)"));
-            super::before_form(ui);
-            super::form_row(ui, "Amount", |ui| {
-                super::db_control(ui, "gain_db", &mut dialog.db, (min, max));
-            });
-            if let Some(error) = &dialog.error {
-                ui.label(egui::RichText::new(error).color(THEME.error));
-            }
-            super::footer(ui, |ui| {
-                if super::footer_button(ui, "OK", super::FooterButton::Primary, true).clicked() {
-                    ok = true;
+        let mut open = true;
+        let error = dialog.error.clone();
+        let db = &mut dialog.db;
+        super::dialog(
+            ctx,
+            "gain_dialog",
+            title,
+            NARROW_W,
+            &mut open,
+            |ui| {
+                ui_kit::help::context(ui, crate::help::CONTEXT_DIALOG_GAIN);
+                super::description(ui, &format!("Gain change ({min:.0} to {max:+.0} dB)"));
+                ui_kit::inspector_group(ui, |ui| {
+                    ui_kit::inspector_row(ui, "Amount", |ui| super::db_control(ui, db, (min, max)), None);
+                });
+                if let Some(error) = &error {
+                    super::error_text(ui, error);
                 }
-                if super::footer_button(ui, "Cancel", super::FooterButton::Cancel, true).clicked() {
-                    dialog.open = false;
+                // Enter confirms.
+                enter = super::enter_pressed(ui);
+            },
+            |ui| {
+                if super::secondary_button(ui, "Cancel").clicked() {
+                    cancel = true;
                 }
-            });
-            // Enter confirms.
-            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                ok = true;
-            }
-        });
-        // Esc or the backdrop cancels.
-        if response.should_close() {
+                if ui_kit::primary_button(ui, "OK").clicked() {
+                    clicked = true;
+                }
+            },
+        );
+        // Cancel, Esc or the backdrop dismisses the dialog.
+        if cancel || !open {
             dialog.open = false;
         }
     }
+    let ok = clicked || enter;
     if ok && dialog.open {
         match dialog.mode {
             GainMode::Gain => {

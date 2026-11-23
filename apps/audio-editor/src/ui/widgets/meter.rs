@@ -4,10 +4,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
+use eframe::egui::Color32;
 use uuid::Uuid;
 
-use crate::ui::theme::THEME;
 use crate::util::db::linear_to_db;
 
 /// Duration of the RMS averaging window, in seconds.
@@ -90,11 +89,11 @@ impl ChannelBallistics {
     #[allow(dead_code)]
     pub fn color_for(db: f32) -> Color32 {
         if db > -6.0 {
-            THEME.meter_red
+            ui_kit::tokens::color::SEM_METER_CLIP
         } else if db > -18.0 {
-            THEME.meter_yellow
+            ui_kit::tokens::color::SEM_METER_WARN
         } else {
-            THEME.meter_green
+            ui_kit::tokens::color::SEM_METER_OK
         }
     }
 }
@@ -104,9 +103,6 @@ impl Default for ChannelBallistics {
         ChannelBallistics::new()
     }
 }
-
-/// Scale tick values printed on the meter, in dBFS.
-pub const TICKS: [f32; 8] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0, -48.0, -60.0];
 
 /// One channel's raw meter reading from the audio thread: peak, sum of
 /// squares, frames and clip flag (the same tuple `Editor::read_meters` yields).
@@ -156,50 +152,6 @@ impl MeterState {
             }
         }
     }
-}
-
-/// Maps a dBFS value to a y position inside a bar area (bottom = -60 dB).
-pub fn db_y(area: Rect, db: f32) -> f32 {
-    let t = ((db - FLOOR) / -FLOOR).clamp(0.0, 1.0);
-    area.bottom() - t * area.height()
-}
-
-/// Draws the compact track-header meter: two thin bars with a 4 px clip light
-/// above each, lit by dB zone (green below -18, yellow to -6, red above).
-///
-/// Clicking the meter clears both clip lights. Returns true when clicked.
-pub fn header_meter(ui: &mut egui::Ui, id: egui::Id, rect: Rect, channels: &mut [ChannelBallistics; 2]) -> bool {
-    let painter = ui.painter_at(rect);
-    let resp = ui.interact(rect, id, egui::Sense::click());
-    let clicked = resp.clicked();
-    if clicked {
-        for ch in channels.iter_mut() {
-            ch.clear_clip();
-        }
-    }
-    let bar_w = THEME.track_meter_bar_w;
-    for (i, ch) in channels.iter().enumerate() {
-        let left = rect.left() + i as f32 * (bar_w + THEME.track_meter_gap);
-        let bar = Rect::from_min_max(Pos2::new(left, rect.top()), Pos2::new(left + bar_w, rect.bottom()));
-        painter.rect_filled(bar, 0.0, THEME.meter_bar_bg);
-        // Lit portion, split by the dB zone boundaries.
-        let lit = ch.rms_db().max(FLOOR);
-        fill_zone(&painter, bar, FLOOR, lit.min(-18.0), THEME.meter_green);
-        fill_zone(&painter, bar, -18.0, lit.min(-6.0), THEME.meter_yellow);
-        fill_zone(&painter, bar, -6.0, lit, THEME.meter_red);
-        // Clip light above the bar.
-        let light = Rect::from_min_size(Pos2::new(left, rect.top() - THEME.track_clip_light - THEME.track_meter_gap), Vec2::new(bar_w, THEME.track_clip_light));
-        painter.rect_filled(light, 0.0, if ch.clip { THEME.clip_light_on } else { THEME.clip_light_off });
-    }
-    clicked
-}
-
-/// Fills the part of `bar` between two dBFS values with `color`.
-pub fn fill_zone(painter: &egui::Painter, bar: Rect, lo: f32, hi: f32, color: Color32) {
-    if hi <= lo {
-        return;
-    }
-    painter.rect_filled(Rect::from_min_max(Pos2::new(bar.left(), db_y(bar, hi)), Pos2::new(bar.right(), db_y(bar, lo))), 0.0, color);
 }
 
 #[cfg(test)]
@@ -262,8 +214,8 @@ mod tests {
 
     #[test]
     fn colors_split_at_minus_eighteen_and_minus_six() {
-        assert_eq!(ChannelBallistics::color_for(-30.0), THEME.meter_green);
-        assert_eq!(ChannelBallistics::color_for(-12.0), THEME.meter_yellow);
-        assert_eq!(ChannelBallistics::color_for(-1.0), THEME.meter_red);
+        assert_eq!(ChannelBallistics::color_for(-30.0), ui_kit::tokens::color::SEM_METER_OK);
+        assert_eq!(ChannelBallistics::color_for(-12.0), ui_kit::tokens::color::SEM_METER_WARN);
+        assert_eq!(ChannelBallistics::color_for(-1.0), ui_kit::tokens::color::SEM_METER_CLIP);
     }
 }

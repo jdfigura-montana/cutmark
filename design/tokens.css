@@ -2,6 +2,8 @@
 /* Regenerate with: $env:UPDATE_TOKENS_CSS = "1"; cargo test -p ui-kit */
 :root {
     /* color */
+    --color-caption-close-glyph-hover: #FFFFFF;
+    --color-caption-close-hover: #C42B1C;
     --color-glass-fill: rgba(34,34,38,.82);
     --color-glass-rim: rgba(255,255,255,.07);
     --color-glass-shadow: rgba(0,0,0,.5);
@@ -25,11 +27,17 @@
     --color-bg-panel: #161618;
     --color-bg-row-selected: #2A2A2D;
     --color-bg-selected: #3A3A3D;
-    --color-bg-track-alt: rgba(255,255,255,.015);
+    --color-bg-track-alt: rgba(255,255,255,.025);
+    --color-bg-track-empty: #111113;
+    --color-bg-track-header: #1B1B1E;
+    --color-bg-track-header-selected: #26262A;
     --color-bg-track-selected: #1C1C1F;
     --color-stroke-clip: rgba(255,255,255,.08);
     --color-stroke-hairline: rgba(255,255,255,.06);
     --color-stroke-separator: rgba(255,255,255,.05);
+    --color-stroke-separator-strong: rgba(255,255,255,.10);
+    --color-stroke-track: rgba(255,255,255,.07);
+    --color-stroke-track-header: rgba(255,255,255,.08);
     --color-text-disabled: #6E6E73;
     --color-text-primary: #F5F5F7;
     --color-text-secondary: #C7C7CC;
@@ -80,7 +88,7 @@
     --space-scale-24: 24px;
     --space-window-gap: 8px;
     /* size */
-    --size-caption-button-height: 52px;
+    --size-caption-button-height: 44px;
     --size-caption-button-width: 46px;
     --size-chip-height: 26px;
     --size-icon-button: 32px;
@@ -95,7 +103,7 @@
     --size-switch-height: 24px;
     --size-switch-width: 40px;
     --size-toolbar-button: 32px;
-    --size-toolbar-main-height: 52px;
+    --size-toolbar-main-height: 44px;
     --size-track-audio-default: 96px;
     --size-track-audio-max: 200px;
     --size-track-audio-min: 48px;

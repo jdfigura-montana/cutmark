@@ -1,6 +1,6 @@
 """Generate THIRD-PARTY-NOTICES.txt in apps/audio-editor.
 
-Lists IBM Plex Sans + JetBrains Mono (OFL), the FFmpeg shared libraries
+Lists Inter + JetBrains Mono (OFL) + Phosphor icons (MIT), the FFmpeg shared libraries
 (LGPL-3.0-or-later) and the license of every crate in the cutmark-audio dependency
 tree for Windows (via cargo tree), read from the extracted crate sources
 in the local cargo registry (no network). Run from the repo root:
@@ -24,15 +24,19 @@ PREAMBLE = """\
 Third-party notices for CutMark Audio Editor
 ====================================
 
-Fonts (bundled under assets/fonts, licenses in the same folder):
+Fonts and icons (embedded in the exe by the ui-kit crate):
 
-- IBM Plex Sans (assets/fonts/IBMPlexSans-*.ttf)
-  License: SIL Open Font License 1.1 - assets/fonts/LICENSE-IBMPlex.txt
-  Copyright (c) 2014 IBM Corp.
+- Inter (crates/ui-kit/assets/fonts/Inter-*.ttf)
+  License: SIL Open Font License 1.1 - crates/ui-kit/assets/fonts/OFL-Inter.txt
+  Copyright (c) 2016 The Inter Project Authors
 
-- JetBrains Mono (assets/fonts/JetBrainsMono-*.ttf)
-  License: SIL Open Font License 1.1 - assets/fonts/OFL-JetBrainsMono.txt
+- JetBrains Mono (crates/ui-kit/assets/fonts/JetBrainsMono-*.ttf)
+  License: SIL Open Font License 1.1 - crates/ui-kit/assets/fonts/OFL-JetBrainsMono.txt
   Copyright 2020 The JetBrains Mono Project Authors
+
+- Phosphor Icons, used through the egui-phosphor crate
+  License: MIT - licenses/Phosphor-MIT.txt
+  Copyright (c) 2020 Phosphor Icons
 
 - FFmpeg 9.0.2 shared libraries (avcodec-63.dll, avdevice-63.dll, avfilter-12.dll,
   avformat-63.dll, avutil-61.dll, swresample-7.dll, swscale-10.dll)

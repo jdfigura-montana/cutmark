@@ -1,6 +1,6 @@
 [package]
 name = "cutmark-audio"
-version = "1.1.0"
+version = "1.2.0"
 description = "CutMark Audio Editor"
 edition.workspace = true
 rust-version.workspace = true
@@ -31,9 +31,11 @@ serde_json = { workspace = true }
 symphonia = { version = "0.6.1", default-features = false, features = ["wav", "mp3", "pcm", "id3v2"] }
 thiserror = { workspace = true }
 trash = "5.2.9"
+ui-kit = { version = "0.1.0", path = "../../crates/ui-kit" }
 uuid = { workspace = true }
 
 [dev-dependencies]
+egui_kittest.workspace = true
 filetime = "0.2.29"
 tempfile = "3.27.0"
 

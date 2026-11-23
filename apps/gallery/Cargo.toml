@@ -1,0 +1,16 @@
+[package]
+name = "cutmark-gallery"
+version.workspace = true
+description = "Cutmark Gallery: every ui-kit component in every state, in the real window chrome."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }
+egui-phosphor.workspace = true
+ui-kit = { version = "0.1.0", path = "../../crates/ui-kit" }
+
+[lints]
+workspace = true

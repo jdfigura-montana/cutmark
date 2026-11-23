@@ -1,6 +1,6 @@
 # CutMark Audio Editor
 
-Version 1.1.0
+Version 1.2.0
 
 A small, keyboard-driven multitrack audio editor for Windows built in Rust with egui. It opens
 project folders (media, cache and project.json live together), imports WAV and MP3 files, and lets
@@ -33,7 +33,7 @@ powershell -ExecutionPolicy Bypass -File apps\audio-editor\scripts\build-install
 Requires [Inno Setup 6](https://jrsoftware.org/isinfo.php) (ISCC.exe) to be installed. The script
 refuses to run while CutMark is open, builds the release exe, runs Inno Setup with the version from
 `apps\audio-editor\Cargo.toml` and writes `dist\CutMark-Setup-<version>.exe`. The installer bundles the exe plus the FFmpeg DLLs
-(beside the exe) and a `licenses\` folder (third-party licences for the IBM Plex and JetBrains Mono fonts and the FFmpeg
+(beside the exe) and a `licenses\` folder (third-party licences for the Inter and JetBrains Mono fonts, the Phosphor icons and the FFmpeg
 DLLs). The
 icons can be regenerated with `python scripts\make_icon.py`.
 
