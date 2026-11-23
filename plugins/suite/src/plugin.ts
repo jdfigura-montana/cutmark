@@ -1,12 +1,59 @@
 import streamDeck from "@elgato/streamdeck";
 
-import { IncrementCounter } from "./actions/increment-counter";
+import { AppConnection } from "./connection";
+import {
+	AddMarkerKey,
+	JumpToEndKey,
+	JumpToStartKey,
+	NextMarkerKey,
+	PauseKey,
+	PlayStopKey,
+	PreviousMarkerKey,
+	RecordKey,
+	RedoKey,
+	RippleKey,
+	SaveKey,
+	SnapKey,
+	SplitAtPlayheadKey,
+	UndoKey,
+} from "./actions/keys";
+import { CommandKeyAction } from "./actions/command-key";
 
-// We can enable "trace" logging so that all messages between the Stream Deck, and the plugin are recorded. When storing sensitive information
 streamDeck.logger.setLevel("trace");
 
-// Register the increment action.
-streamDeck.actions.registerAction(new IncrementCounter());
+// The audio editor's connection; one AppConnection per app (spec: Remote Control "Plugin").
+const connection = new AppConnection("audio", "cutmark-audio.exe");
 
-// Finally, connect to the Stream Deck.
+// The key actions of the "Cutmark Audio" category (1.3-StreamDeck "Keys"); R4 adds track keys and the Audio command.
+const keys: CommandKeyAction[] = [
+	new PlayStopKey(),
+	new PauseKey(),
+	new RecordKey(),
+	new JumpToStartKey(),
+	new JumpToEndKey(),
+	new AddMarkerKey(),
+	new PreviousMarkerKey(),
+	new NextMarkerKey(),
+	new UndoKey(),
+	new RedoKey(),
+	new SplitAtPlayheadKey(),
+	new RippleKey(),
+	new SnapKey(),
+	new SaveKey(),
+];
+for (const key of keys) key.use(connection);
+
+// Follow the monitored audio editor: reconnect on launch, drop the socket on quit.
+streamDeck.system.onApplicationDidLaunch((ev) => {
+	if (ev.application.includes("cutmark-audio")) connection.appLaunched();
+});
+streamDeck.system.onApplicationDidTerminate((ev) => {
+	if (ev.application.includes("cutmark-audio")) connection.appTerminated();
+});
+
+for (const key of keys) streamDeck.actions.registerAction(key);
+
+// The app may already run when the plugin starts.
+connection.beginConnecting();
+
 streamDeck.connect();
