@@ -129,8 +129,10 @@ Groups that depend on a switch (key off, mask off, ISO off) show their rows disa
 
 | Section | Holds (moved from the main window) |
 | --- | --- |
+| General | Hide Recorder from screen captures |
 | Recording | Root folder, naming template with the tokens hint, countdown (Off, 3, 5) and "Hide my countdown when a prompter is linked" |
-| Hotkeys | The existing hotkey settings, if any (R1 confirms) |
+| Hotkeys | The existing read-only hotkey status table (chord, action, status). No editing in Phase 13 |
+| Diagnostics | Recent commands |
 | Control API | On switch, port, listening address, connected clients, token with Show, Copy, Regenerate |
 | Appearance | `ui-kit` accent picker and glass switch |
 
@@ -164,7 +166,26 @@ Left to right: state dot and label (Ready, Recording, Paused, Buffering later), 
 | Control API | Settings > Control API; clients in the status bar |
 | Audio tracks | Audio tool; meters in the Sources panel and the Record panel |
 | Bottom bar (disk free, codec note) | Status bar |
-| Anything R1 finds that is not listed | Gets a row here before R3 |
+| Webcam Enable, camera picker with Refresh, format picker | Camera tool, new Device group at the top. The Sources camera row opens the same picker |
+| Camera picture (eyedropper target) | Top of the Camera tool and the Key tool, same widget. The eyedropper works on it in either |
+| Focus control, sync result with "Apply as camera offset" | Camera tool, Image group and Sync group |
+| PiP corner radius (Rectangle only) | Layout tool, Frame group |
+| Background colour, Browse and Clear, Fit | Layout tool, Background group |
+| Track rows (on, name, device, gain, mute, offset, in mixdown, remove), Add track, Refresh devices | Audio tool, one inspector group per track, then Add track and Refresh devices |
+| WAV sidecars, audio format | Audio tool, Output group |
+| Profile rename flow and two-click Confirm delete | Output tool, same flows |
+| Display source | Sources panel, info row only ("Primary monitor"); no picker exists today |
+| Preview on/off | View > Preview and a chip in the preview toolbar |
+| Hide Recorder from screen captures | Settings > General |
+| Hotkeys status table | Settings > Hotkeys, read-only as today (editing hotkeys is not in Phase 13) |
+| Recent commands | Settings > Diagnostics |
+| Warning banners (capture exclusion, recording error, audio, engine, hotkey, preview, webcam, API) | Banner strip at the top of the center panel: one row each, `sem.meter.warn` or `sem.record` dot, dismiss button where today's banner can be dismissed |
+| Recovered marks banner with Details and Dismiss | Same banner strip; Details opens a popover |
+| Recording panel (time, file, folder, size, bitrate, frames, duplicated, dropped, captured) | Record mode Live panel, Encoder group |
+| "Starting in N" heading | Deck caption ("Starting in 3") |
+| Idle line and "Starting is blocked" | Status bar state label; the blocked reason as a banner |
+| Last take summary | Review right panel, File group. Until R8 lands, the "takeNN saved" toast plus a Last take group at the bottom of the Record Live panel |
+| Status bar finalizing progress and camera line | Status bar, as today |
 
 ## Steps (one prompt each)
 
@@ -175,8 +196,8 @@ Left to right: state dot and label (Ready, Recording, Paused, Buffering later), 
 | R3 | Tool strip, Camera and Key panels; their controls leave the parked column | Rows match the mapping |
 | R4 | Layout and Output panels, profile picker in the preview toolbar | Rows match the mapping |
 | R5 | Sources panel, pre-flight card and Details popover, Audio tool | Rows match the mapping |
-| R6 | Settings dialog (Recording, Hotkeys, Control API, Appearance). The parked column is now empty and deleted | No parked column left |
-| R7 | Preview panel and deck, Record mode, mode rules 1 to 3, toasts | Recording from the deck, hotkey, API and Prompter all switch modes correctly |
+| R6 | Settings dialog (General, Recording, Hotkeys, Control API, Diagnostics, Appearance), banner strip. Only the recording panel, countdown heading, idle line and last take stay parked | Parked column holds only those four items |
+| R7 | Preview panel and deck, Record mode, mode rules 1 to 3, toasts; the last parked items move and the parked column is deleted | Recording from the deck, hotkey, API and Prompter all switch modes correctly |
 | R8 | Review mode: takes list, take info, marks, Show in folder, Rename, Delete | Rename and delete handle every file of a take |
 | R9 | Review playback: decode, play, pause, seek, mark jumps, Add mark | A 10 minute AV1 take plays in sync and seeks to any mark |
 | R10 | Recorder joins the style lint, deprecated `ui_kit::palette` uses removed, panel resize and remembered widths, inventory updated | Lint passes, clippy clean, test count at least the R1 count |
