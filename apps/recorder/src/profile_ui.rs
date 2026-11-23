@@ -6,9 +6,11 @@ use std::ops::RangeInclusive;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
-use egui::{Button, ComboBox, DragValue, RichText, Slider, TextEdit, Ui};
+use egui::{Button, ComboBox, DragValue, RichText, TextEdit, Ui};
 use media_io::AudioCodec;
 use media_io::encode::{Codec as EncoderCodec, CodecSupport, ConfigError, MAX_MBPS, NumericOption, OptionRanges, amf_options, check_combo_with, probe_amf};
+use ui_kit::tokens::space;
+use ui_kit::{inspector_group, inspector_row};
 
 use crate::config::{AudioCodecChoice, Codec, Container, Preset, Profile, RateControl, Settings, takes_root};
 use crate::engine::session::encoder_config;
@@ -29,6 +31,9 @@ const SOFT_MAX_HINT: &str = "On AMD the max is a soft limit; use VBR for a firm 
 
 /// The line shown under the container picker while MKV is chosen.
 const MKV_HINT: &str = "MKV: Windows Explorer shows no video details for MKV files. Use MP4 for the widest compatibility.";
+
+/// The width of the profile dropdown, in the Output group and the preview toolbar.
+const PICKER_WIDTH: f32 = 220.0;
 
 /// The size and frame rate the AMF probe ran for.
 type ProbeKey = (u32, u32, u32);
@@ -187,18 +192,20 @@ pub struct ProfileSection {
     problem: Option<String>,
     /// Whether the profile being edited has an error, which blocks starting a take.
     has_errors: bool,
-    /// The last preview line of the next take's path, with when and for what it was worked out.
+    /// The last next-take answer, with when and for what it was worked out.
     preview: Option<Preview>,
 }
 
-/// The preview line of the next take's path.
+/// The next take's answer for the preview toolbar.
 struct Preview {
     /// When the takes folder was read.
     at: Instant,
-    /// What the line was worked out from: the root, project, template, profile and container.
+    /// What the answer was worked out from: the root, project, template, profile and container.
     key: String,
-    /// The path as shown.
+    /// The path as shown, or the error message when the takes folder could not be read.
     text: String,
+    /// The take's short label ("takeNN"), or None when the folder could not be read.
+    label: Option<String>,
 }
 
 /// What a click in the profile row asks for.
@@ -265,13 +272,21 @@ impl ProfileSection {
         outcome.active_changed = true;
     }
 
-    /// Draws the section. It is read-only while a take runs, and a profile can only be switched while idle.
-    pub fn show(&mut self, ui: &mut Ui, store: &mut ProfileStore, settings: &mut Settings, source: (u32, u32), recording: bool, outcome: &mut ProfileOutcome) {
+    /// Draws the Output tool's groups (spec "Setup mode"): the Profile actions, the Encode group
+    /// and the Format group. Everything is disabled while a take runs, as the profiles are today.
+    pub fn output_panel(
+        &mut self,
+        ui: &mut Ui,
+        store: &mut ProfileStore,
+        settings: &mut Settings,
+        source: (u32, u32),
+        recording: bool,
+        outcome: &mut ProfileOutcome,
+    ) {
         if self.ensure_active(store, settings) {
             outcome.active_changed = true;
         }
         let audio = audio_codec(settings.audio.codec);
-        ui.heading("Profile");
         let warn = ui.visuals().warn_fg_color;
         let error = ui.visuals().error_fg_color;
         for warning in store.warnings() {
@@ -281,80 +296,70 @@ impl ProfileSection {
             ui.colored_label(error, problem);
         }
         ui.add_enabled_ui(!recording, |ui| {
-            self.picker_row(ui, store, settings, outcome);
-            self.fields(ui, store, settings, source, audio, recording);
-            self.naming_fields(ui, store, settings, outcome);
+            self.profile_group(ui, store, settings, outcome);
+            ui.add_space(space::SCALE_8);
+            self.edit_fields(ui, store, settings, source, audio, recording);
         });
         if recording {
             ui.colored_label(ui_kit::palette::TEXT_MUTED, "Profile settings are locked while recording");
         }
     }
 
-    /// Draws the Project and Naming template fields, which are global settings, and the full path of the next take.
-    fn naming_fields(&mut self, ui: &mut Ui, store: &ProfileStore, settings: &mut Settings, outcome: &mut ProfileOutcome) {
-        ui.separator();
-        let mut changed = false;
-        egui::Grid::new("naming-fields").num_columns(2).show(ui, |ui| {
-            ui.label("Project");
-            changed |= ui.add(TextEdit::singleline(&mut settings.project).desired_width(240.0)).changed();
-            ui.end_row();
-            ui.label("Naming template");
-            changed |= ui.add(TextEdit::singleline(&mut settings.naming_template).desired_width(320.0)).changed();
-            ui.end_row();
+    /// The Profile group: the picker and the New, Duplicate, Rename and Delete actions, with
+    /// today's inline rename and two-click Confirm delete.
+    fn profile_group(&mut self, ui: &mut Ui, store: &mut ProfileStore, settings: &mut Settings, outcome: &mut ProfileOutcome) {
+        inspector_group(ui, |ui| {
+            inspector_row(
+                ui,
+                "Profile",
+                |ui| {
+                    self.picker(ui, store, settings, outcome);
+                },
+                None,
+            );
+            let mut action = None;
+            ui.add_space(space::SCALE_4);
+            if let Some(buffer) = &mut self.renaming {
+                ui.horizontal(|ui| {
+                    ui.add(TextEdit::singleline(buffer).desired_width(140.0));
+                    if ui.button("OK").clicked() {
+                        action = Some(Action::ConfirmRename);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        action = Some(Action::CancelRename);
+                    }
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    if ui.button("New").clicked() {
+                        action = Some(Action::New);
+                    }
+                    if ui.button("Duplicate").clicked() {
+                        action = Some(Action::Duplicate);
+                    }
+                    if ui.button("Rename").clicked() {
+                        action = Some(Action::StartRename);
+                    }
+                    let delete_text = if self.confirm_delete { "Confirm delete" } else { "Delete" };
+                    if ui.add_enabled(store.profiles().len() > 1, Button::new(delete_text)).clicked() {
+                        action = Some(Action::Delete);
+                    }
+                });
+            }
+            ui.add_space(space::SCALE_4);
+            if let Some(action) = action {
+                self.run_action(action, store, settings, outcome);
+            }
         });
-        ui.colored_label(ui_kit::palette::TEXT_MUTED, "Tokens: {project} {date} {time} {take} {profile}. Both fields apply to every profile.");
-        if changed {
-            outcome.active_changed = true;
-        }
-        let container = store.get(&settings.active_profile).map(|profile| profile.container).unwrap_or_default();
-        let root = takes_root(settings);
-        let key = format!("{}|{}|{}|{}|{}", root.display(), settings.project, settings.naming_template, settings.active_profile, container.extension());
-        if self.preview.as_ref().is_none_or(|preview| preview.key != key || preview.at.elapsed() > PREVIEW_REFRESH) {
-            let naming = takes::Naming { project: &settings.project, template: &settings.naming_template, profile: &settings.active_profile };
-            let text = match takes::plan_take(&root, chrono::Local::now(), container, &naming) {
-                Ok(paths) => paths.video_file.display().to_string(),
-                Err(err) => format!("The takes folder could not be read: {err}"),
-            };
-            self.preview = Some(Preview { at: Instant::now(), key, text });
-        }
-        if let Some(preview) = &self.preview {
-            ui.label(format!("Next take: {}", preview.text));
-        }
     }
 
-    /// Draws the profile dropdown and the New, Duplicate, Rename and Delete buttons.
-    fn picker_row(&mut self, ui: &mut Ui, store: &mut ProfileStore, settings: &mut Settings, outcome: &mut ProfileOutcome) {
+    /// Draws the profile dropdown; switching to another profile reports through `outcome`.
+    pub fn picker(&mut self, ui: &mut Ui, store: &mut ProfileStore, settings: &mut Settings, outcome: &mut ProfileOutcome) {
         let mut chosen = None;
-        let mut action = None;
-        ui.horizontal(|ui| {
-            ComboBox::from_id_salt("profile-picker").selected_text(settings.active_profile.clone()).width(240.0).show_ui(ui, |ui| {
-                for profile in store.profiles() {
-                    if ui.selectable_label(profile.name == settings.active_profile, &profile.name).clicked() {
-                        chosen = Some(profile.name.clone());
-                    }
-                }
-            });
-            if let Some(buffer) = &mut self.renaming {
-                ui.add(TextEdit::singleline(buffer).desired_width(180.0));
-                if ui.button("OK").clicked() {
-                    action = Some(Action::ConfirmRename);
-                }
-                if ui.button("Cancel").clicked() {
-                    action = Some(Action::CancelRename);
-                }
-            } else {
-                if ui.button("New").clicked() {
-                    action = Some(Action::New);
-                }
-                if ui.button("Duplicate").clicked() {
-                    action = Some(Action::Duplicate);
-                }
-                if ui.button("Rename").clicked() {
-                    action = Some(Action::StartRename);
-                }
-                let delete_text = if self.confirm_delete { "Confirm delete" } else { "Delete" };
-                if ui.add_enabled(store.profiles().len() > 1, Button::new(delete_text)).clicked() {
-                    action = Some(Action::Delete);
+        ComboBox::from_id_salt("profile-picker").selected_text(settings.active_profile.clone()).width(PICKER_WIDTH).show_ui(ui, |ui| {
+            for profile in store.profiles() {
+                if ui.selectable_label(profile.name == settings.active_profile, &profile.name).clicked() {
+                    chosen = Some(profile.name.clone());
                 }
             }
         });
@@ -362,9 +367,6 @@ impl ProfileSection {
             && name != settings.active_profile
         {
             self.switch_to(store, settings, name, outcome);
-        }
-        if let Some(action) = action {
-            self.run_action(action, store, settings, outcome);
         }
     }
 
@@ -417,8 +419,51 @@ impl ProfileSection {
         }
     }
 
-    /// Draws every field of the active profile and writes its edits after the debounce.
-    fn fields(&mut self, ui: &mut Ui, store: &mut ProfileStore, settings: &Settings, source: (u32, u32), audio: AudioCodec, recording: bool) {
+    /// PARKED: the Project and Naming template fields with their tokens hint. They are global
+    /// settings, and the Settings dialog takes them in R6.
+    pub fn naming_fields(&mut self, ui: &mut Ui, settings: &mut Settings, outcome: &mut ProfileOutcome) {
+        ui.heading("Naming");
+        let mut changed = false;
+        egui::Grid::new("naming-fields").num_columns(2).show(ui, |ui| {
+            ui.label("Project");
+            changed |= ui.add(TextEdit::singleline(&mut settings.project).desired_width(240.0)).changed();
+            ui.end_row();
+            ui.label("Naming template");
+            changed |= ui.add(TextEdit::singleline(&mut settings.naming_template).desired_width(320.0)).changed();
+            ui.end_row();
+        });
+        ui.colored_label(ui_kit::palette::TEXT_MUTED, "Tokens: {project} {date} {time} {take} {profile}. Both fields apply to every profile.");
+        if changed {
+            outcome.active_changed = true;
+        }
+    }
+
+    /// The next take for the preview toolbar: its short label ("takeNN" when the take name ends
+    /// with one) and the full video file path, or an error message in the path's place.
+    ///
+    /// The takes folder is read again when something on the line changed or two seconds passed.
+    pub fn next_take(&mut self, store: &ProfileStore, settings: &Settings) -> (Option<String>, String) {
+        let container = store.get(&settings.active_profile).map(|profile| profile.container).unwrap_or_default();
+        let root = takes_root(settings);
+        let key = format!("{}|{}|{}|{}|{}", root.display(), settings.project, settings.naming_template, settings.active_profile, container.extension());
+        if self.preview.as_ref().is_none_or(|preview| preview.key != key || preview.at.elapsed() > PREVIEW_REFRESH) {
+            let naming = takes::Naming { project: &settings.project, template: &settings.naming_template, profile: &settings.active_profile };
+            let (text, label) = match takes::plan_take(&root, chrono::Local::now(), container, &naming) {
+                Ok(paths) => (paths.video_file.display().to_string(), Some(take_label(&paths.base_name).to_owned())),
+                Err(err) => (format!("The takes folder could not be read: {err}"), None),
+            };
+            self.preview = Some(Preview { at: Instant::now(), key, text, label });
+        }
+        let mut answer = (None, String::new());
+        if let Some(preview) = self.preview.as_ref() {
+            answer = (preview.label.clone(), preview.text.clone());
+        }
+        answer
+    }
+
+    /// Draws the Encode and Format groups for the active profile and writes its edits after the debounce.
+    /// Draws the Encode and Format groups for the active profile and writes its edits after the debounce.
+    fn edit_fields(&mut self, ui: &mut Ui, store: &mut ProfileStore, settings: &Settings, source: (u32, u32), audio: AudioCodec, recording: bool) {
         let ctx = ui.ctx().clone();
         let Some(original) = store.get(&settings.active_profile).cloned() else { return };
         let mut p = original.clone();
@@ -434,110 +479,152 @@ impl ProfileSection {
         let mut size_custom = self.size_custom;
         let mut fps_custom = self.fps_custom;
 
-        egui::Grid::new("profile-fields").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-            row(ui, "Codec", &errors, Field::Codec, |ui| {
-                let mut codec = p.codec;
-                ComboBox::from_id_salt("profile-codec").selected_text(codec_label(codec)).show_ui(ui, |ui| {
-                    for choice in [Codec::Av1, Codec::Hevc, Codec::H264] {
-                        if choice == p.codec || usable.contains(&EncoderCodec::from(choice)) {
-                            ui.selectable_value(&mut codec, choice, codec_label(choice));
+        // Encode group (spec "Setup mode": codec, rate control and its fields, preset, keyframe interval).
+        inspector_group(ui, |ui| {
+            inspector_row(
+                ui,
+                "Codec",
+                |ui| {
+                    let mut codec = p.codec;
+                    ComboBox::from_id_salt("profile-codec").selected_text(codec_label(codec)).show_ui(ui, |ui| {
+                        for choice in [Codec::Av1, Codec::Hevc, Codec::H264] {
+                            if choice == p.codec || usable.contains(&EncoderCodec::from(choice)) {
+                                ui.selectable_value(&mut codec, choice, codec_label(choice));
+                            }
+                        }
+                    });
+                    if codec != p.codec {
+                        p.codec = codec;
+                        if let RateControl::ConstantQp { .. } = p.rate_control {
+                            p.rate_control = default_rate(Mode::ConstantQp, ranges_of(&all_ranges, codec));
                         }
                     }
-                });
-                if codec != p.codec {
-                    p.codec = codec;
-                    if let RateControl::ConstantQp { .. } = p.rate_control {
-                        p.rate_control = default_rate(Mode::ConstantQp, ranges_of(&all_ranges, codec));
+                    if probing {
+                        ui.colored_label(ui_kit::palette::TEXT_MUTED, "Checking encoders...");
                     }
-                }
-                if probing {
-                    ui.colored_label(ui_kit::palette::TEXT_MUTED, "Checking encoders...");
-                }
-            });
+                },
+                None,
+            );
+            error_line(ui, &errors, Field::Codec);
+            let ranges = ranges_of(&all_ranges, p.codec);
+            rate_control_editor(ui, "profile", &mut p.rate_control, ranges, &errors);
 
-            rate_control_editor(ui, "profile", &mut p.rate_control, ranges_of(&all_ranges, p.codec), &errors);
+            inspector_row(
+                ui,
+                "Preset",
+                |ui| {
+                    ComboBox::from_id_salt("profile-preset").selected_text(preset_label(p.preset)).show_ui(ui, |ui| {
+                        for choice in [Preset::Speed, Preset::Balanced, Preset::Quality] {
+                            ui.selectable_value(&mut p.preset, choice, preset_label(choice));
+                        }
+                    });
+                },
+                None,
+            );
+            error_line(ui, &errors, Field::Preset);
 
-            row(ui, "Preset", &errors, Field::Preset, |ui| {
-                ComboBox::from_id_salt("profile-preset").selected_text(preset_label(p.preset)).show_ui(ui, |ui| {
-                    for choice in [Preset::Speed, Preset::Balanced, Preset::Quality] {
-                        ui.selectable_value(&mut p.preset, choice, preset_label(choice));
-                    }
-                });
-            });
+            let keyframe_text = format!("{:.1} s", p.keyframe_secs);
+            inspector_row(
+                ui,
+                "Keyframe every",
+                |ui| {
+                    ui.add(DragValue::new(&mut p.keyframe_secs).range(0.0..=60.0).speed(0.1).max_decimals(1).suffix(" s"));
+                },
+                Some(&keyframe_text),
+            );
+            error_line(ui, &errors, Field::Keyframe);
+        });
+        ui.add_space(space::SCALE_8);
 
-            row(ui, "Keyframe every", &errors, Field::Keyframe, |ui| {
-                ui.add(DragValue::new(&mut p.keyframe_secs).range(0.0..=60.0).speed(0.1).max_decimals(1).suffix(" s"));
-            });
-
-            row(ui, "Output size", &errors, Field::Size, |ui| {
-                let preset = SIZES.iter().any(|&(w, h)| p.width == w && p.height == h);
-                let custom = size_custom || (!p.is_source_size() && !preset);
-                let text = if p.is_source_size() {
-                    "Source".to_owned()
-                } else if custom {
-                    "Custom".to_owned()
-                } else {
-                    format!("{}x{}", p.width, p.height)
-                };
-                ComboBox::from_id_salt("profile-size").selected_text(text).show_ui(ui, |ui| {
-                    if ui.selectable_label(p.is_source_size(), "Source").clicked() {
-                        (p.width, p.height) = (0, 0);
-                        size_custom = false;
-                    }
-                    for (w, h) in SIZES {
-                        if ui.selectable_label(!custom && p.width == w && p.height == h, format!("{w}x{h}")).clicked() {
-                            (p.width, p.height) = (w, h);
+        // Format group (spec "Setup mode": output size, frame rate, container).
+        inspector_group(ui, |ui| {
+            inspector_row(
+                ui,
+                "Output size",
+                |ui| {
+                    let preset = SIZES.iter().any(|&(w, h)| p.width == w && p.height == h);
+                    let custom = size_custom || (!p.is_source_size() && !preset);
+                    let text = if p.is_source_size() {
+                        "Source".to_owned()
+                    } else if custom {
+                        "Custom".to_owned()
+                    } else {
+                        format!("{}x{}", p.width, p.height)
+                    };
+                    ComboBox::from_id_salt("profile-size").selected_text(text).show_ui(ui, |ui| {
+                        if ui.selectable_label(p.is_source_size(), "Source").clicked() {
+                            (p.width, p.height) = (0, 0);
                             size_custom = false;
                         }
-                    }
-                    if ui.selectable_label(custom && !p.is_source_size(), "Custom").clicked() {
-                        size_custom = true;
-                        if p.is_source_size() {
-                            (p.width, p.height) = source;
+                        for (w, h) in SIZES {
+                            if ui.selectable_label(!custom && p.width == w && p.height == h, format!("{w}x{h}")).clicked() {
+                                (p.width, p.height) = (w, h);
+                                size_custom = false;
+                            }
                         }
-                    }
-                });
-                if p.is_source_size() {
-                    ui.colored_label(ui_kit::palette::TEXT_MUTED, format!("{}x{}", source.0, source.1));
-                } else if custom {
-                    ui.add(DragValue::new(&mut p.width).range(16..=16384));
-                    ui.label("x");
-                    ui.add(DragValue::new(&mut p.height).range(16..=16384));
-                }
-            });
-
-            row(ui, "Frame rate", &errors, Field::Fps, |ui| {
-                let preset = FPS_CHOICES.contains(&p.fps);
-                let custom = fps_custom || !preset;
-                let text = if custom { "Custom".to_owned() } else { format!("{} fps", p.fps) };
-                ComboBox::from_id_salt("profile-fps").selected_text(text).show_ui(ui, |ui| {
-                    for fps in FPS_CHOICES {
-                        if ui.selectable_label(!custom && p.fps == fps, format!("{fps} fps")).clicked() {
-                            p.fps = fps;
-                            fps_custom = false;
+                        if ui.selectable_label(custom && !p.is_source_size(), "Custom").clicked() {
+                            size_custom = true;
+                            if p.is_source_size() {
+                                (p.width, p.height) = source;
+                            }
                         }
+                    });
+                    if p.is_source_size() {
+                        ui.colored_label(ui_kit::palette::TEXT_MUTED, format!("{}x{}", source.0, source.1));
+                    } else if custom {
+                        ui.add(DragValue::new(&mut p.width).range(16..=16384));
+                        ui.label("x");
+                        ui.add(DragValue::new(&mut p.height).range(16..=16384));
                     }
-                    if ui.selectable_label(custom, "Custom").clicked() {
-                        fps_custom = true;
-                    }
-                });
-                if custom {
-                    ui.add(DragValue::new(&mut p.fps).range(1..=240).suffix(" fps"));
-                }
-            });
+                },
+                None,
+            );
+            error_line(ui, &errors, Field::Size);
 
-            row(ui, "Container", &errors, Field::Container, |ui| {
-                ComboBox::from_id_salt("profile-container").selected_text(container_label(p.container)).show_ui(ui, |ui| {
-                    for choice in [Container::Mkv, Container::Mp4, Container::Mov] {
-                        ui.selectable_value(&mut p.container, choice, container_label(choice));
+            inspector_row(
+                ui,
+                "Frame rate",
+                |ui| {
+                    let preset = FPS_CHOICES.contains(&p.fps);
+                    let custom = fps_custom || !preset;
+                    let text = if custom { "Custom".to_owned() } else { format!("{} fps", p.fps) };
+                    ComboBox::from_id_salt("profile-fps").selected_text(text).show_ui(ui, |ui| {
+                        for fps in FPS_CHOICES {
+                            if ui.selectable_label(!custom && p.fps == fps, format!("{fps} fps")).clicked() {
+                                p.fps = fps;
+                                fps_custom = false;
+                            }
+                        }
+                        if ui.selectable_label(custom, "Custom").clicked() {
+                            fps_custom = true;
+                        }
+                    });
+                    if custom {
+                        ui.add(DragValue::new(&mut p.fps).range(1..=240).suffix(" fps"));
                     }
-                });
-            });
+                },
+                None,
+            );
+            error_line(ui, &errors, Field::Fps);
+
+            inspector_row(
+                ui,
+                "Container",
+                |ui| {
+                    ComboBox::from_id_salt("profile-container").selected_text(container_label(p.container)).show_ui(ui, |ui| {
+                        for choice in [Container::Mkv, Container::Mp4, Container::Mov] {
+                            ui.selectable_value(&mut p.container, choice, container_label(choice));
+                        }
+                    });
+                },
+                None,
+            );
             if p.container == Container::Mkv {
-                ui.label("");
+                ui.add_space(space::SCALE_4);
                 ui.label(RichText::new(MKV_HINT).small().weak());
-                ui.end_row();
+                ui.add_space(space::SCALE_4);
             }
+            error_line(ui, &errors, Field::Container);
         });
 
         self.size_custom = size_custom;
@@ -551,53 +638,81 @@ impl ProfileSection {
     }
 }
 
-/// Draws the rate control picker and the fields of the chosen mode as rows of a two column grid, and returns
+/// Draws the rate control picker and the fields of the chosen mode as inspector rows, and returns
 /// whether the rate control changed.
 ///
 /// A new mode starts with its documented defaults, `ranges` are the probed options of the codec (none before the
-/// probe has answered) and `errors` are shown in red next to the field they belong to. `id_salt` keeps the picker's
+/// probe has answered) and `errors` are drawn in red under the field they belong to. `id_salt` keeps the picker's
 /// id apart when more than one editor is on screen.
 pub fn rate_control_editor(ui: &mut Ui, id_salt: &str, rate: &mut RateControl, ranges: Option<&OptionRanges>, errors: &[(Field, String)]) -> bool {
     let before = *rate;
-    row(ui, "Rate control", errors, Field::Rate, |ui| {
-        let mode = Mode::of(*rate);
-        let mut chosen = mode;
-        ComboBox::from_id_salt(format!("{id_salt}-rate")).selected_text(mode.label()).show_ui(ui, |ui| {
-            for choice in Mode::ALL {
-                ui.selectable_value(&mut chosen, choice, choice.label());
-            }
-        });
-        if chosen != mode {
-            *rate = default_rate(chosen, ranges);
-        }
-    });
+    let mode = Mode::of(*rate);
+    let mut chosen = mode;
+    inspector_row(
+        ui,
+        "Rate control",
+        |ui| {
+            ComboBox::from_id_salt(format!("{id_salt}-rate")).selected_text(mode.label()).show_ui(ui, |ui| {
+                for choice in Mode::ALL {
+                    ui.selectable_value(&mut chosen, choice, choice.label());
+                }
+            });
+        },
+        None,
+    );
+    if chosen != mode {
+        *rate = default_rate(chosen, ranges);
+    }
+    error_line(ui, errors, Field::Rate);
 
     match rate {
         RateControl::ConstantQuality { quality, max_mbps } => {
-            row(ui, "Quality", errors, Field::Quality, |ui| {
-                ui.add(Slider::new(quality, 1..=100));
-            });
-            row(ui, "Max bitrate", errors, Field::MaxMbps, |ui| mbps_field(ui, max_mbps));
-            ui.label("");
+            let quality_text = format!("{quality}");
+            inspector_row(
+                ui,
+                "Quality",
+                |ui| {
+                    ui.add(egui::Slider::new(quality, 1..=100));
+                },
+                Some(&quality_text),
+            );
+            error_line(ui, errors, Field::Quality);
+            let max_text = format!("{max_mbps:.1} Mbps");
+            inspector_row(ui, "Max bitrate", |ui| mbps_field(ui, max_mbps), Some(&max_text));
+            error_line(ui, errors, Field::MaxMbps);
+            ui.add_space(space::SCALE_4);
             ui.label(RichText::new(SOFT_MAX_HINT).small().weak());
-            ui.end_row();
+            ui.add_space(space::SCALE_4);
         }
         RateControl::ConstantQp { qp_i, qp_p } => {
             let range_i = qp_range(ranges.and_then(|r| r.qp_i.as_ref()));
             let range_p = qp_range(ranges.and_then(|r| r.qp_p.as_ref()));
-            row(ui, "QP", errors, Field::Qp, |ui| {
-                ui.label("I");
-                ui.add(DragValue::new(qp_i).range(range_i));
-                ui.label("P");
-                ui.add(DragValue::new(qp_p).range(range_p));
-            });
+            let qp_text = format!("I {qp_i} / P {qp_p}");
+            inspector_row(
+                ui,
+                "QP",
+                |ui| {
+                    ui.label("I");
+                    ui.add(DragValue::new(qp_i).range(range_i));
+                    ui.label("P");
+                    ui.add(DragValue::new(qp_p).range(range_p));
+                },
+                Some(&qp_text),
+            );
+            error_line(ui, errors, Field::Qp);
         }
         RateControl::Cbr { mbps } => {
-            row(ui, "Bitrate", errors, Field::Mbps, |ui| mbps_field(ui, mbps));
+            let mbps_text = format!("{mbps:.1} Mbps");
+            inspector_row(ui, "Bitrate", |ui| mbps_field(ui, mbps), Some(&mbps_text));
+            error_line(ui, errors, Field::Mbps);
         }
         RateControl::VbrPeak { target_mbps, max_mbps } => {
-            row(ui, "Target bitrate", errors, Field::Target, |ui| mbps_field(ui, target_mbps));
-            row(ui, "Max bitrate", errors, Field::MaxMbps, |ui| mbps_field(ui, max_mbps));
+            let target_text = format!("{target_mbps:.1} Mbps");
+            inspector_row(ui, "Target bitrate", |ui| mbps_field(ui, target_mbps), Some(&target_text));
+            error_line(ui, errors, Field::Target);
+            let max_text = format!("{max_mbps:.1} Mbps");
+            inspector_row(ui, "Max bitrate", |ui| mbps_field(ui, max_mbps), Some(&max_text));
+            error_line(ui, errors, Field::MaxMbps);
         }
     }
     *rate != before
@@ -635,17 +750,18 @@ pub fn iso_codec_text(profile: &Profile, camera_height: u32, probe: &AmfProbe) -
     }
 }
 
-/// Draws one labelled row of the field grid, with the errors that belong to `field` in red after the widgets.
-fn row(ui: &mut Ui, label: &str, errors: &[(Field, String)], field: Field, add: impl FnOnce(&mut Ui)) {
-    ui.label(label);
-    ui.horizontal(|ui| {
-        add(ui);
-        let red = ui.visuals().error_fg_color;
-        for (_, message) in errors.iter().filter(|(f, _)| *f == field) {
-            ui.colored_label(red, message);
-        }
-    });
-    ui.end_row();
+/// Draws the errors that belong to `field` as red lines inside the current inspector group.
+fn error_line(ui: &mut Ui, errors: &[(Field, String)], field: Field) {
+    let red = ui.visuals().error_fg_color;
+    let hits: Vec<&String> = errors.iter().filter(|(f, _)| *f == field).map(|(_, message)| message).collect();
+    if hits.is_empty() {
+        return;
+    }
+    ui.add_space(space::SCALE_4);
+    for message in hits {
+        ui.colored_label(red, message.clone());
+    }
+    ui.add_space(space::SCALE_4);
 }
 
 /// Draws a bitrate field in megabits per second.
@@ -691,6 +807,19 @@ fn container_label(container: Container) -> &'static str {
         Container::Mp4 => "MP4",
         Container::Mov => "MOV",
     }
+}
+
+/// The short label of a take name: its trailing "takeNN" part, or the whole name when the
+/// naming template does not end with one (the preview toolbar's next-take caption).
+fn take_label(base_name: &str) -> &str {
+    let digits = base_name.bytes().rev().take_while(u8::is_ascii_digit).count();
+    if digits > 0 {
+        let head = base_name.len() - digits;
+        if base_name[..head].ends_with("take") {
+            return &base_name[head - 4..];
+        }
+    }
+    base_name
 }
 
 /// The probed ranges of one codec.
@@ -775,6 +904,14 @@ fn validate(profile: &Profile, size: (u32, u32), audio: AudioCodec, probe: &AmfP
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_next_take_label_is_the_trailing_take_number() {
+        assert_eq!(take_label("2026-11-23_14-30-05_take07"), "take07");
+        assert_eq!(take_label("take12"), "take12");
+        assert_eq!(take_label("Show AV1 #12"), "Show AV1 #12");
+        assert_eq!(take_label("My Show_07"), "My Show_07");
+    }
 
     #[test]
     fn qp_defaults_scale_to_the_av1_range() {

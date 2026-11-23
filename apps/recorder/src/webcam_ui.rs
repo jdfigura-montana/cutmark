@@ -1,12 +1,14 @@
-//! The webcam UI pieces that stayed behind: the Camera ISO file group of the parked column, the
-//! camera picture the Camera and Key tools show, and the small formatting helpers they use.
+//! The webcam UI pieces: the Camera ISO file group of the Output tool, the camera picture the
+//! Camera and Key tools show, and the small formatting helpers they use.
 //!
 //! The Camera tool's panels moved to `tools_ui`, the Key tool's to `key_ui`.
 
 use std::cell::RefCell;
 
 use capture::CameraFormat;
-use egui::{CursorIcon, Sense, Ui};
+use egui::{CursorIcon, RichText, Sense, Ui};
+use ui_kit::tokens::space;
+use ui_kit::{inspector_group, inspector_row, switch};
 
 use crate::config::WebcamSettings;
 use crate::preview_ui::Pick;
@@ -19,14 +21,12 @@ thread_local! {
     static ISO_PROBE: RefCell<AmfProbe> = RefCell::new(AmfProbe::default());
 }
 
-/// The Camera ISO file group: whether the raw camera is saved on its own, how it is encoded, and the camera offset.
-/// Edits go to the active profile through the store, and the group is read-only while recording.
-///
-/// PARKED: this group waits in the parked column until the Output tool takes it in R4.
+/// The Camera ISO file group of the Output tool (spec "Setup mode"): whether the raw camera is
+/// saved on its own and how it is encoded. The rows are disabled while the switch is off, and the
+/// group is read-only while recording. The camera offset lives in the Camera tool's Sync group.
 pub(crate) fn iso_group(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, recording: bool, profile_name: &str) {
     let Some(settings) = host.settings(store).cloned() else { return };
     let Some(profile) = store.get(profile_name).cloned() else { return };
-    ui.label("Camera ISO file");
     let key = (settings.format.width, settings.format.height, profile.fps);
     let (ranges, codec_text) = ISO_PROBE.with(|cell| {
         let mut probe = cell.borrow_mut();
@@ -37,21 +37,26 @@ pub(crate) fn iso_group(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore
     });
     let mut iso = settings.iso;
     let mut rate = settings.iso_rc;
-    let mut offset = settings.offset_ms;
     let mut changed = false;
-    ui.add_enabled_ui(!recording, |ui| {
-        changed |= ui.checkbox(&mut iso, "Also save the raw camera as its own file").changed();
-        ui.add_enabled_ui(iso, |ui| {
+    inspector_group(ui, |ui| {
+        ui.add_enabled_ui(!recording, |ui| {
+            let state = if iso { "On" } else { "Off" };
+            inspector_row(
+                ui,
+                "Camera ISO file",
+                |ui| {
+                    changed |= switch(ui, &mut iso).changed();
+                },
+                Some(state),
+            );
+            ui.add_space(space::SCALE_4);
+            ui.label(RichText::new("Also save the raw camera as its own file.").small().weak());
+            ui.add_space(space::SCALE_4);
+        });
+        ui.add_enabled_ui(!recording && iso, |ui| {
             let errors = rate_errors(profile.codec, rate, ranges.as_ref());
-            egui::Grid::new("webcam-iso").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                changed |= rate_control_editor(ui, "webcam-iso", &mut rate, ranges.as_ref(), &errors);
-                ui.label("Codec");
-                ui.label(codec_text);
-                ui.end_row();
-                ui.label("Camera offset");
-                changed |= ui.add(egui::DragValue::new(&mut offset).range(-500..=500).suffix(" ms")).changed();
-                ui.end_row();
-            });
+            changed |= rate_control_editor(ui, "webcam-iso", &mut rate, ranges.as_ref(), &errors);
+            inspector_row(ui, "Codec", |_ui| {}, Some(&codec_text));
         });
     });
     if changed {
@@ -59,7 +64,6 @@ pub(crate) fn iso_group(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore
             if let Some(webcam) = &mut profile.webcam {
                 webcam.iso = iso;
                 webcam.iso_rc = rate;
-                webcam.offset_ms = offset;
             }
         });
     }

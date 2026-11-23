@@ -1,8 +1,9 @@
 //! The Setup right panel's tools: the remembered [`Tool`] choice and the Camera tool's panels
 //! (spec "Setup mode": the right panel holds the tool strip and the open tool's panel).
 //!
-//! The Key tool's groups live in `key_ui`; Layout, Audio and Output show the parked column in
-//! `app` until R4 and R5 take their rows.
+//! The Key tool's groups live in `key_ui`, the Layout tool's in `layout_ui` and `background_ui`,
+//! and the Output tool's in `profile_ui` and `webcam_ui`; the Audio tool still shows the parked
+//! column in `app` until R5 takes its rows.
 
 use std::time::Duration;
 
@@ -39,12 +40,12 @@ pub enum Tool {
     Camera,
     /// The chroma key, garbage crop and mask rectangle over the camera picture.
     Key,
-    /// The layout of screen and camera; the parked column until R4.
+    /// The layout of screen and camera, and the background behind it.
     #[default]
     Layout,
     /// The audio tracks; the parked column until R5.
     Audio,
-    /// The encode and format settings; the parked column until R4.
+    /// The profile, its encode and format settings, and the camera ISO file.
     Output,
 }
 

@@ -810,6 +810,7 @@ impl RecorderApp {
     /// 8px window padding and gaps.
     fn setup_panels(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
         let gap = space::WINDOW_GAP as i8;
+        let active = state.phase.has_take();
         egui::Panel::left("setup-sources")
             .resizable(false)
             .exact_size(LEFT_PANEL_W)
@@ -822,7 +823,7 @@ impl RecorderApp {
             .show(ui, |ui| self.settings_panel(ui, ctx, state));
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin { left: gap, right: gap, top: gap, bottom: gap }))
-            .show(ui, |ui| self.preview_panel(ui));
+            .show(ui, |ui| self.preview_panel(ui, active));
     }
 
     /// The right Setup panel (spec "Setup mode"): the tool strip over the open tool's panel in a
@@ -848,7 +849,15 @@ impl RecorderApp {
                     let picked = webcam_ui::camera_picture(ui, &mut self.webcam, self.key_ui.eyedropper);
                     key_ui::key_panel(ui, &self.webcam, &mut self.profile_store, state, &mut self.key_ui, picked.as_ref());
                 }
-                Tool::Layout | Tool::Audio | Tool::Output => self.parked_column(ui, ctx, state),
+                Tool::Layout => layout_ui::show(ui, &mut self.profile_store, &self.settings.active_profile, active),
+                Tool::Output => {
+                    let mut outcome = ProfileOutcome::default();
+                    self.profile_section.output_panel(ui, &mut self.profile_store, &mut self.settings, self.source_size, active, &mut outcome);
+                    self.on_profile_outcome(&outcome);
+                    ui.add_space(space::SCALE_8);
+                    webcam_ui::iso_group(ui, &self.webcam, &mut self.profile_store, active, &state.active_profile);
+                }
+                Tool::Audio => self.parked_column(ui, ctx, state),
             });
             // Every settings change, the open tool among them, saves once the pointer is up and no field has focus.
             let settled = !ctx.input(|input| input.pointer.any_down()) && ctx.memory(|memory| memory.focused().is_none());
@@ -859,14 +868,64 @@ impl RecorderApp {
         });
     }
 
-    /// The center Preview panel: the header and today's preview filling the rest of the panel.
-    fn preview_panel(&mut self, ui: &mut egui::Ui) {
+    /// The center Preview panel (spec "Setup mode"): the panel toolbar (rev 3, 44 tall) over
+    /// today's preview filling the rest of the panel.
+    fn preview_panel(&mut self, ui: &mut egui::Ui, active: bool) {
+        let mut outcome = ProfileOutcome::default();
         ui_kit::panel(ui, |ui| {
             ui.set_min_size(ui.available_size());
-            panel_header(ui, "Preview");
+            self.preview_toolbar(ui, active, &mut outcome);
             ui.add_space(space::SCALE_8);
             self.show_preview(ui);
         });
+        self.on_profile_outcome(&outcome);
+    }
+
+    /// The preview panel's toolbar: the Profile caption and picker, a separator, the Preview and
+    /// Matte view chips, and the next take on the right with its full path as the tooltip.
+    fn preview_toolbar(&mut self, ui: &mut egui::Ui, active: bool, outcome: &mut ProfileOutcome) {
+        let key_on = self.webcam.settings(&self.profile_store).is_some_and(|settings| settings.key.enabled);
+        let (take_label, take_path) = self.profile_section.next_take(&self.profile_store, &self.settings);
+        let next_take = match take_label {
+            Some(label) => format!("Next take {label}"),
+            None => "Next take".to_owned(),
+        };
+        let row = egui::vec2(ui.available_width(), size::PANEL_TOOLBAR_HEIGHT);
+        let inner = ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.add_space(HEADER_PAD);
+            ui.add(
+                egui::Label::new(egui::RichText::new("Profile").font(ui_kit::fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY))
+                    .selectable(false),
+            );
+            ui.add_space(space::SCALE_8);
+            ui.add_enabled_ui(!active, |ui| {
+                self.profile_section.picker(ui, &mut self.profile_store, &mut self.settings, outcome);
+            });
+            ui.separator();
+            ui.add_space(space::SCALE_4);
+            ui_kit::chip(ui, &mut self.preview_enabled, "Preview");
+            ui.add_space(space::SCALE_4);
+            ui.add_enabled_ui(key_on, |ui| {
+                ui_kit::chip(ui, &mut self.key_ui.matte, "Matte view");
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(next_take).font(ui_kit::fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY))
+                        .selectable(false),
+                )
+                .on_hover_text(take_path);
+            });
+        });
+        let rect = inner.response.rect;
+        ui.painter().hline(rect.x_range().expand(space::PANEL_PADDING), rect.bottom(), egui::Stroke::new(HAIRLINE, color::STROKE_HAIRLINE));
+    }
+
+    /// Sends the settings to the controller and saves them when the active profile changed.
+    fn on_profile_outcome(&mut self, outcome: &ProfileOutcome) {
+        if outcome.active_changed {
+            self.controller.set_settings(self.settings.clone());
+            self.save_settings();
+        }
     }
 
     /// The Record and Review placeholder: an empty panel with a centered caption (spec step R2).
@@ -885,9 +944,9 @@ impl RecorderApp {
         );
     }
 
-    /// PARKED: holds what R3 left and what R4 to R6 still take. The camera and key controls moved
-    /// to their tools; the Camera ISO file group waits here for the Output tool (R4), the rest
-    /// for the Sources panel and the Settings dialog (R5 and R6).
+    /// PARKED: holds what R5 and R6 still take. The camera and key controls moved to their tools,
+    /// and the Layout, Output and Camera ISO file groups to the Output tool; the rest waits for
+    /// the Sources panel and the Settings dialog (R5 and R6).
     fn parked_column(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
         let warn = ui.visuals().warn_fg_color;
         let error = ui.visuals().error_fg_color;
@@ -922,20 +981,12 @@ impl RecorderApp {
         self.recovery_banner(ui);
         ui.add_space(8.0);
 
-        ui.checkbox(&mut self.preview_enabled, "Preview");
         if ui.checkbox(&mut self.settings.hide_from_capture, "Hide Recorder from screen captures").changed() {
             self.apply_hide_from_capture();
         }
         ui.add_space(8.0);
 
         let active = state.phase.has_take();
-        // The Camera ISO file group is the only webcam control still parked; the Output tool takes it in R4.
-        webcam_ui::iso_group(ui, &self.webcam, &mut self.profile_store, active, &state.active_profile);
-        ui.add_space(8.0);
-
-        layout_ui::show(ui, &mut self.profile_store, &self.settings.active_profile, active);
-        ui.add_space(8.0);
-
         marks_ui::show(ui, &state.recent_marks);
         ui.add_space(8.0);
 
@@ -956,12 +1007,10 @@ impl RecorderApp {
         }
         ui.add_space(8.0);
 
+        // PARKED: the Project and Naming template fields until the Settings dialog takes them in R6.
         let mut profile_outcome = ProfileOutcome::default();
-        self.profile_section.show(ui, &mut self.profile_store, &mut self.settings, self.source_size, active, &mut profile_outcome);
-        if profile_outcome.active_changed {
-            self.controller.set_settings(self.settings.clone());
-            self.save_settings();
-        }
+        self.profile_section.naming_fields(ui, &mut self.settings, &mut profile_outcome);
+        self.on_profile_outcome(&profile_outcome);
         ui.add_space(8.0);
 
         self.countdown_section(ui);
