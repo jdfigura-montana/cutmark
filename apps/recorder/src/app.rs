@@ -131,6 +131,8 @@ pub struct RecorderApp {
     shutting_down: bool,
     /// The Pre-flight section: its button and the Keep files choice.
     preflight_section: PreflightSection,
+    /// The measured height of the Sources panel's pre-flight card, from the previous frame.
+    sources_card_height: f32,
     /// The window mode and the mode the running take returns to (spec "Mode rules").
     modes: ModeState,
     /// Whether the controller ran a take, countdown included, on the previous frame.
@@ -235,6 +237,7 @@ impl RecorderApp {
             api_port_edit,
             shutting_down: false,
             preflight_section: PreflightSection::default(),
+            sources_card_height: 0.0,
             modes,
             was_running: false,
         };
@@ -812,13 +815,70 @@ impl RecorderApp {
         egui::CentralPanel::default().frame(window_frame()).show(ui, |ui| {
             let [left, center, right] = three_columns(ui.max_rect());
             let active = state.phase.has_take();
-            // R5 fills the Sources panel; the header is all it has today (spec "Setup mode").
-            column(ui, left, |ui| {
-                panel_header(ui, "Sources");
-                ui.add_space(space::SCALE_8);
-            });
+            column(ui, left, |ui| self.sources_panel(ui, state));
             column(ui, right, |ui| self.settings_panel(ui, ctx, state));
             column(ui, center, |ui| self.preview_panel(ui, active));
+        });
+    }
+
+    /// The left Sources panel (spec "Setup mode"): the video group with the display and camera
+    /// rows, the audio tracks, and the pre-flight card pinned to the panel's bottom.
+    fn sources_panel(&mut self, ui: &mut egui::Ui, state: &ControllerState) {
+        panel_header(ui, "Sources");
+        ui.add_space(space::SCALE_8);
+        let panel = ui.max_rect();
+        let top = ui.cursor().top();
+        // The card is pinned to the bottom; the space above it is laid out with the card height
+        // measured on the previous frame, so the first frame reserves MIN_CARD_HEIGHT.
+        let card_height = self.sources_card_height.max(MIN_CARD_HEIGHT);
+        let content_rect = egui::Rect::from_min_max(
+            egui::Pos2::new(panel.left(), top),
+            egui::Pos2::new(panel.right(), (panel.bottom() - card_height - space::SCALE_8).max(top)),
+        );
+        let card_rect = egui::Rect::from_min_max(egui::Pos2::new(panel.left(), (panel.bottom() - card_height).max(top)), panel.right_bottom());
+        let mut content = ui.new_child(egui::UiBuilder::new().max_rect(content_rect));
+        content.set_clip_rect(content_rect);
+        self.sources_content(&mut content, state);
+        let mut card = ui.new_child(egui::UiBuilder::new().max_rect(card_rect));
+        card.set_clip_rect(card_rect);
+        self.preflight_section.sources_card(&mut card, state, &self.controller.sender());
+        self.sources_card_height = card.min_rect().height();
+    }
+
+    /// The Sources panel's video and audio groups (spec "Setup mode").
+    fn sources_content(&mut self, ui: &mut egui::Ui, state: &ControllerState) {
+        group_caption(ui, "Video");
+        let fps = self.profile_store.get(&self.settings.active_profile).map(|profile| profile.fps);
+        display_source_row(ui, self.source_size, fps);
+        self.camera_source_row(ui);
+        ui.add_space(space::SCALE_8);
+        group_caption(ui, "Audio");
+        let live = if state.phase.has_take() { Some(&self.live_tracks) } else { None };
+        tracks_ui::sources_rows(ui, &self.settings.audio, live);
+    }
+
+    /// The camera row of the video group: the camera's name, its format and a status dot;
+    /// clicking it opens the Camera tool's Camera and Format pickers as a popover.
+    fn camera_source_row(&mut self, ui: &mut egui::Ui) {
+        let (name, caption, ok) = match self.webcam.settings(&self.profile_store) {
+            Some(settings) => {
+                let present = self.webcam.cameras().iter().any(|camera| camera.id == settings.camera_id);
+                let name = if settings.camera_name.is_empty() { "No camera".to_owned() } else { settings.camera_name.clone() };
+                let caption = format!(
+                    "{} {}x{} @ {} fps",
+                    settings.format.subtype,
+                    settings.format.width,
+                    settings.format.height,
+                    webcam_ui::fps_text(f64::from(settings.format.fps))
+                );
+                (name, caption, present)
+            }
+            None => ("Camera off".to_owned(), String::new(), false),
+        };
+        let response = source_row(ui, ui_kit::icons::regular::CAMERA, &name, &caption, ok);
+        egui::Popup::menu(&response).width(320.0).show(|ui| {
+            tools_ui::camera_row(ui, &mut self.webcam, &mut self.profile_store);
+            tools_ui::format_row(ui, &mut self.webcam, &mut self.profile_store);
         });
     }
 
@@ -856,7 +916,17 @@ impl RecorderApp {
                     ui.add_space(space::SCALE_8);
                     webcam_ui::iso_group(ui, &self.webcam, &mut self.profile_store, active, &state.active_profile);
                 }
-                Tool::Audio => self.parked_column(ui, ctx, state),
+                Tool::Audio => {
+                    let live_tracks = if active { Some(&self.live_tracks) } else { None };
+                    let changed = tracks_ui::audio_panel(ui, &mut self.settings.audio, &self.devices, live_tracks, active);
+                    self.push_settings_if_changed();
+                    self.on_tracks_changed(ctx, changed);
+                    if active {
+                        ctx.request_repaint_after(METER_REFRESH);
+                    }
+                    ui.add_space(space::SCALE_8);
+                    self.parked_column(ui, state);
+                }
             }
         });
         // Every settings change, the open tool among them, saves once the pointer is up and no field has focus.
@@ -936,10 +1006,11 @@ impl RecorderApp {
         });
     }
 
-    /// PARKED: holds what R5 and R6 still take. The camera and key controls moved to their tools,
-    /// and the Layout, Output and Camera ISO file groups to the Output tool; the rest waits for
-    /// the Sources panel and the Settings dialog (R5 and R6).
-    fn parked_column(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
+    /// PARKED: holds what R6 still takes. The camera and key controls moved to their tools, the
+    /// Layout, Output and Camera ISO file groups to the Output tool, the audio tracks to the
+    /// Audio tool, and the pre-flight card to the Sources panel; the rest waits for the Settings
+    /// dialog (R6).
+    fn parked_column(&mut self, ui: &mut egui::Ui, state: &ControllerState) {
         let warn = ui.visuals().warn_fg_color;
         let error = ui.visuals().error_fg_color;
         ui.heading("Cutmark Recorder");
@@ -984,7 +1055,6 @@ impl RecorderApp {
 
         if active {
             self.recording_panel(ui, state);
-            ctx.request_repaint_after(METER_REFRESH);
         } else if let Phase::Countdown(left) = state.phase {
             ui.heading(format!("Starting in {left}"));
         } else {
@@ -1008,16 +1078,7 @@ impl RecorderApp {
         self.countdown_section(ui);
         ui.add_space(8.0);
 
-        self.preflight_section.show(ui, state, &self.controller.sender());
-        ui.add_space(8.0);
-
         self.api_section(ui);
-        ui.add_space(8.0);
-
-        let live_tracks = if active { Some(&self.live_tracks) } else { None };
-        let changed = tracks_ui::tracks_panel(ui, &mut self.settings.audio, &self.devices, live_tracks, active);
-        self.push_settings_if_changed();
-        self.on_tracks_changed(ctx, changed);
         ui.add_space(8.0);
 
         ui.heading("Hotkeys");
@@ -1184,6 +1245,67 @@ fn panel_header(ui: &mut egui::Ui, title: &str) {
     });
     let rect = inner.response.rect;
     ui.painter().hline(rect.x_range().expand(space::PANEL_PADDING), rect.bottom(), egui::Stroke::new(HAIRLINE, color::STROKE_HAIRLINE));
+}
+
+/// The height the Sources panel reserves for the pre-flight card before it has been measured.
+const MIN_CARD_HEIGHT: f32 = 150.0;
+
+/// Height of a source row in the Sources panel.
+const SOURCE_ROW_HEIGHT: f32 = 36.0;
+
+/// Diameter of a source row's status dot.
+const DOT_DIAMETER: f32 = 8.0;
+
+/// The display row of the Sources panel's video group: the primary monitor, its size with the
+/// frame rate it is captured at, and a status dot. There is no display picker today, so the row
+/// is info only (spec "Mapping").
+fn display_source_row(ui: &mut egui::Ui, size: (u32, u32), fps: Option<u32>) {
+    let caption = match fps {
+        Some(fps) if fps > 0 => format!("{}x{} @ {} fps", size.0, size.1, fps),
+        _ => format!("{}x{}", size.0, size.1),
+    };
+    source_row(ui, ui_kit::icons::regular::MONITOR, "Primary monitor", &caption, true);
+}
+
+/// One source row of the video group: the icon, the name with its detail caption and a status
+/// dot. Returns the row's response so the camera row can open its picker popover on click.
+fn source_row(ui: &mut egui::Ui, icon: &'static str, name: &str, caption: &str, ok: bool) -> egui::Response {
+    let row = egui::vec2(ui.available_width(), SOURCE_ROW_HEIGHT);
+    let inner = ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.add(
+            egui::Label::new(egui::RichText::new(icon).font(ui_kit::fonts::icon_regular(typography::BODY_SIZE)).color(color::TEXT_SECONDARY)).selectable(false),
+        );
+        ui.add_space(space::SCALE_4);
+        ui.vertical(|ui| {
+            ui.add(
+                egui::Label::new(egui::RichText::new(name).font(ui_kit::fonts::medium(typography::BODY_SIZE)).color(color::TEXT_PRIMARY))
+                    .selectable(false)
+                    .truncate(),
+            );
+            if !caption.is_empty() {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(caption).font(ui_kit::fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY))
+                        .selectable(false)
+                        .truncate(),
+                );
+            }
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            status_dot(ui, ok);
+        });
+    });
+    ui.interact(inner.response.rect, ui.id().with(("source-row", name)), egui::Sense::click())
+}
+
+/// The small status dot at a source row's right edge.
+fn status_dot(ui: &mut egui::Ui, ok: bool) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(DOT_DIAMETER, DOT_DIAMETER), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), DOT_DIAMETER / 2.0, if ok { color::SEM_METER_OK } else { color::SEM_METER_WARN });
+}
+
+/// The small caption naming a Sources group ("Video", "Audio").
+fn group_caption(ui: &mut egui::Ui, text: &str) {
+    ui.add(egui::Label::new(egui::RichText::new(text).font(ui_kit::fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY)).selectable(false));
 }
 
 /// The window-body frame all three modes share: the ground fill with the 8px window gap on

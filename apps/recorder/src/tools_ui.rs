@@ -2,8 +2,7 @@
 //! (spec "Setup mode": the right panel holds the tool strip and the open tool's panel).
 //!
 //! The Key tool's groups live in `key_ui`, the Layout tool's in `layout_ui` and `background_ui`,
-//! and the Output tool's in `profile_ui` and `webcam_ui`; the Audio tool still shows the parked
-//! column in `app` until R5 takes its rows.
+//! the Output tool's in `profile_ui` and `webcam_ui`, and the Audio tool's in `tracks_ui`.
 
 use std::time::Duration;
 
@@ -43,7 +42,7 @@ pub enum Tool {
     /// The layout of screen and camera, and the background behind it.
     #[default]
     Layout,
-    /// The audio tracks; the parked column until R5.
+    /// The audio tracks; the panel lives in `tracks_ui`.
     Audio,
     /// The profile, its encode and format settings, and the camera ISO file.
     Output,
@@ -138,7 +137,10 @@ fn device_group(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore, re
 }
 
 /// The camera dropdown with its Refresh icon button, as one inspector row.
-fn camera_row(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore) {
+///
+/// Also drawn in the Sources panel's camera popover (spec "Setup mode": clicking the camera row
+/// opens the same picker).
+pub(crate) fn camera_row(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore) {
     let Some(settings) = host.settings(store) else { return };
     let present = host.cameras().iter().any(|camera| camera.id == settings.camera_id);
     let is_listing = host.is_listing();
@@ -177,7 +179,9 @@ fn camera_row(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore) {
 }
 
 /// The format dropdown of the selected camera, as one inspector row.
-fn format_row(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore) {
+///
+/// Also drawn in the Sources panel's camera popover, under the camera dropdown.
+pub(crate) fn format_row(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore) {
     let Some(settings) = host.settings(store) else { return };
     let selected = format!(
         "{} {}x{} @ {} fps",

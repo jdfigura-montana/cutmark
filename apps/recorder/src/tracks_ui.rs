@@ -1,12 +1,15 @@
-//! The track list: one row per audio track with its controls and level meter, plus the WAV and format choices.
+//! The Audio tool's panel: one inspector group per track, the Add track and Refresh devices
+//! buttons and the Output group; plus the audio rows the Sources panel shows (spec "Setup mode").
 //!
-//! See the recorder spec: Audio capture and tracks (Per-track controls) and UI, hotkeys, monitoring (Main window).
+//! See the recorder spec: Audio capture and tracks (Per-track controls).
 
 use std::time::{Duration, Instant};
 
 use capture::{AudioDevice, DeviceKind};
-use egui::{Response, RichText, Ui};
+use egui::{ComboBox, Response, RichText, Ui};
 use ui_kit::palette::RECORD_RED;
+use ui_kit::tokens::space;
+use ui_kit::{SliderKind, inspector_group, inspector_row, switch};
 
 use crate::config::{AudioCodecChoice, AudioSettings, MAX_OFFSET_MS, MAX_TRACKS, TrackSettings};
 use crate::engine::session::TrackSnapshot;
@@ -27,10 +30,14 @@ const GAIN_MIN_DB: f32 = -30.0;
 const GAIN_MAX_DB: f32 = 12.0;
 /// Width of the sliders, in points.
 const SLIDER_WIDTH: f32 = 130.0;
-/// Width of the name field, in points.
-const NAME_WIDTH: f32 = 130.0;
-/// Width of the level meter, in points.
-const METER_WIDTH: f32 = 180.0;
+/// Width of the compact level meter slot in the Sources panel, in points.
+const SOURCE_METER_SPAN: f32 = 160.0;
+/// The gap left for the peak value at a Sources row's right edge, in points.
+const SOURCE_METER_GAP: f32 = 64.0;
+/// The entries of the Audio format choice.
+const FORMAT_LABELS: [&str; 2] = ["AAC 320 kbps", "PCM 24-bit"];
+/// The tooltips of the Audio format entries.
+const FORMAT_TIPS: [&str; 2] = ["MPEG-4 AAC at 320 kbps", "Uncompressed PCM, 24-bit"];
 
 /// What changed in the track panel this frame.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -134,13 +141,13 @@ struct RowInput<'a> {
     level: Level,
 }
 
-/// Draws the track list, the WAV and format choices and the Add track and Refresh devices buttons.
+/// Draws the Audio tool (spec "Setup mode"): one inspector group per track, then the Add track
+/// and Refresh devices buttons, then the Output group with the WAV sidecars and the audio format.
 ///
 /// While `recording` is true only gain and mute can change. `live` holds the running take's meters.
-pub fn tracks_panel(ui: &mut Ui, settings: &mut AudioSettings, devices: &[AudioDevice], live: Option<&LiveTrackStats>, recording: bool) -> TracksChanged {
+pub fn audio_panel(ui: &mut Ui, settings: &mut AudioSettings, devices: &[AudioDevice], live: Option<&LiveTrackStats>, recording: bool) -> TracksChanged {
     let mut changed = TracksChanged::default();
     let now = Instant::now();
-    ui.heading("Audio tracks");
     let mut remove_at = None;
     // A running take only has the enabled tracks, and the list cannot change while it runs.
     let mut session_index = 0;
@@ -152,21 +159,22 @@ pub fn tracks_panel(ui: &mut Ui, settings: &mut AudioSettings, devices: &[AudioD
         if track.enabled {
             session_index += 1;
         }
+        let mut remove = false;
         ui.push_id(index, |ui| {
-            if track_row(ui, track, RowInput { index, devices, recording, level }, &mut changed) {
-                remove_at = Some(index);
-            }
+            inspector_group(ui, |ui| track_group(ui, track, RowInput { index, devices, recording, level }, &mut changed, &mut remove));
         });
-        ui.separator();
+        if remove {
+            remove_at = Some(index);
+        }
     }
     if let Some(index) = remove_at {
         settings.tracks.remove(index);
         changed.discrete();
     }
     if settings.tracks.is_empty() {
-        ui.label("No audio tracks. Add one to record sound.");
+        ui.weak("No audio tracks. Add one to record sound.");
     }
-
+    ui.add_space(space::SCALE_4);
     ui.horizontal(|ui| {
         let can_add = !recording && settings.tracks.len() < MAX_TRACKS;
         let tip = if recording { LOCKED_TIP } else { MAX_TRACKS_TIP };
@@ -178,87 +186,100 @@ pub fn tracks_panel(ui: &mut Ui, settings: &mut AudioSettings, devices: &[AudioD
             changed.refresh_devices = true;
         }
     });
-
-    ui.add_space(4.0);
-    if locked(ui, recording, |ui| ui.checkbox(&mut settings.wav_sidecars, "Also save each track as a WAV file")).changed() {
-        changed.discrete();
-    }
-    ui.horizontal(|ui| {
-        ui.label("Audio format");
-        for (choice, label) in [(AudioCodecChoice::Aac320, "AAC 320 kbps"), (AudioCodecChoice::Pcm24, "PCM 24-bit")] {
-            let selected = settings.codec == choice;
-            if locked(ui, recording, |ui| ui.radio(selected, label)).clicked() && !selected {
-                settings.codec = choice;
-                changed.discrete();
-            }
-        }
-    });
+    ui.add_space(space::SCALE_8);
+    output_group(ui, settings, recording, &mut changed);
     changed
 }
 
-/// Draws one track over four short rows that each fit the 340 px settings column, and returns
-/// true when its Remove button was clicked.
-///
-/// The rows cannot share one wrapping line: a wrapped egui row never wraps a nested ui (the
-/// disabled wrappers, the device dropdown), so a too long line widens the panel instead of
-/// wrapping (spec "Panels": the right panel stays 340 wide).
-fn track_row(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, changed: &mut TracksChanged) -> bool {
+/// Draws one track's inspector group (spec "Setup mode": On, Name, Device, Gain, Mute, Offset,
+/// In mixdown, the level meter, Remove) and reports the edits through `changed`;
+/// sets `*remove` when the Remove button was clicked.
+fn track_group(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, changed: &mut TracksChanged, remove: &mut bool) {
     let recording = input.recording;
-    let mut remove = false;
-    ui.vertical(|ui| {
-        // The on/off switch, the track's name and its Remove button.
-        ui.horizontal(|ui| {
-            if locked(ui, recording, |ui| ui.checkbox(&mut track.enabled, "On")).changed() {
+    let on_text = if track.enabled { "On" } else { "Off" };
+    inspector_row(
+        ui,
+        "On",
+        |ui| {
+            let mut on = track.enabled;
+            if locked(ui, recording, |ui| switch(ui, &mut on)).changed() {
+                track.enabled = on;
                 changed.discrete();
             }
-            let name = locked(ui, recording, |ui| ui.add(egui::TextEdit::singleline(&mut track.name).desired_width(NAME_WIDTH)));
+        },
+        Some(on_text),
+    );
+    inspector_row(
+        ui,
+        "Name",
+        |ui| {
+            let name = locked(ui, recording, |ui| ui.add(egui::TextEdit::singleline(&mut track.name).desired_width(ui.available_width())));
             changed.continuous(&name);
-            if locked(ui, recording, |ui| ui.button("Remove")).clicked() {
-                remove = true;
-            }
-        });
-        // The device dropdown needs a row of its own to fit the column at full width.
-        device_picker(ui, track, input, changed);
-        // The gain and the mute.
-        ui.horizontal(|ui| {
+        },
+        None,
+    );
+    device_row(ui, track, input, changed);
+    let gain_text = format!("{:.1} dB", track.gain_db);
+    inspector_row(
+        ui,
+        "Gain",
+        |ui| {
             ui.spacing_mut().slider_width = SLIDER_WIDTH;
-            ui.label("Gain");
-            let gain = ui.add(egui::Slider::new(&mut track.gain_db, GAIN_MIN_DB..=GAIN_MAX_DB).suffix(" dB").fixed_decimals(1));
-            changed.continuous(&gain);
-            if gain.changed() {
-                track.gain_db = track.gain_db.clamp(GAIN_MIN_DB, GAIN_MAX_DB);
+            let mut gain = track.gain_db;
+            if ui_kit::slider(ui, &mut gain, GAIN_MIN_DB..=GAIN_MAX_DB, SliderKind::Accent).changed() {
+                track.gain_db = gain.clamp(GAIN_MIN_DB, GAIN_MAX_DB);
+                changed.settings = true;
                 changed.live = true;
             }
-            let mute = ui.toggle_value(&mut track.muted, "Mute");
+            let mute = switch(ui, &mut track.muted);
             if mute.changed() {
                 changed.discrete();
                 changed.live = true;
             }
-        });
-        // The capture offset and whether the track lands in the mixdown.
-        ui.horizontal(|ui| {
+        },
+        Some(&gain_text),
+    );
+    let offset_text = format!("{} ms", track.offset_ms);
+    inspector_row(
+        ui,
+        "Offset",
+        |ui| {
             ui.spacing_mut().slider_width = SLIDER_WIDTH;
-            ui.label("Offset");
             let offset = locked(ui, recording, |ui| ui.add(egui::Slider::new(&mut track.offset_ms, -MAX_OFFSET_MS..=MAX_OFFSET_MS).suffix(" ms")));
             changed.continuous(&offset);
             if offset.changed() {
                 track.offset_ms = track.offset_ms.clamp(-MAX_OFFSET_MS, MAX_OFFSET_MS);
             }
-        });
-        // The mixdown switch and the level meter.
-        ui.horizontal(|ui| {
-            if locked(ui, recording, |ui| ui.checkbox(&mut track.in_mixdown, "In mixdown")).changed() {
+        },
+        Some(&offset_text),
+    );
+    inspector_row(
+        ui,
+        "In mixdown",
+        |ui| {
+            if locked(ui, recording, |ui| switch(ui, &mut track.in_mixdown)).changed() {
                 changed.discrete();
             }
-            ui_kit::level_meter(ui, input.level.peak_dbfs, input.level.clipped, METER_WIDTH);
-        });
-    });
-    remove
+            let width = (ui.available_width() - ui.spacing().item_spacing.x).max(60.0);
+            ui_kit::level_meter(ui, input.level.peak_dbfs, input.level.clipped, width);
+        },
+        None,
+    );
+    inspector_row(
+        ui,
+        "",
+        |ui| {
+            if ui.button("Remove").clicked() {
+                *remove = true;
+            }
+        },
+        None,
+    );
 }
 
-/// Draws the device dropdown of a track over a full row of its own; a saved device that is not
-/// present shows its name in red with "(missing)".
-fn device_picker(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, changed: &mut TracksChanged) {
+/// Draws the device dropdown of a track; a saved device that is not present shows its name in
+/// red with "(missing)".
+fn device_row(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, changed: &mut TracksChanged) {
     let found = find_device(track, input.devices);
     let found_id = found.map(|device| device.id.clone());
     let text = match found {
@@ -267,20 +288,27 @@ fn device_picker(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, ch
         None => RichText::new(format!("{} (missing)", track.device_name)).color(RECORD_RED),
     };
     let mut picked: Option<&AudioDevice> = None;
-    locked(ui, input.recording, |ui| {
-        egui::ComboBox::from_id_salt(("track-device", input.index))
-            .selected_text(text)
-            .width(ui.available_width())
-            .show_ui(ui, |ui| {
-                for device in input.devices {
-                    let selected = found_id.as_deref() == Some(device.id.as_str());
-                    if ui.selectable_label(selected, device_entry(device)).clicked() {
-                        picked = Some(device);
-                    }
-                }
-            })
-            .response
-    });
+    inspector_row(
+        ui,
+        "Device",
+        |ui| {
+            locked(ui, input.recording, |ui| {
+                ComboBox::from_id_salt(("track-device", input.index))
+                    .selected_text(text.clone())
+                    .width(ui.available_width())
+                    .show_ui(ui, |ui| {
+                        for device in input.devices {
+                            let selected = found_id.as_deref() == Some(device.id.as_str());
+                            if ui.selectable_label(selected, device_entry(device)).clicked() {
+                                picked = Some(device);
+                            }
+                        }
+                    })
+                    .response
+            });
+        },
+        None,
+    );
     if let Some(device) = picked
         && found_id.as_deref() != Some(device.id.as_str())
     {
@@ -288,6 +316,75 @@ fn device_picker(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, ch
         track.device_name = device.name.clone();
         track.kind = device.kind.into();
         changed.discrete();
+    }
+}
+
+/// Draws the Output group (spec "Setup mode"): whether each track is also saved as a WAV file,
+/// and the audio format as a segmented choice.
+fn output_group(ui: &mut Ui, settings: &mut AudioSettings, recording: bool, changed: &mut TracksChanged) {
+    inspector_group(ui, |ui| {
+        let wav_text = if settings.wav_sidecars { "On" } else { "Off" };
+        inspector_row(
+            ui,
+            "Also save each track as a WAV file",
+            |ui| {
+                let mut on = settings.wav_sidecars;
+                if locked(ui, recording, |ui| switch(ui, &mut on)).changed() {
+                    settings.wav_sidecars = on;
+                    changed.discrete();
+                }
+            },
+            Some(wav_text),
+        );
+        inspector_row(
+            ui,
+            "Audio format",
+            |ui| {
+                let mut index = match settings.codec {
+                    AudioCodecChoice::Aac320 => 0,
+                    AudioCodecChoice::Pcm24 => 1,
+                };
+                locked(ui, recording, |ui| ui_kit::segmented_filled(ui, "audio-format", &mut index, &FORMAT_LABELS, &FORMAT_TIPS));
+                let picked = if index == 0 { AudioCodecChoice::Aac320 } else { AudioCodecChoice::Pcm24 };
+                if picked != settings.codec {
+                    settings.codec = picked;
+                    changed.discrete();
+                }
+            },
+            None,
+        );
+    });
+}
+
+/// Draws the Sources panel's audio rows (spec "Setup mode"): one list row per enabled track
+/// with its name, a compact level meter and the peak value. Info only; nothing is editable here.
+pub fn sources_rows(ui: &mut Ui, settings: &AudioSettings, live: Option<&LiveTrackStats>) {
+    let now = Instant::now();
+    let mut session_index = 0;
+    let mut rows = 0;
+    for track in &settings.tracks {
+        if !track.enabled {
+            continue;
+        }
+        let level = match live {
+            Some(live) => live.level(session_index, now),
+            None => IDLE_LEVEL,
+        };
+        session_index += 1;
+        rows += 1;
+        let peak_text = format!("{:.0} dB", level.peak_dbfs.max(METER_FLOOR_DBFS));
+        let response = ui_kit::list_row(ui, false, None, &track.name, Some(&peak_text));
+        // The compact level meter is painted into a slot of the row, left of the peak value.
+        let rect = response.rect;
+        let meter_rect = egui::Rect::from_min_max(
+            egui::Pos2::new(rect.right() - SOURCE_METER_SPAN, rect.top() + space::SCALE_4),
+            egui::Pos2::new(rect.right() - SOURCE_METER_GAP, rect.bottom() - space::SCALE_4),
+        );
+        let mut meter_ui = ui.new_child(egui::UiBuilder::new().max_rect(meter_rect));
+        ui_kit::level_meter(&mut meter_ui, level.peak_dbfs, level.clipped, meter_rect.width());
+    }
+    if rows == 0 {
+        ui.weak("No enabled audio tracks.");
     }
 }
 
