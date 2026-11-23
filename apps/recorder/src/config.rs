@@ -9,6 +9,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 use crate::profiles;
+use crate::tools_ui::Tool;
 
 /// Name of the profile that is active until the user picks another.
 const DEFAULT_PROFILE: &str = "Tutorial AV1 1440p60";
@@ -283,6 +284,8 @@ pub struct Settings {
     pub hide_from_capture: bool,
     /// The window mode the app reopens in.
     pub mode: Mode,
+    /// The Setup tool the right panel shows (spec "Mode rules": the open tool is remembered between launches).
+    pub tool: Tool,
     /// The shipped profile names this install has already written, so a deleted shipped profile is never recreated.
     #[serde(default)]
     pub shipped_written: Vec<String>,
@@ -318,6 +321,7 @@ impl Default for Settings {
             audio: AudioSettings::default(),
             hide_from_capture: true,
             mode: Mode::default(),
+            tool: Tool::Layout,
             shipped_written: Vec::new(),
         }
     }

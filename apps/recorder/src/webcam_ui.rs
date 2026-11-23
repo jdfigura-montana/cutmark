@@ -1,187 +1,29 @@
-//! The Webcam section of the window: camera, mode, live camera picture and the camera controls.
+//! The webcam UI pieces that stayed behind: the Camera ISO file group of the parked column, the
+//! camera picture the Camera and Key tools show, and the small formatting helpers they use.
+//!
+//! The Camera tool's panels moved to `tools_ui`, the Key tool's to `key_ui`.
 
 use std::cell::RefCell;
-use std::time::Duration;
 
 use capture::CameraFormat;
-use egui::{Button, Checkbox, Color32, ComboBox, CursorIcon, DragValue, Grid, ProgressBar, Sense, Slider, Ui};
-use media_io::SyncReport;
+use egui::{CursorIcon, Sense, Ui};
 
-use crate::config::{ControlSetting, WebcamSettings};
-use crate::engine::bus::{BusSender, Command, CommandKind};
-use crate::engine::controller::{ControllerState, Phase};
-use crate::key_ui::{self, KeyUiState};
+use crate::config::WebcamSettings;
 use crate::preview_ui::Pick;
 use crate::profile_ui::{AmfProbe, iso_codec_text, rate_control_editor, rate_errors};
 use crate::profiles::ProfileStore;
 use crate::webcam::WebcamHost;
-
-/// The widest the camera picture is drawn, in points, so it does not grow as large as the screen preview.
-const PREVIEW_MAX_WIDTH: f32 = 360.0;
-
-/// The width of the control sliders, in points.
-const SLIDER_WIDTH: f32 = 220.0;
-
-/// The color of the "Within 1 frame" verdict.
-const SYNC_GOOD: Color32 = Color32::from_rgb(0x5C, 0xB8, 0x5C);
-
-/// The color of the "Off by N frames" verdict and of a failed sync test.
-const SYNC_WARN: Color32 = Color32::from_rgb(0xE6, 0xB4, 0x3C);
-
-/// How often the window redraws while a sync test runs, so its progress moves.
-const SYNC_REPAINT: Duration = Duration::from_millis(100);
 
 thread_local! {
     /// The encoder probe the camera file group reads its option ranges from.
     static ISO_PROBE: RefCell<AmfProbe> = RefCell::new(AmfProbe::default());
 }
 
-/// Draws the Webcam section. Everything except the camera controls is read-only while recording.
-///
-/// The controller `state` and the command `bus` drive the camera sync test at the bottom of the section.
-/// `key_state` is what the Chroma key section below the camera picture keeps between frames.
-pub fn show(
-    ui: &mut Ui,
-    host: &mut WebcamHost,
-    store: &mut ProfileStore,
-    recording: bool,
-    state: &ControllerState,
-    bus: &BusSender,
-    key_state: &mut KeyUiState,
-) {
-    ui.heading("Webcam");
-    let mut enabled = host.settings(store).is_some();
-    if ui.add_enabled(!recording, Checkbox::new(&mut enabled, "Enable")).changed() {
-        if enabled {
-            host.enable(store);
-        } else {
-            host.disable(store);
-        }
-    }
-    if host.settings(store).is_none() {
-        return;
-    }
-    ui.add_enabled_ui(!recording, |ui| {
-        camera_row(ui, host, store);
-        format_row(ui, host, store);
-    });
-    ui.add_space(4.0);
-    let picked = preview_click(ui, host, key_state.eyedropper);
-    ui.add_space(4.0);
-    controls(ui, host, store);
-    ui.add_space(4.0);
-    iso_group(ui, host, store, recording, &state.active_profile);
-    ui.add_space(4.0);
-    key_ui::show(ui, host, store, state, key_state, picked.as_ref());
-    ui.add_space(4.0);
-    sync_test(ui, host, store, state, bus);
-}
-
-/// Draws the camera picture, and while the eyedropper is armed returns the pixel under a click on it.
-fn preview_click(ui: &mut Ui, host: &mut WebcamHost, eyedropper: bool) -> Option<Pick> {
-    let scope = ui.scope(|ui| {
-        ui.set_max_width(PREVIEW_MAX_WIDTH);
-        host.show_preview(ui);
-    });
-    if !eyedropper {
-        return None;
-    }
-    let response = ui.interact(scope.response.rect, ui.id().with("webcam-preview-click"), Sense::click()).on_hover_cursor(CursorIcon::Crosshair);
-    if response.clicked() { response.interact_pointer_pos().and_then(|pos| host.pick(pos)) } else { None }
-}
-
-/// The camera dropdown with its Refresh button.
-fn camera_row(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore) {
-    let Some(settings) = host.settings(store) else { return };
-    let present = host.cameras().iter().any(|camera| camera.id == settings.camera_id);
-    let selected = if settings.camera_name.is_empty() {
-        if host.is_listing() { "Looking for cameras...".to_owned() } else { "No camera".to_owned() }
-    } else if present || host.is_listing() {
-        settings.camera_name.clone()
-    } else {
-        format!("{} (not found)", settings.camera_name)
-    };
-    let current_id = settings.camera_id.clone();
-    let mut picked: Option<String> = None;
-    ui.horizontal(|ui| {
-        ui.label("Camera");
-        ComboBox::from_id_salt("webcam-camera").selected_text(selected).width(260.0).show_ui(ui, |ui| {
-            for camera in host.cameras() {
-                if ui.selectable_label(camera.id == current_id, &camera.name).clicked() {
-                    picked = Some(camera.id.clone());
-                }
-            }
-        });
-        if ui.add_enabled(!host.is_listing(), Button::new("Refresh")).clicked() {
-            host.refresh_cameras();
-        }
-    });
-    if let Some(id) = picked {
-        host.select_camera(store, &id);
-    }
-}
-
-/// The mode dropdown of the selected camera.
-fn format_row(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore) {
-    let Some(settings) = host.settings(store) else { return };
-    let saved = format!("{} {}x{} @ {} fps", settings.format.subtype, settings.format.width, settings.format.height, fps_text(f64::from(settings.format.fps)));
-    let mut picked: Option<CameraFormat> = None;
-    ui.horizontal(|ui| {
-        ui.label("Format");
-        ComboBox::from_id_salt("webcam-format").selected_text(saved).width(260.0).show_ui(ui, |ui| {
-            for format in host.formats(store) {
-                if ui.selectable_label(host.is_current_format(store, format), format_label(format)).clicked() {
-                    picked = Some(*format);
-                }
-            }
-        });
-    });
-    if let Some(format) = picked {
-        host.select_format(store, &format);
-    }
-}
-
-/// The sliders with their Auto boxes, and the Lock and Reset buttons. These stay live while recording.
-fn controls(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore) {
-    ui.label("Camera controls");
-    let infos = host.controls().to_vec();
-    if infos.is_empty() {
-        ui.weak("This camera has no adjustable controls, or it is not running.");
-        return;
-    }
-    Grid::new("webcam-controls").num_columns(3).show(ui, |ui| {
-        ui.spacing_mut().slider_width = SLIDER_WIDTH;
-        for info in &infos {
-            ui.label(info.prop.label());
-            let mut value = info.current.value;
-            let mut auto = info.current.auto;
-            let slider = Slider::new(&mut value, info.range.min..=info.range.max).step_by(f64::from(info.range.step.max(1)));
-            if ui.add_enabled(!auto, slider).changed() {
-                host.set_control(store, info.prop, ControlSetting::Manual(value));
-            }
-            if info.range.auto_capable {
-                if ui.checkbox(&mut auto, "Auto").changed() {
-                    host.set_control(store, info.prop, if auto { ControlSetting::Auto } else { ControlSetting::Manual(info.current.value) });
-                }
-            } else {
-                ui.label("");
-            }
-            ui.end_row();
-        }
-    });
-    ui.horizontal(|ui| {
-        if ui.button("Lock current values").clicked() {
-            host.lock_current(store);
-        }
-        if ui.button("Reset to defaults").clicked() {
-            host.reset_defaults(store);
-        }
-    });
-}
-
 /// The Camera ISO file group: whether the raw camera is saved on its own, how it is encoded, and the camera offset.
 /// Edits go to the active profile through the store, and the group is read-only while recording.
-fn iso_group(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, recording: bool, profile_name: &str) {
+///
+/// PARKED: this group waits in the parked column until the Output tool takes it in R4.
+pub(crate) fn iso_group(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, recording: bool, profile_name: &str) {
     let Some(settings) = host.settings(store).cloned() else { return };
     let Some(profile) = store.get(profile_name).cloned() else { return };
     ui.label("Camera ISO file");
@@ -201,13 +43,13 @@ fn iso_group(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, recording
         changed |= ui.checkbox(&mut iso, "Also save the raw camera as its own file").changed();
         ui.add_enabled_ui(iso, |ui| {
             let errors = rate_errors(profile.codec, rate, ranges.as_ref());
-            Grid::new("webcam-iso").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            egui::Grid::new("webcam-iso").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
                 changed |= rate_control_editor(ui, "webcam-iso", &mut rate, ranges.as_ref(), &errors);
                 ui.label("Codec");
                 ui.label(codec_text);
                 ui.end_row();
                 ui.label("Camera offset");
-                changed |= ui.add(DragValue::new(&mut offset).range(-500..=500).suffix(" ms")).changed();
+                changed |= ui.add(egui::DragValue::new(&mut offset).range(-500..=500).suffix(" ms")).changed();
                 ui.end_row();
             });
         });
@@ -223,86 +65,37 @@ fn iso_group(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, recording
     }
 }
 
-/// The Sync test button with its hint, the progress while it runs, and the result with the button that applies it.
-fn sync_test(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, state: &ControllerState, bus: &BusSender) {
-    ui.label("Camera sync");
-    let iso = host.settings(store).is_some_and(|settings| settings.iso);
-    let idle = state.phase == Phase::Idle && state.preflight.is_none() && state.sync_test.is_none();
-    ui.horizontal(|ui| {
-        if ui.add_enabled(idle && iso, Button::new("Sync test (12 s)")).clicked() {
-            let command = Command::new(CommandKind::SyncTest, capture::qpc_now());
-            if bus.send(command).is_err() {
-                log::warn!("the sync test was not started because the controller has ended");
-            }
-        }
-        ui.weak("Face the camera; dim the room if it fails.");
-    });
-    if !iso {
-        ui.weak("Turn on the camera file to run the sync test.");
+/// Draws the camera picture at the full width of its panel; while the eyedropper is armed
+/// returns the pixel under a click on it.
+pub(crate) fn camera_picture(ui: &mut Ui, host: &mut WebcamHost, eyedropper: bool) -> Option<Pick> {
+    let scope = ui.scope(|ui| host.show_preview(ui));
+    if !eyedropper {
+        return None;
     }
-    if let Some(run) = &state.sync_test {
-        ui.add(ProgressBar::new(run.progress).text(run.status));
-        ui.ctx().request_repaint_after(SYNC_REPAINT);
-    }
-    match &state.sync_result {
-        Some(Ok(report)) => sync_result(ui, host, store, report, &state.active_profile),
-        Some(Err(message)) => {
-            ui.colored_label(SYNC_WARN, message);
-        }
-        None => {}
-    }
-}
-
-/// The measured offset, the verdict, and the button that saves the opposite offset to the profile.
-fn sync_result(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, report: &SyncReport, profile: &str) {
-    ui.label(format!("Measured offset {:+.0} ms (spread {:.0} ms over {} flashes)", report.median_ms, report.spread_ms, report.offsets_ms.len()));
-    // The test records with the offset at zero, so what the current offset leaves over is the raw median plus that offset.
-    let residual_ms = report.median_ms + f64::from(host.settings(store).map_or(0, |settings| settings.offset_ms));
-    ui.label(format!("Residual with current offset: {residual_ms:+.0} ms"));
-    match frames_off(residual_ms, report.main_fps) {
-        None => {
-            ui.colored_label(SYNC_GOOD, "Within 1 frame");
-        }
-        Some(frames) => {
-            ui.colored_label(SYNC_WARN, format!("Off by {frames} frame{}", if frames == 1 { "" } else { "s" }));
-        }
-    }
-    ui.horizontal(|ui| {
-        if ui.button("Apply as camera offset").clicked() {
-            let offset = applied_offset(report.median_ms);
-            store.edit(profile, |profile| {
-                if let Some(settings) = &mut profile.webcam {
-                    settings.offset_ms = offset;
-                }
-            });
-            store.flush();
-        }
-        if let Some(settings) = host.settings(store) {
-            ui.weak(format!("Camera offset is {} ms", settings.offset_ms));
-        }
-    });
-}
-
-/// How many whole frames a residual is off by, or none when it is within one frame either way.
-fn frames_off(residual_ms: f64, fps: f64) -> Option<u32> {
-    let frames = residual_ms * fps / 1000.0;
-    (frames.abs() > 1.0).then(|| frames.abs().round() as u32)
-}
-
-/// The offset that cancels a measured median: its opposite, rounded, and limited to the range the window allows.
-fn applied_offset(median_ms: f64) -> i32 {
-    WebcamSettings { offset_ms: (-median_ms).round() as i32, ..WebcamSettings::default() }.offset_clamped()
+    let response = ui.interact(scope.response.rect, ui.id().with("webcam-preview-click"), Sense::click()).on_hover_cursor(CursorIcon::Crosshair);
+    if response.clicked() { response.interact_pointer_pos().and_then(|pos| host.pick(pos)) } else { None }
 }
 
 /// A frame rate without trailing zeros: 30, 29.97, 59.94.
-fn fps_text(fps: f64) -> String {
+pub(crate) fn fps_text(fps: f64) -> String {
     let text = format!("{fps:.2}");
     text.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
 /// How a camera mode is listed in the dropdown.
-fn format_label(format: &CameraFormat) -> String {
+pub(crate) fn format_label(format: &CameraFormat) -> String {
     format!("{} {}x{} @ {} fps", format.subtype, format.width, format.height, fps_text(format.fps()))
+}
+
+/// How many whole frames a residual is off by, or none when it is within one frame either way.
+pub(crate) fn frames_off(residual_ms: f64, fps: f64) -> Option<u32> {
+    let frames = residual_ms * fps / 1000.0;
+    (frames.abs() > 1.0).then(|| frames.abs().round() as u32)
+}
+
+/// The offset that cancels a measured median: its opposite, rounded, and limited to the range the window allows.
+pub(crate) fn applied_offset(median_ms: f64) -> i32 {
+    WebcamSettings { offset_ms: (-median_ms).round() as i32, ..WebcamSettings::default() }.offset_clamped()
 }
 
 #[cfg(test)]

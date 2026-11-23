@@ -1,9 +1,13 @@
-//! The Chroma key section of the Webcam panel: key color, eyedropper, sliders, matte view and garbage matte.
+//! The Key tool of the Setup right panel: chroma key, garbage crop and mask rectangle over the camera picture.
 //!
 //! Every change goes straight into the active profile in the shared store, which saves it with its one debounced
 //! write. The compose thread reads the profile's key on the next frame, so the preview follows the sliders live.
 
-use egui::{Checkbox, Slider, Ui};
+use std::ops::RangeInclusive;
+
+use egui::Ui;
+use ui_kit::tokens::space;
+use ui_kit::{SliderKind, inspector_group, inspector_row, switch};
 
 use crate::config::KeyConfig;
 use crate::engine::controller::{ControllerState, Phase};
@@ -11,13 +15,10 @@ use crate::preview_ui::Pick;
 use crate::profiles::ProfileStore;
 use crate::webcam::WebcamHost;
 
-/// The width of the sliders, in points.
-const SLIDER_WIDTH: f32 = 220.0;
-
 /// The size of the square the eyedropper averages, in preview pixels, on each side.
 const EYEDROPPER_SIDE: u32 = 5;
 
-/// What the Chroma key section remembers between frames; none of it is saved.
+/// What the Key tool remembers between frames; none of it is saved.
 #[derive(Debug, Default)]
 pub struct KeyUiState {
     /// Whether the preview shows the key as a black and white matte; it only works while idle.
@@ -39,49 +40,21 @@ pub fn is_idle(state: &ControllerState) -> bool {
     state.phase == Phase::Idle && state.preflight.is_none() && state.sync_test.is_none()
 }
 
-/// Draws the Chroma key section; `picked` is the spot the user clicked on the camera picture this frame, if any.
+/// Draws the Key tool's groups: Chroma key, Garbage crop and Mask rectangle (spec "Setup mode").
 ///
-/// The section is read-only while a take runs, because a take uses the profile as it was when it started.
-pub fn show(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, state: &ControllerState, key_state: &mut KeyUiState, picked: Option<&Pick>) {
-    ui.label("Chroma key");
+/// `picked` is the spot the user clicked on the camera picture this frame, if any. The groups are
+/// read-only while a take runs, because a take uses the profile as it was when it started; a group
+/// whose switch is off shows its rows disabled, not hidden.
+pub fn key_panel(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, state: &ControllerState, key_state: &mut KeyUiState, picked: Option<&Pick>) {
     let Some(saved) = host.settings(store).map(|settings| settings.key.clone()) else { return };
     let idle = is_idle(state);
     let mut key = saved.clone();
     ui.add_enabled_ui(idle, |ui| {
-        ui.checkbox(&mut key.enabled, "Enable key");
-        ui.horizontal(|ui| {
-            ui.label("Key color");
-            ui.color_edit_button_srgb(&mut key.color);
-            let label = if key_state.eyedropper { "Click the camera picture..." } else { "Eyedropper" };
-            if ui.selectable_label(key_state.eyedropper, label).clicked() {
-                key_state.eyedropper = !key_state.eyedropper;
-            }
-        });
-        if key_state.eyedropper
-            && let Some(pick) = picked
-        {
-            if let Some(color) = average_patch(&pick.frame.rgba, pick.frame.width, pick.frame.height, pick.x, pick.y) {
-                key.color = color;
-                key.enabled = true;
-            }
-            key_state.eyedropper = false;
-        }
-        ui.add_enabled(key.enabled, Checkbox::new(&mut key_state.matte, "Matte view"));
-        ui.scope(|ui| {
-            ui.spacing_mut().slider_width = SLIDER_WIDTH;
-            ui.add_enabled_ui(key.enabled, |ui| {
-                ui.add(Slider::new(&mut key.similarity, 0.0..=1.0).text("Similarity"));
-                ui.add(Slider::new(&mut key.smoothness, 0.0..=1.0).text("Smoothness"));
-                ui.add(Slider::new(&mut key.spill, 0.0..=1.0).text("Spill"));
-            });
-            ui.label("Garbage crop");
-            ui.add(Slider::new(&mut key.crop_left_pct, 0.0..=90.0).suffix("%").text("Left"));
-            ui.add(Slider::new(&mut key.crop_right_pct, 0.0..=90.0).suffix("%").text("Right"));
-            ui.add(Slider::new(&mut key.crop_top_pct, 0.0..=90.0).suffix("%").text("Top"));
-            ui.add(Slider::new(&mut key.crop_bottom_pct, 0.0..=90.0).suffix("%").text("Bottom"));
-            ui.checkbox(&mut key.mask_enabled, "Mask rectangle");
-            ui.add_enabled_ui(key.mask_enabled, |ui| mask_sliders(ui, &mut key));
-        });
+        chroma_group(ui, &mut key, key_state, picked);
+        ui.add_space(space::SCALE_8);
+        crop_group(ui, &mut key);
+        ui.add_space(space::SCALE_8);
+        mask_group(ui, &mut key);
     });
     if !idle {
         key_state.clear();
@@ -95,12 +68,122 @@ pub fn show(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, state: &Co
     }
 }
 
-/// The four sliders of the mask rectangle.
-fn mask_sliders(ui: &mut Ui, key: &mut KeyConfig) {
-    ui.add(Slider::new(&mut key.mask_x_pct, 0.0..=100.0).suffix("%").text("X"));
-    ui.add(Slider::new(&mut key.mask_y_pct, 0.0..=100.0).suffix("%").text("Y"));
-    ui.add(Slider::new(&mut key.mask_w_pct, 0.0..=100.0).suffix("%").text("Width"));
-    ui.add(Slider::new(&mut key.mask_h_pct, 0.0..=100.0).suffix("%").text("Height"));
+/// Applies a camera-picture click to the key color while the eyedropper is armed; the Camera
+/// tool's picture is the same eyedropper target as the Key tool's.
+pub fn take_pick(store: &mut ProfileStore, profile: &str, key_state: &mut KeyUiState, picked: Option<&Pick>) {
+    if !key_state.eyedropper {
+        return;
+    }
+    if let Some(pick) = picked
+        && let Some(color) = average_patch(&pick.frame.rgba, pick.frame.width, pick.frame.height, pick.x, pick.y)
+    {
+        store.edit(profile, |profile| {
+            if let Some(settings) = &mut profile.webcam {
+                settings.key.color = color;
+                settings.key.enabled = true;
+            }
+        });
+    }
+    if picked.is_some() {
+        key_state.eyedropper = false;
+    }
+}
+
+/// The Chroma key group: the enable switch, the key color with its eyedropper, the matte view and the three key sliders.
+fn chroma_group(ui: &mut Ui, key: &mut KeyConfig, key_state: &mut KeyUiState, picked: Option<&Pick>) {
+    inspector_group(ui, |ui| {
+        inspector_row(
+            ui,
+            "Enable",
+            |ui| {
+                let mut on = key.enabled;
+                if switch(ui, &mut on).changed() {
+                    key.enabled = on;
+                }
+            },
+            None,
+        );
+        inspector_row(
+            ui,
+            "Key color",
+            |ui| {
+                ui.color_edit_button_srgb(&mut key.color);
+                let label = if key_state.eyedropper { "Click the camera picture..." } else { "Eyedropper" };
+                if ui.selectable_label(key_state.eyedropper, label).clicked() {
+                    key_state.eyedropper = !key_state.eyedropper;
+                }
+            },
+            None,
+        );
+        if key_state.eyedropper
+            && let Some(pick) = picked
+        {
+            if let Some(color) = average_patch(&pick.frame.rgba, pick.frame.width, pick.frame.height, pick.x, pick.y) {
+                key.color = color;
+                key.enabled = true;
+            }
+            key_state.eyedropper = false;
+        }
+        ui.add_enabled_ui(key.enabled, |ui| {
+            inspector_row(
+                ui,
+                "Matte view",
+                |ui| {
+                    switch(ui, &mut key_state.matte);
+                },
+                None,
+            );
+            slider_row(ui, "Similarity", &mut key.similarity, 0.0..=1.0, "", 2);
+            slider_row(ui, "Smoothness", &mut key.smoothness, 0.0..=1.0, "", 2);
+            slider_row(ui, "Spill", &mut key.spill, 0.0..=1.0, "", 2);
+        });
+    });
+}
+
+/// The Garbage crop group: how much of the camera's edges is thrown away, in percent.
+fn crop_group(ui: &mut Ui, key: &mut KeyConfig) {
+    inspector_group(ui, |ui| {
+        slider_row(ui, "Left", &mut key.crop_left_pct, 0.0..=90.0, " %", 0);
+        slider_row(ui, "Right", &mut key.crop_right_pct, 0.0..=90.0, " %", 0);
+        slider_row(ui, "Top", &mut key.crop_top_pct, 0.0..=90.0, " %", 0);
+        slider_row(ui, "Bottom", &mut key.crop_bottom_pct, 0.0..=90.0, " %", 0);
+    });
+}
+
+/// The Mask rectangle group: the switch and the four sliders of the cut-out rectangle.
+fn mask_group(ui: &mut Ui, key: &mut KeyConfig) {
+    inspector_group(ui, |ui| {
+        inspector_row(
+            ui,
+            "Enable",
+            |ui| {
+                let mut on = key.mask_enabled;
+                if switch(ui, &mut on).changed() {
+                    key.mask_enabled = on;
+                }
+            },
+            None,
+        );
+        ui.add_enabled_ui(key.mask_enabled, |ui| {
+            slider_row(ui, "X", &mut key.mask_x_pct, 0.0..=100.0, " %", 0);
+            slider_row(ui, "Y", &mut key.mask_y_pct, 0.0..=100.0, " %", 0);
+            slider_row(ui, "Width", &mut key.mask_w_pct, 0.0..=100.0, " %", 0);
+            slider_row(ui, "Height", &mut key.mask_h_pct, 0.0..=100.0, " %", 0);
+        });
+    });
+}
+
+/// One slider row with the value on the right; `decimals` formats it and `suffix` follows it.
+fn slider_row(ui: &mut Ui, label: &str, value: &mut f32, range: RangeInclusive<f32>, suffix: &str, decimals: usize) {
+    let text = format!("{:.*}{}", decimals, value, suffix);
+    inspector_row(
+        ui,
+        label,
+        move |ui| {
+            ui_kit::slider(ui, value, range, SliderKind::Accent);
+        },
+        Some(&text),
+    );
 }
 
 /// The average color of the 5x5 square of straight RGBA pixels around a point.

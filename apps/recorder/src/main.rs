@@ -23,6 +23,7 @@ mod recovery;
 mod status_ui;
 mod sync_flash;
 mod takes;
+mod tools_ui;
 mod tracks_ui;
 mod tray;
 mod webcam;

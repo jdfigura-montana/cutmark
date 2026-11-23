@@ -26,6 +26,7 @@ use crate::profile_ui::{ProfileOutcome, ProfileSection};
 use crate::profiles::ProfileStore;
 use crate::recovery::{self, RecoveryReport};
 use crate::status_ui;
+use crate::tools_ui::{self, Tool};
 use crate::tracks_ui::{self, LiveTrackStats, TracksChanged};
 use crate::tray::{Tray, TrayHandle, TrayState};
 use crate::webcam::WebcamHost;
@@ -98,6 +99,8 @@ pub struct RecorderApp {
     webcam: WebcamHost,
     /// The matte view and the eyedropper of the Chroma key section; never saved, and off whenever a take starts.
     key_ui: KeyUiState,
+    /// The Setup tool the right panel shows; persisted with the settings (spec "Mode rules").
+    tool: Tool,
     /// Where the startup recovery scan delivers its report, until it has.
     recovery_rx: Option<std::sync::mpsc::Receiver<RecoveryReport>>,
     /// What the recovery scan found, until the banner is dismissed.
@@ -189,6 +192,7 @@ impl RecorderApp {
             }
         };
         let api_port_edit = settings.api.port;
+        let tool = settings.tool;
         let modes = ModeState::new(settings.mode);
         let mut app = Self {
             sent_settings: settings.clone(),
@@ -215,6 +219,7 @@ impl RecorderApp {
             preview_active: true,
             webcam: WebcamHost::new(&cc.egui_ctx),
             key_ui: KeyUiState::default(),
+            tool,
             recovery_rx,
             recovery: None,
             recovery_details: false,
@@ -820,12 +825,37 @@ impl RecorderApp {
             .show(ui, |ui| self.preview_panel(ui));
     }
 
-    /// The right Setup panel: the parked settings column inside a vertical ScrollArea (the
-    /// ui-kit overlay scrollbar comes from ui_kit::apply's global scroll style).
+    /// The right Setup panel (spec "Setup mode"): the tool strip over the open tool's panel in a
+    /// vertical ScrollArea (the ui-kit overlay scrollbar comes from ui_kit::apply's global scroll style).
     fn settings_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
+        let active = state.phase.has_take();
         ui_kit::panel(ui, |ui| {
             ui.set_min_size(ui.available_size());
-            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| self.parked_column(ui, ctx, state));
+            let items = tools_ui::strip_items();
+            let mut tool = self.tool;
+            ui_kit::tool_strip(ui, &mut tool, &items);
+            if tool != self.tool {
+                self.tool = tool;
+                self.settings.tool = tool;
+                self.settings_dirty = true;
+            }
+            ui.add_space(space::SCALE_8);
+            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| match self.tool {
+                Tool::Camera => {
+                    tools_ui::camera_panel(ui, &mut self.webcam, &mut self.profile_store, active, state, &self.controller.sender(), &mut self.key_ui);
+                }
+                Tool::Key => {
+                    let picked = webcam_ui::camera_picture(ui, &mut self.webcam, self.key_ui.eyedropper);
+                    key_ui::key_panel(ui, &self.webcam, &mut self.profile_store, state, &mut self.key_ui, picked.as_ref());
+                }
+                Tool::Layout | Tool::Audio | Tool::Output => self.parked_column(ui, ctx, state),
+            });
+            // Every settings change, the open tool among them, saves once the pointer is up and no field has focus.
+            let settled = !ctx.input(|input| input.pointer.any_down()) && ctx.memory(|memory| memory.focused().is_none());
+            if self.settings_dirty && settled {
+                self.save_settings();
+            }
+            self.profile_store.save_when_due(ctx);
         });
     }
 
@@ -855,8 +885,9 @@ impl RecorderApp {
         );
     }
 
-    /// PARKED: emptied by R3 to R6. Today's whole settings column, unchanged, waiting for the
-    /// tool panels (R3 to R5) and the Settings dialog (R6) to take its rows.
+    /// PARKED: holds what R3 left and what R4 to R6 still take. The camera and key controls moved
+    /// to their tools; the Camera ISO file group waits here for the Output tool (R4), the rest
+    /// for the Sources panel and the Settings dialog (R5 and R6).
     fn parked_column(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
         let warn = ui.visuals().warn_fg_color;
         let error = ui.visuals().error_fg_color;
@@ -898,7 +929,8 @@ impl RecorderApp {
         ui.add_space(8.0);
 
         let active = state.phase.has_take();
-        webcam_ui::show(ui, &mut self.webcam, &mut self.profile_store, active, state, &self.controller.sender(), &mut self.key_ui);
+        // The Camera ISO file group is the only webcam control still parked; the Output tool takes it in R4.
+        webcam_ui::iso_group(ui, &self.webcam, &mut self.profile_store, active, &state.active_profile);
         ui.add_space(8.0);
 
         layout_ui::show(ui, &mut self.profile_store, &self.settings.active_profile, active);
@@ -926,7 +958,6 @@ impl RecorderApp {
 
         let mut profile_outcome = ProfileOutcome::default();
         self.profile_section.show(ui, &mut self.profile_store, &mut self.settings, self.source_size, active, &mut profile_outcome);
-        self.profile_store.save_when_due(ctx);
         if profile_outcome.active_changed {
             self.controller.set_settings(self.settings.clone());
             self.save_settings();
