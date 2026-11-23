@@ -1,13 +1,29 @@
 //! Draws the live monitor preview in the main area of the window.
 
 use capture::{Preview, PreviewFrame};
-use egui::{Align2, Color32, ColorImage, Context, FontId, Pos2, Rect, Sense, TextureHandle, TextureOptions, Ui, Vec2, pos2};
+use egui::{Align2, Color32, ColorImage, Context, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui, Vec2, pos2, vec2};
+use ui_kit::tokens::{color, space, typography};
 
 /// The dark colour around and behind the picture.
 const BACKDROP: Color32 = Color32::from_gray(14);
 
 /// Space left below the preview for the transport deck R7 adds (spec "Setup mode").
 const DECK_SPACE: f32 = 88.0;
+
+/// Width of the recording preview's rim (spec "Record mode": 1px).
+const RIM: f32 = 1.0;
+
+/// Alpha of the recording rim (spec "Record mode": 35%).
+const RIM_ALPHA: f32 = 0.35;
+
+/// Alpha of the REC pill's `sem.record` tint fill (spec "Record mode").
+const PILL_TINT: f32 = 0.3;
+
+/// Height of the REC pill.
+const PILL_HEIGHT: f32 = 24.0;
+
+/// Diameter of the REC pill's dot.
+const PILL_DOT: f32 = 6.0;
 
 /// The preview picture and what the window knows about it.
 #[derive(Default)]
@@ -56,6 +72,31 @@ impl PreviewView {
     /// Draws the newest preview frame letterboxed in the centered 16:9 box, or "Starting preview..." until one arrives.
     pub fn show(&mut self, ui: &mut Ui, preview: &Preview) {
         let area = allocate_area(ui);
+        self.draw_frame(ui, preview, area);
+    }
+
+    /// Draws the recording preview (spec "Record mode"): the 16:9 box grown to
+    /// fill the space, the `sem.record` rim at 35% around it and the REC pill
+    /// at its top left ("PAUSED" in `sem.meter.warn` while paused); returns
+    /// the box rect.
+    pub fn show_recording(&mut self, ui: &mut Ui, preview: Option<&Preview>, enabled: bool, paused: bool) -> Rect {
+        let area = allocate_full(ui);
+        let scale = (area.width() / 16.0).min(area.height() / 9.0);
+        let box_rect = Rect::from_center_size(area.center(), Vec2::new(16.0 * scale, 9.0 * scale));
+        match (preview, enabled) {
+            (Some(preview), true) => self.draw_frame(ui, preview, box_rect),
+            (_, true) => draw_message(ui, box_rect, "Starting preview..."),
+            (_, false) => draw_message(ui, box_rect, "Preview off"),
+        }
+        let painter = ui.painter();
+        painter.rect_stroke(box_rect, 0.0, Stroke::new(RIM, color::SEM_RECORD.gamma_multiply(RIM_ALPHA)), StrokeKind::Inside);
+        rec_pill(ui, box_rect, paused);
+        box_rect
+    }
+
+    /// Uploads the newest frame and letterboxes it into `area`, or draws the
+    /// "Starting preview..." message until one arrives.
+    fn draw_frame(&mut self, ui: &mut Ui, preview: &Preview, area: Rect) {
         let ctx = ui.ctx().clone();
         let pixels_per_point = ctx.pixels_per_point();
         let size_px = ((area.width() * pixels_per_point).round() as u32, (area.height() * pixels_per_point).round() as u32);
@@ -135,4 +176,25 @@ fn allocate_area(ui: &mut Ui) -> Rect {
 /// Draws a message in the middle of the area.
 fn draw_message(ui: &Ui, area: Rect, message: &str) {
     ui.painter().text(area.center(), Align2::CENTER_CENTER, message, FontId::proportional(16.0), Color32::GRAY);
+}
+
+/// Reserves the whole remaining space for the recording preview (spec
+/// "Record mode": the preview box grows to fill the center).
+fn allocate_full(ui: &mut Ui) -> Rect {
+    let size = Vec2::new(ui.available_width().max(1.0), ui.available_height().max(1.0));
+    ui.allocate_exact_size(size, Sense::hover()).0
+}
+
+/// The REC pill at the preview box's top left: a `sem.record` tint capsule
+/// with a dot and "REC", or "PAUSED" in `sem.meter.warn` while paused
+/// (spec "Record mode").
+fn rec_pill(ui: &Ui, box_rect: Rect, paused: bool) {
+    let mark = if paused { color::SEM_METER_WARN } else { Color32::WHITE };
+    let galley = ui.painter().layout_no_wrap(crate::record_ui::pill_label(paused).to_owned(), ui_kit::fonts::medium(typography::CAPTION_SIZE), mark);
+    let width = space::SCALE_8 + PILL_DOT + space::SCALE_4 + galley.size().x + space::SCALE_8;
+    let rect = Rect::from_min_size(pos2(box_rect.left() + space::SCALE_8, box_rect.top() + space::SCALE_8), vec2(width, PILL_HEIGHT));
+    let painter = ui.painter();
+    painter.rect_filled(rect, PILL_HEIGHT / 2.0, color::SEM_RECORD.gamma_multiply(PILL_TINT));
+    painter.circle_filled(pos2(rect.left() + space::SCALE_8 + PILL_DOT / 2.0, rect.center().y), PILL_DOT / 2.0, mark);
+    painter.galley(pos2(rect.left() + space::SCALE_8 + PILL_DOT + space::SCALE_4, rect.center().y - galley.size().y / 2.0), galley, mark);
 }

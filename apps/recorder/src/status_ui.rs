@@ -11,8 +11,9 @@ const DOT_DIAMETER: f32 = 6.0;
 
 /// Draws the status bar contents: the state dot and label on the left, then the free disk
 /// space and the camera ISO codec note when present; the Control API client count sits on
-/// the right edge.
-pub fn show(ui: &mut egui::Ui, state: &ControllerState, api_clients: Option<usize>) {
+/// the right edge. While idle the label reads Ready, or Blocked when starting is blocked
+/// (the reason stays in the banner strip; spec "Mapping").
+pub fn show(ui: &mut egui::Ui, state: &ControllerState, api_clients: Option<usize>, blocked: bool) {
     use ui_kit::tokens::{color, size, space, typography};
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), size::STATUS_BAR_HEIGHT), Sense::hover());
     let painter = ui.painter();
@@ -22,6 +23,7 @@ pub fn show(ui: &mut egui::Ui, state: &ControllerState, api_clients: Option<usiz
 
     // The state dot and its label; a countdown is a recording that has not begun yet.
     let (dot, label) = match state.phase {
+        Phase::Idle if blocked => (color::SEM_RECORD, "Blocked"),
         Phase::Idle => (color::SEM_SUCCESS, "Ready"),
         Phase::Countdown(_) => (color::SEM_RECORD, "Starting"),
         Phase::Recording => (color::SEM_RECORD, "Recording"),

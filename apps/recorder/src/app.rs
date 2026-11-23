@@ -13,7 +13,6 @@ use crate::compositor::{ComposeConfig, CompositorThread};
 use crate::config::{self, Mode, ModeState, Settings};
 use crate::engine::bus::{BusSender, Command, CommandKind, MarkKind};
 use crate::engine::controller::{Controller, ControllerState, Phase, lock};
-use crate::engine::session::Summary;
 use crate::hotkeys::Hotkeys;
 use crate::key_ui::{self, KeyUiState};
 use crate::label_popup::PopupHandle;
@@ -23,6 +22,7 @@ use crate::preflight_ui::PreflightSection;
 use crate::preview_ui::PreviewView;
 use crate::profile_ui::{ProfileOutcome, ProfileSection};
 use crate::profiles::ProfileStore;
+use crate::record_ui;
 use crate::recovery::{self, RecoveryReport};
 use crate::settings_ui::{self, ApiUi, NextTake, Section, SettingsDialog};
 use crate::status_ui;
@@ -135,6 +135,8 @@ pub struct RecorderApp {
     modes: ModeState,
     /// Whether the controller ran a take, countdown included, on the previous frame.
     was_running: bool,
+    /// The base name of the take that is running, for the stop toast.
+    running_take: Option<String>,
     /// The Settings dialog: whether it is open and the section its right side shows.
     settings_dialog: SettingsDialog,
 }
@@ -239,6 +241,7 @@ impl RecorderApp {
             sources_card_height: 0.0,
             modes,
             was_running: false,
+            running_take: None,
             settings_dialog: SettingsDialog::default(),
         };
         app.sync_preview(&cc.egui_ctx);
@@ -541,82 +544,21 @@ impl RecorderApp {
         self.was_minimized = minimized;
     }
 
-    /// Draws the status while a take is running or paused.
-    fn recording_panel(&self, ui: &mut egui::Ui, state: &ControllerState) {
-        ui.heading(if state.phase == Phase::Paused { "Paused" } else { "Recording" });
-        let (Some(take), Some(stats)) = (&state.take, &state.stats) else { return };
-        let elapsed_seconds = stats.frames / u64::from(state.fps.max(1));
-        egui::Grid::new("recording-status").num_columns(2).show(ui, |ui| {
-            ui.strong("Time");
-            ui.label(format_hms(elapsed_seconds));
-            ui.end_row();
-            ui.strong("File");
-            ui.label(&take.base_name);
-            ui.end_row();
-            ui.strong("Folder");
-            ui.label(take.folder.display().to_string());
-            ui.end_row();
-            ui.strong("Size");
-            ui.label(format!("{:.1} MB", stats.bytes_written as f64 / 1_000_000.0));
-            ui.end_row();
-            ui.strong("Bitrate");
-            ui.label(format!("{:.1} Mbps", state.mbps));
-            ui.end_row();
-            ui.strong("Frames");
-            ui.label(stats.frames.to_string());
-            ui.end_row();
-            ui.strong("Duplicated");
-            ui.label(stats.duplicated.to_string());
-            ui.end_row();
-            ui.strong("Dropped");
-            ui.label(stats.dropped.to_string());
-            ui.end_row();
-            ui.strong("Captured");
-            ui.label(stats.frames_received.to_string());
-            ui.end_row();
-        });
-        ui.add_space(8.0);
-    }
-
-    /// Draws the totals of the last finished take, until the next one starts.
-    fn summary_panel(&self, ui: &mut egui::Ui, summary: &Summary) {
-        ui.heading("Last take");
-        egui::Grid::new("take-summary").num_columns(2).show(ui, |ui| {
-            ui.strong("File");
-            ui.label(summary.file.display().to_string());
-            ui.end_row();
-            ui.strong("Frames");
-            ui.label(summary.frames.to_string());
-            ui.end_row();
-            ui.strong("Duplicated");
-            ui.label(summary.duplicated.to_string());
-            ui.end_row();
-            ui.strong("Dropped");
-            ui.label(summary.dropped.to_string());
-            ui.end_row();
-            ui.strong("Size");
-            ui.label(format!("{:.1} MB", summary.bytes_written as f64 / 1_000_000.0));
-            ui.end_row();
-            ui.strong("Duration");
-            ui.label(format_hms(summary.duration_ms / 1000));
-            ui.end_row();
-            ui.strong("Average bitrate");
-            ui.label(format!("{:.2} Mbps", summary.average_mbps));
-            ui.end_row();
-        });
-        ui.add_space(8.0);
-    }
-
     /// Follows the controller phase (spec "Mode rules"): a take starting, countdown included,
-    /// switches to Record and remembers the mode that was open; the take ending returns to it.
-    /// The mode is persisted with the settings.
-    fn sync_mode(&mut self, state: &ControllerState) {
+    /// switches to Record and remembers the mode that was open; the take ending returns to it
+    /// and shows the "takeNN saved" toast (the Review action arrives with R8). The mode is
+    /// persisted with the settings.
+    fn sync_mode(&mut self, state: &ControllerState, ctx: &egui::Context) {
         let running = state.phase != Phase::Idle;
         if running && !self.was_running {
             self.modes.start();
         } else if !running && self.was_running {
             self.modes.stop();
+            if let Some(base_name) = self.running_take.take() {
+                ui_kit::toast(ctx, format!("{} saved", crate::profile_ui::take_label(&base_name)));
+            }
         }
+        self.running_take = state.take.as_ref().filter(|_| running).map(|take| take.base_name.clone());
         if self.modes.mode != self.settings.mode {
             self.settings.mode = self.modes.mode;
             self.settings_dirty = true;
@@ -809,7 +751,7 @@ impl RecorderApp {
     }
 
     /// The Setup layout (spec "Window layout" and "Setup mode"): the Sources panel on the
-    /// left, the Preview in the center and the parked settings column on the right, with the
+    /// left, the Preview in the center and the tool panels column on the right, with the
     /// 8px window padding and gaps.
     fn setup_panels(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
         egui::CentralPanel::default().frame(window_frame()).show(ui, |ui| {
@@ -924,8 +866,6 @@ impl RecorderApp {
                     if active {
                         ctx.request_repaint_after(METER_REFRESH);
                     }
-                    ui.add_space(space::SCALE_8);
-                    self.parked_column(ui, state);
                 }
             }
         });
@@ -938,7 +878,8 @@ impl RecorderApp {
     }
 
     /// The center Preview panel (spec "Setup mode"): the banner strip, the panel toolbar
-    /// (rev 3, 44 tall) and today's preview filling the rest of the panel.
+    /// (rev 3, 44 tall), today's preview filling the rest of the panel and the transport
+    /// deck over its bottom edge.
     fn preview_panel(&mut self, ui: &mut egui::Ui, state: &ControllerState, active: bool) {
         if self.banner_strip(ui, state) {
             ui.add_space(space::SCALE_8);
@@ -948,6 +889,21 @@ impl RecorderApp {
         ui.add_space(space::SCALE_8);
         self.show_preview(ui);
         self.on_profile_outcome(&outcome);
+        self.show_deck(ui, ui.max_rect(), state);
+    }
+
+    /// The transport deck over the preview panel's bottom edge (spec "Setup mode"
+    /// and "Record mode").
+    fn show_deck(&self, ui: &mut egui::Ui, content_rect: egui::Rect, state: &ControllerState) {
+        let chords = Chords::of(&self.hotkeys);
+        let d = record_ui::Deck {
+            phase: state.phase,
+            fps: state.fps,
+            frames: state.stats.as_ref().map(|stats| stats.frames),
+            countdown_secs: self.settings.countdown_secs,
+            chords: &chords,
+        };
+        record_ui::deck(ui, content_rect, "recorder-deck", d, &self.controller.sender());
     }
 
     /// The preview panel's toolbar: the Profile caption and picker, a separator, the Preview and
@@ -997,7 +953,8 @@ impl RecorderApp {
         }
     }
 
-    /// The Record and Review placeholder: the banner strip over a centered caption (spec step R2).
+    /// The Review placeholder: the banner strip over a centered caption (spec step R2;
+    /// Review is built in R8).
     fn placeholder_panel(&mut self, ui: &mut egui::Ui, state: &ControllerState) {
         egui::CentralPanel::default().frame(window_frame()).show(ui, |ui| {
             column(ui, ui.max_rect(), |ui| {
@@ -1010,20 +967,35 @@ impl RecorderApp {
         });
     }
 
-    /// PARKED: emptied by R7. Only the recording panel, the countdown heading, the idle line
-    /// and the last take summary stay (spec step R6); everything else moved to the Settings
-    /// dialog, the tools, the Sources panel or the banner strip.
-    fn parked_column(&mut self, ui: &mut egui::Ui, state: &ControllerState) {
+    /// The Record layout (spec "Modes" and "Record mode"): the recording preview in a center
+    /// that fills the window and the Live panel on the right; there is no left column.
+    fn record_panels(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
+        egui::CentralPanel::default().frame(window_frame()).show(ui, |ui| {
+            let [center, right] = two_columns(ui.max_rect());
+            column(ui, right, |ui| self.live_panel(ui, ctx, state));
+            column(ui, center, |ui| self.record_center(ui, state));
+        });
+    }
+
+    /// The Live panel (spec "Record mode"): read-only, so only the meters may
+    /// ask for a repaint while a take runs.
+    fn live_panel(&self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
+        let live = if state.phase.has_take() { Some(&self.live_tracks) } else { None };
+        record_ui::live_panel(ui, state, &self.settings.audio, live);
         if state.phase.has_take() {
-            self.recording_panel(ui, state);
-        } else if let Phase::Countdown(left) = state.phase {
-            ui.heading(format!("Starting in {left}"));
-        } else {
-            ui.label("Idle");
-            if let Some(summary) = &state.summary {
-                self.summary_panel(ui, summary);
-            }
+            ctx.request_repaint_after(METER_REFRESH);
         }
+    }
+
+    /// The Record mode's center: the banner strip over the recording preview,
+    /// with the deck over its bottom edge.
+    fn record_center(&mut self, ui: &mut egui::Ui, state: &ControllerState) {
+        if self.banner_strip(ui, state) {
+            ui.add_space(space::SCALE_8);
+        }
+        let preview = self.preview.as_ref();
+        self.preview_view.show_recording(ui, preview, self.preview_enabled, state.phase == Phase::Paused);
+        self.show_deck(ui, ui.max_rect(), state);
     }
 }
 
@@ -1122,18 +1094,19 @@ fn write_synced(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     file.sync_all()
 }
 
-/// Formats a number of seconds as HH:MM:SS.
-fn format_hms(total_seconds: u64) -> String {
-    format!("{:02}:{:02}:{:02}", total_seconds / 3600, total_seconds / 60 % 60, total_seconds % 60)
-}
-
-/// The hotkey chords the Capture menu shows as its shortcuts; empty when a chord is not registered.
-struct Chords {
-    start_stop: String,
-    pause_resume: String,
-    mark: String,
-    mark_label: String,
-    mute_mic: String,
+/// The hotkey chords the Capture menu and the deck tooltips show as their shortcuts; empty
+/// when a chord is not registered.
+pub(crate) struct Chords {
+    /// The start or stop recording chord.
+    pub(crate) start_stop: String,
+    /// The pause or resume chord.
+    pub(crate) pause_resume: String,
+    /// The add mark chord.
+    pub(crate) mark: String,
+    /// The add mark with label chord.
+    pub(crate) mark_label: String,
+    /// The mute mic chord.
+    pub(crate) mute_mic: String,
 }
 
 impl Chords {
@@ -1290,6 +1263,17 @@ fn three_columns(content: egui::Rect) -> [egui::Rect; 3] {
     [left, center, right]
 }
 
+/// The Record columns inside the window body's content rect: the recording
+/// preview filling everything left of the Live panel ([`RIGHT_PANEL_W`]),
+/// separated by the window gap; there is no left column in Record mode
+/// (spec "Modes" and "Record mode").
+fn two_columns(content: egui::Rect) -> [egui::Rect; 2] {
+    let gap = space::WINDOW_GAP;
+    let right = egui::Rect::from_min_max(egui::Pos2::new((content.right() - RIGHT_PANEL_W).max(content.left()), content.top()), content.right_bottom());
+    let center = egui::Rect::from_min_max(content.left_top(), egui::Pos2::new((right.left() - gap).max(content.left()), content.bottom()));
+    [center, right]
+}
+
 /// One column of the window body: the [`ui_kit::panel`] drawn exactly in `rect` and clipped to
 /// it, so content wider than the column is clipped and never widens the column (spec "Panels").
 fn column<R>(parent: &mut egui::Ui, rect: egui::Rect, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
@@ -1314,7 +1298,7 @@ fn menu_item(ui: &mut egui::Ui, label: &str, chord: &str) -> egui::Response {
 }
 
 /// Sends one command to the controller bus with the current QPC time, logging when the bus has ended.
-fn send(bus: &BusSender, kind: CommandKind) {
+pub(crate) fn send(bus: &BusSender, kind: CommandKind) {
     let command = Command::new(kind, capture::qpc_now());
     if bus.send(command).is_err() {
         log::warn!("the command was not sent because the controller has ended");
@@ -1368,13 +1352,15 @@ impl eframe::App for RecorderApp {
         let window_shown = !ctx.input(|input| input.viewport().minimized).unwrap_or(false);
         self.webcam.sync(&mut self.profile_store, &self.settings.active_profile, window_shown);
         self.sync_compositor(window_shown);
-        // The mode rules (spec "Modes"): a take starting or ending moves the mode.
-        self.sync_mode(&state);
+        // The mode rules (spec "Modes"): a take starting or ending moves the mode; ending
+        // also queues the "takeNN saved" toast.
+        self.sync_mode(&state, &ctx);
 
         // The 26px status bar (spec "Status bar"): state, disk free, camera note, API clients.
         egui::Panel::bottom("status-bar").frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
             let clients = self.api.as_ref().map(|server| server.client_count());
-            status_ui::show(ui, &state, clients);
+            let blocked = state.phase == Phase::Idle && self.profile_section.blocked();
+            status_ui::show(ui, &state, clients, blocked);
         });
 
         // The 44px title bar (spec "Title bar", rev 3); it reports a picked mode through the cell.
@@ -1392,8 +1378,13 @@ impl eframe::App for RecorderApp {
 
         match self.modes.mode {
             Mode::Setup => self.setup_panels(ui, &ctx, &state),
-            Mode::Record | Mode::Review => self.placeholder_panel(ui, &state),
+            Mode::Record => self.record_panels(ui, &ctx, &state),
+            Mode::Review => self.placeholder_panel(ui, &state),
         }
+
+        // The toasts (spec "Mode rules"): one glass capsule at a time; the stop toast's
+        // Review action arrives with R8a.
+        ui_kit::show_toasts(&ctx);
 
         // The Settings dialog (spec "Settings dialog"): File > Settings (Ctrl+,) and
         // View > Appearance open it, Esc closes it.

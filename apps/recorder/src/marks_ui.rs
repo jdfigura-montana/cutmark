@@ -1,41 +1,38 @@
-//! The Marks panel: the most recent marks of the running or last take, newest first.
+//! The marks rows of the Record mode's Live panel (spec "Record mode"): one
+//! list row per recent mark, newest first and selected.
 
 use std::collections::VecDeque;
 
-use ui_kit::palette::{ACCENT, METER_GREEN, METER_YELLOW, RECORD_RED, TEXT_MUTED, TEXT_NORMAL, TEXT_PRIMARY};
+use egui::Ui;
+use ui_kit::{MarkerKind, marker_color};
 
 use crate::engine::marks::RecentMark;
 
-/// How many rows the panel lists.
-const ROW_LIMIT: usize = 10;
-
-/// Draws the Marks panel for `recent`, which holds the marks oldest first.
-pub fn show(ui: &mut egui::Ui, recent: &VecDeque<RecentMark>) {
-    ui.heading("Marks");
+/// Draws the recent marks, newest first, with the newest row selected so the
+/// newest mark is always the one the list starts on (spec "Record mode").
+pub fn rows(ui: &mut Ui, recent: &VecDeque<RecentMark>) {
     if recent.is_empty() {
-        ui.colored_label(TEXT_MUTED, "No marks yet");
+        ui.weak("No marks yet");
         return;
     }
-    egui::Grid::new("recent-marks").num_columns(3).spacing([10.0, 4.0]).show(ui, |ui| {
-        for (timecode, category, label) in recent.iter().rev().take(ROW_LIMIT) {
-            ui.monospace(timecode);
-            let color = category_color(category);
-            ui.label(egui::RichText::new(category).small().color(color).background_color(color.gamma_multiply(0.2)));
-            ui.label(label.as_deref().unwrap_or(""));
-            ui.end_row();
-        }
-    });
+    for (index, (timecode, category, label)) in recent.iter().rev().enumerate() {
+        let label = match label {
+            Some(label) if !label.is_empty() => label.clone(),
+            _ => category.clone(),
+        };
+        ui_kit::list_row(ui, index == 0, Some(marker_color(kind(category))), &label, Some(timecode));
+    }
 }
 
-/// The tag color of a category name.
-fn category_color(category: &str) -> egui::Color32 {
+/// The marker kind of a category name. The ui-kit marker palette has no
+/// highlight or chapter colors (markers never follow the accent), so those
+/// take the closest categories' colors.
+fn kind(category: &str) -> MarkerKind {
     match category {
-        "Highlight" => METER_YELLOW,
-        "Cut" => RECORD_RED,
-        "Retake" => METER_GREEN,
-        "Chapter" => ACCENT,
-        "B-roll" => TEXT_PRIMARY,
-        "System" => TEXT_MUTED,
-        _ => TEXT_NORMAL,
+        "Cut" => MarkerKind::Cut,
+        "Retake" | "Highlight" => MarkerKind::Retake,
+        "B-roll" => MarkerKind::BRoll,
+        "System" => MarkerKind::System,
+        _ => MarkerKind::Note,
     }
 }

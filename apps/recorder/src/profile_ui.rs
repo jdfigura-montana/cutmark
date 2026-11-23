@@ -791,8 +791,9 @@ fn container_label(container: Container) -> &'static str {
 }
 
 /// The short label of a take name: its trailing "takeNN" part, or the whole name when the
-/// naming template does not end with one (the preview toolbar's next-take caption).
-fn take_label(base_name: &str) -> &str {
+/// naming template does not end with one (the preview toolbar's next-take caption and the
+/// stop toast).
+pub(crate) fn take_label(base_name: &str) -> &str {
     let digits = base_name.bytes().rev().take_while(u8::is_ascii_digit).count();
     if digits > 0 {
         let head = base_name.len() - digits;
