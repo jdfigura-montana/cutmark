@@ -1,4 +1,9 @@
 # Progress
+## Task AE 1.3 R5 (2026-11-23)
+- The four Stream Deck+ dials DONE (spec 1.3-StreamDeck.md "Dials"): Zoom (rotate zoom.step, press zoom.fit, $B1 zoom percent + bar), Jog (rotate jog.step with per-dial fine/coarse toggled by press, touch tap play_pause, $A1 playhead mm:ss.mmm + size), Track volume (rotate track.volume.step, press track.mute, R4 track setting, $B1 name + dB + bar, strip grey while muted, "No track N"), Markers (rotate marker.step, press add_marker, $A1 "Markers" + playhead timecode). New src/actions/dial.ts (DialBase: registry, trigger descriptions, 50 ms tick coalescing that sums ticks, launch on press when down, "Not running"/"Update" strips) and src/actions/dials.ts; plugin.ts registers the 4 dials; manifest +4 encoder actions ($B1/$A1 layouts, track volume uses ui/track.html); 8 placeholder SVGs. npm run build clean. Open for JD: strips render from R2b state publishing (playhead_ms, zoom_label, tracks), not built yet; layout item keys/bar range verified against the SDK schemas only.
+
+
+# Progress
 ## Task AE 1.3 R4 (2026-11-23)
 - Track keys and the Audio command key DONE (spec 1.3-StreamDeck.md "Keys"): Track Mute/Solo/Arm send track.mute/track.solo/track.arm with {track: 1..64} from an sdpi-range PI, title = track name from state, on state lit (mute accent, solo yellow, arm red), "No track N" when missing; Audio command key's PI dropdown is an sdpi-select with datasource="getCommands" filled from the welcome command list via the plugin's sendToPlugin handler, fallback disabled option "Open the audio editor to load commands", title = chosen command's label. Base CommandKeyAction gained sendRunning/isOwnError hooks and a JsonObject settings type (R3 keys unchanged). 12 new placeholder SVGs, ui/track.html + ui/audio-command.html, manifest 18 actions. npm run build clean. Open for JD: track keys render from state.tracks, which R2b (app state publishing) has not built yet.
 

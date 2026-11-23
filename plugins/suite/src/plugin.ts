@@ -22,6 +22,8 @@ import {
 	UndoKey,
 } from "./actions/keys";
 import { CommandKeyAction } from "./actions/command-key";
+import { JogDial, MarkersDial, TrackVolumeDial, ZoomDial } from "./actions/dials";
+import { DialBase } from "./actions/dial";
 
 streamDeck.logger.setLevel("trace");
 
@@ -51,6 +53,10 @@ const keys: CommandKeyAction[] = [
 ];
 for (const key of keys) key.use(connection);
 
+// The dial actions of the "Cutmark Audio" category (1.3-StreamDeck "Dials").
+const dials: DialBase[] = [new JogDial(), new ZoomDial(), new TrackVolumeDial(), new MarkersDial()];
+for (const dial of dials) dial.use(connection);
+
 // Follow the monitored audio editor: reconnect on launch, drop the socket on quit.
 streamDeck.system.onApplicationDidLaunch((ev) => {
 	if (ev.application.includes("cutmark-audio")) connection.appLaunched();
@@ -59,7 +65,7 @@ streamDeck.system.onApplicationDidTerminate((ev) => {
 	if (ev.application.includes("cutmark-audio")) connection.appTerminated();
 });
 
-for (const key of keys) streamDeck.actions.registerAction(key);
+for (const action of [...keys, ...dials]) streamDeck.actions.registerAction(action);
 
 // The app may already run when the plugin starts.
 connection.beginConnecting();
