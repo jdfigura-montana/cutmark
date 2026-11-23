@@ -12,7 +12,7 @@ use std::ops::RangeInclusive;
 use egui::Ui;
 use ui_kit::SliderKind;
 use ui_kit::tokens::space;
-use ui_kit::{inspector_group, inspector_row, segmented};
+use ui_kit::{inspector_group, inspector_row, segmented, segmented_filled};
 
 use crate::config::{AnchorCorner, LayoutKind, PipConfig, PipShape};
 use crate::profiles::ProfileStore;
@@ -20,8 +20,12 @@ use crate::profiles::ProfileStore;
 /// The corners in the order the picker lists them.
 const CORNERS: [AnchorCorner; 4] = [AnchorCorner::TopLeft, AnchorCorner::TopRight, AnchorCorner::BottomLeft, AnchorCorner::BottomRight];
 
-/// The views of the View group's segmented control, in order.
-const VIEWS: [(LayoutKind, &str); 3] = [(LayoutKind::ScreenOnly, "Screen only"), (LayoutKind::Pip, "Picture in picture"), (LayoutKind::CamOnly, "Cam only")];
+/// The views of the View group's segmented control, in order, with the short
+/// labels the panel's width needs; the full names are the segment tooltips.
+const VIEWS: [(LayoutKind, &str); 3] = [(LayoutKind::ScreenOnly, "Screen"), (LayoutKind::Pip, "PiP"), (LayoutKind::CamOnly, "Cam")];
+
+/// The full name of each view, as the segment tooltips.
+const VIEW_NAMES: [&str; 3] = ["Screen only", "Picture in picture", "Cam only"];
 
 /// The shapes of the Frame group's segmented control, in order.
 const SHAPES: [(PipShape, &str); 2] = [(PipShape::Rectangle, "Rectangle"), (PipShape::Circle, "Circle")];
@@ -53,7 +57,7 @@ pub fn show(ui: &mut Ui, store: &mut ProfileStore, profile_name: &str, recording
                 ui,
                 "View",
                 |ui| {
-                    changed |= choice(ui, "layout-view", &mut layout, &VIEWS);
+                    changed |= view_choice(ui, &mut layout);
                 },
                 None,
             );
@@ -153,6 +157,22 @@ fn frame_group(ui: &mut Ui, pip: &mut PipConfig, enabled: bool, changed: &mut bo
             );
         });
     });
+}
+
+/// The View group's three-way segmented control: equal cells filling the row
+/// width, each segment's full view name as its tooltip; true when the view changed.
+fn view_choice(ui: &mut Ui, value: &mut LayoutKind) -> bool {
+    let labels: [&str; 3] = VIEWS.map(|(_, label)| label);
+    let mut index = VIEWS.iter().position(|(kind, _)| *kind == *value).unwrap_or(0);
+    let before = index;
+    segmented_filled(ui, "layout-view", &mut index, &labels, &VIEW_NAMES);
+    if index != before
+        && let Some((kind, _)) = VIEWS.get(index)
+    {
+        *value = *kind;
+        return true;
+    }
+    false
 }
 
 /// One segmented control over a small copyable enum; true when the choice changed.

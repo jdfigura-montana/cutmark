@@ -35,8 +35,8 @@ pub use widgets::{
     about_dialog, accent_picker, appearance_dialog, caption_buttons, chip, deck_button, dialog, fader, focus_ring, glass_frame, icon_button, inspector_group,
     inspector_header, inspector_row, list_row, main_toolbar, marker_color, menu_bar, paint_clip, paint_glass_highlight, paint_marker, paint_marquee,
     paint_pending_band, paint_playhead, paint_ruler, paint_snap_line, paint_track_area_empty, paint_track_header_column, paint_track_row, paint_waveform,
-    panel, play_button, primary_button, scroll_thumb, search_field, segmented, set_toast_time, show_toasts, slider, status_bar, switch, text_field, timecode,
-    title_block, toast, tool_strip, track_header, transport_deck, waveform_color,
+    panel, play_button, primary_button, scroll_thumb, search_field, segmented, segmented_filled, set_toast_time, show_toasts, slider, status_bar, switch,
+    text_field, timecode, title_block, toast, tool_strip, track_header, transport_deck, waveform_color,
 };
 
 use tokens::{color, radius, size, space, typography};

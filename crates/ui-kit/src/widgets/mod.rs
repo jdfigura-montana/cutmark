@@ -51,7 +51,7 @@ pub use panel::panel;
 pub use primary_button::primary_button;
 pub use scroll_thumb::scroll_thumb;
 pub use search_field::search_field;
-pub use segmented::segmented;
+pub use segmented::{segmented, segmented_filled};
 pub use slider::{SliderKind, slider};
 pub use status_bar::status_bar;
 pub use switch::switch;

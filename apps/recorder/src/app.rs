@@ -834,30 +834,36 @@ impl RecorderApp {
             ui.set_min_size(ui.available_size());
             let items = tools_ui::strip_items();
             let mut tool = self.tool;
-            ui_kit::tool_strip(ui, &mut tool, &items);
+            let strip = ui_kit::tool_strip(ui, &mut tool, &items);
+            // The hairline under the tool strip runs edge to edge of the panel like every
+            // panel header's (spec "Panel header"); the strip's own cells may end short of it.
+            ui.painter().hline(ui.max_rect().x_range().expand(space::PANEL_PADDING), strip.rect.bottom(), egui::Stroke::new(HAIRLINE, color::STROKE_HAIRLINE));
             if tool != self.tool {
                 self.tool = tool;
                 self.settings.tool = tool;
                 self.settings_dirty = true;
             }
             ui.add_space(space::SCALE_8);
-            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| match self.tool {
-                Tool::Camera => {
-                    tools_ui::camera_panel(ui, &mut self.webcam, &mut self.profile_store, active, state, &self.controller.sender(), &mut self.key_ui);
+            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                ui.set_max_width(ui.available_width());
+                match self.tool {
+                    Tool::Camera => {
+                        tools_ui::camera_panel(ui, &mut self.webcam, &mut self.profile_store, active, state, &self.controller.sender(), &mut self.key_ui);
+                    }
+                    Tool::Key => {
+                        let picked = webcam_ui::camera_picture(ui, &mut self.webcam, self.key_ui.eyedropper);
+                        key_ui::key_panel(ui, &self.webcam, &mut self.profile_store, state, &mut self.key_ui, picked.as_ref());
+                    }
+                    Tool::Layout => layout_ui::show(ui, &mut self.profile_store, &self.settings.active_profile, active),
+                    Tool::Output => {
+                        let mut outcome = ProfileOutcome::default();
+                        self.profile_section.output_panel(ui, &mut self.profile_store, &mut self.settings, self.source_size, active, &mut outcome);
+                        self.on_profile_outcome(&outcome);
+                        ui.add_space(space::SCALE_8);
+                        webcam_ui::iso_group(ui, &self.webcam, &mut self.profile_store, active, &state.active_profile);
+                    }
+                    Tool::Audio => self.parked_column(ui, ctx, state),
                 }
-                Tool::Key => {
-                    let picked = webcam_ui::camera_picture(ui, &mut self.webcam, self.key_ui.eyedropper);
-                    key_ui::key_panel(ui, &self.webcam, &mut self.profile_store, state, &mut self.key_ui, picked.as_ref());
-                }
-                Tool::Layout => layout_ui::show(ui, &mut self.profile_store, &self.settings.active_profile, active),
-                Tool::Output => {
-                    let mut outcome = ProfileOutcome::default();
-                    self.profile_section.output_panel(ui, &mut self.profile_store, &mut self.settings, self.source_size, active, &mut outcome);
-                    self.on_profile_outcome(&outcome);
-                    ui.add_space(space::SCALE_8);
-                    webcam_ui::iso_group(ui, &self.webcam, &mut self.profile_store, active, &state.active_profile);
-                }
-                Tool::Audio => self.parked_column(ui, ctx, state),
             });
             // Every settings change, the open tool among them, saves once the pointer is up and no field has focus.
             let settled = !ctx.input(|input| input.pointer.any_down()) && ctx.memory(|memory| memory.focused().is_none());

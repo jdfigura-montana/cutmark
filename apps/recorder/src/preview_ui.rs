@@ -6,14 +6,8 @@ use egui::{Align2, Color32, ColorImage, Context, FontId, Pos2, Rect, Sense, Text
 /// The dark colour around and behind the picture.
 const BACKDROP: Color32 = Color32::from_gray(14);
 
-/// Height over width of the area before the first frame says what the monitor's shape is.
-const AREA_ASPECT: f32 = 9.0 / 16.0;
-
-/// The share of the free height the preview area may take, so the rest of the window stays reachable.
-const MAX_HEIGHT_SHARE: f32 = 0.5;
-
-/// The least height the preview area gets, in points.
-const MIN_AREA_HEIGHT: f32 = 180.0;
+/// Space left below the preview for the transport deck R7 adds (spec "Setup mode").
+const DECK_SPACE: f32 = 88.0;
 
 /// The preview picture and what the window knows about it.
 #[derive(Default)]
@@ -59,7 +53,7 @@ impl PreviewView {
         Some(Pick { frame: frame.clone(), x, y })
     }
 
-    /// Draws the newest preview frame, or "Starting preview..." until one arrives.
+    /// Draws the newest preview frame letterboxed in the centered 16:9 box, or "Starting preview..." until one arrives.
     pub fn show(&mut self, ui: &mut Ui, preview: &Preview) {
         let area = allocate_area(ui);
         let ctx = ui.ctx().clone();
@@ -92,7 +86,7 @@ impl PreviewView {
         self.image_rect = Some(drawn);
     }
 
-    /// Draws a plain dark area with a message, for when the preview is off or could not start.
+    /// Draws the centered 16:9 box with a message, for when the preview is off or could not start.
     pub fn placeholder(ui: &mut Ui, message: &str) {
         let area = allocate_area(ui);
         draw_message(ui, area, message);
@@ -125,14 +119,17 @@ fn frame_pixel(rect: Rect, pos: Pos2, size: (u32, u32)) -> Option<(u32, u32)> {
     Some((x.min(size.0 - 1), y.min(size.1 - 1)))
 }
 
-/// Reserves the full width and paints the dark backdrop; returns the area.
+/// Reserves the space under the panel toolbar, leaving [`DECK_SPACE`] at the
+/// bottom for the deck, and paints the dark 16:9 preview box centered in the
+/// rest of that space, horizontally and vertically; returns the box.
 fn allocate_area(ui: &mut Ui) -> Rect {
     let width = ui.available_width().max(1.0);
-    let max_height = (ui.available_height() * MAX_HEIGHT_SHARE).max(MIN_AREA_HEIGHT);
-    let height = (width * AREA_ASPECT).min(max_height);
-    let (area, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
-    ui.painter().rect_filled(area, 0.0, BACKDROP);
-    area
+    let height = (ui.available_height() - DECK_SPACE).max(1.0);
+    let (space_rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    let scale = (space_rect.width() / 16.0).min(space_rect.height() / 9.0);
+    let box_rect = Rect::from_center_size(space_rect.center(), Vec2::new(16.0 * scale, 9.0 * scale));
+    ui.painter().rect_filled(box_rect, 0.0, BACKDROP);
+    box_rect
 }
 
 /// Draws a message in the middle of the area.
