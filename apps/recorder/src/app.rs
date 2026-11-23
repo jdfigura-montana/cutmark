@@ -809,81 +809,71 @@ impl RecorderApp {
     /// left, the Preview in the center and the parked settings column on the right, with the
     /// 8px window padding and gaps.
     fn setup_panels(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
-        let gap = space::WINDOW_GAP as i8;
-        let active = state.phase.has_take();
-        egui::Panel::left("setup-sources")
-            .resizable(false)
-            .exact_size(LEFT_PANEL_W)
-            .frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin { left: gap, right: 0, top: gap, bottom: gap }))
-            .show(ui, sources_panel);
-        egui::Panel::right("setup-settings")
-            .resizable(false)
-            .exact_size(RIGHT_PANEL_W)
-            .frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin { left: 0, right: gap, top: gap, bottom: gap }))
-            .show(ui, |ui| self.settings_panel(ui, ctx, state));
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin { left: gap, right: gap, top: gap, bottom: gap }))
-            .show(ui, |ui| self.preview_panel(ui, active));
+        egui::CentralPanel::default().frame(window_frame()).show(ui, |ui| {
+            let [left, center, right] = three_columns(ui.max_rect());
+            let active = state.phase.has_take();
+            // R5 fills the Sources panel; the header is all it has today (spec "Setup mode").
+            column(ui, left, |ui| {
+                panel_header(ui, "Sources");
+                ui.add_space(space::SCALE_8);
+            });
+            column(ui, right, |ui| self.settings_panel(ui, ctx, state));
+            column(ui, center, |ui| self.preview_panel(ui, active));
+        });
     }
 
     /// The right Setup panel (spec "Setup mode"): the tool strip over the open tool's panel in a
     /// vertical ScrollArea (the ui-kit overlay scrollbar comes from ui_kit::apply's global scroll style).
     fn settings_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
         let active = state.phase.has_take();
-        ui_kit::panel(ui, |ui| {
-            ui.set_min_size(ui.available_size());
-            let items = tools_ui::strip_items();
-            let mut tool = self.tool;
-            let strip = ui_kit::tool_strip(ui, &mut tool, &items);
-            // The hairline under the tool strip runs edge to edge of the panel like every
-            // panel header's (spec "Panel header"); the strip's own cells may end short of it.
-            ui.painter().hline(ui.max_rect().x_range().expand(space::PANEL_PADDING), strip.rect.bottom(), egui::Stroke::new(HAIRLINE, color::STROKE_HAIRLINE));
-            if tool != self.tool {
-                self.tool = tool;
-                self.settings.tool = tool;
-                self.settings_dirty = true;
-            }
-            ui.add_space(space::SCALE_8);
-            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                ui.set_max_width(ui.available_width());
-                match self.tool {
-                    Tool::Camera => {
-                        tools_ui::camera_panel(ui, &mut self.webcam, &mut self.profile_store, active, state, &self.controller.sender(), &mut self.key_ui);
-                    }
-                    Tool::Key => {
-                        let picked = webcam_ui::camera_picture(ui, &mut self.webcam, self.key_ui.eyedropper);
-                        key_ui::key_panel(ui, &self.webcam, &mut self.profile_store, state, &mut self.key_ui, picked.as_ref());
-                    }
-                    Tool::Layout => layout_ui::show(ui, &mut self.profile_store, &self.settings.active_profile, active),
-                    Tool::Output => {
-                        let mut outcome = ProfileOutcome::default();
-                        self.profile_section.output_panel(ui, &mut self.profile_store, &mut self.settings, self.source_size, active, &mut outcome);
-                        self.on_profile_outcome(&outcome);
-                        ui.add_space(space::SCALE_8);
-                        webcam_ui::iso_group(ui, &self.webcam, &mut self.profile_store, active, &state.active_profile);
-                    }
-                    Tool::Audio => self.parked_column(ui, ctx, state),
+        let items = tools_ui::strip_items();
+        let mut tool = self.tool;
+        let strip = ui_kit::tool_strip(ui, &mut tool, &items);
+        // The hairline under the tool strip runs edge to edge of the panel like every
+        // panel header's (spec "Panel header"); the strip's own cells may end short of it.
+        ui.painter().hline(ui.max_rect().x_range().expand(space::PANEL_PADDING), strip.rect.bottom(), egui::Stroke::new(HAIRLINE, color::STROKE_HAIRLINE));
+        if tool != self.tool {
+            self.tool = tool;
+            self.settings.tool = tool;
+            self.settings_dirty = true;
+        }
+        ui.add_space(space::SCALE_8);
+        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            ui.set_max_width(ui.available_width());
+            match self.tool {
+                Tool::Camera => {
+                    tools_ui::camera_panel(ui, &mut self.webcam, &mut self.profile_store, active, state, &self.controller.sender(), &mut self.key_ui);
                 }
-            });
-            // Every settings change, the open tool among them, saves once the pointer is up and no field has focus.
-            let settled = !ctx.input(|input| input.pointer.any_down()) && ctx.memory(|memory| memory.focused().is_none());
-            if self.settings_dirty && settled {
-                self.save_settings();
+                Tool::Key => {
+                    let picked = webcam_ui::camera_picture(ui, &mut self.webcam, self.key_ui.eyedropper);
+                    key_ui::key_panel(ui, &self.webcam, &mut self.profile_store, state, &mut self.key_ui, picked.as_ref());
+                }
+                Tool::Layout => layout_ui::show(ui, &mut self.profile_store, &self.settings.active_profile, active),
+                Tool::Output => {
+                    let mut outcome = ProfileOutcome::default();
+                    self.profile_section.output_panel(ui, &mut self.profile_store, &mut self.settings, self.source_size, active, &mut outcome);
+                    self.on_profile_outcome(&outcome);
+                    ui.add_space(space::SCALE_8);
+                    webcam_ui::iso_group(ui, &self.webcam, &mut self.profile_store, active, &state.active_profile);
+                }
+                Tool::Audio => self.parked_column(ui, ctx, state),
             }
-            self.profile_store.save_when_due(ctx);
         });
+        // Every settings change, the open tool among them, saves once the pointer is up and no field has focus.
+        let settled = !ctx.input(|input| input.pointer.any_down()) && ctx.memory(|memory| memory.focused().is_none());
+        if self.settings_dirty && settled {
+            self.save_settings();
+        }
+        self.profile_store.save_when_due(ctx);
     }
 
     /// The center Preview panel (spec "Setup mode"): the panel toolbar (rev 3, 44 tall) over
     /// today's preview filling the rest of the panel.
     fn preview_panel(&mut self, ui: &mut egui::Ui, active: bool) {
         let mut outcome = ProfileOutcome::default();
-        ui_kit::panel(ui, |ui| {
-            ui.set_min_size(ui.available_size());
-            self.preview_toolbar(ui, active, &mut outcome);
-            ui.add_space(space::SCALE_8);
-            self.show_preview(ui);
-        });
+        self.preview_toolbar(ui, active, &mut outcome);
+        ui.add_space(space::SCALE_8);
+        self.show_preview(ui);
         self.on_profile_outcome(&outcome);
     }
 
@@ -934,20 +924,16 @@ impl RecorderApp {
         }
     }
 
-    /// The Record and Review placeholder: an empty panel with a centered caption (spec step R2).
+    /// The Record and Review placeholder: one full-width panel with a centered caption (spec step R2).
     fn placeholder_panel(&mut self, ui: &mut egui::Ui) {
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin::same(space::WINDOW_GAP as i8))).show(
-            ui,
-            |ui| {
-                ui_kit::panel(ui, |ui| {
-                    ui.set_min_size(ui.available_size());
-                    let galley =
-                        ui.painter().layout_no_wrap("Coming in Phase 13".to_owned(), ui_kit::fonts::medium(typography::CAPTION_SIZE), color::TEXT_TERTIARY);
-                    let center = ui.max_rect().center();
-                    ui.painter().galley(center - galley.size() / 2.0, galley, color::TEXT_TERTIARY);
-                });
-            },
-        );
+        egui::CentralPanel::default().frame(window_frame()).show(ui, |ui| {
+            column(ui, ui.max_rect(), |ui| {
+                let galley =
+                    ui.painter().layout_no_wrap("Coming in Phase 13".to_owned(), ui_kit::fonts::medium(typography::CAPTION_SIZE), color::TEXT_TERTIARY);
+                let center = ui.max_rect().center();
+                ui.painter().galley(center - galley.size() / 2.0, galley, color::TEXT_TERTIARY);
+            });
+        });
     }
 
     /// PARKED: holds what R5 and R6 still take. The camera and key controls moved to their tools,
@@ -1200,13 +1186,36 @@ fn panel_header(ui: &mut egui::Ui, title: &str) {
     ui.painter().hline(rect.x_range().expand(space::PANEL_PADDING), rect.bottom(), egui::Stroke::new(HAIRLINE, color::STROKE_HAIRLINE));
 }
 
-/// The left Sources panel: the header and an empty body for now; R5 fills it (spec "Setup mode").
-fn sources_panel(ui: &mut egui::Ui) {
-    ui_kit::panel(ui, |ui| {
+/// The window-body frame all three modes share: the ground fill with the 8px window gap on
+/// every side (spec "Window layout").
+fn window_frame() -> egui::Frame {
+    egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin::same(space::WINDOW_GAP as i8))
+}
+
+/// The three Setup columns inside the window body's content rect: the Sources panel
+/// ([`LEFT_PANEL_W`]) on the left, the settings panel ([`RIGHT_PANEL_W`]) on the right and
+/// what is left between them as the center, separated by the window gap (spec "Panels").
+fn three_columns(content: egui::Rect) -> [egui::Rect; 3] {
+    let gap = space::WINDOW_GAP;
+    let left = egui::Rect::from_min_max(content.left_top(), egui::Pos2::new(content.left() + LEFT_PANEL_W, content.bottom()));
+    let right = egui::Rect::from_min_max(egui::Pos2::new((content.right() - RIGHT_PANEL_W).max(left.right() + gap), content.top()), content.right_bottom());
+    // On a window too narrow for both side panels the center collapses to zero width instead of inverting.
+    let center_min_x = left.right() + gap;
+    let center_max_x = (right.left() - gap).max(center_min_x);
+    let center = egui::Rect::from_min_max(egui::Pos2::new(center_min_x, content.top()), egui::Pos2::new(center_max_x, content.bottom()));
+    [left, center, right]
+}
+
+/// One column of the window body: the [`ui_kit::panel`] drawn exactly in `rect` and clipped to
+/// it, so content wider than the column is clipped and never widens the column (spec "Panels").
+fn column<R>(parent: &mut egui::Ui, rect: egui::Rect, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let mut ui = parent.new_child(egui::UiBuilder::new().max_rect(rect));
+    ui.set_clip_rect(rect);
+    ui_kit::panel(&mut ui, |ui| {
         ui.set_min_size(ui.available_size());
-        panel_header(ui, "Sources");
-        ui.add_space(space::SCALE_8);
-    });
+        add_contents(ui)
+    })
+    .inner
 }
 
 /// One menu item: the label in the body font, then the hotkey in the mono value style
@@ -1297,5 +1306,34 @@ impl eframe::App for RecorderApp {
             Mode::Setup => self.setup_panels(ui, &ctx, &state),
             Mode::Record | Mode::Review => self.placeholder_panel(ui),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Setup layout, headless at 1300 x 840: the right settings column ends at the window
+    /// width minus the window gap (it never grows past the window edge) and starts after the
+    /// center column, with the window gap between them.
+    #[test]
+    fn the_setup_columns_fill_the_window_and_keep_the_right_panel_its_width() {
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1300.0, 840.0))), ..Default::default() };
+        let ctx = egui::Context::default();
+        let columns = std::cell::Cell::new((egui::Rect::NOTHING, egui::Rect::NOTHING, egui::Rect::NOTHING));
+        let mut output = ctx.run_ui(input, |ui| {
+            egui::CentralPanel::default().frame(window_frame()).show(ui, |ui| {
+                let [left, center, right] = three_columns(ui.max_rect());
+                columns.set((left, center, right));
+            });
+        });
+        output.textures_delta.clear();
+        let (left, center, right) = columns.get();
+        let gap = space::WINDOW_GAP;
+        assert_eq!(right.right(), 1300.0 - gap, "the right column ends at the window width minus the window gap");
+        assert_eq!(right.left(), center.right() + gap, "the right column starts after the center column");
+        assert_eq!(right.width(), RIGHT_PANEL_W, "the right column keeps the settings panel width");
+        assert_eq!(left.width(), LEFT_PANEL_W, "the left column keeps the Sources panel width");
+        assert_eq!(center.left(), left.right() + gap, "the center column starts after the left column");
     }
 }

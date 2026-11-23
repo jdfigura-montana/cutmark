@@ -155,7 +155,7 @@ fn camera_row(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore) {
         ui,
         "Camera",
         |ui| {
-            let width = (ui.available_width() - size::ICON_BUTTON).max(60.0);
+            let width = (ui.available_width() - size::ICON_BUTTON - ui.spacing().item_spacing.x).max(60.0);
             ComboBox::from_id_salt("webcam-camera").selected_text(selected).width(width).show_ui(ui, |ui| {
                 for camera in host.cameras() {
                     if ui.selectable_label(camera.id == current_id, &camera.name).clicked() {

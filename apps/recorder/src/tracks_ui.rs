@@ -29,8 +29,6 @@ const GAIN_MAX_DB: f32 = 12.0;
 const SLIDER_WIDTH: f32 = 130.0;
 /// Width of the name field, in points.
 const NAME_WIDTH: f32 = 130.0;
-/// Width of the device dropdown, in points.
-const DEVICE_WIDTH: f32 = 280.0;
 /// Width of the level meter, in points.
 const METER_WIDTH: f32 = 180.0;
 
@@ -198,23 +196,31 @@ pub fn tracks_panel(ui: &mut Ui, settings: &mut AudioSettings, devices: &[AudioD
     changed
 }
 
-/// Draws one track as two lines and returns true when its Remove button was clicked.
+/// Draws one track over four short rows that each fit the 340 px settings column, and returns
+/// true when its Remove button was clicked.
+///
+/// The rows cannot share one wrapping line: a wrapped egui row never wraps a nested ui (the
+/// disabled wrappers, the device dropdown), so a too long line widens the panel instead of
+/// wrapping (spec "Panels": the right panel stays 340 wide).
 fn track_row(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, changed: &mut TracksChanged) -> bool {
     let recording = input.recording;
     let mut remove = false;
     ui.vertical(|ui| {
-        ui.horizontal_wrapped(|ui| {
+        // The on/off switch, the track's name and its Remove button.
+        ui.horizontal(|ui| {
             if locked(ui, recording, |ui| ui.checkbox(&mut track.enabled, "On")).changed() {
                 changed.discrete();
             }
             let name = locked(ui, recording, |ui| ui.add(egui::TextEdit::singleline(&mut track.name).desired_width(NAME_WIDTH)));
             changed.continuous(&name);
-            device_picker(ui, track, input, changed);
             if locked(ui, recording, |ui| ui.button("Remove")).clicked() {
                 remove = true;
             }
         });
-        ui.horizontal_wrapped(|ui| {
+        // The device dropdown needs a row of its own to fit the column at full width.
+        device_picker(ui, track, input, changed);
+        // The gain and the mute.
+        ui.horizontal(|ui| {
             ui.spacing_mut().slider_width = SLIDER_WIDTH;
             ui.label("Gain");
             let gain = ui.add(egui::Slider::new(&mut track.gain_db, GAIN_MIN_DB..=GAIN_MAX_DB).suffix(" dB").fixed_decimals(1));
@@ -228,12 +234,19 @@ fn track_row(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, change
                 changed.discrete();
                 changed.live = true;
             }
+        });
+        // The capture offset and whether the track lands in the mixdown.
+        ui.horizontal(|ui| {
+            ui.spacing_mut().slider_width = SLIDER_WIDTH;
             ui.label("Offset");
             let offset = locked(ui, recording, |ui| ui.add(egui::Slider::new(&mut track.offset_ms, -MAX_OFFSET_MS..=MAX_OFFSET_MS).suffix(" ms")));
             changed.continuous(&offset);
             if offset.changed() {
                 track.offset_ms = track.offset_ms.clamp(-MAX_OFFSET_MS, MAX_OFFSET_MS);
             }
+        });
+        // The mixdown switch and the level meter.
+        ui.horizontal(|ui| {
             if locked(ui, recording, |ui| ui.checkbox(&mut track.in_mixdown, "In mixdown")).changed() {
                 changed.discrete();
             }
@@ -243,7 +256,8 @@ fn track_row(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, change
     remove
 }
 
-/// Draws the device dropdown of a track; a saved device that is not present shows its name in red with "(missing)".
+/// Draws the device dropdown of a track over a full row of its own; a saved device that is not
+/// present shows its name in red with "(missing)".
 fn device_picker(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, changed: &mut TracksChanged) {
     let found = find_device(track, input.devices);
     let found_id = found.map(|device| device.id.clone());
@@ -256,7 +270,7 @@ fn device_picker(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, ch
     locked(ui, input.recording, |ui| {
         egui::ComboBox::from_id_salt(("track-device", input.index))
             .selected_text(text)
-            .width(DEVICE_WIDTH)
+            .width(ui.available_width())
             .show_ui(ui, |ui| {
                 for device in input.devices {
                     let selected = found_id.as_deref() == Some(device.id.as_str());
