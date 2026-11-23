@@ -24,6 +24,8 @@ use crate::profile_ui::{ProfileOutcome, ProfileSection};
 use crate::profiles::ProfileStore;
 use crate::record_ui;
 use crate::recovery::{self, RecoveryReport};
+use crate::review;
+use crate::review_ui;
 use crate::settings_ui::{self, ApiUi, NextTake, Section, SettingsDialog};
 use crate::status_ui;
 use crate::tools_ui::{self, Tool};
@@ -43,6 +45,10 @@ const APP_MARK: f32 = 14.0;
 
 /// The 1px hairline stroke width.
 const HAIRLINE: f32 = 1.0;
+
+/// Half the height of the toast's Review button, so the button centers on the
+/// toast capsule.
+const TOAST_BUTTON_HALF_HEIGHT: f32 = 14.0;
 
 /// Left padding of a panel header's title; with the panel's own 8px padding the title sits 14px from the panel edge.
 const HEADER_PAD: f32 = 6.0;
@@ -139,6 +145,14 @@ pub struct RecorderApp {
     running_take: Option<String>,
     /// The Settings dialog: whether it is open and the section its right side shows.
     settings_dialog: SettingsDialog,
+    /// The Review scan: the project's takes grouped by day, newest first.
+    review_days: Vec<review::Day>,
+    /// The selected take's name in Review, remembered while the app runs.
+    review_selected: Option<String>,
+    /// Whether the Review scan must run again before the Review panels draw.
+    review_dirty: bool,
+    /// The finished take the stop toast offers a Review action for, until the toast is gone.
+    review_take_pending: Option<String>,
 }
 
 impl RecorderApp {
@@ -243,6 +257,10 @@ impl RecorderApp {
             was_running: false,
             running_take: None,
             settings_dialog: SettingsDialog::default(),
+            review_days: Vec::new(),
+            review_selected: None,
+            review_dirty: true,
+            review_take_pending: None,
         };
         app.sync_preview(&cc.egui_ctx);
         app.sync_api(&cc.egui_ctx);
@@ -545,9 +563,8 @@ impl RecorderApp {
     }
 
     /// Follows the controller phase (spec "Mode rules"): a take starting, countdown included,
-    /// switches to Record and remembers the mode that was open; the take ending returns to it
-    /// and shows the "takeNN saved" toast (the Review action arrives with R8). The mode is
-    /// persisted with the settings.
+    /// switches to Record and remembers the mode that was open; the take ending returns to it,
+    /// shows the "takeNN saved" toast with its Review action, and flags the Review scan.
     fn sync_mode(&mut self, state: &ControllerState, ctx: &egui::Context) {
         let running = state.phase != Phase::Idle;
         if running && !self.was_running {
@@ -556,6 +573,9 @@ impl RecorderApp {
             self.modes.stop();
             if let Some(base_name) = self.running_take.take() {
                 ui_kit::toast(ctx, format!("{} saved", crate::profile_ui::take_label(&base_name)));
+                // The finished take joins the Review list, and the toast offers to open it there.
+                self.review_dirty = true;
+                self.review_take_pending = Some(base_name);
             }
         }
         self.running_take = state.take.as_ref().filter(|_| running).map(|take| take.base_name.clone());
@@ -566,12 +586,16 @@ impl RecorderApp {
         self.was_running = running;
     }
 
-    /// Moves to `to` when the mode rules allow it; the mode is persisted with the settings.
+    /// Moves to `to` when the mode rules allow it; the mode is persisted with the settings,
+    /// and opening Review flags its scan.
     fn set_mode(&mut self, recording: bool, to: Mode) {
         if self.modes.can_switch(recording, to) && self.modes.mode != to {
             self.modes.mode = to;
             self.settings.mode = to;
             self.settings_dirty = true;
+            if to == Mode::Review {
+                self.review_dirty = true;
+            }
         }
     }
 
@@ -584,8 +608,42 @@ impl RecorderApp {
         }
     }
 
-    /// The caption next to the project name: the profile, its output size and frame rate (spec "Title bar").
+    /// Draws the stop toast's Review button beside the toast capsule and opens
+    /// Review with that take selected when it is clicked; the button lives only
+    /// as long as the toast shows (spec "Mode rules" 2). `ui_kit::toast` carries
+    /// no action, so the button is drawn in its own area next to the capsule.
+    fn toast_review_action(&mut self, ctx: &egui::Context, shown: Option<egui::Response>) {
+        let pending = self.review_take_pending.clone();
+        match (pending, shown) {
+            (Some(take), Some(toast)) => {
+                let clicked = Cell::new(false);
+                egui::Area::new(egui::Id::new("toast-review-action"))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(egui::pos2(toast.rect.right() + space::SCALE_8, toast.rect.center().y - TOAST_BUTTON_HALF_HEIGHT))
+                    .show(ctx, |ui| {
+                        if ui.small_button("Review").clicked() {
+                            clicked.set(true);
+                        }
+                    });
+                if clicked.get() {
+                    self.review_take_pending = None;
+                    self.review_selected = Some(take);
+                    self.set_mode(false, Mode::Review);
+                }
+            }
+            // The toast is gone; the Review action goes with it.
+            (_, None) => self.review_take_pending = None,
+            _ => {}
+        }
+    }
+
+    /// The caption next to the project name: in Review the takes of today and
+    /// their total length, otherwise the profile, its output size and frame
+    /// rate (spec "Title bar").
     fn title_caption(&self) -> String {
+        if self.modes.mode == Mode::Review {
+            return self.review_caption();
+        }
         let profile = self.profile_store.get(&self.settings.active_profile);
         let size = match profile {
             Some(profile) if !profile.is_source_size() => format!("{}x{}", profile.width, profile.height),
@@ -593,6 +651,14 @@ impl RecorderApp {
         };
         let fps = profile.map_or(0, |profile| profile.fps);
         format!("{} \u{b7} {} \u{b7} {} fps", self.settings.active_profile, size, fps)
+    }
+
+    /// The Review title caption (spec "Title bar"): the takes of today and
+    /// their total length; the length is left out when no sidecar knows it.
+    fn review_caption(&self) -> String {
+        let (count, total_ms, timed) = review::today_summary(&self.review_days);
+        let count_text = if count == 1 { "1 take today".to_owned() } else { format!("{count} takes today") };
+        if timed == 0 { count_text } else { format!("{count_text} \u{b7} {}", review::format_duration(total_ms)) }
     }
 
     /// Draws the 44px title bar (spec "Title bar", rev 3): the app mark and the menus on the
@@ -953,18 +1019,42 @@ impl RecorderApp {
         }
     }
 
-    /// The Review placeholder: the banner strip over a centered caption (spec step R2;
-    /// Review is built in R8).
-    fn placeholder_panel(&mut self, ui: &mut egui::Ui, state: &ControllerState) {
+    /// The Review layout (spec "Review mode"): the takes list on the left, the
+    /// take's picture in the center and the take info on the right. The scan
+    /// runs when Review opens, when a take finishes and on the header's
+    /// refresh button; playback arrives with R9.
+    fn review_panels(&mut self, ui: &mut egui::Ui, state: &ControllerState) {
+        if self.review_dirty {
+            self.review_dirty = false;
+            self.rescan_review();
+        }
         egui::CentralPanel::default().frame(window_frame()).show(ui, |ui| {
-            column(ui, ui.max_rect(), |ui| {
-                self.banner_strip(ui, state);
-                let galley =
-                    ui.painter().layout_no_wrap("Coming in Phase 13".to_owned(), ui_kit::fonts::medium(typography::CAPTION_SIZE), color::TEXT_TERTIARY);
-                let center = ui.available_rect_before_wrap().center();
-                ui.painter().galley(center - galley.size() / 2.0, galley, color::TEXT_TERTIARY);
+            let [left, center, right] = three_columns(ui.max_rect());
+            column(ui, left, |ui| match review_ui::takes_panel(ui, &self.review_days, &mut self.review_selected) {
+                review_ui::TakesAction::OpenFolder => open_folder(&project_folder(&self.settings)),
+                review_ui::TakesAction::Refresh => self.review_dirty = true,
+                review_ui::TakesAction::None => {}
+            });
+            column(ui, center, |ui| {
+                if self.banner_strip(ui, state) {
+                    ui.add_space(space::SCALE_8);
+                }
+                review_ui::center(ui, &self.review_days, self.review_selected.as_deref());
+            });
+            column(ui, right, |ui| {
+                review_ui::take_panel(ui, review::find(&self.review_days, self.review_selected.as_deref()));
             });
         });
+    }
+
+    /// Rescans the project folder for takes and keeps the selected take when
+    /// it still exists, falling back to the newest one.
+    fn rescan_review(&mut self) {
+        self.review_days = review::scan(&project_folder(&self.settings));
+        let names: Vec<String> = self.review_days.iter().flat_map(|day| day.takes.iter().map(|take| take.name.clone())).collect();
+        if !names.iter().any(|name| Some(name) == self.review_selected.as_ref()) {
+            self.review_selected = names.first().cloned();
+        }
     }
 
     /// The Record layout (spec "Modes" and "Record mode"): the recording preview in a center
@@ -1379,12 +1469,13 @@ impl eframe::App for RecorderApp {
         match self.modes.mode {
             Mode::Setup => self.setup_panels(ui, &ctx, &state),
             Mode::Record => self.record_panels(ui, &ctx, &state),
-            Mode::Review => self.placeholder_panel(ui, &state),
+            Mode::Review => self.review_panels(ui, &state),
         }
 
-        // The toasts (spec "Mode rules"): one glass capsule at a time; the stop toast's
-        // Review action arrives with R8a.
-        ui_kit::show_toasts(&ctx);
+        // The toasts (spec "Mode rules"): one glass capsule at a time; the stop
+        // toast carries a Review action that opens Review on that take.
+        let shown_toast = ui_kit::show_toasts(&ctx);
+        self.toast_review_action(&ctx, shown_toast);
 
         // The Settings dialog (spec "Settings dialog"): File > Settings (Ctrl+,) and
         // View > Appearance open it, Esc closes it.
