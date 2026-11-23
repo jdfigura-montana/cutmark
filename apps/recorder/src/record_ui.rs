@@ -18,13 +18,16 @@ use crate::engine::session::Summary;
 use crate::marks_ui;
 use crate::tracks_ui::{self, LiveTrackStats};
 
-/// Width of the record capsule (spec "Setup mode": the deck's Record capsule
-/// is the transport deck's 56 x 44 capsule).
-const CAPSULE_WIDTH: f32 = 56.0;
+/// Left padding of the capsule's content (the dot or square).
+const CAPSULE_PAD_LEFT: f32 = 14.0;
+/// Right padding of the capsule's content (the label).
+const CAPSULE_PAD_RIGHT: f32 = 18.0;
 /// Side of the white dot or square inside the record capsule.
 const CAPSULE_GLYPH: f32 = 10.0;
 /// Corner radius of the capsule's white square, the stop glyph.
-const SQUARE_RADIUS: f32 = 2.0;
+const SQUARE_RADIUS: f32 = 2.5;
+/// Opacity of the capsule while it is disabled (spec "States": disabled at 40%).
+const DISABLED_OPACITY: f32 = 0.4;
 /// Gap between the capsule's glyph and its label.
 const CAPSULE_GAP: f32 = space::SCALE_8;
 /// Left padding of a panel header's title, the same inset the app's other
@@ -72,7 +75,7 @@ fn deck_contents(ui: &mut Ui, d: Deck<'_>, send: &mut dyn FnMut(CommandKind)) {
         }
         _ => idle_timecode(ui),
     }
-    if ui_kit::deck_button(ui, ui_kit::icons::regular::NOTE_PENCIL, &tip("Add mark", &d.chords.mark)).clicked() {
+    if ui_kit::deck_button(ui, ui_kit::icons::regular::FLAG, &tip("Add mark", &d.chords.mark)).clicked() {
         send(CommandKind::Mark(MarkKind::Silent));
     }
     let start_stop = if running { "Stop recording" } else { "Start recording" };
@@ -105,32 +108,72 @@ pub(crate) fn pill_label(paused: bool) -> &'static str {
     if paused { "PAUSED" } else { "REC" }
 }
 
-/// The record capsule (spec "Setup mode"): a `sem.record` capsule with a white
-/// dot and "Record" while idle, a white square and "Stop" while a take runs.
-/// ui-kit's `play_button` has no labelled capsule, so the app draws this one
-/// from the tokens.
+// The rects of the last record capsule a test drew: the outer rect, the
+// glyph rect and the label rect (test hook for the containment test).
+#[cfg(test)]
+thread_local! {
+    static LAST_CAPSULE_RECTS: std::cell::RefCell<Option<(Rect, Rect, Rect)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The record capsule (spec "Setup mode"): one `sem.record` capsule measured
+/// from its content (dot, gap, label) plus 14 px left and 18 px right padding
+/// at the deck button height with a true capsule radius (height / 2), so the
+/// fill always covers the white dot and the white "Record" label while idle
+/// and the white rounded square and "Stop" while a take runs. Hover and
+/// pressed take the derived `sem.record` shades, disabled fades to 40%, the
+/// focus ring follows the capsule, and the dot and the label sit vertically
+/// centered on the rect, on the deck buttons' center line. ui-kit's
+/// `play_button` has no labelled capsule, so the app draws this one from the
+/// tokens.
 pub fn record_capsule(ui: &mut Ui, recording: bool, tooltip: &str) -> Response {
     let height = size::TRANSPORT_BUTTON;
-    let (rect, response) = ui.allocate_exact_size(vec2(CAPSULE_WIDTH, height), Sense::click());
+    let label = capsule_label(recording);
+    // White like the Play capsule's record glyph: there is no text.on_record token.
+    let label_galley = ui.painter().layout_no_wrap(label.to_owned(), ui_kit::fonts::semibold(typography::BODY_SIZE), Color32::WHITE);
+    let width = CAPSULE_PAD_LEFT + CAPSULE_GLYPH + CAPSULE_GAP + label_galley.size().x + CAPSULE_PAD_RIGHT;
+    let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
     let response = response.on_hover_text(tooltip);
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, capsule_label(recording)));
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, label));
+    // The hover and pressed shades come from the same derivation the accent's
+    // shades come from; the base fill stays the exact token value.
+    let record = ui_kit::accent::derive(color::SEM_RECORD);
+    let enabled = ui.is_enabled();
+    let content = if enabled { Color32::WHITE } else { faded(Color32::WHITE) };
+    let fill = if !enabled {
+        faded(color::SEM_RECORD)
+    } else if response.is_pointer_button_down_on() {
+        record.pressed
+    } else if response.hovered() {
+        record.hover
+    } else {
+        color::SEM_RECORD
+    };
+    let dot_rect = Rect::from_min_size(pos2(rect.left() + CAPSULE_PAD_LEFT, rect.center().y - CAPSULE_GLYPH / 2.0), vec2(CAPSULE_GLYPH, CAPSULE_GLYPH));
+    let label_pos = pos2(dot_rect.right() + CAPSULE_GAP, rect.center().y - label_galley.size().y / 2.0);
+    #[cfg(test)]
+    let label_rect = Rect::from_min_size(label_pos, label_galley.size());
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
-        painter.rect_filled(rect, CornerRadius::from(height / 2.0), color::SEM_RECORD);
-        let label_galley = painter.layout_no_wrap(capsule_label(recording).to_owned(), ui_kit::fonts::medium(typography::BODY_SIZE), Color32::WHITE);
-        let glyph_left = rect.center().x - (CAPSULE_GLYPH + CAPSULE_GAP + label_galley.size().x) / 2.0;
-        let glyph_center = pos2(glyph_left + CAPSULE_GLYPH / 2.0, rect.center().y);
+        painter.rect_filled(rect, CornerRadius::from(height / 2.0), fill);
         if recording {
-            painter.rect_filled(Rect::from_center_size(glyph_center, vec2(CAPSULE_GLYPH, CAPSULE_GLYPH)), SQUARE_RADIUS, Color32::WHITE);
+            painter.rect_filled(dot_rect, CornerRadius::from(SQUARE_RADIUS), content);
         } else {
-            painter.circle_filled(glyph_center, CAPSULE_GLYPH / 2.0, Color32::WHITE);
+            painter.circle_filled(dot_rect.center(), CAPSULE_GLYPH / 2.0, content);
         }
-        painter.galley(pos2(glyph_left + CAPSULE_GLYPH + CAPSULE_GAP, rect.center().y - label_galley.size().y / 2.0), label_galley, Color32::WHITE);
+        painter.galley(label_pos, label_galley, Color32::PLACEHOLDER);
     }
     if response.has_focus() {
         ui_kit::focus_ring(ui, rect, CornerRadius::from(height / 2.0));
     }
+    #[cfg(test)]
+    LAST_CAPSULE_RECTS.with(|slot| *slot.borrow_mut() = Some((rect, dot_rect, label_rect)));
     response
+}
+
+/// Fades a fully opaque token color to [`DISABLED_OPACITY`] alpha (spec
+/// "States": disabled at 40%).
+fn faded(color: Color32) -> Color32 {
+    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), (f32::from(color.a()) * DISABLED_OPACITY) as u8)
 }
 
 /// The idle deck's timecode in `text.tertiary` (spec "Setup mode").
@@ -333,6 +376,29 @@ mod tests {
                 deck_contents(ui, d, &mut |_| {});
             });
             output.textures_delta.clear();
+        }
+    }
+
+    /// The capsule's fill covers its whole rect with the dot (or stop square)
+    /// and the label inside, both vertically centered, while idle and while a
+    /// take runs.
+    #[test]
+    fn the_capsule_rect_contains_the_dot_and_the_label() {
+        let ctx = egui::Context::default();
+        ui_kit::apply(&ctx);
+        for recording in [false, true] {
+            LAST_CAPSULE_RECTS.with(|slot| *slot.borrow_mut() = None);
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(400.0, 100.0))), ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| {
+                record_capsule(ui, recording, "Start recording");
+            });
+            output.textures_delta.clear();
+            let (rect, glyph, label) = LAST_CAPSULE_RECTS.with(|slot| (*slot.borrow()).expect("the capsule recorded its rects"));
+            assert!(rect.contains_rect(glyph), "the glyph {glyph:?} must sit inside the capsule {rect:?}");
+            assert!(rect.contains_rect(label), "the label {label:?} must sit inside the capsule {rect:?}");
+            assert!((glyph.center().y - rect.center().y).abs() < 0.5, "the glyph must be vertically centered on the rect");
+            assert!((label.center().y - rect.center().y).abs() < 0.5, "the label must be vertically centered on the rect");
+            assert_eq!(rect.height(), size::TRANSPORT_BUTTON, "the capsule is the deck button height");
         }
     }
 }
