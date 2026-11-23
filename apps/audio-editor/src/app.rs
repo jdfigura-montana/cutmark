@@ -36,6 +36,40 @@ const TOP_BAR_H: f32 = size::TOOLBAR_MAIN_HEIGHT;
 /// Height of the bottom status bar panel.
 const STATUS_BAR_H: f32 = size::STATUS_BAR_HEIGHT;
 
+/// The editor shortcut ids the keyboard chain checks, most specific first
+/// (entries that share a logical key: egui's matching ignores an extra Shift
+/// or Alt, so the Shift variants must be tested before their plain keys).
+const SHORTCUT_ORDER: &[&str] = &[
+    "redo",
+    "undo",
+    "select_all",
+    "process_normalize",
+    "fade_in",
+    "fade_out",
+    "save_as",
+    "add_track",
+    "new_project",
+    "open_project",
+    "import_media",
+    "export",
+    "record",
+    "save",
+    "delete_selection",
+    "clear_selection",
+    "toggle_ripple",
+    "toggle_snap",
+    "split_at_playhead",
+    "copy",
+    "cut",
+    "paste",
+    "trim_to_selection",
+    "add_marker",
+    "previous_marker",
+    "next_marker",
+    "process_gain",
+    "silence",
+];
+
 /// Wraps plain panel messages (import, relink, bin and timeline edits) as
 /// "Media" messages for the messages dialog.
 fn media_messages(texts: Vec<String>) -> impl Iterator<Item = Message> {
@@ -48,6 +82,38 @@ enum Screen {
     Start(StartScreen),
     /// An open project being edited.
     Editing(Box<Editor>),
+}
+
+/// Why the keyboard's guards stopped a shortcut action.
+pub(crate) enum ShortcutBlocked {
+    /// An export locks the project.
+    Locked,
+    /// A take is being recorded and the id is not one of the recording keys.
+    Recording,
+    /// A drag gesture is active and undo, redo or cut would break it.
+    Gesture,
+}
+
+/// What running one shortcut action produced.
+pub(crate) struct ShortcutOutcome {
+    /// A Project menu action to apply up in `run` (New, Open).
+    pub project: ProjectMenuAction,
+    /// A modal to show with its own title, if the action raised one.
+    pub dialog: Option<ConfirmDialog>,
+    /// Plain messages for the messages dialog.
+    pub messages: Vec<Message>,
+}
+
+/// The result of running one shortcut action by id.
+pub(crate) enum ShortcutResult {
+    /// The action ran (some ids are no-ops, like clear_selection with an
+    /// empty selection).
+    Ran(ShortcutOutcome),
+    /// The keyboard's guards stopped it.
+    Blocked(ShortcutBlocked),
+    /// The id has no action behind it (reserved and local-context ids:
+    /// help, menus, dialogs, gesture cancels, timeline zoom keys).
+    Unhandled,
 }
 
 /// What to do once the close prompts are answered.
@@ -110,6 +176,9 @@ pub struct App {
     about_open: bool,
     /// True once the first editing frame checked whether to show the tour.
     tour_checked: bool,
+    /// The remote control server, when this instance runs it (spec:
+    /// docs/audio-editor/1.3-StreamDeck.md "App side").
+    remote: Option<crate::remote::Remote>,
 }
 
 impl Default for App {
@@ -131,7 +200,17 @@ impl Default for App {
             tour: tour::TourState::default(),
             about_open: false,
             tour_checked: false,
+            remote: None,
         }
+    }
+}
+
+impl App {
+    /// The running app's `App`: with the remote control server (`None` when
+    /// another instance runs it or it failed to start). Tests use `default`,
+    /// which has none.
+    pub fn with_remote(remote: Option<crate::remote::Remote>) -> Self {
+        App { remote, ..Default::default() }
     }
 }
 
@@ -156,10 +235,17 @@ impl App {
         let mut opened: Option<Editor> = None;
         let mut action = ProjectMenuAction::None;
         let mut help_action = HelpMenuAction::None;
+        // A Project menu action a remote command left behind, applied below.
+        let mut remote_action = ProjectMenuAction::None;
         // A close that survived the prompts this frame, applied below.
         let mut resolved: Option<PendingClose> = None;
         match &mut screen {
             Screen::Start(start) => {
+                // Nothing to dispatch into here; stale commands must not
+                // fire when the next project opens.
+                if let Some(remote) = self.remote.as_mut() {
+                    crate::remote::clear(remote);
+                }
                 if !self.start_output_queried {
                     self.start_output = crate::audio::engine::default_output_name();
                     self.start_output_queried = true;
@@ -189,6 +275,16 @@ impl App {
                 help_action = chosen.help;
                 Self::intercept_window_close(ui.ctx(), editor, &mut self.pending_close, self.close_confirmed);
                 resolved = Self::run_close_prompts(&ui.ctx().clone(), editor, &mut self.messages, &mut self.pending_close);
+                // The remote runs the same dispatch as the keyboard, with the
+                // same guards except the text-field focus (the remote has no
+                // text field). Called after the keyboard handling, so a
+                // keyboard press this frame wins over a queued command.
+                if let Some(remote) = self.remote.as_mut() {
+                    let ctx = ui.ctx().clone();
+                    remote_action = crate::remote::poll(remote, editor, &mut self.menu, &mut self.messages, &mut |editor, menu, id| {
+                        Self::run_shortcut_action(&ctx, editor, menu, id)
+                    });
+                }
             }
         }
         if let Some(mut editor) = opened {
@@ -201,6 +297,12 @@ impl App {
             ProjectMenuAction::Open => self.request_close(&mut screen, PendingClose::Open),
             ProjectMenuAction::Close => self.request_close(&mut screen, PendingClose::Close),
             ProjectMenuAction::Import => {}
+        }
+        match remote_action {
+            ProjectMenuAction::None => {}
+            ProjectMenuAction::New => self.request_close(&mut screen, PendingClose::New),
+            ProjectMenuAction::Open => self.request_close(&mut screen, PendingClose::Open),
+            ProjectMenuAction::Close | ProjectMenuAction::Import => {}
         }
         match help_action {
             HelpMenuAction::None => {}
@@ -568,85 +670,23 @@ impl App {
         // never while an export locks the project or a take is recorded. Every
         // key comes from the shortcut table (`crate::shortcuts`); entries that
         // share a logical key are checked most specific first, because egui's
-        // matching ignores an extra Shift or Alt.
+        // matching ignores an extra Shift or Alt. Each id runs through
+        // `run_shortcut_action`, the dispatch the remote control shares.
         if !ui.ctx().egui_wants_keyboard_input() && !editor.is_locked() && !recording {
-            let ctx = ui.ctx();
-            // A continuous gesture is active: undo/redo keys are ignored.
+            let ctx = ui.ctx().clone();
+            // A continuous gesture is active: undo/redo and cut are ignored.
             let gesture_active = editor.gesture_base.is_some();
             // Ctrl+G, Ctrl+L and Ctrl+R ignore a held Shift, as before.
             let shift = ui.input(|i| i.modifiers.shift);
             // These read the table without consuming: the prompt dialogs
             // drawn after this handler still get their Esc and Space.
-            if !gesture_active && crate::shortcuts::peek(ctx, "redo") {
-                let _ = editor.redo();
-            } else if !gesture_active && crate::shortcuts::peek(ctx, "undo") {
-                let _ = editor.undo();
-            } else if crate::shortcuts::peek(ctx, "select_all") {
-                editor.select_all();
-            } else if crate::shortcuts::peek(ctx, "process_normalize") {
-                crate::ui::dialogs::normalize::request(ctx);
-            } else if crate::shortcuts::peek(ctx, "fade_in") {
-                if let Err(error) = editor.fade_in() {
-                    *messages = Some(ConfirmDialog::new("Fade", Self::op_message(&error)));
-                }
-            } else if crate::shortcuts::peek(ctx, "fade_out") {
-                if let Err(error) = editor.fade_out() {
-                    *messages = Some(ConfirmDialog::new("Fade", Self::op_message(&error)));
-                }
-            } else if crate::shortcuts::peek(ctx, "save_as") {
-                menu.open_save_as(editor);
-            } else if crate::shortcuts::peek(ctx, "add_track") {
-                let _ = editor.apply(Action::AddTrack { index: None, name: None });
-            } else if crate::shortcuts::peek(ctx, "new_project") {
-                action = ProjectMenuAction::New;
-            } else if crate::shortcuts::peek(ctx, "open_project") {
-                action = ProjectMenuAction::Open;
-            } else if crate::shortcuts::peek(ctx, "import_media") {
-                msgs.extend(media_messages(bin_panel::pick_and_import(editor)));
-            } else if crate::shortcuts::peek(ctx, "export") {
-                menu.open_export(editor);
-            } else if !shift && crate::shortcuts::peek(ctx, "record") {
-                // Record onto the armed track from the playhead; "Arm a track
-                // first" and the like go to the messages dialog.
-                if let Err(error) = editor.start_recording() {
-                    msgs.push(Message::recording(error.to_string()));
-                }
-            } else if crate::shortcuts::peek(ctx, "save") {
-                menu.save(editor);
-            } else if crate::shortcuts::peek(ctx, "delete_selection") {
-                Self::delete_selection(editor);
-            } else if crate::shortcuts::peek(ctx, "clear_selection") {
-                editor.clear_selection();
-            } else if crate::shortcuts::peek(ctx, "toggle_ripple") {
-                editor.toggle_ripple();
-            } else if crate::shortcuts::peek(ctx, "toggle_snap") {
-                editor.toggle_snap();
-            } else if crate::shortcuts::peek(ctx, "split_at_playhead") {
-                let _ = editor.split();
-            } else if crate::shortcuts::peek(ctx, "copy") {
-                editor.copy_selection();
-            } else if !gesture_active && crate::shortcuts::peek(ctx, "cut") {
-                let _ = editor.cut_selection();
-            } else if crate::shortcuts::peek(ctx, "paste") {
-                let _ = editor.paste();
-            } else if crate::shortcuts::peek(ctx, "trim_to_selection") {
-                let _ = editor.trim_to_selection();
-            } else if crate::shortcuts::peek(ctx, "add_marker") {
-                let _ = editor.add_marker_at_playhead();
-            } else if crate::shortcuts::peek(ctx, "previous_marker") {
-                editor.jump_prev_marker();
-            } else if crate::shortcuts::peek(ctx, "next_marker") {
-                editor.jump_next_marker();
-            } else if !shift && crate::shortcuts::peek(ctx, "process_gain") {
-                // Process keys. egui itself binds none of Ctrl+G / Ctrl+Shift+N
-                // / Ctrl+Shift+I / Ctrl+Shift+O / Ctrl+L, so nothing else
-                // opens on them.
-                crate::ui::dialogs::gain::request_process(ctx);
-            } else if !shift
-                && crate::shortcuts::peek(ctx, "silence")
-                && let Err(error) = editor.silence()
-            {
-                *messages = Some(ConfirmDialog::new("Silence", Self::op_message(&error)));
+            let hit = SHORTCUT_ORDER.iter().copied().find(|id| match *id {
+                "redo" | "undo" | "cut" => !gesture_active && crate::shortcuts::peek(&ctx, id),
+                "record" | "process_gain" | "silence" => !shift && crate::shortcuts::peek(&ctx, id),
+                _ => crate::shortcuts::peek(&ctx, id),
+            });
+            if let Some(id) = hit {
+                Self::apply_outcome(Self::run_shortcut_action(&ctx, editor, menu, id), &mut action, messages, &mut msgs);
             }
         }
 
@@ -654,22 +694,11 @@ impl App {
         // activate). While a take is recorded Space belongs to
         // `handle_recording_keys`.
         if !ui.ctx().egui_wants_keyboard_input() && !recording {
+            let ctx = ui.ctx().clone();
             let keys = crate::shortcuts::table();
-            let ctx = ui.ctx();
-            if keys.pressed(ctx, "play_selection") {
-                // Play selection: plays the range once, then returns to its
-                // start. Without a range, Shift+Space does nothing.
-                if let crate::editor::selection::Selection::Range { start, end, .. } = editor.selection().clone() {
-                    editor.play_range(start, end);
-                }
-            } else if keys.pressed(ctx, "play_pause") {
-                editor.toggle_play();
-            } else if keys.pressed(ctx, "pause") {
-                editor.toggle_pause();
-            } else if keys.pressed(ctx, "jump_to_start") {
-                editor.jump_start();
-            } else if keys.pressed(ctx, "jump_to_end") {
-                editor.jump_end();
+            let hit = ["play_selection", "play_pause", "pause", "jump_to_start", "jump_to_end"].into_iter().find(|id| keys.pressed(&ctx, id));
+            if let Some(id) = hit {
+                Self::apply_outcome(Self::run_shortcut_action(&ctx, editor, menu, id), &mut action, messages, &mut msgs);
             }
         }
 
@@ -683,6 +712,139 @@ impl App {
             dialog.show(&ui.ctx().clone());
         }
         EditorActions { project: action, help: help_action }
+    }
+
+    /// Applies what one shortcut action produced to the frame's locals: the
+    /// Project menu action, a titled dialog, the plain messages.
+    fn apply_outcome(result: ShortcutResult, action: &mut ProjectMenuAction, messages: &mut Option<ConfirmDialog>, msgs: &mut Vec<Message>) {
+        match result {
+            ShortcutResult::Ran(outcome) => {
+                if outcome.project != ProjectMenuAction::None {
+                    *action = outcome.project;
+                }
+                if let Some(dialog) = outcome.dialog {
+                    *messages = Some(dialog);
+                }
+                msgs.extend(outcome.messages);
+            }
+            // A guard stopped the id (the keyboard path never runs a blocked
+            // id) or the id has no action behind it.
+            ShortcutResult::Blocked(_) | ShortcutResult::Unhandled => {}
+        }
+    }
+
+    /// Why a blocked shortcut is blocked, for the remote control's reply.
+    pub(crate) fn blocked_reason(blocked: &ShortcutBlocked) -> &'static str {
+        match blocked {
+            ShortcutBlocked::Locked => "an export is running",
+            ShortcutBlocked::Recording => "a take is being recorded",
+            ShortcutBlocked::Gesture => "a drag gesture is in progress",
+        }
+    }
+
+    /// Runs the action behind one shortcut-table id with the keyboard's
+    /// guards, except the text-field focus check (each caller owns that: the
+    /// keyboard checks egui's keyboard focus, the remote has no text field).
+    /// The keyboard chain in `show_editor` and the remote control both come
+    /// through here, so a remote command and its key can never drift apart.
+    pub(crate) fn run_shortcut_action(ctx: &egui::Context, editor: &mut Editor, menu: &mut ProjectMenu, id: &str) -> ShortcutResult {
+        // While a take is recorded only the four recording keys work, exactly
+        // the set `handle_recording_keys` acts on.
+        if editor.is_recording() && !matches!(id, "save" | "record_stop_keep" | "record_discard" | "add_marker") {
+            return ShortcutResult::Blocked(ShortcutBlocked::Recording);
+        }
+        // While an export locks the project every edit is refused; the
+        // transport keys keep working, as they always did.
+        if editor.is_locked() && !matches!(id, "play_selection" | "play_pause" | "pause" | "jump_to_start" | "jump_to_end") {
+            return ShortcutResult::Blocked(ShortcutBlocked::Locked);
+        }
+        // A drag gesture is active: undo, redo and cut would break it.
+        if matches!(id, "undo" | "redo" | "cut") && editor.gesture_base.is_some() {
+            return ShortcutResult::Blocked(ShortcutBlocked::Gesture);
+        }
+        let mut outcome = ShortcutOutcome { project: ProjectMenuAction::None, dialog: None, messages: Vec::new() };
+        match id {
+            "redo" => {
+                let _ = editor.redo();
+            }
+            "undo" => {
+                let _ = editor.undo();
+            }
+            "select_all" => editor.select_all(),
+            "process_normalize" => crate::ui::dialogs::normalize::request(ctx),
+            "fade_in" => {
+                if let Err(error) = editor.fade_in() {
+                    outcome.dialog = Some(ConfirmDialog::new("Fade", Self::op_message(&error)));
+                }
+            }
+            "fade_out" => {
+                if let Err(error) = editor.fade_out() {
+                    outcome.dialog = Some(ConfirmDialog::new("Fade", Self::op_message(&error)));
+                }
+            }
+            "save_as" => menu.open_save_as(editor),
+            "add_track" => {
+                let _ = editor.apply(Action::AddTrack { index: None, name: None });
+            }
+            "new_project" => outcome.project = ProjectMenuAction::New,
+            "open_project" => outcome.project = ProjectMenuAction::Open,
+            "import_media" => outcome.messages = media_messages(bin_panel::pick_and_import(editor)).collect(),
+            "export" => menu.open_export(editor),
+            // Record onto the armed track from the playhead; "Arm a track
+            // first" and the like go to the messages dialog.
+            "record" => {
+                if let Err(error) = editor.start_recording() {
+                    outcome.messages.push(Message::recording(error.to_string()));
+                }
+            }
+            "save" => menu.save(editor),
+            "delete_selection" => Self::delete_selection(editor),
+            "clear_selection" => editor.clear_selection(),
+            "toggle_ripple" => editor.toggle_ripple(),
+            "toggle_snap" => editor.toggle_snap(),
+            "split_at_playhead" => {
+                let _ = editor.split();
+            }
+            "copy" => editor.copy_selection(),
+            "cut" => {
+                let _ = editor.cut_selection();
+            }
+            "paste" => {
+                let _ = editor.paste();
+            }
+            "trim_to_selection" => {
+                let _ = editor.trim_to_selection();
+            }
+            "add_marker" => {
+                let _ = editor.add_marker_at_playhead();
+            }
+            "previous_marker" => editor.jump_prev_marker(),
+            "next_marker" => editor.jump_next_marker(),
+            // Process keys. egui itself binds none of Ctrl+G / Ctrl+Shift+N
+            // / Ctrl+Shift+I / Ctrl+Shift+O / Ctrl+L, so nothing else
+            // opens on them.
+            "process_gain" => crate::ui::dialogs::gain::request_process(ctx),
+            "silence" => {
+                if let Err(error) = editor.silence() {
+                    outcome.dialog = Some(ConfirmDialog::new("Silence", Self::op_message(&error)));
+                }
+            }
+            // Play selection: plays the range once, then returns to its
+            // start. Without a range, Shift+Space does nothing.
+            "play_selection" => {
+                if let crate::editor::selection::Selection::Range { start, end, .. } = editor.selection().clone() {
+                    editor.play_range(start, end);
+                }
+            }
+            "play_pause" => editor.toggle_play(),
+            "pause" => editor.toggle_pause(),
+            "jump_to_start" => editor.jump_start(),
+            "jump_to_end" => editor.jump_end(),
+            "record_stop_keep" => editor.stop_recording(),
+            "record_discard" => editor.cancel_recording(),
+            _ => return ShortcutResult::Unhandled,
+        }
+        ShortcutResult::Ran(outcome)
     }
 
     /// The keys that work while a take is recorded: Space ends the take and
