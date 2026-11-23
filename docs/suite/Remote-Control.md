@@ -67,9 +67,9 @@ App to client:
 - `blocked` is returned when a guard stops the command (for example recording in progress). The plugin shows the key's alert.
 - Protocol major mismatch: the plugin shows "Update" on its keys and sends nothing.
 
-## Plugin (plugins/streamdeck/)
+## Plugin (plugins/suite/)
 
-- Location in repo: `plugins/streamdeck/` with the `com.cutmark.suite.sdPlugin` folder inside, built with the official `@elgato/streamdeck` SDK and the Stream Deck CLI.
+- Location in repo: `plugins/suite/` with the `com.cutmark.suite.sdPlugin` folder inside, built with the official `@elgato/streamdeck` SDK and the Stream Deck CLI.
 - Manifest: `SDKVersion` 2, `Software.MinimumVersion` "7.1", `Nodejs.Version` "24", `OS` windows only, `ApplicationsToMonitor` windows: the app exe names (audio: `cutmark-audio.exe`, confirm against the build).
 - WebSocket client: the `ws` npm package (sends no `Origin` header).
 - Connection: on `applicationDidLaunch` (or plugin start with the app already running) read `<app>.json`, connect, `hello`. Retry every 2 seconds for 30 seconds, then wait for the next launch event. On `applicationDidTerminate` drop the socket.
