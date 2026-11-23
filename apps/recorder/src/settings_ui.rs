@@ -88,14 +88,17 @@ pub struct Outcome {
     pub regenerate_token: bool,
 }
 
-/// The width the dialog body keeps, so the hotkey table and the picker fit.
-const BODY_MIN_WIDTH: f32 = 560.0;
+/// The width the Settings body wants, clamped to the screen.
+const BODY_WIDTH: f32 = 760.0;
+
+/// The height the Settings body wants, clamped to the screen.
+const BODY_HEIGHT: f32 = 520.0;
 
 /// Width of the section list on the left.
-const SECTION_LIST_WIDTH: f32 = 140.0;
+const SECTION_LIST_WIDTH: f32 = 200.0;
 
-/// The tallest the section content gets before it scrolls.
-const BODY_MAX_HEIGHT: f32 = 460.0;
+/// The margin the dialog keeps to the screen edges on every side.
+const SCREEN_MARGIN: f32 = 48.0;
 
 /// Width of the naming template field.
 const NAMING_FIELD_WIDTH: f32 = 320.0;
@@ -115,16 +118,22 @@ pub fn show(
 ) -> Outcome {
     let mut outcome = Outcome::default();
     let mut open = dialog.open;
+    // Fixed body size, clamped to the screen: an egui::Modal has no width
+    // limit of its own, so the body must never grow from its available_width().
+    let screen = ctx.input(|input| input.content_rect());
+    let body_width = BODY_WIDTH.min((screen.width() - 2.0 * SCREEN_MARGIN).max(0.0));
+    let body_height = BODY_HEIGHT.min((screen.height() - 2.0 * SCREEN_MARGIN).max(0.0));
     ui_kit::dialog(
         ctx,
         Id::new("recorder-settings-dialog"),
         "Settings",
         &mut open,
         |ui| {
-            ui.set_min_width(BODY_MIN_WIDTH);
+            ui.set_width(body_width);
+            ui.set_height(body_height);
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
-                    ui.set_min_width(SECTION_LIST_WIDTH);
+                    ui.set_width(SECTION_LIST_WIDTH);
                     for candidate in Section::ALL {
                         if ui.selectable_label(dialog.section == candidate, candidate.label()).clicked() {
                             dialog.section = candidate;
@@ -132,9 +141,10 @@ pub fn show(
                     }
                 });
                 ui.separator();
-                egui::ScrollArea::vertical().auto_shrink(false).max_height(BODY_MAX_HEIGHT).show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
-                    match dialog.section {
+                let content_width = (body_width - SECTION_LIST_WIDTH - 2.0 * ui.spacing().item_spacing.x - 1.0).max(0.0);
+                egui::ScrollArea::vertical().auto_shrink(false).min_scrolled_width(content_width).max_width(content_width).max_height(body_height).show(
+                    ui,
+                    |ui| match dialog.section {
                         Section::General => general_section(ui, settings, &mut outcome),
                         Section::Recording => recording_section(ui, settings, next_take, &mut outcome),
                         Section::Hotkeys => hotkey_table(ui, hotkeys),
@@ -143,8 +153,8 @@ pub fn show(
                         Section::Appearance => {
                             ui_kit::accent_picker(ui);
                         }
-                    }
-                });
+                    },
+                );
             });
         },
         |_ui| {},
