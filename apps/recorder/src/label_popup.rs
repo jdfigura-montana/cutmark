@@ -99,7 +99,7 @@ mod win {
     use std::sync::{Arc, Mutex, PoisonError};
 
     use ::marks::MarkType;
-    use ui_kit::palette;
+    use ui_kit::tokens;
     use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows::Win32::Graphics::Gdi::{
         BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreatePen, CreateSolidBrush, DEFAULT_CHARSET, DT_CENTER, DT_LEFT, DT_SINGLELINE,
@@ -185,7 +185,7 @@ mod win {
         HWND(raw as *mut c_void)
     }
 
-    /// A palette color as a GDI color.
+    /// A token color as a GDI color.
     fn rgb(color: egui::Color32) -> COLORREF {
         COLORREF(u32::from(color.r()) | (u32::from(color.g()) << 8) | (u32::from(color.b()) << 16))
     }
@@ -282,7 +282,7 @@ mod win {
             SendMessageW(edit, EM_LIMITTEXT, Some(WPARAM(LABEL_LIMIT)), Some(LPARAM(0)));
             let old = SetWindowLongPtrW(edit, GWLP_WNDPROC, edit_proc as *const () as isize);
             EDIT_PROC.with(|cell| cell.set(old));
-            let edit_brush = CreateSolidBrush(rgb(palette::RECESSED));
+            let edit_brush = CreateSolidBrush(rgb(tokens::color::BG_TRACK_EMPTY));
             let state = State {
                 hwnd: hwnd.0 as isize,
                 edit: edit.0 as isize,
@@ -598,8 +598,8 @@ mod win {
         let hdc = HDC(wparam.0 as *mut c_void);
         // SAFETY: `hdc` is the device context the system passed with the message.
         unsafe {
-            SetTextColor(hdc, rgb(palette::TEXT_PRIMARY));
-            SetBkColor(hdc, rgb(palette::RECESSED));
+            SetTextColor(hdc, rgb(tokens::color::TEXT_PRIMARY));
+            SetBkColor(hdc, rgb(tokens::color::BG_TRACK_EMPTY));
         }
         LRESULT(with_state(|state| state.edit_brush).unwrap_or(0))
     }
@@ -620,7 +620,7 @@ mod win {
 
     /// Draws the popup's contents on `hdc`.
     fn draw(hdc: HDC, lay: &Layout, category: usize, font: isize) {
-        round_box(hdc, RECT { left: 0, top: 0, right: lay.width, bottom: lay.height }, palette::PANEL_BG, palette::CONTROL_BORDER, 0);
+        round_box(hdc, RECT { left: 0, top: 0, right: lay.width, bottom: lay.height }, tokens::color::BG_PANEL, tokens::color::BG_HOVER, 0);
         // SAFETY: `hdc` is the live paint context, and the font (or 0, which selects nothing useful but is harmless) is owned by this module.
         unsafe {
             if font != 0 {
@@ -632,15 +632,21 @@ mod win {
             let Some(rect) = lay.pills.get(index) else { continue };
             let selected = index == category;
             let (fill, border, text) = if selected {
-                (palette::ACCENT, palette::ACCENT, palette::APP_BG)
+                (tokens::accent::ACCENT, tokens::accent::ACCENT, tokens::color::BG_GROUND)
             } else {
-                (palette::CONTROL_FILL, palette::CONTROL_BORDER, palette::TEXT_NORMAL)
+                (tokens::color::BG_CONTROL, tokens::color::BG_HOVER, tokens::color::TEXT_SECONDARY)
             };
             round_box(hdc, *rect, fill, border, lay.radius);
             draw_text(hdc, *rect, &format!("{} {name}", index + 1), text, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
-        round_box(hdc, lay.edit_frame, palette::RECESSED, palette::CONTROL_BORDER, lay.radius);
-        draw_text(hdc, lay.hint, "Enter saves. Esc saves with no label. Tab switches category.", palette::TEXT_MUTED, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        round_box(hdc, lay.edit_frame, tokens::color::BG_TRACK_EMPTY, tokens::color::BG_HOVER, lay.radius);
+        draw_text(
+            hdc,
+            lay.hint,
+            "Enter saves. Esc saves with no label. Tab switches category.",
+            tokens::color::TEXT_TERTIARY,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+        );
     }
 
     /// Draws a filled box with a one pixel border and rounded corners.

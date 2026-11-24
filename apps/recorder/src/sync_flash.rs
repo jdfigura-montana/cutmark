@@ -62,6 +62,7 @@ mod win {
     const MAX_FLASH_MS: u32 = 2000;
 
     /// White, as a GDI color.
+    // style-lint: allow the flash must paint pure white and no token is white
     const WHITE: COLORREF = COLORREF(0x00FF_FFFF);
 
     /// The window handle for a raw value.

@@ -60,7 +60,7 @@ mod win {
     use std::mem::size_of;
     use std::sync::atomic::{AtomicIsize, Ordering};
 
-    use ui_kit::palette;
+    use ui_kit::tokens;
     use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows::Win32::Graphics::Gdi::{
         ANTIALIASED_QUALITY, BeginPaint, CLIP_DEFAULT_PRECIS, CreateFontW, CreatePen, CreateSolidBrush, DEFAULT_CHARSET, DT_CENTER, DT_SINGLELINE, DT_VCENTER,
@@ -150,7 +150,7 @@ mod win {
         HWND(raw as *mut c_void)
     }
 
-    /// A palette color as a GDI color.
+    /// A token color as a GDI color.
     fn rgb(color: egui::Color32) -> COLORREF {
         COLORREF(u32::from(color.r()) | (u32::from(color.g()) << 8) | (u32::from(color.b()) << 16))
     }
@@ -391,8 +391,8 @@ mod win {
             FillRect(hdc, &client, key);
             let _ = DeleteObject(key.into());
 
-            let pen = CreatePen(PS_SOLID, 2, rgb(palette::CONTROL_BORDER));
-            let brush: HBRUSH = CreateSolidBrush(rgb(palette::PANEL_BG));
+            let pen = CreatePen(PS_SOLID, 2, rgb(tokens::color::BG_HOVER));
+            let brush: HBRUSH = CreateSolidBrush(rgb(tokens::color::BG_PANEL));
             let old_pen = SelectObject(hdc, pen.into());
             let old_brush = SelectObject(hdc, brush.into());
             let _ = Ellipse(hdc, client.left + 1, client.top + 1, client.right - 1, client.bottom - 1);
@@ -405,7 +405,7 @@ mod win {
                 SelectObject(hdc, HFONT(font as *mut c_void).into());
             }
             SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, rgb(palette::TEXT_PRIMARY));
+            SetTextColor(hdc, rgb(tokens::color::TEXT_PRIMARY));
             let mut wide: Vec<u16> = number.to_string().encode_utf16().collect();
             let mut rect = client;
             DrawTextW(hdc, &mut wide, &mut rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);

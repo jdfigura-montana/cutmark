@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use egui::{Button, ComboBox, DragValue, RichText, TextEdit, Ui};
 use media_io::AudioCodec;
 use media_io::encode::{Codec as EncoderCodec, CodecSupport, ConfigError, MAX_MBPS, NumericOption, OptionRanges, amf_options, check_combo_with, probe_amf};
-use ui_kit::tokens::space;
+use ui_kit::tokens::{color, space};
 use ui_kit::{inspector_group, inspector_row};
 
 use crate::config::{AudioCodecChoice, Codec, Container, Preset, Profile, RateControl, Settings, takes_root};
@@ -301,7 +301,7 @@ impl ProfileSection {
             self.edit_fields(ui, store, settings, source, audio, recording);
         });
         if recording {
-            ui.colored_label(ui_kit::palette::TEXT_MUTED, "Profile settings are locked while recording");
+            ui.colored_label(color::TEXT_TERTIARY, "Profile settings are locked while recording");
         }
     }
 
@@ -481,7 +481,7 @@ impl ProfileSection {
                         }
                     }
                     if probing {
-                        ui.colored_label(ui_kit::palette::TEXT_MUTED, "Checking encoders...");
+                        ui.colored_label(color::TEXT_TERTIARY, "Checking encoders...");
                     }
                 },
                 None,
@@ -551,7 +551,7 @@ impl ProfileSection {
                         }
                     });
                     if p.is_source_size() {
-                        ui.colored_label(ui_kit::palette::TEXT_MUTED, format!("{}x{}", source.0, source.1));
+                        ui.colored_label(color::TEXT_TERTIARY, format!("{}x{}", source.0, source.1));
                     } else if custom {
                         ui.add(DragValue::new(&mut p.width).range(16..=16384));
                         ui.label("x");

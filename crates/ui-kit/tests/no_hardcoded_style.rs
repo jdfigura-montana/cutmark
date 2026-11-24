@@ -17,6 +17,7 @@ const OPT_IN: &[&str] = &[
     "crates/ui-kit/src/tour.rs",
     "apps/gallery/src",
     "apps/audio-editor/src",
+    "apps/recorder/src",
 ];
 
 /// Marker that lets a single line opt out of the lint.

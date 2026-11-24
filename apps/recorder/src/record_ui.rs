@@ -173,7 +173,7 @@ pub fn record_capsule(ui: &mut Ui, recording: bool, tooltip: &str) -> Response {
 /// Fades a fully opaque token color to [`DISABLED_OPACITY`] alpha (spec
 /// "States": disabled at 40%).
 fn faded(color: Color32) -> Color32 {
-    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), (f32::from(color.a()) * DISABLED_OPACITY) as u8)
+    color.gamma_multiply(DISABLED_OPACITY)
 }
 
 /// The idle deck's timecode in `text.tertiary` (spec "Setup mode").

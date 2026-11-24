@@ -1,11 +1,11 @@
 //! Draws the live monitor preview in the main area of the window.
 
 use capture::{Preview, PreviewFrame};
-use egui::{Align2, Color32, ColorImage, Context, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui, Vec2, pos2, vec2};
+use egui::{Align2, Color32, ColorImage, Context, Pos2, Rect, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui, Vec2, pos2, vec2};
 use ui_kit::tokens::{color, space, typography};
 
-/// The dark colour around and behind the picture.
-const BACKDROP: Color32 = Color32::from_gray(14);
+/// The dark colour around and behind the picture (`bg.track.empty`).
+const BACKDROP: Color32 = color::BG_TRACK_EMPTY;
 
 /// Space left below the preview for the transport deck R7 adds (spec "Setup mode").
 const DECK_SPACE: f32 = 88.0;
@@ -175,7 +175,7 @@ fn allocate_area(ui: &mut Ui) -> Rect {
 
 /// Draws a message in the middle of the area.
 fn draw_message(ui: &Ui, area: Rect, message: &str) {
-    ui.painter().text(area.center(), Align2::CENTER_CENTER, message, FontId::proportional(16.0), Color32::GRAY);
+    ui.painter().text(area.center(), Align2::CENTER_CENTER, message, ui_kit::fonts::medium(typography::HEADLINE_SIZE), color::TEXT_TERTIARY);
 }
 
 /// Reserves the whole remaining space for the recording preview (spec

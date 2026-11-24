@@ -9,6 +9,7 @@ use std::thread::JoinHandle;
 
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+use ui_kit::tokens::color;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, GetWindowThreadProcessId, MSG, PostThreadMessageW, TranslateMessage, WM_APP, WM_QUIT,
@@ -20,10 +21,10 @@ use crate::platform;
 
 /// Width and height of the tray icon in pixels.
 const ICON_SIZE: u32 = 32;
-/// Tray icon colour while idle.
-const IDLE_RGB: [u8; 3] = [150, 150, 150];
-/// Tray icon colour while recording.
-const RECORDING_RGB: [u8; 3] = [220, 50, 50];
+/// Tray icon colour while idle (`text.tertiary`).
+const IDLE_RGB: egui::Color32 = color::TEXT_TERTIARY;
+/// Tray icon colour while recording (`sem.record`).
+const RECORDING_RGB: egui::Color32 = color::SEM_RECORD;
 /// Tooltip text while idle.
 const TOOLTIP_IDLE: &str = "Cutmark Recorder";
 /// Tooltip text while recording.
@@ -213,8 +214,8 @@ fn message_loop(icons: &TrayIcons, state_rx: &Receiver<TrayState>) {
 
 /// Builds the menu and the tray icon; call it on the thread that will run the message loop.
 fn build_icons(ctx: &egui::Context, hwnd: Option<isize>, bus: BusSender, control: ControlSender) -> Result<TrayIcons, String> {
-    let idle_icon = circle_icon(IDLE_RGB)?;
-    let recording_icon = circle_icon(RECORDING_RGB)?;
+    let idle_icon = circle_icon(rgb_bytes(IDLE_RGB))?;
+    let recording_icon = circle_icon(rgb_bytes(RECORDING_RGB))?;
 
     let show = MenuItem::new("Show window", true, None);
     let start_stop = MenuItem::new("Start or stop recording", true, None);
@@ -255,6 +256,11 @@ fn build_icons(ctx: &egui::Context, hwnd: Option<isize>, bus: BusSender, control
     Ok(TrayIcons { icon, idle_icon, recording_icon })
 }
 
+/// A token color as the RGB bytes a tray icon pixel row needs.
+fn rgb_bytes(color: egui::Color32) -> [u8; 3] {
+    [color.r(), color.g(), color.b()]
+}
+
 /// Draws a filled circle with a soft edge as a 32x32 RGBA icon.
 fn circle_icon(rgb: [u8; 3]) -> Result<Icon, String> {
     Icon::from_rgba(circle_rgba(rgb), ICON_SIZE, ICON_SIZE).map_err(|err| format!("could not build the tray icon image: {err}"))
@@ -282,7 +288,7 @@ mod tests {
 
     #[test]
     fn circle_is_opaque_in_the_middle_and_clear_in_the_corner() {
-        let pixels = circle_rgba(RECORDING_RGB);
+        let pixels = circle_rgba(rgb_bytes(RECORDING_RGB));
         assert_eq!(pixels.len(), (ICON_SIZE * ICON_SIZE * 4) as usize);
         let alpha_at = |x: u32, y: u32| pixels[((y * ICON_SIZE + x) * 4 + 3) as usize];
         assert_eq!(alpha_at(16, 16), 255);

@@ -22,11 +22,11 @@ use crate::profiles::ProfileStore;
 use crate::webcam::WebcamHost;
 use crate::webcam_ui;
 
-/// The color of the "Within 1 frame" verdict.
-const SYNC_GOOD: Color32 = Color32::from_rgb(0x5C, 0xB8, 0x5C);
+/// The color of the "Within 1 frame" verdict (`sem.success`).
+const SYNC_GOOD: Color32 = ui_kit::tokens::color::SEM_SUCCESS;
 
-/// The color of the "Off by N frames" verdict and of a failed sync test.
-const SYNC_WARN: Color32 = Color32::from_rgb(0xE6, 0xB4, 0x3C);
+/// The color of the "Off by N frames" verdict and of a failed sync test (`sem.meter.warn`).
+const SYNC_WARN: Color32 = ui_kit::tokens::color::SEM_METER_WARN;
 
 /// How often the window redraws while a sync test runs, so its progress moves.
 const SYNC_REPAINT: Duration = Duration::from_millis(100);

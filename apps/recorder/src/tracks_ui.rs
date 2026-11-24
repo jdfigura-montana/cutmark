@@ -7,8 +7,7 @@ use std::time::{Duration, Instant};
 
 use capture::{AudioDevice, DeviceKind};
 use egui::{ComboBox, Response, RichText, Ui};
-use ui_kit::palette::RECORD_RED;
-use ui_kit::tokens::space;
+use ui_kit::tokens::{color, space};
 use ui_kit::{SliderKind, inspector_group, inspector_row, switch};
 
 use crate::config::{AudioCodecChoice, AudioSettings, MAX_OFFSET_MS, MAX_TRACKS, TrackSettings};
@@ -285,7 +284,7 @@ fn device_row(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, chang
     let text = match found {
         Some(device) => RichText::new(device_entry(device)),
         None if track.device_name.is_empty() => RichText::new("No device selected"),
-        None => RichText::new(format!("{} (missing)", track.device_name)).color(RECORD_RED),
+        None => RichText::new(format!("{} (missing)", track.device_name)).color(color::SEM_RECORD),
     };
     let mut picked: Option<&AudioDevice> = None;
     inspector_row(

@@ -12,8 +12,8 @@ use crate::engine::controller::{ControllerState, Phase, PreflightResult};
 use crate::engine::preflight::{DND_LABEL, Status, dnd_line};
 use crate::platform::open_notification_settings;
 
-/// The colour of a passing check in the full report; the theme has no green of its own.
-const PASS_GREEN: Color32 = Color32::from_rgb(70, 190, 100);
+/// The colour of a passing check in the full report (`sem.success`).
+const PASS_GREEN: Color32 = color::SEM_SUCCESS;
 
 /// How often the window repaints while a pre-flight runs, so the progress bar moves.
 const PROGRESS_REFRESH: Duration = Duration::from_millis(100);
