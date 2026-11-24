@@ -18,6 +18,7 @@ use crate::key_ui::{self, KeyUiState};
 use crate::label_popup::PopupHandle;
 use crate::layout_ui;
 use crate::platform;
+use crate::playback::Playback;
 use crate::preflight_ui::PreflightSection;
 use crate::preview_ui::PreviewView;
 use crate::profile_ui::{ProfileOutcome, ProfileSection};
@@ -155,6 +156,14 @@ pub struct RecorderApp {
     review_take_pending: Option<String>,
     /// The Review take panel's editing state: the rename field and the delete dialog.
     take_panel: review_ui::TakePanelState,
+    /// The Review playback of the selected take, closed when Review is left or a take starts.
+    review_playback: Option<Playback>,
+    /// The main file the playback is opened for, so selecting another take closes it first.
+    review_playback_for: Option<std::path::PathBuf>,
+    /// Why the selected take's playback could not open, shown in the review center.
+    review_playback_error: Option<String>,
+    /// The review center's state: the frame texture, the scrub bar's drag state.
+    review_center: review_ui::CenterState,
 }
 
 impl RecorderApp {
@@ -264,6 +273,10 @@ impl RecorderApp {
             review_dirty: true,
             review_take_pending: None,
             take_panel: review_ui::TakePanelState::default(),
+            review_playback: None,
+            review_playback_for: None,
+            review_playback_error: None,
+            review_center: review_ui::CenterState::default(),
         };
         app.sync_preview(&cc.egui_ctx);
         app.sync_api(&cc.egui_ctx);
@@ -1023,9 +1036,9 @@ impl RecorderApp {
     }
 
     /// The Review layout (spec "Review mode"): the takes list on the left, the
-    /// take's picture in the center and the take info with its Actions group on
+    /// take's playback in the center and the take info with its Actions group on
     /// the right. The scan runs when Review opens, when a take finishes and on
-    /// the header's refresh button; playback arrives with R9.
+    /// the header's refresh button.
     fn review_panels(&mut self, ui: &mut egui::Ui, state: &ControllerState) {
         if self.review_dirty {
             self.review_dirty = false;
@@ -1042,17 +1055,36 @@ impl RecorderApp {
                 if self.banner_strip(ui, state) {
                     ui.add_space(space::SCALE_8);
                 }
-                review_ui::center(ui, &self.review_days, self.review_selected.as_deref());
+                let action = review_ui::center(
+                    ui,
+                    &self.review_days,
+                    self.review_selected.as_deref(),
+                    self.review_playback.as_mut(),
+                    self.review_playback_error.as_deref(),
+                    &mut self.review_center,
+                );
+                if let review_ui::CenterAction::AddMark(position) = action {
+                    self.add_review_mark(position);
+                }
             });
             let recording = state.phase != Phase::Idle;
-            column(ui, right, |ui| match review_ui::take_panel(ui, &self.review_days, self.review_selected.as_deref(), &mut self.take_panel, recording) {
-                review_ui::TakeAction::ShowInFolder => {
-                    if let Some(video) = review::find(&self.review_days, self.review_selected.as_deref()).map(|take| take.video.clone()) {
-                        platform::show_in_folder(&video);
+            let playback_info = self.review_playback.as_ref().map(|playback| (playback.position_ms(), playback.is_playing()));
+            column(ui, right, |ui| {
+                match review_ui::take_panel(ui, &self.review_days, self.review_selected.as_deref(), &mut self.take_panel, recording, playback_info) {
+                    review_ui::TakeAction::ShowInFolder => {
+                        if let Some(video) = review::find(&self.review_days, self.review_selected.as_deref()).map(|take| take.video.clone()) {
+                            platform::show_in_folder(&video);
+                        }
                     }
+                    review_ui::TakeAction::Rename(new_name) => self.rename_selected_take(new_name),
+                    review_ui::TakeAction::Seek(position) => {
+                        if let Some(playback) = &mut self.review_playback {
+                            playback.seek(position);
+                            self.review_center.settle();
+                        }
+                    }
+                    review_ui::TakeAction::None => {}
                 }
-                review_ui::TakeAction::Rename(new_name) => self.rename_selected_take(new_name),
-                review_ui::TakeAction::None => {}
             });
         });
         // The delete confirmation dialog (spec "Review mode"): every file of the
@@ -1062,6 +1094,54 @@ impl RecorderApp {
             if review_ui::delete_dialog(ui.ctx(), take, &mut self.take_panel.confirm_delete) {
                 self.delete_selected_take();
             }
+        }
+    }
+
+    /// The review playback lifecycle: opened on the selected take's main file
+    /// while Review is open and no take runs, closed the moment Review is left
+    /// or a take starts, and closed and reopened when another take is selected.
+    fn sync_review_playback(&mut self, running: bool) {
+        if self.modes.mode != Mode::Review || running {
+            if self.review_playback.is_some() || self.review_playback_for.is_some() || self.review_playback_error.is_some() {
+                if let Some(mut playback) = self.review_playback.take() {
+                    playback.close();
+                }
+                self.review_playback_for = None;
+                self.review_playback_error = None;
+            }
+            return;
+        }
+        let wanted = review::find(&self.review_days, self.review_selected.as_deref()).map(|take| take.video.clone());
+        if self.review_playback_for == wanted && (self.review_playback.is_some() || self.review_playback_error.is_some()) {
+            return;
+        }
+        // A new take: the previous playback's decoder and audio device are freed first.
+        if let Some(mut playback) = self.review_playback.take() {
+            playback.close();
+        }
+        self.review_playback_for = wanted.clone();
+        self.review_playback_error = None;
+        let Some(path) = wanted else { return };
+        match Playback::open(&path) {
+            Ok(playback) => self.review_playback = Some(playback),
+            Err(err) => {
+                log::warn!("the playback of {} could not open: {err}", path.display());
+                self.review_playback_error = Some(err.to_string());
+            }
+        }
+    }
+
+    /// Adds a Note mark at `position` to the selected take's sidecar and
+    /// rescans, so the list and the scrub bar's dots update at once.
+    fn add_review_mark(&mut self, position: u64) {
+        let Some(take) = review::find(&self.review_days, self.review_selected.as_deref()) else { return };
+        let name = take.name.clone();
+        match review::add_mark(take, position) {
+            Ok(()) => {
+                log::info!("added a note mark at {} to {name}", marks::format_tc(position));
+                self.rescan_review();
+            }
+            Err(reason) => log::warn!("could not add the mark to {name}: {reason}"),
         }
     }
 
@@ -1120,6 +1200,61 @@ impl RecorderApp {
         self.rescan_review();
         let names: Vec<String> = self.review_days.iter().flat_map(|day| day.takes.iter().map(|take| take.name.clone())).collect();
         self.review_selected = names.get(index).or_else(|| names.first()).cloned();
+    }
+
+    /// The Review keys (spec "Review mode"): Space toggles play, Left and
+    /// Right step 5 s, Home and End jump to the ends and [ and ] jump to the
+    /// previous and next mark. They act only while Review is open, no dialog
+    /// is over it and no widget (a text field above all) holds the focus.
+    fn review_keys(&mut self, ctx: &egui::Context) {
+        if self.modes.mode != Mode::Review || self.settings_dialog.open || self.take_panel.confirm_delete {
+            return;
+        }
+        if ctx.memory(|memory| memory.focused().is_some()) {
+            return;
+        }
+        let pressed = |key: egui::Key| ctx.input(|input| input.key_pressed(key));
+        let Some(playback) = &mut self.review_playback else { return };
+        let position = playback.position_ms();
+        let duration = playback.duration_ms();
+        let positions: Vec<u64> =
+            review::find(&self.review_days, self.review_selected.as_deref()).map_or_else(Vec::new, |take| take.marks.iter().map(|mark| mark.t_ms).collect());
+        let mut acted = false;
+        if pressed(egui::Key::Space) {
+            playback.toggle();
+            acted = true;
+        }
+        if pressed(egui::Key::ArrowLeft) {
+            playback.seek(position.saturating_sub(5_000));
+            acted = true;
+        }
+        if pressed(egui::Key::ArrowRight) {
+            playback.seek(position + 5_000);
+            acted = true;
+        }
+        if pressed(egui::Key::Home) {
+            playback.seek(0);
+            acted = true;
+        }
+        if pressed(egui::Key::End) {
+            playback.seek(duration);
+            acted = true;
+        }
+        if pressed(egui::Key::OpenBracket)
+            && let Some(t_ms) = review::previous_mark(&positions, position)
+        {
+            playback.seek(t_ms);
+            acted = true;
+        }
+        if pressed(egui::Key::CloseBracket)
+            && let Some(t_ms) = review::next_mark(&positions, position)
+        {
+            playback.seek(t_ms);
+            acted = true;
+        }
+        if acted {
+            self.review_center.settle();
+        }
     }
 
     /// The Record layout (spec "Modes" and "Record mode"): the recording preview in a center
@@ -1532,6 +1667,10 @@ impl eframe::App for RecorderApp {
             self.set_mode(running, to);
         }
         self.handle_mode_keys(&ctx, running);
+        // The review playback (spec "Review mode"): opened for the selected take
+        // while Review is open and idle, closed the moment Review is left or a
+        // take starts (the decoder and the audio device are freed).
+        self.sync_review_playback(running);
         // File > Settings (Ctrl+,) opens the Settings dialog (spec "Menus"): only on the
         // press itself, never while the dialog is open or a text field holds the focus.
         if settings_key_pressed(&ctx, self.settings_dialog.open) {
@@ -1543,6 +1682,8 @@ impl eframe::App for RecorderApp {
             Mode::Record => self.record_panels(ui, &ctx, &state),
             Mode::Review => self.review_panels(ui, &state),
         }
+        // The Review keys (spec "Review mode"): play, seek steps and mark jumps.
+        self.review_keys(&ctx);
 
         // The toasts (spec "Mode rules"): one glass capsule at a time; the stop
         // toast carries a Review action that opens Review on that take.

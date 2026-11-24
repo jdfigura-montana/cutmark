@@ -5,20 +5,22 @@
 //! its stem: the camera ISO file, the WAV sidecars, the marks sidecar and the
 //! derived `_marks` files. The start time comes from the marks sidecar's
 //! session start when there is one, and from the video file's modified time
-//! otherwise. media-io exposes no file probe, so the duration comes from the
-//! sidecar's recording length and a take without a sidecar shows none; no
-//! new dependency was added for this.
+//! otherwise. The duration comes from the sidecar's recording length, with
+//! media-io's header probe as the fallback when the sidecar has none.
 //!
 //! The rename and delete actions (spec "Review mode", the right panel's
 //! Actions group) live here too: renaming moves every file of a take to a new
 //! stem and rewrites the file name references inside the sidecar, deleting
-//! hands the files to the Recycle Bin through the `trash` crate.
+//! hands the files to the Recycle Bin through the `trash` crate. Adding a mark
+//! writes a Note to the sidecar through the marks crate and regenerates the
+//! derived `_marks` files from the marks exports.
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local, NaiveDate, Utc};
+use media_io::player::probe::probe;
 
 /// The file extensions that make a file group a take (spec "Review mode").
 const MEDIA_EXTENSIONS: [&str; 3] = ["mkv", "mp4", "mov"];
@@ -128,6 +130,128 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
+/// The timeline position of the next mark after `position_ms`, in
+/// milliseconds. The positions must be sorted; when none is after the
+/// position the search wraps to the first mark, so a press at the end
+/// returns to the take's first mark.
+pub fn next_mark(mark_positions: &[u64], position_ms: u64) -> Option<u64> {
+    let first = mark_positions.first().copied()?;
+    mark_positions.iter().find(|&&t| t > position_ms).copied().or(Some(first))
+}
+
+/// The timeline position of the previous mark before `position_ms`, in
+/// milliseconds. The positions must be sorted; when none is before the
+/// position the search wraps to the last mark, so a press at the start
+/// returns to the take's last mark.
+pub fn previous_mark(mark_positions: &[u64], position_ms: u64) -> Option<u64> {
+    let last = mark_positions.last().copied()?;
+    mark_positions.iter().rev().find(|&&t| t < position_ms).copied().or(Some(last))
+}
+
+/// The index into `mark_positions` of the mark under `position_ms`: the last
+/// one at or before it. The positions must be sorted.
+pub fn mark_under(mark_positions: &[u64], position_ms: u64) -> Option<usize> {
+    mark_positions.iter().rposition(|&t| t <= position_ms)
+}
+
+/// The milliseconds a scrub at `x` points at on a track that starts at
+/// `left`, is `width` px wide and spans `duration_ms`: a pointer before the
+/// track or on it seeks to 0, one past its end to the take's length.
+pub fn scrub_ms(x: f32, left: f32, width: f32, duration_ms: u64) -> u64 {
+    if width <= 0.0 || duration_ms == 0 {
+        return 0;
+    }
+    let fraction = f64::from(((x - left) / width).clamp(0.0, 1.0));
+    (fraction * duration_ms as f64) as u64
+}
+
+/// Adds a Note mark at `t_ms` (the playback position in the take's main file)
+/// to the take's marks sidecar through the marks crate, then regenerates the
+/// derived `_marks.md` and `_marks.csv` files from the marks exports. A take
+/// without a sidecar gets one.
+pub fn add_mark(take: &Take, t_ms: u64) -> Result<(), String> {
+    let sidecar_path = marks::discover(&take.video).unwrap_or_else(|| take.video.with_extension("marks.json"));
+    let mut sidecar = if sidecar_path.exists() {
+        let (sidecar, _) = marks::load(&sidecar_path).map_err(|err| format!("{} could not be read: {err}", sidecar_path.display()))?;
+        sidecar
+    } else {
+        new_sidecar(take, t_ms)
+    };
+    let mark = marks::Mark {
+        id: uuid::Uuid::now_v7(),
+        mark_type: marks::MarkType::Note,
+        media: media_index(&sidecar, &take.video),
+        t_ms,
+        end_ms: None,
+        label: None,
+        notes: None,
+        source: marks::Source::Ui,
+        created_at: Utc::now(),
+        script: None,
+        auto: None,
+        original_type: None,
+    };
+    sidecar.marks.push(mark);
+    // Sort by session time, the way the marks crate writes a sidecar; the
+    // offsets are read first so the sort closure does not borrow the sidecar.
+    let offsets: Vec<u64> = sidecar.media.iter().map(|entry| entry.offset_ms).collect();
+    sidecar.marks.sort_by(|a, b| {
+        let session = |mark: &marks::Mark| offsets.get(mark.media).copied().unwrap_or(0).saturating_add(mark.t_ms);
+        session(a).cmp(&session(b)).then_with(|| a.id.cmp(&b.id))
+    });
+    let mut text = serde_json::to_string_pretty(&sidecar).map_err(|err| format!("the sidecar could not be encoded: {err}"))?;
+    text.push('\n');
+    write_file(&sidecar_path, text.as_bytes())?;
+    let folder = sidecar_path.parent().unwrap_or_else(|| Path::new("."));
+    write_file(&folder.join(format!("{}_marks.md", take.name)), marks::markdown(&sidecar).as_bytes())?;
+    write_file(&folder.join(format!("{}_marks.csv", take.name)), &marks::csv(&sidecar))?;
+    Ok(())
+}
+
+/// A fresh sidecar for a take that has none: one media entry for the main
+/// file and a session that starts now. The entry's length is at least
+/// `t_ms`, so the reader never clamps the first mark away.
+fn new_sidecar(take: &Take, t_ms: u64) -> marks::Sidecar {
+    marks::Sidecar {
+        schema_version: marks::SCHEMA_VERSION,
+        session: marks::Session {
+            id: uuid::Uuid::now_v7(),
+            started_at: Utc::now(),
+            ended_at: Some(Utc::now()),
+            recovered: false,
+            writer: marks::WriterInfo { app: "cutmark-recorder".to_owned(), version: env!("CARGO_PKG_VERSION").to_owned() },
+            clock: None,
+        },
+        media: vec![marks::MediaEntry {
+            index: 0,
+            path: take.video.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(),
+            offset_ms: 0,
+            duration_ms: take.duration_ms.unwrap_or(0).max(t_ms),
+        }],
+        context: None,
+        marks: Vec::new(),
+    }
+}
+
+/// The index of the take's main file in the sidecar's media list, matched by
+/// file name; 0 when no entry names it.
+fn media_index(sidecar: &marks::Sidecar, video: &Path) -> usize {
+    let name = video.file_name();
+    sidecar.media.iter().find(|entry| Path::new(&entry.path).file_name() == name).map_or(0, |entry| entry.index)
+}
+
+/// Writes `bytes` to `path` through a temp file in the same folder that is
+/// renamed over it (the atomic-write rule), removing the temp file on failure.
+fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let temp = path.with_file_name(format!("{name}.tmp"));
+    let written = fs::write(&temp, bytes).and_then(|()| fs::rename(&temp, path));
+    if written.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    written.map_err(|err| format!("{} could not be written: {err}", path.display()))
+}
+
 /// Adds every file directly in `folder` to its stem's group.
 fn collect_folder(folder: &Path, groups: &mut HashMap<String, Vec<TakeFile>>) {
     let Ok(entries) = fs::read_dir(folder) else {
@@ -165,7 +289,12 @@ fn build_take(name: String, mut files: Vec<TakeFile>) -> Option<Take> {
     let video = files.iter().filter(|file| is_media(&file.path)).map(|file| file.path.clone()).min()?;
     let modified = fs::metadata(&video).and_then(|meta| meta.modified()).ok()?;
     let sidecar = load_sidecar(&video);
-    let duration_ms = sidecar.as_ref().map(|sidecar| sidecar.media.iter().map(|media| media.duration_ms).sum());
+    // The sidecar's recording length wins; when it has none (or says zero),
+    // media-io's header probe reads the length from the file itself.
+    let duration_ms = match sidecar.as_ref().map(|sidecar| sidecar.media.iter().map(|media| media.duration_ms).sum::<u64>()) {
+        Some(total) if total > 0 => Some(total),
+        _ => probe(&video).ok().map(|info| info.duration_ms),
+    };
     let marks = sidecar.as_ref().map(|sidecar| sidecar.marks.clone()).unwrap_or_default();
     let start = match &sidecar {
         Some(sidecar) => sidecar.session.started_at.with_timezone(&Local),
@@ -493,6 +622,108 @@ mod tests {
         assert!(check_take_name("take01 ", &existing).is_err(), "a trailing space is refused");
         assert!(check_take_name("take01.", &existing).is_err(), "a trailing dot is refused");
         assert!(check_take_name("com1", &existing).is_err(), "a reserved device name is refused");
+    }
+
+    /// The deck's previous and next mark jump at every edge: no marks at all,
+    /// before, on and past each end, with the wrap-around the functions define.
+    #[test]
+    fn next_and_previous_mark_select_at_the_edges() {
+        let marks = [1_000, 2_000, 3_000];
+        assert_eq!(next_mark(&[], 0), None);
+        assert_eq!(previous_mark(&[], 0), None);
+        assert_eq!(next_mark(&marks, 0), Some(1_000), "the first mark is next at the start");
+        assert_eq!(next_mark(&marks, 1_000), Some(2_000), "a mark is skipped, not repeated");
+        assert_eq!(next_mark(&marks, 2_999), Some(3_000));
+        assert_eq!(next_mark(&marks, 3_000), Some(1_000), "next wraps to the first mark at the end");
+        assert_eq!(next_mark(&marks, 9_999), Some(1_000));
+        assert_eq!(previous_mark(&marks, 5_000), Some(3_000));
+        assert_eq!(previous_mark(&marks, 3_000), Some(2_000), "a mark is skipped, not repeated");
+        assert_eq!(previous_mark(&marks, 2_000), Some(1_000));
+        assert_eq!(previous_mark(&marks, 1_000), Some(3_000), "previous wraps to the last mark at the start");
+        assert_eq!(previous_mark(&marks, 0), Some(3_000));
+    }
+
+    /// The mark the playhead sits on: the last one at or before the position,
+    /// none before the first mark.
+    #[test]
+    fn the_mark_under_the_playhead_is_the_last_one_at_or_before_it() {
+        let marks = [1_000, 2_000, 3_000];
+        assert_eq!(mark_under(&marks, 0), None);
+        assert_eq!(mark_under(&marks, 999), None);
+        assert_eq!(mark_under(&marks, 1_000), Some(0));
+        assert_eq!(mark_under(&marks, 2_500), Some(1));
+        assert_eq!(mark_under(&marks, 3_000), Some(2));
+        assert_eq!(mark_under(&marks, u64::MAX), Some(2));
+        assert_eq!(mark_under(&[], 0), None);
+    }
+
+    /// The scrub position math: clamped to the track on both sides, linear in
+    /// between, and 0 without a track or a duration.
+    #[test]
+    fn the_scrub_position_maps_to_milliseconds() {
+        assert_eq!(scrub_ms(50.0, 100.0, 400.0, 10_000), 0, "before the track seeks to 0");
+        assert_eq!(scrub_ms(100.0, 100.0, 400.0, 10_000), 0);
+        assert_eq!(scrub_ms(300.0, 100.0, 400.0, 10_000), 5_000, "the middle of the track is half the length");
+        assert_eq!(scrub_ms(500.0, 100.0, 400.0, 10_000), 10_000);
+        assert_eq!(scrub_ms(900.0, 100.0, 400.0, 10_000), 10_000, "past the track seeks to the length");
+        assert_eq!(scrub_ms(300.0, 100.0, 0.0, 10_000), 0, "no track is position 0");
+        assert_eq!(scrub_ms(300.0, 100.0, 400.0, 0), 0, "no duration is position 0");
+    }
+
+    #[test]
+    fn an_added_mark_is_written_to_the_sidecar_and_the_exports() -> Result<(), Box<dyn std::error::Error>> {
+        let root = fresh_dir("review-add-mark")?;
+        let project = root.join("Show");
+        let folder = project.join("2026-11-21_09-00-00_take01");
+        fs::create_dir_all(&folder)?;
+        let stem = "2026-11-21_09-00-00_take01";
+        fs::write(folder.join(format!("{stem}.mkv")), b"video")?;
+        fs::write(folder.join(format!("{stem}.marks.json")), sidecar_json("2026-11-21T12:00:00.000Z", 60_000, 1))?;
+        let days = scan(&project);
+        let take = &days[0].takes[0];
+
+        add_mark(take, 5_000)?;
+        let (sidecar, _) = marks::load(&folder.join(format!("{stem}.marks.json")))?;
+        assert_eq!(sidecar.marks.len(), 2, "the mark joined the sidecar's own marks");
+        let added = sidecar.marks.last().expect("a mark was added");
+        assert_eq!(added.mark_type, marks::MarkType::Note);
+        assert_eq!(added.source, marks::Source::Ui);
+        assert_eq!(added.t_ms, 5_000);
+        assert_eq!(added.media, 0);
+        assert!(
+            sidecar.marks.windows(2).all(|pair| marks::session_ms(&sidecar, &pair[0]) <= marks::session_ms(&sidecar, &pair[1])),
+            "the marks stay sorted by timeline position"
+        );
+        let md = fs::read_to_string(folder.join(format!("{stem}_marks.md")))?;
+        assert!(md.contains("00:00:05.000"), "the markdown log lists the new mark: {md}");
+        let csv = fs::read_to_string(folder.join(format!("{stem}_marks.csv")))?;
+        assert!(csv.contains(",5000,"), "the csv log lists the new mark: {csv}");
+        fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn an_added_mark_creates_a_sidecar_when_the_take_has_none() -> Result<(), Box<dyn std::error::Error>> {
+        let root = fresh_dir("review-add-mark-fresh")?;
+        let project = root.join("Show");
+        let folder = project.join("2026-11-21_09-00-00_take01");
+        fs::create_dir_all(&folder)?;
+        let stem = "2026-11-21_09-00-00_take01";
+        fs::write(folder.join(format!("{stem}.mkv")), b"video")?;
+        let days = scan(&project);
+        let take = &days[0].takes[0];
+
+        add_mark(take, 1_200)?;
+        let (sidecar, _) = marks::load(&folder.join(format!("{stem}.marks.json")))?;
+        assert_eq!(sidecar.marks.len(), 1);
+        assert_eq!(sidecar.marks[0].mark_type, marks::MarkType::Note);
+        assert_eq!(sidecar.marks[0].t_ms, 1_200);
+        assert_eq!(sidecar.session.writer.app, "cutmark-recorder");
+        assert_eq!(sidecar.media[0].path, format!("{stem}.mkv"), "the fresh sidecar names the take's main file");
+        assert!(folder.join(format!("{stem}_marks.md")).exists(), "the markdown log was written");
+        assert!(folder.join(format!("{stem}_marks.csv")).exists(), "the csv log was written");
+        fs::remove_dir_all(&root)?;
+        Ok(())
     }
 
     #[test]
