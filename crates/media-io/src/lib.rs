@@ -28,6 +28,9 @@ pub mod mux;
 pub mod sync;
 
 #[cfg(windows)]
+pub mod player;
+
+#[cfg(windows)]
 pub use amf::AmfEncoder;
 
 #[cfg(windows)]

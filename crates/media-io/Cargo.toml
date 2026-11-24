@@ -19,13 +19,13 @@ expect_used = "deny"
 panic = "deny"
 
 [dependencies]
-ffmpeg-next = { workspace = true, features = ["codec", "format"] }
+ffmpeg-next = { workspace = true, features = ["codec", "format", "software-scaling"] }
 log.workspace = true
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", features = ["Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi_Common"] }
+windows = { version = "0.62.2", features = ["Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi_Common"] }
 
 [dev-dependencies]
 # Path dependency, used by the hwframes_probe example only.
