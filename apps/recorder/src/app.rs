@@ -10,7 +10,7 @@ use ui_kit::tokens::{color, size, space, typography};
 
 use crate::api::{ApiServer, token};
 use crate::compositor::{ComposeConfig, CompositorThread};
-use crate::config::{self, Mode, ModeState, Settings};
+use crate::config::{self, Mode, ModeState, PanelWidths, Settings};
 use crate::engine::bus::{BusSender, Command, CommandKind, MarkKind};
 use crate::engine::controller::{Controller, ControllerState, Phase, lock};
 use crate::hotkeys::Hotkeys;
@@ -54,11 +54,14 @@ const TOAST_BUTTON_HALF_HEIGHT: f32 = 14.0;
 /// Left padding of a panel header's title; with the panel's own 8px padding the title sits 14px from the panel edge.
 const HEADER_PAD: f32 = 6.0;
 
-/// Width of the left Sources panel (spec "Panels": default 270).
-const LEFT_PANEL_W: f32 = 270.0;
+/// Width the center column keeps while the side columns give way (spec "Panels").
+const CENTER_MIN_W: f32 = 480.0;
 
-/// Width of the right settings panel (spec "Panels": default 340).
-const RIGHT_PANEL_W: f32 = 340.0;
+/// Width of a column divider's accent line.
+const DIVIDER_LINE_W: f32 = 2.0;
+
+/// How far the arrow keys move a focused column divider.
+const DIVIDER_KEY_STEP: f32 = 16.0;
 
 /// The Recorder app: settings, hotkeys, the tray icon and the window over the engine controller.
 pub struct RecorderApp {
@@ -837,12 +840,44 @@ impl RecorderApp {
     /// 8px window padding and gaps.
     fn setup_panels(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
         egui::CentralPanel::default().frame(window_frame()).show(ui, |ui| {
-            let [left, center, right] = three_columns(ui.max_rect());
+            let [left, center, right] = three_columns(ui.max_rect(), self.settings.panel_widths.get(Mode::Setup));
             let active = state.phase.has_take();
             column(ui, left, |ui| self.sources_panel(ui, state));
             column(ui, right, |ui| self.settings_panel(ui, ctx, state));
             column(ui, center, |ui| self.preview_panel(ui, state, active));
+            self.resize_dividers(ui, &left, &center, &right, Mode::Setup);
         });
+    }
+
+    /// Handles the two column dividers of a three-column mode: a drag, the arrow keys or a
+    /// double-click writes the new width into the mode's saved widths (spec "Panels").
+    fn resize_dividers(&mut self, ui: &mut egui::Ui, left: &egui::Rect, center: &egui::Rect, right: &egui::Rect, mode: Mode) {
+        let mut widths = self.settings.panel_widths.get(mode);
+        let mut changed = false;
+        if let Some(w) = column_divider(ui, gap_between(left, center), "left", widths.left, DividerSide::Left) {
+            widths.left = w;
+            changed = true;
+        }
+        if let Some(w) = column_divider(ui, gap_between(center, right), "right", widths.right, DividerSide::Right) {
+            widths.right = w;
+            changed = true;
+        }
+        if changed {
+            self.settings.panel_widths.set(mode, widths);
+            self.settings_dirty = true;
+        }
+    }
+
+    /// Handles the Record mode's single divider between the center and the Live panel: a
+    /// drag, the arrow keys or a double-click writes the new width into the mode's saved
+    /// widths (spec "Panels").
+    fn resize_right_divider(&mut self, ui: &mut egui::Ui, center: &egui::Rect, right: &egui::Rect, mode: Mode) {
+        let mut widths = self.settings.panel_widths.get(mode);
+        if let Some(w) = column_divider(ui, gap_between(center, right), "right", widths.right, DividerSide::Right) {
+            widths.right = w;
+            self.settings.panel_widths.set(mode, widths);
+            self.settings_dirty = true;
+        }
     }
 
     /// The left Sources panel (spec "Setup mode"): the video group with the display and camera
@@ -1045,7 +1080,7 @@ impl RecorderApp {
             self.rescan_review();
         }
         egui::CentralPanel::default().frame(window_frame()).show(ui, |ui| {
-            let [left, center, right] = three_columns(ui.max_rect());
+            let [left, center, right] = three_columns(ui.max_rect(), self.settings.panel_widths.get(Mode::Review));
             column(ui, left, |ui| match review_ui::takes_panel(ui, &self.review_days, &mut self.review_selected) {
                 review_ui::TakesAction::OpenFolder => open_folder(&project_folder(&self.settings)),
                 review_ui::TakesAction::Refresh => self.review_dirty = true,
@@ -1086,6 +1121,7 @@ impl RecorderApp {
                     review_ui::TakeAction::None => {}
                 }
             });
+            self.resize_dividers(ui, &left, &center, &right, Mode::Review);
         });
         // The delete confirmation dialog (spec "Review mode"): every file of the
         // take with its size, Cancel and Move to Recycle Bin.
@@ -1261,9 +1297,10 @@ impl RecorderApp {
     /// that fills the window and the Live panel on the right; there is no left column.
     fn record_panels(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
         egui::CentralPanel::default().frame(window_frame()).show(ui, |ui| {
-            let [center, right] = two_columns(ui.max_rect());
+            let [center, right] = two_columns(ui.max_rect(), self.settings.panel_widths.get(Mode::Record));
             column(ui, right, |ui| self.live_panel(ui, ctx, state));
             column(ui, center, |ui| self.record_center(ui, state));
+            self.resize_right_divider(ui, &center, &right, Mode::Record);
         });
     }
 
@@ -1539,13 +1576,16 @@ fn window_frame() -> egui::Frame {
     egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin::same(space::WINDOW_GAP as i8))
 }
 
-/// The three Setup columns inside the window body's content rect: the Sources panel
-/// ([`LEFT_PANEL_W`]) on the left, the settings panel ([`RIGHT_PANEL_W`]) on the right and
-/// what is left between them as the center, separated by the window gap (spec "Panels").
-fn three_columns(content: egui::Rect) -> [egui::Rect; 3] {
+/// The three columns inside the window body's content rect: the Sources panel on the left,
+/// the settings panel on the right and what is left between them as the center, separated
+/// by the window gap. The widths come from the mode's saved [`PanelWidths`], clamped into
+/// the spec ranges, and when the window cannot keep the center's [`CENTER_MIN_W`] the side
+/// columns give way first (spec "Panels").
+fn three_columns(content: egui::Rect, widths: PanelWidths) -> [egui::Rect; 3] {
     let gap = space::WINDOW_GAP;
-    let left = egui::Rect::from_min_max(content.left_top(), egui::Pos2::new(content.left() + LEFT_PANEL_W, content.bottom()));
-    let right = egui::Rect::from_min_max(egui::Pos2::new((content.right() - RIGHT_PANEL_W).max(left.right() + gap), content.top()), content.right_bottom());
+    let (left_w, right_w) = fitted_widths(widths.left, widths.right, content.width(), gap);
+    let left = egui::Rect::from_min_max(content.left_top(), egui::Pos2::new(content.left() + left_w, content.bottom()));
+    let right = egui::Rect::from_min_max(egui::Pos2::new((content.right() - right_w).max(left.right() + gap), content.top()), content.right_bottom());
     // On a window too narrow for both side panels the center collapses to zero width instead of inverting.
     let center_min_x = left.right() + gap;
     let center_max_x = (right.left() - gap).max(center_min_x);
@@ -1553,15 +1593,59 @@ fn three_columns(content: egui::Rect) -> [egui::Rect; 3] {
     [left, center, right]
 }
 
-/// The Record columns inside the window body's content rect: the recording
-/// preview filling everything left of the Live panel ([`RIGHT_PANEL_W`]),
-/// separated by the window gap; there is no left column in Record mode
-/// (spec "Modes" and "Record mode").
-fn two_columns(content: egui::Rect) -> [egui::Rect; 2] {
+/// The Record columns inside the window body's content rect: the recording preview filling
+/// everything left of the Live panel, separated by the window gap; there is no left column
+/// in Record mode (spec "Modes" and "Record mode"). The right width comes from the mode's
+/// saved [`PanelWidths`], clamped into its range and giving way to the center's
+/// [`CENTER_MIN_W`] on a narrow window (spec "Panels").
+fn two_columns(content: egui::Rect, widths: PanelWidths) -> [egui::Rect; 2] {
     let gap = space::WINDOW_GAP;
-    let right = egui::Rect::from_min_max(egui::Pos2::new((content.right() - RIGHT_PANEL_W).max(content.left()), content.top()), content.right_bottom());
+    let right_w = fitted_right(widths.right, content.width(), gap);
+    let right = egui::Rect::from_min_max(egui::Pos2::new((content.right() - right_w).max(content.left()), content.top()), content.right_bottom());
     let center = egui::Rect::from_min_max(content.left_top(), egui::Pos2::new((right.left() - gap).max(content.left()), content.bottom()));
     [center, right]
+}
+
+/// The left and right column widths clamped into their spec ranges and, when the window is
+/// too narrow to keep the center's [`CENTER_MIN_W`], shrunk toward their minimums in
+/// proportion to how much room each has to give (spec "Panels": the side columns give way
+/// first). A window narrower than the minimums leaves the center below [`CENTER_MIN_W`].
+fn fitted_widths(left: f32, right: f32, content_width: f32, gap: f32) -> (f32, f32) {
+    let left = left.clamp(config::LEFT_PANEL_MIN, config::LEFT_PANEL_MAX);
+    let right = right.clamp(config::RIGHT_PANEL_MIN, config::RIGHT_PANEL_MAX);
+    let overflow = left + right + 2.0 * gap + CENTER_MIN_W - content_width;
+    if overflow <= 0.0 {
+        return (left, right);
+    }
+    let left_room = left - config::LEFT_PANEL_MIN;
+    let right_room = right - config::RIGHT_PANEL_MIN;
+    let room = left_room + right_room;
+    if room <= 0.0 {
+        return (left, right);
+    }
+    let give = overflow.min(room);
+    (left - give * left_room / room, right - give * right_room / room)
+}
+
+/// The right column width clamped into its spec range and, when the window is too narrow to
+/// keep the center's [`CENTER_MIN_W`], shrunk toward its minimum (spec "Panels"); used by
+/// Record mode, which has no left column.
+fn fitted_right(right: f32, content_width: f32, gap: f32) -> f32 {
+    let right = right.clamp(config::RIGHT_PANEL_MIN, config::RIGHT_PANEL_MAX);
+    let overflow = right + gap + CENTER_MIN_W - content_width;
+    if overflow <= 0.0 {
+        return right;
+    }
+    let room = right - config::RIGHT_PANEL_MIN;
+    if room <= 0.0 {
+        return right;
+    }
+    right - overflow.min(room)
+}
+
+/// The window gap between two columns, as the divider's drag rect.
+fn gap_between(a: &egui::Rect, b: &egui::Rect) -> egui::Rect {
+    egui::Rect::from_min_max(egui::Pos2::new(a.right(), a.top()), egui::Pos2::new(b.left(), a.bottom()))
 }
 
 /// One column of the window body: the [`ui_kit::panel`] drawn exactly in `rect` and clipped to
@@ -1574,6 +1658,75 @@ fn column<R>(parent: &mut egui::Ui, rect: egui::Rect, add_contents: impl FnOnce(
         add_contents(ui)
     })
     .inner
+}
+
+/// Which column one divider resizes: the side fixes the drag direction, the width range and
+/// the default a double-click restores (spec "Panels").
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DividerSide {
+    /// The gap between the left column and the center: dragging right widens the left column.
+    Left,
+    /// The gap between the center and the right column: dragging left widens the right column.
+    Right,
+}
+
+impl DividerSide {
+    /// The width change per pointer pixel of drag, so the divider follows the pointer.
+    fn sign(self) -> f32 {
+        match self {
+            Self::Left => 1.0,
+            Self::Right => -1.0,
+        }
+    }
+
+    /// The width clamped into the side's range.
+    fn clamp(self, width: f32) -> f32 {
+        match self {
+            Self::Left => width.clamp(config::LEFT_PANEL_MIN, config::LEFT_PANEL_MAX),
+            Self::Right => width.clamp(config::RIGHT_PANEL_MIN, config::RIGHT_PANEL_MAX),
+        }
+    }
+
+    /// The width a double-click restores.
+    fn default_width(self) -> f32 {
+        match self {
+            Self::Left => config::LEFT_PANEL_DEFAULT,
+            Self::Right => config::RIGHT_PANEL_DEFAULT,
+        }
+    }
+}
+
+/// One column divider in the window gap beside a column (spec "Panels"): dragging it resizes
+/// the column, the arrow keys move 16 px when it is focused, and double-clicking restores
+/// the default width. The cursor becomes the resize cursor on hover, and a thin accent line
+/// shows on hover and while dragging. Returns the column's new width when this frame changed it.
+fn column_divider(ui: &mut egui::Ui, rect: egui::Rect, id_salt: &'static str, width: f32, side: DividerSide) -> Option<f32> {
+    let response = ui.interact(rect, egui::Id::new("column_divider").with(id_salt), egui::Sense::click_and_drag());
+    if response.clicked() {
+        response.request_focus();
+    }
+    if response.hovered() || response.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        let theme = ui_kit::Theme::get(ui.ctx());
+        ui.painter().vline(rect.center().x, rect.y_range(), egui::Stroke::new(DIVIDER_LINE_W, theme.accent.accent));
+    }
+    if response.double_clicked() {
+        return Some(side.default_width());
+    }
+    let mut moved = 0.0;
+    if response.dragged() {
+        moved += side.sign() * response.drag_delta().x;
+    }
+    if response.has_focus() {
+        let step = match ui.input(|input| (input.key_pressed(egui::Key::ArrowLeft), input.key_pressed(egui::Key::ArrowRight))) {
+            (true, _) => -1.0,
+            (_, true) => 1.0,
+            (false, false) => 0.0,
+        };
+        moved += side.sign() * step * DIVIDER_KEY_STEP;
+    }
+    let new_width = side.clamp(width + moved);
+    (new_width != width).then_some(new_width)
 }
 
 /// One menu item: the label in the body font, then the hotkey in the mono value style
@@ -1734,7 +1887,7 @@ mod tests {
         let columns = std::cell::Cell::new((egui::Rect::NOTHING, egui::Rect::NOTHING, egui::Rect::NOTHING));
         let mut output = ctx.run_ui(input, |ui| {
             egui::CentralPanel::default().frame(window_frame()).show(ui, |ui| {
-                let [left, center, right] = three_columns(ui.max_rect());
+                let [left, center, right] = three_columns(ui.max_rect(), PanelWidths::default());
                 columns.set((left, center, right));
             });
         });
@@ -1743,9 +1896,64 @@ mod tests {
         let gap = space::WINDOW_GAP;
         assert_eq!(right.right(), 1300.0 - gap, "the right column ends at the window width minus the window gap");
         assert_eq!(right.left(), center.right() + gap, "the right column starts after the center column");
-        assert_eq!(right.width(), RIGHT_PANEL_W, "the right column keeps the settings panel width");
-        assert_eq!(left.width(), LEFT_PANEL_W, "the left column keeps the Sources panel width");
+        assert_eq!(right.width(), config::RIGHT_PANEL_DEFAULT, "the right column keeps the settings panel width");
+        assert_eq!(left.width(), config::LEFT_PANEL_DEFAULT, "the left column keeps the Sources panel width");
         assert_eq!(center.left(), left.right() + gap, "the center column starts after the left column");
+    }
+
+    /// The saved widths clamp into the spec ranges: below the minimum up to it, above the
+    /// maximum down to it (spec "Panels": left 220 to 360, right 300 to 440).
+    #[test]
+    fn the_saved_widths_clamp_into_the_panel_ranges() {
+        let gap = space::WINDOW_GAP;
+        let (left, right) = fitted_widths(0.0, 0.0, 4000.0, gap);
+        assert_eq!(left, config::LEFT_PANEL_MIN, "a left width under the minimum clamps up to it");
+        assert_eq!(right, config::RIGHT_PANEL_MIN, "a right width under the minimum clamps up to it");
+        let (left, right) = fitted_widths(1000.0, 1000.0, 4000.0, gap);
+        assert_eq!(left, config::LEFT_PANEL_MAX, "a left width over the maximum clamps down to it");
+        assert_eq!(right, config::RIGHT_PANEL_MAX, "a right width over the maximum clamps down to it");
+    }
+
+    /// On a window too narrow for the wanted widths, the side columns give way first and the
+    /// center keeps its 480 px minimum; they shrink in proportion to the room each has left
+    /// down to its minimum (spec "Panels").
+    #[test]
+    fn the_center_keeps_its_minimum_while_the_side_columns_give_way() {
+        let gap = space::WINDOW_GAP;
+        // 270 + 340 + 2 gaps + 480 = 1106 is 56 more than the 1050 the window offers.
+        let (left, right) = fitted_widths(270.0, 340.0, 1050.0, gap);
+        let left_room = 270.0 - config::LEFT_PANEL_MIN;
+        let right_room = 340.0 - config::RIGHT_PANEL_MIN;
+        assert_eq!(left, 270.0 - 56.0 * left_room / (left_room + right_room), "the left column gives way in proportion");
+        assert_eq!(right, 340.0 - 56.0 * right_room / (left_room + right_room), "the right column gives way in proportion");
+        assert_eq!(left + right + 2.0 * gap + CENTER_MIN_W, 1050.0, "the center keeps its 480 px minimum");
+    }
+
+    /// A window narrower than the minimums cannot keep the center's minimum: the side
+    /// columns stay at their minimums and the center goes below 480 px (spec "Panels").
+    #[test]
+    fn a_window_too_narrow_for_the_minimums_leaves_the_center_below_its_minimum() {
+        let gap = space::WINDOW_GAP;
+        let (left, right) = fitted_widths(270.0, 340.0, 900.0, gap);
+        assert_eq!(left, config::LEFT_PANEL_MIN, "the left column stops at its minimum");
+        assert_eq!(right, config::RIGHT_PANEL_MIN, "the right column stops at its minimum");
+        assert_eq!(left + right + 2.0 * gap + CENTER_MIN_W, 1016.0, "which is more than the 900 the window offers");
+        let [left, center, right] = three_columns(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0)), PanelWidths::default());
+        assert_eq!(left.width(), config::LEFT_PANEL_MIN);
+        assert_eq!(right.width(), config::RIGHT_PANEL_MIN);
+        assert_eq!(center.width(), 900.0 - 2.0 * gap - left.width() - right.width(), "the center takes what is left");
+    }
+
+    /// Record mode has one divider: the Live panel's width clamps into its range and gives
+    /// way to the center's 480 px minimum on a narrow window (spec "Panels").
+    #[test]
+    fn the_record_columns_keep_the_center_at_its_minimum_on_a_narrow_window() {
+        let gap = space::WINDOW_GAP;
+        assert_eq!(fitted_right(340.0, 2000.0, gap), config::RIGHT_PANEL_DEFAULT, "a wide window keeps the saved width");
+        // 340 + gap + 480 = 828 is 28 more than the 800 the window offers.
+        let [center, right] = two_columns(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0)), PanelWidths::default());
+        assert_eq!(right.width(), 340.0 - 28.0, "the Live panel gives way to the center");
+        assert_eq!(center.width(), CENTER_MIN_W, "the center keeps its 480 px minimum");
     }
 
     /// Ctrl+, opens the Settings dialog only on the press itself, while the dialog is

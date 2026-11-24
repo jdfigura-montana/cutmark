@@ -286,9 +286,75 @@ pub struct Settings {
     pub mode: Mode,
     /// The Setup tool the right panel shows (spec "Mode rules": the open tool is remembered between launches).
     pub tool: Tool,
+    /// The panel widths of every mode, remembered between launches (spec "Panels").
+    pub panel_widths: ModeWidths,
     /// The shipped profile names this install has already written, so a deleted shipped profile is never recreated.
     #[serde(default)]
     pub shipped_written: Vec<String>,
+}
+
+/// The narrowest the left column may be (spec "Panels").
+pub const LEFT_PANEL_MIN: f32 = 220.0;
+
+/// The widest the left column may be (spec "Panels").
+pub const LEFT_PANEL_MAX: f32 = 360.0;
+
+/// The left column's width until the user resizes it (spec "Panels").
+pub const LEFT_PANEL_DEFAULT: f32 = 270.0;
+
+/// The narrowest the right column may be (spec "Panels").
+pub const RIGHT_PANEL_MIN: f32 = 300.0;
+
+/// The widest the right column may be (spec "Panels").
+pub const RIGHT_PANEL_MAX: f32 = 440.0;
+
+/// The right column's width until the user resizes it (spec "Panels").
+pub const RIGHT_PANEL_DEFAULT: f32 = 340.0;
+
+/// The column widths of one mode (spec "Panels").
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PanelWidths {
+    /// The left column's width.
+    pub left: f32,
+    /// The right column's width.
+    pub right: f32,
+}
+
+impl Default for PanelWidths {
+    fn default() -> Self {
+        Self { left: LEFT_PANEL_DEFAULT, right: RIGHT_PANEL_DEFAULT }
+    }
+}
+
+/// The column widths of every mode, remembered between launches (spec "Panels").
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModeWidths {
+    /// Setup mode's column widths.
+    pub setup: PanelWidths,
+    /// Record mode's column widths; Record has no left column.
+    pub record: PanelWidths,
+    /// Review mode's column widths.
+    pub review: PanelWidths,
+}
+
+impl ModeWidths {
+    /// The widths of `mode`.
+    pub fn get(self, mode: Mode) -> PanelWidths {
+        match mode {
+            Mode::Setup => self.setup,
+            Mode::Record => self.record,
+            Mode::Review => self.review,
+        }
+    }
+
+    /// Overwrites the widths of `mode`.
+    pub fn set(&mut self, mode: Mode, widths: PanelWidths) {
+        match mode {
+            Mode::Setup => self.setup = widths,
+            Mode::Record => self.record = widths,
+            Mode::Review => self.review = widths,
+        }
+    }
 }
 
 /// The folder takes go into: the settings root folder, or else the user's Videos folder joined with Cutmark.
@@ -322,6 +388,7 @@ impl Default for Settings {
             hide_from_capture: true,
             mode: Mode::default(),
             tool: Tool::Layout,
+            panel_widths: ModeWidths::default(),
             shipped_written: Vec::new(),
         }
     }
@@ -1132,6 +1199,24 @@ mod mode_tests {
         // A settings file from before the mode existed opens in Setup.
         let old: Settings = serde_json::from_str("{}")?;
         assert_eq!(old.mode, Mode::Setup);
+        Ok(())
+    }
+
+    #[test]
+    fn the_panel_widths_are_persisted_per_mode_with_the_settings() -> Result<(), Box<dyn std::error::Error>> {
+        let mut settings = Settings::default();
+        assert_eq!(settings.panel_widths.setup, PanelWidths::default(), "a fresh install uses the default widths");
+        settings.panel_widths.set(Mode::Setup, PanelWidths { left: 300.0, right: 420.0 });
+        settings.panel_widths.set(Mode::Record, PanelWidths { left: 220.0, right: 320.0 });
+        settings.panel_widths.set(Mode::Review, PanelWidths { left: 260.0, right: 340.0 });
+        let text = serde_json::to_string(&settings)?;
+        let back: Settings = serde_json::from_str(&text)?;
+        assert_eq!(back.panel_widths.get(Mode::Setup), PanelWidths { left: 300.0, right: 420.0 });
+        assert_eq!(back.panel_widths.get(Mode::Record), PanelWidths { left: 220.0, right: 320.0 });
+        assert_eq!(back.panel_widths.get(Mode::Review), PanelWidths { left: 260.0, right: 340.0 });
+        // A settings file from before the widths existed gets the defaults.
+        let old: Settings = serde_json::from_str("{}")?;
+        assert_eq!(old.panel_widths, ModeWidths::default());
         Ok(())
     }
 }

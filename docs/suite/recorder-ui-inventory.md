@@ -249,3 +249,50 @@ Things on screen today that the Phase 13 mapping table does not name a row for:
 - The "Starting in N" countdown heading in the main column (the deck caption in the spec covers
   the number, not this line).
 
+## After Phase 13
+
+Phase 13 (R2 to R10b) rebuilt the window around the three modes Setup, Record and Review, one
+CentralPanel per mode split into columns with 8 px gaps. The UI files Phase 13 added:
+
+| File | Draws |
+| --- | --- |
+| apps/recorder/src/tools_ui.rs | The tool strip (Camera, Key, Layout, Audio, Output) and the Camera tool panel |
+| apps/recorder/src/record_ui.rs | The Record mode: the transport deck, the Live panel, the record/stop capsule and the REC pill label |
+| apps/recorder/src/review_ui.rs | The Review mode: the takes panel, the playback center with its scrub bar and deck, the take panel with its Actions group |
+| apps/recorder/src/settings_ui.rs | The Settings dialog: General, Recording, Hotkeys, Control API, Diagnostics, Appearance |
+
+app.rs now draws the title bar with menus and the mode switch, the Sources panel, the banner
+strip, and the column layout with its resizable dividers; the old single scrolling column is
+gone. Where each old control lives now:
+
+| Today (main column, s1 tag) | After Phase 13 |
+| --- | --- |
+| Webcam Enable, camera and format pickers, camera controls, camera picture, sync test | Camera tool (tools_ui.rs); the Sources camera row opens the same pickers |
+| Camera ISO file | Output tool, Camera ISO file group (webcam_ui::iso_group) |
+| Chroma key, garbage crop, mask rectangle, matte view | Key tool (key_ui.rs); Matte view also a chip in the preview toolbar |
+| Layout | Layout tool (layout_ui.rs) |
+| Background | Layout tool, Background group (background_ui.rs) |
+| Audio tracks, WAV sidecars, audio format | Audio tool (tracks_ui.rs); meters in the Sources panel and the Record Live panel |
+| Profile block (picker, encoder fields) | Profile picker in the preview toolbar; fields and actions in the Output tool (profile_ui.rs) |
+| Profile rename flow and two-click Confirm delete | Output tool, same flows |
+| Project field | Title bar project-name rename popover (app.rs) |
+| Naming template, next take path | Settings > Recording; next take in the preview toolbar |
+| Countdown | Settings > Recording; caption on the deck |
+| Pre-flight and Do Not Disturb row | Sources panel pre-flight card with its Details popover (preflight_ui.rs) |
+| Marks list | Record Live panel and Review right panel (marks_ui rows, review_ui) |
+| Recording panel (time, file, size, bitrate, frames, duplicated, dropped, captured) | Record Live panel, Encoder group (record_ui.rs) |
+| Last take summary | Review right panel File group; a Last take group in the Live panel while idle |
+| "Starting in N" heading | Deck caption ("Starting in N") |
+| Idle line and "Starting is blocked" | Status bar state label; the blocked reason as a banner |
+| State line and bottom bar (disk free, codec note, finalizing) | Status bar (status_ui.rs) and the Live panel |
+| Preview picture and placeholder | Setup center panel (preview_ui.rs); Record center with the REC pill; deck over both (record_ui.rs) |
+| Hide Recorder from screen captures | Settings > General |
+| Hotkeys status table | Settings > Hotkeys, read-only as before |
+| Control API | Settings > Control API; connected clients in the status bar |
+| Recent commands | Settings > Diagnostics |
+| Warning banners and the recovered-marks banner | Banner strip at the top of the center panel (app.rs); Details opens a popover |
+| Fixed 270/340 panel widths | The 8 px gaps beside the left and right columns are drag handles (app.rs column_divider): drag, arrow keys move 16 px when focused, double-click resets; left 220 to 360, right 300 to 440, the center keeps 480 px and the widths are saved per mode in settings.json |
+
+`cargo test -p cutmark-recorder -q` after R10b (Nov 23, 2026): **283 passed; 0 failed;
+0 ignored** (the FFmpeg "[av1_amf]" lines in the output are stderr chatter from passing tests).
+
