@@ -15,6 +15,9 @@ mod label_popup;
 mod layout_ui;
 mod marks_ui;
 mod platform;
+// The review playback engine; the review UI wires it in R9c.
+#[allow(dead_code)]
+mod playback;
 mod preflight_ui;
 mod preview_ui;
 mod profile_ui;
