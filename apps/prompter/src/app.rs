@@ -89,7 +89,13 @@ fn diagnostics(alpha: Option<String>, view: Option<Option<ViewStatus>>) -> Strin
     let view = match view {
         None => "hidden".to_owned(),
         Some(None) => "window not found".to_owned(),
-        Some(Some(s)) => format!("excluded {}, no-activate {}, topmost {}", yes_no(s.excluded), yes_no(s.no_activate), yes_no(s.topmost)),
+        Some(Some(s)) => format!(
+            "excluded {}, no-activate {}, topmost {}, backing clear {}",
+            yes_no(s.excluded),
+            yes_no(s.no_activate),
+            yes_no(s.topmost),
+            yes_no(s.backing_is_clear)
+        ),
     };
     format!("Alpha mode: {alpha} | View: {view}")
 }

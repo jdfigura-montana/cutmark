@@ -1,7 +1,7 @@
 //! The Floating view (spec "Floating view"): one transparent immediate viewport that scrolls
 //! sample text. A spike: the script, the widgets and the saved geometry come later.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use egui::{Align2, Color32, Pos2, Rect, Sense, Vec2, ViewportBuilder, ViewportCommand, ViewportId};
 use prompter_platform::view::{NativeWindow, ViewStatus, ViewWindow};
@@ -20,6 +20,16 @@ const READING_LINE: f32 = 0.33;
 /// winit applies a window change after the frame that asked for it, so the flags are read back on
 /// this many frames after each change.
 const RECHECK_FRAMES: u8 = 5;
+/// How often a settled view is read back. The app gets no signal here for resume from sleep or
+/// unlock, so this is what catches a repaint from those, or from anything else.
+const HEALTH_CHECK: Duration = Duration::from_secs(1);
+
+/// What a view's window sits on. A change means Windows may have repainted it.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Placement {
+    monitor: Option<isize>,
+    scale: Option<f32>,
+}
 
 /// One open Floating view. Dropping it closes the window.
 pub struct FloatingView {
@@ -30,6 +40,8 @@ pub struct FloatingView {
     /// The click-through value last sent to this window.
     passthrough: bool,
     recheck: u8,
+    placement: Placement,
+    checked_at: Instant,
     /// Where in the drag bar the pointer took hold, in view coordinates.
     grab: Option<Pos2>,
     shown_at: Instant,
@@ -44,7 +56,19 @@ pub fn default_position(monitor: Vec2) -> Pos2 {
 impl FloatingView {
     /// `number` must differ from that of every other open view: the window is found by its title.
     pub fn new(number: u32, position: Option<Pos2>) -> Self {
-        Self { number, position, window: None, status: ViewStatus::default(), passthrough: false, recheck: 0, grab: None, shown_at: Instant::now() }
+        let now = Instant::now();
+        Self {
+            number,
+            position,
+            window: None,
+            status: ViewStatus::default(),
+            passthrough: false,
+            recheck: 0,
+            placement: Placement::default(),
+            checked_at: now,
+            grab: None,
+            shown_at: now,
+        }
     }
 
     fn title(&self) -> String {
@@ -78,29 +102,43 @@ impl FloatingView {
         })
     }
 
-    /// The OS setup on the first frame the window exists, then the read-back after each change.
+    /// The OS setup on the first frame the window exists, then the read-backs: after each change,
+    /// and once a second from then on.
     fn apply_window_setup(&mut self, ctx: &egui::Context, click_through: bool) {
-        match self.window {
-            None => {
-                let Some(window) = NativeWindow::find_own_window(&self.title()) else {
-                    return;
-                };
-                log_failure("exclude_from_capture", window.exclude_from_capture());
-                log_failure("set_no_activate", window.set_no_activate());
-                log_failure("reassert_topmost", window.reassert_topmost());
-                self.window = Some(window);
-                self.status = window.status();
-                log::info!("{} shown: {:?}", self.title(), self.status);
+        if let Some(window) = self.window {
+            let placement = placement(ctx, window);
+            if self.placement != placement {
+                log::info!("{} monitor or scale changed: {placement:?}", self.title());
+                self.placement = placement;
+                log_failure("clear_backing", window.clear_backing());
                 self.recheck = RECHECK_FRAMES;
             }
-            Some(window) if self.recheck > 0 => {
-                self.recheck -= 1;
+            if check_due(self.recheck, self.checked_at.elapsed()) {
                 self.status = repair(window);
-                if self.recheck == 0 {
-                    log::info!("{} settled: {:?}", self.title(), self.status);
+                self.checked_at = Instant::now();
+                if self.recheck > 0 {
+                    self.recheck -= 1;
+                    if self.recheck == 0 {
+                        log::info!("{} settled: {:?}", self.title(), self.status);
+                    }
                 }
             }
-            Some(_) => {}
+        } else {
+            let Some(window) = NativeWindow::find_own_window(&self.title()) else {
+                return;
+            };
+            // First, as this frame has not been presented yet. Every show makes a new window, so
+            // this runs on every show.
+            log_failure("clear_backing", window.clear_backing());
+            log_failure("exclude_from_capture", window.exclude_from_capture());
+            log_failure("set_no_activate", window.set_no_activate());
+            log_failure("reassert_topmost", window.reassert_topmost());
+            self.window = Some(window);
+            self.placement = placement(ctx, window);
+            self.status = window.status();
+            self.checked_at = Instant::now();
+            log::info!("{} shown: {:?}", self.title(), self.status);
+            self.recheck = RECHECK_FRAMES;
         }
         if self.passthrough != click_through {
             self.passthrough = click_through;
@@ -176,11 +214,21 @@ impl FloatingView {
     }
 }
 
+fn placement(ctx: &egui::Context, window: NativeWindow) -> Placement {
+    Placement { monitor: window.monitor(), scale: ctx.input(|i| i.viewport().native_pixels_per_point) }
+}
+
+/// Every frame while a change is settling, then once per [`HEALTH_CHECK`].
+fn check_due(recheck: u8, since_last: Duration) -> bool {
+    recheck > 0 || since_last >= HEALTH_CHECK
+}
+
 /// Reads the flags back and re-applies any that dropped. winit rewrites the whole extended style
-/// when one of its window flags changes, which removes the no-activate and tool-window styles.
+/// when one of its window flags changes, which removes the no-activate and tool-window styles;
+/// Windows fills the backing white when it shows a window.
 fn repair(window: NativeWindow) -> ViewStatus {
     let status = window.status();
-    if status.excluded && status.no_activate {
+    if status.excluded && status.no_activate && status.backing_is_clear {
         return status;
     }
     log::info!("view flags dropped, re-applying: {status:?}");
@@ -189,6 +237,9 @@ fn repair(window: NativeWindow) -> ViewStatus {
     }
     if !status.excluded {
         log_failure("exclude_from_capture", window.exclude_from_capture());
+    }
+    if !status.backing_is_clear {
+        log_failure("clear_backing", window.clear_backing());
     }
     window.status()
 }
@@ -203,6 +254,13 @@ pub fn log_failure(call: &str, result: prompter_platform::Result<()>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_settling_view_is_read_every_frame_then_once_a_second() {
+        assert!(check_due(1, Duration::ZERO));
+        assert!(!check_due(0, Duration::from_millis(999)));
+        assert!(check_due(0, HEALTH_CHECK));
+    }
 
     #[test]
     fn a_view_is_centered_in_the_top_third() {

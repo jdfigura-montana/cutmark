@@ -1,5 +1,6 @@
 //! Prompter view window setup (spec "View window setup"): hidden from capture, never takes focus,
-//! stays on top. Windows backend only; elsewhere every call reports it is unsupported.
+//! stays on top, see-through where nothing is drawn. Windows backend only; elsewhere every call
+//! reports it is unsupported.
 
 use crate::error::Result;
 
@@ -16,6 +17,9 @@ pub struct ViewStatus {
     pub no_activate: bool,
     /// The window is in the topmost band.
     pub topmost: bool,
+    /// The window's own GDI surface, under what the renderer draws, reads as cleared at a few
+    /// sample points. When it does not, a transparent view shows white behind it.
+    pub backing_is_clear: bool,
 }
 
 /// The OS setup a prompter view window needs.
@@ -33,6 +37,14 @@ pub trait ViewWindow {
 
     /// Puts the window back on top of the topmost band without activating it.
     fn reassert_topmost(&self) -> Result<()>;
+
+    /// Clears the window's GDI surface so the desktop shows through the renderer's transparent
+    /// pixels. Windows fills it white when the window is shown, so call this on a visible window,
+    /// and again after anything that shows it. On a hidden window it clears nothing.
+    fn clear_backing(&self) -> Result<()>;
+
+    /// An opaque id for the monitor the window is mostly on, for noticing that it moved.
+    fn monitor(&self) -> Option<isize>;
 
     /// Reads the current state. A value that cannot be read counts as not applied.
     fn status(&self) -> ViewStatus;
@@ -64,16 +76,34 @@ fn has_topmost(ex_style: u32) -> bool {
     ex_style & EX_TOPMOST != 0
 }
 
+/// Where the backing is read back: the four corners, one pixel in, and the center.
+#[cfg(any(windows, test))]
+fn sample_points(width: i32, height: i32) -> [(i32, i32); 5] {
+    let (right, bottom) = ((width - 2).max(0), (height - 2).max(0));
+    let (left, top) = (1.min(right), 1.min(bottom));
+    [(left, top), (right, top), (left, bottom), (right, bottom), (width / 2, height / 2)]
+}
+
+/// Whether every sample is a cleared pixel. A cleared pixel is black (with zero alpha); the value
+/// for an unreadable pixel is not black, so it counts as not clear.
+#[cfg(any(windows, test))]
+fn all_clear(colors: impl IntoIterator<Item = u32>) -> bool {
+    colors.into_iter().all(|color| color == 0)
+}
+
 #[cfg(windows)]
 mod win {
+    use windows::Win32::Foundation::RECT;
     use windows::Win32::Foundation::{GetLastError, HWND, SetLastError, WIN32_ERROR};
+    use windows::Win32::Graphics::Gdi::{BLACKNESS, GetDC, GetPixel, HDC, MONITOR_DEFAULTTONEAREST, MonitorFromWindow, PatBlt, ReleaseDC};
     use windows::Win32::UI::WindowsAndMessaging::{
-        FindWindowW, GWL_EXSTYLE, GetWindowDisplayAffinity, GetWindowLongPtrW, GetWindowThreadProcessId, HWND_TOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-        SWP_NOMOVE, SWP_NOSIZE, SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, WDA_EXCLUDEFROMCAPTURE,
+        FindWindowW, GCLP_HBRBACKGROUND, GWL_EXSTYLE, GetClientRect, GetWindowDisplayAffinity, GetWindowLongPtrW, GetWindowThreadProcessId, HWND_TOPMOST,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetClassLongPtrW, SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos,
+        WDA_EXCLUDEFROMCAPTURE,
     };
     use windows::core::PCWSTR;
 
-    use super::{NativeWindow, ViewStatus, ViewWindow, has_no_activate, has_topmost, with_no_activate};
+    use super::{NativeWindow, ViewStatus, ViewWindow, all_clear, has_no_activate, has_topmost, sample_points, with_no_activate};
     use crate::error::{PlatformError, Result};
 
     impl ViewWindow for NativeWindow {
@@ -119,12 +149,34 @@ mod win {
                 .map_err(|e| win32_error("SetWindowPos", &e))
         }
 
+        fn clear_backing(&self) -> Result<()> {
+            // The brush belongs to the window class, not the window, and winit uses one class for
+            // all its windows, so the Library may share this change. winit 0.30 already registers
+            // the class without a brush, and an empty brush does not stop the white fill when a
+            // window is shown: the PatBlt below is what clears it.
+            remove_class_background(*self)?;
+            let (width, height) = client_size(*self)?;
+            let dc = WindowDc::of(*self)?;
+            // SAFETY: the DC stays valid while `dc` lives; the call takes only values besides it.
+            #[allow(unsafe_code)]
+            let painted = unsafe { PatBlt(dc.dc, 0, 0, width, height, BLACKNESS) };
+            if painted.as_bool() { Ok(()) } else { Err(last_error("PatBlt")) }
+        }
+
+        fn monitor(&self) -> Option<isize> {
+            // SAFETY: the call takes only values; a bad handle gets the nearest or no monitor.
+            #[allow(unsafe_code)]
+            let monitor = unsafe { MonitorFromWindow(hwnd(*self), MONITOR_DEFAULTTONEAREST) };
+            (!monitor.is_invalid()).then_some(monitor.0 as isize)
+        }
+
         fn status(&self) -> ViewStatus {
             let ex_style = ex_style(*self).unwrap_or(0);
             ViewStatus {
                 excluded: display_affinity(*self).is_ok_and(|a| a == WDA_EXCLUDEFROMCAPTURE.0),
                 no_activate: has_no_activate(ex_style),
                 topmost: has_topmost(ex_style),
+                backing_is_clear: backing_is_clear(*self),
             }
         }
     }
@@ -137,6 +189,81 @@ mod win {
     fn win32_error(call: &'static str, error: &windows::core::Error) -> PlatformError {
         let code = WIN32_ERROR::from_error(error).map_or(error.code().0 as u32, |e| e.0);
         PlatformError::Win32 { call, code }
+    }
+
+    /// A window's DC, released when dropped.
+    pub(super) struct WindowDc {
+        window: HWND,
+        pub(super) dc: HDC,
+    }
+
+    impl WindowDc {
+        pub(super) fn of(window: NativeWindow) -> Result<Self> {
+            let window = hwnd(window);
+            // SAFETY: the call takes only a value; a bad handle makes it return a null DC.
+            #[allow(unsafe_code)]
+            let dc = unsafe { GetDC(Some(window)) };
+            if dc.is_invalid() { Err(last_error("GetDC")) } else { Ok(Self { window, dc }) }
+        }
+    }
+
+    impl Drop for WindowDc {
+        fn drop(&mut self) {
+            // SAFETY: `dc` came from GetDC for this window and is released only here.
+            #[allow(unsafe_code)]
+            unsafe {
+                ReleaseDC(Some(self.window), self.dc)
+            };
+        }
+    }
+
+    fn last_error(call: &'static str) -> PlatformError {
+        // SAFETY: the call takes nothing and reads this thread's last-error value.
+        #[allow(unsafe_code)]
+        let error = unsafe { GetLastError() };
+        PlatformError::Win32 { call, code: error.0 }
+    }
+
+    fn remove_class_background(window: NativeWindow) -> Result<()> {
+        // The call returns the previous brush, which may be 0, so the last-error rule applies.
+        // SAFETY: both calls take only values; a null brush is a documented value for the class.
+        #[allow(unsafe_code)]
+        let (previous, error) = unsafe {
+            SetLastError(WIN32_ERROR(0));
+            let previous = SetClassLongPtrW(hwnd(window), GCLP_HBRBACKGROUND, 0);
+            (previous, GetLastError())
+        };
+        if previous == 0 && error.0 != 0 {
+            return Err(PlatformError::Win32 { call: "SetClassLongPtrW", code: error.0 });
+        }
+        Ok(())
+    }
+
+    fn client_size(window: NativeWindow) -> Result<(i32, i32)> {
+        let mut rect = RECT::default();
+        // SAFETY: `rect` is a live, writable RECT; a bad handle makes the call return an error.
+        #[allow(unsafe_code)]
+        unsafe { GetClientRect(hwnd(window), &mut rect) }.map_err(|e| win32_error("GetClientRect", &e))?;
+        Ok((rect.right - rect.left, rect.bottom - rect.top))
+    }
+
+    /// A handful of pixel reads, cheap enough for the read-backs. It sees only the GDI surface,
+    /// not what the renderer composes above it.
+    fn backing_is_clear(window: NativeWindow) -> bool {
+        let Ok((width, height)) = client_size(window) else {
+            return false;
+        };
+        let Ok(dc) = WindowDc::of(window) else {
+            return false;
+        };
+        width > 0
+            && height > 0
+            && all_clear(sample_points(width, height).into_iter().map(|(x, y)| {
+                // SAFETY: the DC stays valid while `dc` lives; unreadable points return CLR_INVALID.
+                #[allow(unsafe_code)]
+                let color = unsafe { GetPixel(dc.dc, x, y) };
+                color.0
+            }))
     }
 
     fn display_affinity(window: NativeWindow) -> Result<u32> {
@@ -196,6 +323,14 @@ impl ViewWindow for NativeWindow {
         Err(crate::error::PlatformError::Unsupported)
     }
 
+    fn clear_backing(&self) -> Result<()> {
+        Err(crate::error::PlatformError::Unsupported)
+    }
+
+    fn monitor(&self) -> Option<isize> {
+        None
+    }
+
     fn status(&self) -> ViewStatus {
         ViewStatus::default()
     }
@@ -228,6 +363,22 @@ mod tests {
         assert!(has_topmost(EX_TOPMOST));
     }
 
+    #[test]
+    fn backing_samples_stay_inside_the_window() {
+        assert_eq!(sample_points(760, 420), [(1, 1), (758, 1), (1, 418), (758, 418), (380, 210)]);
+        for size in [1, 2, 3] {
+            assert!(sample_points(size, size).iter().all(|&(x, y)| (0..size).contains(&x) && (0..size).contains(&y)));
+        }
+    }
+
+    #[test]
+    fn the_backing_is_clear_only_if_every_sample_is_black() {
+        assert!(all_clear([0, 0, 0]));
+        assert!(!all_clear([0, 0x00FF_FFFF, 0]));
+        // CLR_INVALID, what an unreadable pixel returns.
+        assert!(!all_clear([0, u32::MAX]));
+    }
+
     #[cfg(windows)]
     #[test]
     fn style_bits_match_the_windows_constants() {
@@ -241,8 +392,9 @@ mod tests {
     #[cfg(windows)]
     #[test]
     #[ignore = "creates a real window; run by hand on a Windows desktop"]
-    fn hidden_window_takes_all_three_calls() -> std::result::Result<(), Box<dyn std::error::Error>> {
-        use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP};
+    fn real_window_takes_every_call() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use windows::Win32::Graphics::Gdi::{PatBlt, WHITENESS};
+        use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, SW_SHOWNOACTIVATE, ShowWindow, WINDOW_EX_STYLE, WS_POPUP};
         use windows::core::{HSTRING, w};
 
         let title = format!("Cutmark Prompter platform test {}", std::process::id());
@@ -259,7 +411,24 @@ mod tests {
         window.exclude_from_capture()?;
         window.set_no_activate()?;
         window.reassert_topmost()?;
-        assert_eq!(window.status(), ViewStatus { excluded: true, no_activate: true, topmost: true });
+        // A hidden window has no pixels to read, so its backing does not count as clear.
+        assert_eq!(window.status(), ViewStatus { excluded: true, no_activate: true, topmost: true, backing_is_clear: false });
+        assert!(window.monitor().is_some());
+
+        // The backing needs a visible window. Paint it white, then clear it.
+        // SAFETY: this thread created the window, which stays alive until the end of the test.
+        #[allow(unsafe_code)]
+        let _ = unsafe { ShowWindow(created, SW_SHOWNOACTIVATE) };
+        {
+            let dc = win::WindowDc::of(window)?;
+            // SAFETY: the DC stays valid while `dc` lives.
+            #[allow(unsafe_code)]
+            let painted = unsafe { PatBlt(dc.dc, 0, 0, 200, 100, WHITENESS) };
+            assert!(painted.as_bool());
+        }
+        assert!(!window.status().backing_is_clear);
+        window.clear_backing()?;
+        assert!(window.status().backing_is_clear);
 
         // SAFETY: this thread created the window and nothing uses it after this call.
         #[allow(unsafe_code)]
