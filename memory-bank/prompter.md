@@ -18,12 +18,17 @@
 - Brackets in code never open or close a cue; a cue outside code may hold code. A cue ends at the last `]]` of a run, so `[[pause]]]` is plain text.
 - Cues in a heading do not split it. List depth starts at 0.
 - Open: a second paragraph in a loose list item (no cue) is a ListItem with continues false, so it would draw its own marker.
-- C2 done: index::{WordIndex, Token, FORMAT_VERSION}; rules in index/normalize.rs. Script now has source_hash (std hash of the Markdown). WordIndex::is_current checks a cache; bump FORMAT_VERSION when parsing or normalizing changes. index_10k: 9.6 ms in release (10,010 typed words, 8,151 tokens). Nothing writes the cache file yet.
+- C2 done: index::{WordIndex, Token, FORMAT_VERSION}; rules in index/normalize.rs. Script now has source_hash (std hash of the Markdown). WordIndex::is_current checks a cache; bump FORMAT_VERSION when parsing or normalizing changes. index_10k: 9.6 ms in release (10,010 typed words, 8,151 tokens).
+- C3 done: store::{Store, Library, ScriptMeta, SnapshotMeta, Imported, StoreError}; .txt escaping and the split in store/import.rs. New deps: serde_json, uuid, chrono (now, serde), thiserror (JD approved); dev tempfile.
+- Store::open takes the prompter data folder; the app finds it with `directories`. No app code uses the store yet. One Store per folder. A bad library.json is an error and is never overwritten; a failed library write leaves memory unchanged.
+- `edited` changes on save and restore only. duplicate adds " copy" and drops favorite, last_position and unknown fields. Unknown fields are kept; views, tabs and overrides have no typed fields yet.
+- Import needs UTF-8 (a BOM is dropped), makes scripts with no folder, and numbers split parts "Title (part 1 of 2)". cached_index parses the text to check the hash and ignores cache write errors.
+- Open: .txt escaping covers line starts only, as the prompt said. Mid-line Markdown still applies: "press <Enter>" loses the tag, "*word*" turns italic. The spec says .txt drops nothing.
 - Tokens: a word may cross spans ("**world**,"), so char_range can end past its first span. source_line_of gives the block's first line. No spoken characters, no token.
 - Forms: the aligner must split multi-word forms. Contractions expand inside one token only: typed "do not" (two tokens) gets no "dont", so normalize the heard words the same way. No readings yet for "1990s" (gives "nineteen ninety s"), a minus sign, or other currencies.
 
 ## Next
-- C3.
+- C4.
 - By hand: see-through, flash on open, move to another monitor or DPI, lock and sleep, scroll with the Library minimized, OBS capture.
 - Open from V4: only Ctrl+Alt+C shows in the menus (V4 did not read the Hotkeys section). About notices are a short hand-written list.
 - scripts\check.ps1 fails in this worktree at clippy cutmark-audio: FFmpeg headers not found.
@@ -35,6 +40,7 @@
 - A faint one-frame flash on open is not ruled out.
 
 ## Notes
+- Phase 9 normalize fixes: decades (1990s, '90s), minus signs, currency words for €, £ and ¥.
 - winit drops no-activate on every MousePassthrough toggle; view.rs re-applies it.
 - egui-winit 0.36.2 ignores StartDrag without focus, so the view moves itself with OuterPosition.
 - egui-winit sends Ctrl+Alt+C as Event::Copy, not a C key. app.rs puts the C key back, or menu_bar reads the Alt release as a tap and focuses File.

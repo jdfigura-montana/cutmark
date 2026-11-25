@@ -19,5 +19,12 @@ expect_used = "deny"
 panic = "deny"
 
 [dependencies]
+chrono = { workspace = true, features = ["now", "serde"] }
 pulldown-cmark = { version = "0.13.6", default-features = false }
 serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
