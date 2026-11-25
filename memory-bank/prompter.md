@@ -10,8 +10,13 @@
 - V3: renderer.rs (DX12, DxgiFromVisual, logs surface alpha modes; PreMultiplied on JD's PC) and view.rs (one Floating view with sample text, drag bar, window setup, flag repair). White backing fix via clear_backing (JD approved the platform change).
 - V4: Library shell in app.rs (title bar, Scripts, editor and Run panels, status bar, Appearance and About dialogs). menu.rs holds the menu list and enable rules. View controls are in the Run panel. Minimum window 900 x 480.
 
+## State
+- Phase 2 C1 done: crates/prompter-core. script::{parse, sections} and the block model; limits::{MAX_WORDS, split_at_heading}. Deps: pulldown-cmark (no default features), serde.
+- C1 choices: Mark label keeps its prefix; the category name may end in a colon, a space or the end of the label. Cues in a heading do not split it. A split list item gives two ListItem blocks, so a renderer would draw two markers. Code blocks and code spans are plain text and their cues count. List depth starts at 0.
+
 ## Next
-- JD's check of V4 on screen, then Phase 2.
+- C2.
+- JD's check of V4 on screen is still pending.
 - By hand: see-through, flash on open, move to another monitor or DPI, lock and sleep, scroll with the Library minimized, OBS capture.
 - Open from V4: only Ctrl+Alt+C shows in the menus (V4 did not read the Hotkeys section). About notices are a short hand-written list.
 - scripts\check.ps1 fails in this worktree at clippy cutmark-audio: FFmpeg headers not found.
