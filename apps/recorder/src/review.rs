@@ -2,15 +2,17 @@
 //! (spec "Review mode", the left Takes panel's data).
 //!
 //! A take is the main media file (mkv, mp4, mov) plus every file that shares
-//! its stem: the camera ISO file, the WAV sidecars, the marks sidecar and the
-//! derived `_marks` files. The start time comes from the marks sidecar's
+//! its stem: the camera ISO file (`_cam`), the track WAV files (`_t*_*.wav`),
+//! the marks sidecar and the derived `_marks` files, session.json and the
+//! `_script` files. The start time comes from the marks sidecar's
 //! session start when there is one, and from the video file's modified time
 //! otherwise. The duration comes from the sidecar's recording length, with
 //! media-io's header probe as the fallback when the sidecar has none.
 //!
 //! The rename and delete actions (spec "Review mode", the right panel's
 //! Actions group) live here too: renaming moves every file of a take to a new
-//! stem and rewrites the file name references inside the sidecar, deleting
+//! stem and rewrites the file name references inside the marks sidecar and
+//! session.json, deleting
 //! hands the files to the Recycle Bin through the `trash` crate. Adding a mark
 //! writes a Note to the sidecar through the marks crate and regenerates the
 //! derived `_marks` files from the marks exports.
@@ -28,9 +30,18 @@ use crate::config::CompositeMode;
 /// The file extensions that make a file group a take (spec "Review mode").
 const MEDIA_EXTENSIONS: [&str; 3] = ["mkv", "mp4", "mov"];
 
+/// The end of the marks sidecar's file name, after the take's stem.
+const MARKS_SUFFIX: &str = ".marks.json";
+
+/// The end of session.json's file name, after the take's stem.
+const SESSION_SUFFIX: &str = "_session.json";
+
 /// File-name suffixes whose stem is the take's stem; a plain `file_stem`
 /// would keep the `.marks` or `_marks` part and split a take's files apart.
-const SIDECAR_SUFFIXES: [&str; 3] = [".marks.json", "_marks.md", "_marks.csv"];
+const SIDECAR_SUFFIXES: [&str; 6] = [MARKS_SUFFIX, "_marks.md", "_marks.csv", SESSION_SUFFIX, "_script.md", "_script.csv"];
+
+/// What the camera file's stem adds to the take's stem.
+const CAM_SUFFIX: &str = "_cam";
 
 /// One file of a take.
 pub struct TakeFile {
@@ -271,18 +282,42 @@ fn collect_folder(folder: &Path, groups: &mut HashMap<String, Vec<TakeFile>>) {
     }
 }
 
-/// The stem a file belongs to: the sidecar and its derived files keep the
-/// take's stem, everything else uses its own `file_stem`.
+/// The stem a file belongs to: the sidecars and derived files, the camera
+/// file and the track WAV files keep the take's stem, everything else uses its
+/// own `file_stem`.
 fn take_stem(file_name: &str) -> String {
     for suffix in SIDECAR_SUFFIXES {
         if let Some(stem) = file_name.strip_suffix(suffix) {
             return stem.to_owned();
         }
     }
-    Path::new(file_name).file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default()
+    let path = Path::new(file_name);
+    let stem = path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
+    let base = if is_media(path) {
+        stem.strip_suffix(CAM_SUFFIX)
+    } else if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("wav")) {
+        track_wav_base(&stem)
+    } else {
+        None
+    };
+    match base {
+        Some(base) => base.to_owned(),
+        None => stem,
+    }
 }
 
-/// Whether `path` is a main media file.
+/// The take's stem inside the stem of a track WAV file, `{stem}_t{number}_{name}`;
+/// None when the stem does not have that shape. The first match wins, because a
+/// track name may repeat the pattern.
+fn track_wav_base(stem: &str) -> Option<&str> {
+    stem.match_indices("_t").find_map(|(at, marker)| {
+        let rest = &stem[at + marker.len()..];
+        let after_number = rest.trim_start_matches(|ch: char| ch.is_ascii_digit());
+        (after_number.len() < rest.len() && after_number.starts_with('_')).then(|| &stem[..at])
+    })
+}
+
+/// Whether `path` has a media file's extension.
 fn is_media(path: &Path) -> bool {
     path.extension().is_some_and(|extension| MEDIA_EXTENSIONS.iter().any(|candidate| extension.eq_ignore_ascii_case(candidate)))
 }
@@ -291,7 +326,15 @@ fn is_media(path: &Path) -> bool {
 /// media file or its modified time cannot be read.
 fn build_take(name: String, mut files: Vec<TakeFile>) -> Option<Take> {
     files.sort_by(|a, b| a.path.file_name().cmp(&b.path.file_name()));
-    let video = files.iter().filter(|file| is_media(&file.path)).map(|file| file.path.clone()).min()?;
+    let media_with_stem = |stem: &str| {
+        files
+            .iter()
+            .filter(|file| is_media(&file.path) && file.path.file_stem().is_some_and(|found| found.to_string_lossy() == stem))
+            .map(|file| file.path.clone())
+            .min()
+    };
+    let video = media_with_stem(&name)?;
+    let iso = media_with_stem(&format!("{name}{CAM_SUFFIX}"));
     let modified = fs::metadata(&video).and_then(|meta| meta.modified()).ok()?;
     let sidecar = load_sidecar(&video);
     // The sidecar's recording length wins; when it has none (or says zero),
@@ -305,8 +348,7 @@ fn build_take(name: String, mut files: Vec<TakeFile>) -> Option<Take> {
         Some(sidecar) => sidecar.session.started_at.with_timezone(&Local),
         None => DateTime::<Utc>::from(modified).with_timezone(&Local),
     };
-    let iso = files.iter().find(|file| file.path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("iso"))).map(|file| file.path.clone());
-    let composite = load_composite_mode(&video.with_file_name(format!("{name}_session.json")));
+    let composite = load_composite_mode(&video.with_file_name(format!("{name}{SESSION_SUFFIX}")));
     Some(Take { name, start, duration_ms, total_size: files.iter().map(|file| file.size).sum(), files, video, iso, marks, composite })
 }
 
@@ -386,8 +428,9 @@ pub fn check_take_name(new_name: &str, existing_takes: &[String]) -> Result<(), 
 }
 
 /// Renames every file of the take to `new_name` and rewrites the file name
-/// references inside the marks sidecar. When a rename or the sidecar update
-/// fails, the renames already done are rolled back and the reason is returned.
+/// references inside the marks sidecar and session.json. When a rename or an
+/// update fails, the changes already made are rolled back and the reason is
+/// returned.
 pub fn rename_take(take: &Take, new_name: &str) -> Result<(), String> {
     let mut renames: Vec<(PathBuf, PathBuf)> = Vec::new();
     for file in &take.files {
@@ -413,14 +456,26 @@ pub fn rename_take(take: &Take, new_name: &str) -> Result<(), String> {
         }
         done.push((from, to));
     }
-    // The sidecar records the take's file names; give it the new stem too.
-    let sidecar = done.iter().find(|(from, _)| from.to_string_lossy().ends_with(".marks.json")).map(|(_, to)| to.clone());
-    if let Some(sidecar) = sidecar
-        && let Err(err) = rewrite_sidecar(&sidecar, &take.name, new_name)
-    {
-        log::warn!("could not rewrite {}: {err}", sidecar.display());
-        roll_back(&done);
-        return Err("the marks sidecar could not be updated".to_owned());
+    // Both JSON files record the take's file names; give them the new stem too.
+    let mut rewritten: Vec<(&Path, String)> = Vec::new();
+    for (suffix, what) in [(MARKS_SUFFIX, "the marks sidecar"), (SESSION_SUFFIX, "session.json")] {
+        let old_name = format!("{}{suffix}", take.name);
+        let Some((_, json)) = done.iter().find(|(from, _)| from.file_name().is_some_and(|name| name.to_string_lossy() == old_name)) else {
+            continue;
+        };
+        match rewrite_stem(json, &take.name, new_name) {
+            Ok(original) => rewritten.push((json, original)),
+            Err(err) => {
+                log::warn!("could not rewrite {}: {err}", json.display());
+                for (path, original) in &rewritten {
+                    if let Err(err) = write_file(path, original.as_bytes()) {
+                        log::warn!("could not roll back an update: {err}");
+                    }
+                }
+                roll_back(&done);
+                return Err(format!("{what} could not be updated"));
+            }
+        }
     }
     Ok(())
 }
@@ -434,19 +489,13 @@ fn roll_back(done: &[(PathBuf, PathBuf)]) {
     }
 }
 
-/// Replaces every occurrence of the old take stem in the sidecar's text (the
-/// recorded media paths carry it) and writes the result through a temp file
-/// in the same folder that is renamed over the sidecar.
-fn rewrite_sidecar(sidecar: &Path, old_stem: &str, new_stem: &str) -> std::io::Result<()> {
-    let text = fs::read_to_string(sidecar)?;
-    let name = sidecar.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-    let temp = sidecar.with_file_name(format!("{name}.tmp"));
-    fs::write(&temp, text.replace(old_stem, new_stem))?;
-    if let Err(err) = fs::rename(&temp, sidecar) {
-        let _ = fs::remove_file(&temp);
-        return Err(err);
-    }
-    Ok(())
+/// Replaces every occurrence of the old take stem in the file's text (the
+/// recorded file names carry it), writes the result atomically and returns the
+/// old text for a rollback.
+fn rewrite_stem(path: &Path, old_stem: &str, new_stem: &str) -> Result<String, String> {
+    let text = fs::read_to_string(path).map_err(|err| format!("{} could not be read: {err}", path.display()))?;
+    write_file(path, text.replace(old_stem, new_stem).as_bytes())?;
+    Ok(text)
 }
 
 #[cfg(test)]
@@ -493,8 +542,11 @@ mod tests {
         let one = project.join("2026-11-20_10-00-00_take01");
         fs::create_dir_all(&one)?;
         fs::write(one.join("2026-11-20_10-00-00_take01.mkv"), b"video")?;
-        fs::write(one.join("2026-11-20_10-00-00_take01.iso"), b"iso")?;
-        fs::write(one.join("2026-11-20_10-00-00_take01.wav"), b"wav")?;
+        fs::write(one.join("2026-11-20_10-00-00_take01_cam.mkv"), b"camera")?;
+        fs::write(one.join("2026-11-20_10-00-00_take01_t1_Mic_t2_a.wav"), b"wav")?;
+        for suffix in ["_session.json", "_script.md", "_script.csv"] {
+            fs::write(one.join(format!("2026-11-20_10-00-00_take01{suffix}")), b"data")?;
+        }
         fs::write(one.join("2026-11-20_10-00-00_take01.marks.json"), sidecar_json("2026-11-20T12:00:00.000Z", 3_698_784, 1))?;
         fs::write(one.join("2026-11-20_10-00-00_take01_marks.md"), b"md")?;
         fs::write(one.join("2026-11-20_10-00-00_take01_marks.csv"), b"csv")?;
@@ -510,8 +562,9 @@ mod tests {
         assert_eq!(days[1].takes[0].name, "2026-11-20_10-00-00_take01");
 
         let take = &days[1].takes[0];
-        assert_eq!(take.files.len(), 6, "iso, wav, sidecar, md and csv belong to the take");
-        assert!(take.iso.as_ref().is_some_and(|iso| iso.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("iso"))));
+        assert_eq!(take.files.len(), 9, "camera, wav, sidecar, session.json and the derived files belong to the take");
+        assert_eq!(take.video, one.join("2026-11-20_10-00-00_take01.mkv"));
+        assert_eq!(take.iso, Some(one.join("2026-11-20_10-00-00_take01_cam.mkv")));
         assert!(take.files.iter().any(|file| file.path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("wav"))));
         assert_eq!(take.marks.len(), 1);
         assert_eq!(take.duration_ms, Some(3_698_784));
@@ -617,22 +670,36 @@ mod tests {
         let folder = project.join("2026-11-20_10-00-00_take01");
         fs::create_dir_all(&folder)?;
         let stem = "2026-11-20_10-00-00_take01";
-        for suffix in [".mkv", ".iso", ".wav", ".marks.json", "_marks.md", "_marks.csv"] {
+        let suffixes = [".mp4", "_cam.mp4", "_t1_Mic.wav", ".marks.json", "_marks.md", "_marks.csv", "_session.json", "_script.md", "_script.csv"];
+        for suffix in suffixes {
             fs::write(folder.join(format!("{stem}{suffix}")), b"data")?;
         }
-        fs::write(folder.join(format!("{stem}.marks.json")), sidecar_json_media("2026-11-20T12:00:00.000Z", 1_000, 1, &format!("{stem}.mkv")))?;
+        fs::write(folder.join(format!("{stem}.marks.json")), sidecar_json_media("2026-11-20T12:00:00.000Z", 1_000, 1, &format!("{stem}.mp4")))?;
+        let session = format!(r#"{{"composite":{{"mode":"clean","main":{{"file":"{stem}.mp4"}},"layers":[{{"file":"{stem}_cam.mp4"}}]}}}}"#);
+        fs::write(folder.join(format!("{stem}_session.json")), session)?;
         let days = scan(&project);
+        assert_eq!(days[0].takes.len(), 1);
         assert_eq!(days[0].takes[0].name, stem);
+        assert_eq!(days[0].takes[0].composite, CompositeMode::Clean);
 
         let new_name = "2026-11-20_10-05-00_take01b";
         rename_take(&days[0].takes[0], new_name)?;
-        for suffix in [".mkv", ".iso", ".wav", ".marks.json", "_marks.md", "_marks.csv"] {
+        for suffix in suffixes {
             assert!(!folder.join(format!("{stem}{suffix}")).exists(), "{suffix} was moved");
             assert!(folder.join(format!("{new_name}{suffix}")).exists(), "{suffix} has the new name");
         }
         let sidecar = fs::read_to_string(folder.join(format!("{new_name}.marks.json")))?;
-        assert!(sidecar.contains(&format!("\"path\": \"{new_name}.mkv\"")), "the sidecar's media path follows the rename");
+        assert!(sidecar.contains(&format!("\"path\": \"{new_name}.mp4\"")), "the sidecar's media path follows the rename");
         assert!(!sidecar.contains(stem), "no old file name reference is left in the sidecar");
+        let session: serde_json::Value = serde_json::from_slice(&fs::read(folder.join(format!("{new_name}_session.json")))?)?;
+        assert_eq!(session["composite"]["main"]["file"], format!("{new_name}.mp4"));
+        assert_eq!(session["composite"]["layers"][0]["file"], format!("{new_name}_cam.mp4"));
+        let days = scan(&project);
+        assert_eq!(days[0].takes.len(), 1);
+        let take = &days[0].takes[0];
+        assert_eq!(take.composite, CompositeMode::Clean, "a Clean take stays Clean");
+        assert_eq!(take.files.len(), suffixes.len());
+        assert_eq!(take.iso, Some(folder.join(format!("{new_name}_cam.mp4"))));
         fs::remove_dir_all(&root)?;
         Ok(())
     }
