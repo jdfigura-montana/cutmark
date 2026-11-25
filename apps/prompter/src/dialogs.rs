@@ -1,8 +1,9 @@
-//! The library's dialogs: naming a script or folder, and confirming a delete.
+//! The library's dialogs: naming a script or folder, confirming a delete, and the snapshots.
 
 use prompter_core::store::StoreError;
 use ui_kit::tokens::color;
 
+use crate::snapshots::Snapshots;
 use crate::workspace::Workspace;
 
 /// What a name being typed is for.
@@ -28,6 +29,7 @@ pub enum Dialog {
         id: String,
         title: String,
     },
+    Snapshots(Snapshots),
 }
 
 impl Dialog {
@@ -36,8 +38,8 @@ impl Dialog {
         Self::Name { naming, text: text.to_owned(), error: None, focus: true }
     }
 
-    /// Draws the dialog. Returns false once it is closed. A failed delete is returned for the
-    /// caller to report. A refused name is shown in the dialog, which stays open.
+    /// Draws the dialog. Returns false once it is closed. A failed delete or snapshot action
+    /// is returned for the caller to report. A refused name is shown in the dialog, which stays open.
     pub fn show(&mut self, ctx: &egui::Context, workspace: &mut Workspace) -> (bool, Option<StoreError>) {
         let mut open = true;
         let (mut accepted, mut cancelled) = (false, false);
@@ -111,6 +113,10 @@ impl Dialog {
                     failure = workspace.delete(id).err();
                     open = false;
                 }
+            }
+            Self::Snapshots(snapshots) => {
+                let (open, result) = snapshots.show(ctx, workspace);
+                return (open, result.err());
             }
         }
         (open && !cancelled, failure)

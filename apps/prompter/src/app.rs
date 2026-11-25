@@ -14,8 +14,10 @@ use crate::dialogs::{Dialog, Naming};
 use crate::editor::{self, Editor};
 use crate::find::FindBar;
 use crate::menu::{EDITOR_MENU, Item, MENUS, MenuState, SCRIPTS_MENU};
+use crate::preview::Preview;
 use crate::renderer::AlphaInUse;
 use crate::scripts_panel::{Action, ScriptsPanel};
+use crate::snapshots::Snapshots;
 use crate::stats;
 use crate::view::{self, FloatingView, log_failure};
 use crate::workspace::{Autosave, Workspace};
@@ -71,6 +73,7 @@ pub struct PrompterApp {
     scripts: ScriptsPanel,
     editor: Editor,
     find: FindBar,
+    preview: Preview,
     clipboard: ClipboardCheck,
     /// The editor's right-click menu is open.
     editor_menu_open: bool,
@@ -115,6 +118,7 @@ impl PrompterApp {
             scripts: ScriptsPanel::default(),
             editor: Editor::default(),
             find: FindBar::default(),
+            preview: Preview::default(),
             clipboard: ClipboardCheck::default(),
             editor_menu_open: false,
             dialog: None,
@@ -158,7 +162,7 @@ impl PrompterApp {
         match item {
             Item::NewScript => self.dialog = Some(Dialog::name(Naming::NewScript, "")),
             Item::NewFolder => self.dialog = Some(Dialog::name(Naming::NewFolder, "")),
-            Item::Import | Item::Export | Item::Duplicate | Item::Delete => self.file_command(ctx, frame, item),
+            Item::Import | Item::Export | Item::Duplicate | Item::Delete | Item::Snapshots => self.file_command(ctx, frame, item),
             Item::Undo | Item::Redo | Item::Cut | Item::Copy | Item::Paste | Item::PastePlain | Item::SelectAll | Item::FindInScript | Item::SearchAll => {
                 self.queued = Some(item);
                 ctx.request_repaint();
@@ -207,6 +211,7 @@ impl PrompterApp {
                 self.dialog = Some(Dialog::Delete { title: workspace.title(&id).to_owned(), id });
                 Ok(())
             }
+            (Item::Snapshots, Some(id)) => Snapshots::load(workspace, id).map(|snapshots| self.dialog = Some(Dialog::Snapshots(snapshots))),
             _ => Ok(()),
         };
         report(ctx, result);
@@ -267,7 +272,8 @@ impl PrompterApp {
     /// The editor panel: its toolbar and find bar, then the open script or what to do without
     /// one. `command` is an Edit menu item picked in the last frame.
     fn editor_column(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame, command: Option<Item>) {
-        if let Some(item) = panel_toolbar(ui, self.menu_state()) {
+        let state = self.menu_state();
+        if let Some(item) = panel_toolbar(ui, state, &mut self.preview.open) {
             self.run(ui.ctx(), frame, item);
         }
         let workspace = match &mut self.workspace {
@@ -298,8 +304,18 @@ impl PrompterApp {
         if self.find.is_open() {
             panel_row(ui, |ui| self.find.show(ui, &open.text, id));
         }
-        let shown = self.editor.show(ui, serial, &mut open.text, self.find.highlight());
+        let (left, right) = split(ui.available_rect_before_wrap(), self.preview.open);
+        // Both layouts go through this scope, so that the editor keeps its scroll position.
+        let left = egui::UiBuilder::new().id_salt("editor-half").max_rect(left);
+        let shown = ui.scope_builder(left, |ui| self.editor.show(ui, serial, &mut open.text, self.find.highlight())).inner;
         self.find.note_keyboard(ui, id);
+        match right {
+            Some(right) => {
+                let right = egui::UiBuilder::new().id_salt("preview-half").max_rect(right);
+                ui.scope_builder(right, |ui| self.preview.show(ui, serial, &open.text, self.editor.cursor_line()));
+            }
+            None => self.preview.forget(),
+        }
         if shown.changed {
             workspace.text_changed(Instant::now());
             // The title bar and the find bar, already drawn, have to catch up.
@@ -663,8 +679,22 @@ fn new_folder_button(ui: &mut egui::Ui, state: MenuState) -> bool {
     ui.add_enabled(item.enabled(state), egui::Button::new(job)).on_hover_text(item.chord()).clicked()
 }
 
+/// The editor's space, and with the preview on, the preview's to its right.
+fn split(area: egui::Rect, preview: bool) -> (egui::Rect, Option<egui::Rect>) {
+    if !preview {
+        return (area, None);
+    }
+    let half = ((area.width() - space::SCALE_8) / 2.0).max(0.0);
+    let mut left = area;
+    left.max.x = area.left() + half;
+    let mut right = area;
+    right.min.x = area.right() - half;
+    (left, Some(right))
+}
+
 /// The editor's toolbar (rev 3 "Panel toolbar"). Returns the button clicked, as its menu item.
-fn panel_toolbar(ui: &mut egui::Ui, state: MenuState) -> Option<Item> {
+/// The Preview chip sets `preview` itself.
+fn panel_toolbar(ui: &mut egui::Ui, state: MenuState, preview: &mut bool) -> Option<Item> {
     let mut picked = None;
     panel_row(ui, |ui| {
         let buttons = [(Item::Undo, ui_kit::icons::regular::ARROW_COUNTER_CLOCKWISE), (Item::Redo, ui_kit::icons::regular::ARROW_CLOCKWISE)];
@@ -675,6 +705,9 @@ fn panel_toolbar(ui: &mut egui::Ui, state: MenuState) -> Option<Item> {
                 }
             });
         }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_enabled_ui(state.script_open, |ui| ui_kit::widgets::chip(ui, preview, "Preview"));
+        });
     });
     picked
 }

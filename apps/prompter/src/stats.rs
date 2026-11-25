@@ -18,6 +18,11 @@ pub fn read_minutes(words: usize) -> usize {
 
 /// The title bar's caption, for example "1,240 words · 9 min".
 pub fn caption(words: usize) -> String {
+    format!("{} · {} min", word_label(words), read_minutes(words))
+}
+
+/// A word count as written out, for example "1,240 words".
+pub fn word_label(words: usize) -> String {
     let digits = words.to_string();
     let mut grouped = String::new();
     for (index, digit) in digits.chars().enumerate() {
@@ -27,10 +32,10 @@ pub fn caption(words: usize) -> String {
         grouped.push(digit);
     }
     let noun = if words == 1 { "word" } else { "words" };
-    format!("{grouped} {noun} · {} min", read_minutes(words))
+    format!("{grouped} {noun}")
 }
 
-fn spoken_words(markdown: &str) -> usize {
+pub fn spoken_words(markdown: &str) -> usize {
     WordIndex::build(&script::parse(markdown)).spoken_words()
 }
 

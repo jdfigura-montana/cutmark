@@ -19,6 +19,8 @@ struct Library {
     clipboard: String,
     /// Frames until a requested paste arrives.
     paste_due: Option<u8>,
+    /// The window's size.
+    size: egui::Vec2,
     /// What the last frame painted.
     shapes: Vec<egui::epaint::ClippedShape>,
     folder: PathBuf,
@@ -45,7 +47,8 @@ impl Library {
         ui_kit::apply(&ctx);
         let app = PrompterApp::with_library(true, AlphaInUse::default(), Ok(workspace));
         let frame = eframe::Frame::_new_kittest();
-        let mut library = Self { ctx, app, frame, time: 0.0, clipboard: String::new(), paste_due: None, shapes: Vec::new(), folder };
+        let mut library =
+            Self { ctx, app, frame, time: 0.0, clipboard: String::new(), paste_due: None, size: egui::vec2(1100.0, 720.0), shapes: Vec::new(), folder };
         library.settle();
         library
     }
@@ -62,7 +65,7 @@ impl Library {
             }
         }
         self.time += 0.1;
-        let screen = Rect::from_min_size(Pos2::ZERO, egui::vec2(1100.0, 720.0));
+        let screen = Rect::from_min_size(Pos2::ZERO, self.size);
         let input = egui::RawInput { screen_rect: Some(screen), time: Some(self.time), focused: true, events, ..Default::default() };
         let (app, frame) = (&mut self.app, &self.frame);
         let mut output = self.ctx.run_ui(input, |ui| {
@@ -106,17 +109,17 @@ impl Library {
         self.settle();
     }
 
-    /// Where the last frame painted exactly `text`. A menu row's text is its label and then
-    /// its shortcut.
+    /// Where the last frame painted exactly `text`, the topmost if it did so twice. A menu
+    /// row's text is its label and then its shortcut.
     fn find_text(&self, text: &str) -> Option<Rect> {
         fn search(shape: &egui::Shape, text: &str) -> Option<Rect> {
             match shape {
                 egui::Shape::Text(painted) if painted.galley.text() == text => Some(painted.visual_bounding_rect()),
-                egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| search(shape, text)),
+                egui::Shape::Vec(shapes) => shapes.iter().rev().find_map(|shape| search(shape, text)),
                 _ => None,
             }
         }
-        self.shapes.iter().find_map(|clipped| search(&clipped.shape, text))
+        self.shapes.iter().rev().find_map(|clipped| search(&clipped.shape, text))
     }
 
     fn click_text(&mut self, text: &str) {
@@ -268,6 +271,75 @@ fn the_editor_context_menu_copies_and_pastes_the_selection() {
     assert_eq!((library.script(), library.clipboard.as_str()), ("", "alpha betaalpha"));
     library.pick("Edit", Item::Paste);
     assert_eq!(library.script(), "alpha betaalpha");
+}
+
+#[test]
+fn the_preview_chip_shows_the_script_and_follows_the_cursor() {
+    let mut library = Library::with_script("# Title\n\nSome **bold** words");
+    // The preview shows the text without its Markdown markers.
+    assert!(library.find_text("Some bold words").is_none());
+    library.click_text("Preview");
+    assert!(library.find_text("Some bold words").is_some());
+    assert_eq!(library.app.preview.followed_line(), Some(1));
+
+    library.click_into_editor();
+    library.key(CTRL, Key::End);
+    assert_eq!(library.app.preview.followed_line(), Some(3));
+    library.type_text("\n\nmore");
+    assert_eq!(library.app.preview.followed_line(), Some(5));
+
+    library.click_text("Preview");
+    assert!(library.find_text("Some bold words").is_none());
+}
+
+#[test]
+fn file_snapshots_takes_one_and_restores_it_only_after_asking() {
+    let mut library = Library::with_script("first text");
+    library.pick("File", Item::Snapshots);
+    assert!(library.find_text("No snapshots yet.").is_some());
+    library.click_text("Snapshot now");
+    assert!(library.find_text("No snapshots yet.").is_none());
+    library.click_text("Close");
+
+    library.click_into_editor();
+    library.key(CTRL, Key::A);
+    library.type_text("second");
+    library.pick("File", Item::Snapshots);
+    library.click_text("Preview");
+    assert!(library.find_text("first text").is_some());
+    library.click_text("Back");
+
+    // Cancel at the question changes nothing.
+    library.click_text("Restore");
+    library.click_text("Cancel");
+    assert_eq!(library.script(), "second");
+    library.click_text("Restore");
+    assert_eq!(library.script(), "second", "restored without asking");
+    library.click_text("Restore");
+    assert!(library.app.dialog.is_none());
+    assert_eq!(library.script(), "first text");
+
+    // The text from before the restore is the newest snapshot, and the restored one is on disk.
+    let store = library.app.workspace.as_ref().unwrap().store();
+    let id = store.library().scripts[0].id.clone();
+    let kept: Vec<String> = store.snapshots(&id).unwrap().into_iter().map(|meta| store.snapshot_text(&id, meta).unwrap()).collect();
+    assert_eq!(kept, ["second", "first text"]);
+    assert_eq!(store.load(&id).unwrap(), "first text");
+}
+
+#[test]
+fn ten_snapshots_leave_the_dialog_buttons_on_screen_in_the_smallest_window() {
+    let mut library = Library::with_script("words");
+    library.size = egui::vec2(900.0, 480.0);
+    library.settle();
+    library.pick("File", Item::Snapshots);
+    for _ in 0..11 {
+        library.click_text("Snapshot now");
+    }
+    let button = library.find_text("Snapshot now").unwrap();
+    assert!(button.bottom() < 480.0, "{button:?}");
+    let id = library.app.workspace.as_ref().unwrap().open_script().unwrap().id.clone();
+    assert_eq!(library.app.workspace.as_ref().unwrap().store().snapshots(&id).unwrap().len(), 10);
 }
 
 #[test]

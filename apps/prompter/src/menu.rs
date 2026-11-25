@@ -11,6 +11,7 @@ pub enum Item {
     Export,
     Duplicate,
     Delete,
+    Snapshots,
     Settings,
     Exit,
     Undo,
@@ -52,7 +53,10 @@ pub struct MenuState {
 
 /// The menus in bar order. Each is a list of groups, drawn with a separator between them.
 pub const MENUS: [(&str, &[&[Item]]); 5] = [
-    ("File", &[&[Item::NewScript, Item::NewFolder, Item::Import, Item::Export, Item::Duplicate, Item::Delete], &[Item::Settings], &[Item::Exit]]),
+    (
+        "File",
+        &[&[Item::NewScript, Item::NewFolder, Item::Import, Item::Export, Item::Duplicate, Item::Delete, Item::Snapshots], &[Item::Settings], &[Item::Exit]],
+    ),
     ("Edit", &[&[Item::Undo, Item::Redo], &[Item::Cut, Item::Copy, Item::Paste, Item::PastePlain], &[Item::SelectAll, Item::FindInScript, Item::SearchAll]]),
     ("Script", &[&[Item::StartOrPause, Item::ResetToTop, Item::JumpToSection, Item::ToggleMode]]),
     ("View", &[&[Item::Views, Item::ShowView, Item::HideView, Item::ClickThrough], &[Item::Outline], &[Item::Appearance]]),
@@ -75,6 +79,7 @@ impl Item {
             Self::Export => "Export",
             Self::Duplicate => "Duplicate",
             Self::Delete => "Delete",
+            Self::Snapshots => "Snapshots",
             Self::Settings => "Settings",
             Self::Exit => "Exit",
             Self::Undo => "Undo",
@@ -129,7 +134,7 @@ impl Item {
             Self::ShowView => !state.view_open,
             Self::HideView => state.view_open,
             Self::NewScript | Self::NewFolder | Self::Import | Self::SearchAll => state.library_open,
-            Self::Export | Self::Duplicate | Self::Delete | Self::FindInScript => state.script_open,
+            Self::Export | Self::Duplicate | Self::Delete | Self::Snapshots | Self::FindInScript => state.script_open,
             Self::Undo => state.editor.can_undo,
             Self::Redo => state.editor.can_redo,
             Self::Cut | Self::Copy => state.editor.has_selection,
@@ -168,7 +173,8 @@ mod tests {
     #[test]
     fn an_open_script_with_nothing_to_edit_enables_its_file_items_and_find() {
         use Item::*;
-        let expected = [NewScript, NewFolder, Import, Export, Duplicate, Delete, Exit, FindInScript, SearchAll, ShowView, ClickThrough, Appearance, About];
+        let expected =
+            [NewScript, NewFolder, Import, Export, Duplicate, Delete, Snapshots, Exit, FindInScript, SearchAll, ShowView, ClickThrough, Appearance, About];
         assert_eq!(enabled(false, true), expected);
     }
 
@@ -212,7 +218,7 @@ mod tests {
     #[test]
     fn every_item_from_the_spec_is_listed_once() {
         let counts: Vec<(&str, usize)> = MENUS.iter().map(|(title, groups)| (*title, groups.iter().map(|group| group.len()).sum())).collect();
-        assert_eq!(counts, [("File", 8), ("Edit", 9), ("Script", 4), ("View", 6), ("Help", 4)]);
+        assert_eq!(counts, [("File", 9), ("Edit", 9), ("Script", 4), ("View", 6), ("Help", 4)]);
         let items = all();
         for (index, item) in items.iter().enumerate() {
             assert!(!items[..index].contains(item), "{item:?} is listed twice");

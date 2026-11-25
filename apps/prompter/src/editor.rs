@@ -82,11 +82,18 @@ pub struct Editor {
     /// The selection the undo flags were last read at.
     seen: Option<CCursorRange>,
     status: Status,
+    /// The 1-based line of the text the cursor is on.
+    cursor_line: u32,
 }
 
 impl Editor {
     pub fn status(&self) -> Status {
         self.status
+    }
+
+    /// The cursor's 1-based line as of the last [`Editor::show`].
+    pub fn cursor_line(&self) -> u32 {
+        self.cursor_line
     }
 
     /// The editor, filling the space left.
@@ -100,6 +107,7 @@ impl Editor {
         self.edited |= shown.changed;
         let state = TextEditState::load(ui.ctx(), id).unwrap_or_default();
         let range = state.cursor.char_range().unwrap_or_default();
+        self.cursor_line = line_of(text, range.primary.index);
         self.status.has_text = !text.is_empty();
         self.status.has_selection = !range.is_empty();
         // Reading the undo history copies it, so it is read only when it can have changed.
@@ -113,6 +121,12 @@ impl Editor {
         }
         shown
     }
+}
+
+/// The 1-based line of the character at `index`.
+fn line_of(text: &str, index: CharIndex) -> u32 {
+    let breaks = text.chars().take(index.0).filter(|&c| c == '\n').count();
+    u32::try_from(breaks).map_or(u32::MAX, |breaks| breaks.saturating_add(1))
 }
 
 /// The text field inside its scroll area.

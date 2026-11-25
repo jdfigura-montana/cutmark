@@ -311,16 +311,22 @@ impl Store {
         Ok(snapshots)
     }
 
+    /// The text a snapshot holds.
+    pub fn snapshot_text(&self, id: &str, snapshot: SnapshotMeta) -> Result<String> {
+        self.position(id)?;
+        let path = self.snapshot_path(id, snapshot);
+        match fs::read_to_string(&path) {
+            Ok(text) => Ok(text),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Err(StoreError::UnknownSnapshot),
+            Err(error) => Err(io_error(&path)(error)),
+        }
+    }
+
     /// Replaces the script's text with a snapshot's, after taking a snapshot of the current
     /// text.
     pub fn restore(&mut self, id: &str, snapshot: SnapshotMeta) -> Result<()> {
-        self.position(id)?;
         // Read it first: the new snapshot may push this one past the cap.
-        let text = match fs::read_to_string(self.snapshot_path(id, snapshot)) {
-            Ok(text) => text,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(StoreError::UnknownSnapshot),
-            Err(error) => return Err(io_error(&self.snapshot_path(id, snapshot))(error)),
-        };
+        let text = self.snapshot_text(id, snapshot)?;
         self.snapshot(id)?;
         self.save(id, &text)
     }

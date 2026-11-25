@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::time::Instant;
 
-use prompter_core::store::{Result, Store};
+use prompter_core::store::{Result, SnapshotMeta, Store};
 
 use crate::autosave;
 use crate::stats::WordCount;
@@ -162,6 +162,28 @@ impl Workspace {
     pub fn export(&mut self, id: &str, dest: &Path) -> Result<()> {
         self.flush()?;
         self.store.export_md(id, dest)
+    }
+
+    /// Keeps a copy of a script's text as it is now.
+    pub fn snapshot(&mut self, id: &str) -> Result<()> {
+        self.flush()?;
+        self.store.snapshot(id).map(|_| ())
+    }
+
+    /// Puts a snapshot's text back. The store keeps the current text as a snapshot first. An
+    /// open script is opened afresh, so its editor starts over with the new text.
+    pub fn restore(&mut self, id: &str, snapshot: SnapshotMeta) -> Result<()> {
+        self.flush()?;
+        let result = self.store.restore(id, snapshot);
+        // Even after a failure, the file may hold the new text.
+        if self.open.as_ref().is_some_and(|open| open.id == id) {
+            let text = self.store.load(id)?;
+            if self.open.as_ref().is_some_and(|open| open.text != text) {
+                self.open = None;
+                self.open(id)?;
+            }
+        }
+        result
     }
 
     pub fn rename(&mut self, id: &str, title: &str) -> Result<()> {
