@@ -20,7 +20,7 @@ use media_io::bgvideo::{LoopingVideo, VideoColor, VideoMatrix, VideoRange};
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 use windows::core::Interface;
 
-use crate::config::Profile;
+use crate::config::{CompositeMode, Profile};
 use crate::webcam::{self, CamShare};
 
 /// How long the thread sleeps between checks while it is switched off.
@@ -46,6 +46,9 @@ pub struct ComposeConfig {
     pub fps: u32,
     /// Which pictures the composite shows.
     pub layout: Layout,
+    /// Whether a take records in Clean mode, so its encoder gets a frame without the camera; the preview
+    /// always shows `layout` in full.
+    pub clean: bool,
     /// The camera's place and look in the picture in picture layout.
     pub pip: PipSettings,
     /// What the composite draws behind the camera.
@@ -69,6 +72,7 @@ impl Default for ComposeConfig {
             height: 0,
             fps: 60,
             layout: Layout::ScreenOnly,
+            clean: false,
             pip: PipSettings::default(),
             bg: BackgroundSettings::default(),
             key: KeySettings::default(),
@@ -105,6 +109,7 @@ impl ComposeConfig {
             height,
             fps: profile.fps.max(1),
             layout: profile.layout.into(),
+            clean: profile.effective_composite_mode() == CompositeMode::Clean,
             pip: (&profile.pip).into(),
             bg: (&profile.background).into(),
             key,
@@ -113,6 +118,13 @@ impl ComposeConfig {
             cursor,
             video_path: if profile.background.kind == crate::config::BackgroundKind::Video { profile.background.video_path.clone() } else { String::new() },
         }
+    }
+
+    /// The layout of the second frame a take's encoder needs, or None when it records the composite itself.
+    ///
+    /// Clean mode records the screen as the Screen only layout draws it, with no camera layer.
+    pub fn encoder_layout(&self) -> Option<Layout> {
+        self.clean.then_some(Layout::ScreenOnly)
     }
 }
 
@@ -133,6 +145,30 @@ pub struct Composite {
     pub content_seq: u64,
     /// How many screen frames the capture has delivered so far.
     pub screen_received: u64,
+    /// The separate frame for a Clean take's encoder; None otherwise.
+    encoder: Option<EncoderFrame>,
+}
+
+/// The frame a Clean take records in place of the composite.
+#[derive(Clone)]
+struct EncoderFrame {
+    /// The BGRA texture, from a ring of its own.
+    texture: ID3D11Texture2D,
+    /// Changes only when the screen delivered a new picture; the camera is not in this frame.
+    content_seq: u64,
+}
+
+impl Composite {
+    /// The frame as a take's encoder sees it. A Clean take gets the separate encoder frame, and nothing
+    /// from a composite that has none, so the camera can never slip into its main video.
+    fn for_encoder(mut self, clean: bool) -> Option<Self> {
+        if clean {
+            let frame = self.encoder.take()?;
+            self.texture = frame.texture;
+            self.content_seq = frame.content_seq;
+        }
+        Some(self)
+    }
 }
 
 /// What the handle and the thread share.
@@ -242,9 +278,13 @@ impl PinGuard {
         store_config(&self.handle.shared, config);
     }
 
-    /// The newest composite on the pinned device, or None before the first.
+    /// The newest frame to encode on the pinned device, or None before the first.
+    ///
+    /// This is the composite, except in Clean mode, where it is the screen without the camera. The
+    /// preview reads [`CompositorHandle::latest`] and always gets the full composite.
     pub fn latest(&self) -> Option<Composite> {
-        self.handle.latest().filter(|frame| same_device(&frame.gpu, &self.gpu))
+        let clean = lock(&self.handle.shared.config).encoder_layout().is_some();
+        self.handle.latest().filter(|frame| same_device(&frame.gpu, &self.gpu)).and_then(|frame| frame.for_encoder(clean))
     }
 
     /// The text of the compositor's last error, or None while it works.
@@ -355,6 +395,9 @@ struct Worker {
     gpu: Gpu,
     capture: Option<Capture>,
     compositor: Option<Compositor>,
+    /// Draws the encoder frame of a Clean take; its own ring keeps both frames valid as long as a
+    /// single one. None while no Clean take runs.
+    encoder_compositor: Option<Compositor>,
     /// When the next frame is due.
     next_tick: Instant,
     /// The number of the last published frame.
@@ -368,7 +411,17 @@ struct Worker {
 impl Worker {
     /// A worker on the given device with nothing running yet.
     fn new(shared: Arc<Shared>, gpu: Gpu) -> Self {
-        Self { shared, gpu, capture: None, compositor: None, next_tick: Instant::now(), seq: 0, bg_video: None, bg_video_failed: None }
+        Self {
+            shared,
+            gpu,
+            capture: None,
+            compositor: None,
+            encoder_compositor: None,
+            next_tick: Instant::now(),
+            seq: 0,
+            bg_video: None,
+            bg_video_failed: None,
+        }
     }
 
     /// Runs until the stop flag is set.
@@ -401,7 +454,7 @@ impl Worker {
                 }
             }
             self.wait_for_tick(config.fps);
-            if let Err(message) = self.tick(&config, cam.as_ref()) {
+            if let Err(message) = self.tick(&config, cam.as_ref(), pinned.is_some()) {
                 self.fail(&message);
                 self.nap(ERROR_BACKOFF);
             }
@@ -436,6 +489,7 @@ impl Worker {
         if self.capture.is_some() || self.compositor.is_some() || self.bg_video.is_some() {
             self.capture = None;
             self.compositor = None;
+            self.encoder_compositor = None;
             self.bg_video = None;
             self.bg_video_failed = None;
             *lock(&self.shared.latest) = None;
@@ -489,14 +543,16 @@ impl Worker {
         };
         if self.compositor.as_ref().map(Compositor::output_size) != Some(size) {
             self.compositor = None;
+            self.encoder_compositor = None;
             let compositor = Compositor::new(&self.gpu, size.0, size.1).map_err(|err| format!("could not start the compositor: {err}"))?;
             self.compositor = Some(compositor);
         }
         Ok(true)
     }
 
-    /// Composes one frame from the latest pictures and publishes it.
-    fn tick(&mut self, config: &ComposeConfig, cam: Option<&CamShare>) -> Result<(), String> {
+    /// Composes one frame from the latest pictures and publishes it; while a Clean take records, the
+    /// encoder's frame is composed and published with it.
+    fn tick(&mut self, config: &ComposeConfig, cam: Option<&CamShare>, recording: bool) -> Result<(), String> {
         let (Some(running), Some(compositor)) = (&self.capture, &mut self.compositor) else { return Ok(()) };
         let screen = running.capture.latest();
         let cam_frame = cam.and_then(|share| share.capture.latest());
@@ -541,8 +597,25 @@ impl Worker {
             .compose(screen.as_ref().map(|frame| &frame.texture), cam_frame.as_ref(), &config.layout, &config.pip, &config.key, config.matte)
             .map_err(|err| err.to_string())?;
         let (width, height) = compositor.output_size();
+        let screen_seq = screen.as_ref().map_or(0, |frame| frame.seq);
+        let encoder = match config.encoder_layout().filter(|_| recording) {
+            Some(layout) => {
+                let second = match &mut self.encoder_compositor {
+                    Some(second) => second,
+                    empty => empty.insert(Compositor::new(&self.gpu, width, height).map_err(|err| format!("could not start the encoder compositor: {err}"))?),
+                };
+                let frame = second
+                    .compose(screen.as_ref().map(|frame| &frame.texture), None, &layout, &config.pip, &config.key, false)
+                    .map_err(|err| err.to_string())?;
+                Some(EncoderFrame { texture: frame.texture, content_seq: screen_seq })
+            }
+            None => {
+                self.encoder_compositor = None;
+                None
+            }
+        };
         self.seq += 1;
-        let content_seq = screen.as_ref().map_or(0, |frame| frame.seq).wrapping_add(cam_frame.as_ref().map_or(0, |frame| frame.seq));
+        let content_seq = screen_seq.wrapping_add(cam_frame.as_ref().map_or(0, |frame| frame.seq));
         let published = Composite {
             gpu: self.gpu.clone(),
             texture: composed.texture,
@@ -551,6 +624,7 @@ impl Worker {
             seq: self.seq,
             content_seq,
             screen_received: running.capture.frames_received(),
+            encoder,
         };
         *lock(&self.shared.latest) = Some(published);
         *lock(&self.shared.error) = None;
@@ -623,6 +697,25 @@ mod tests {
         assert!(config.key.enabled);
         assert_eq!(config.key.similarity, 0.55);
         assert!(!config.matte);
+    }
+
+    #[test]
+    fn a_clean_pip_config_keeps_the_camera_in_the_preview_and_out_of_the_encoder_frame() {
+        let profile = Profile {
+            layout: crate::config::LayoutKind::Pip,
+            webcam: Some(crate::config::WebcamSettings::default()),
+            composite_mode: CompositeMode::Clean,
+            ..Profile::premiere_hevc_1080p60()
+        };
+        let config = ComposeConfig::from_profile(&profile, (1920, 1080), 0, true);
+        // The preview composes `layout`, which has the camera layer.
+        assert_eq!(config.layout, Layout::Pip);
+        // The encoder gets its own frame in the Screen only layout, which has none.
+        assert_eq!(config.encoder_layout(), Some(Layout::ScreenOnly));
+
+        let baked = Profile { composite_mode: CompositeMode::Baked, ..profile };
+        let config = ComposeConfig::from_profile(&baked, (1920, 1080), 0, true);
+        assert_eq!((config.layout, config.encoder_layout()), (Layout::Pip, None));
     }
 
     #[test]

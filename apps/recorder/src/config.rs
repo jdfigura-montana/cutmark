@@ -654,6 +654,17 @@ impl From<LayoutKind> for capture::Layout {
     }
 }
 
+/// Whether the camera is drawn into the main video of a take, saved in a profile.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompositeMode {
+    /// The main video shows what the layout shows, the camera included.
+    #[default]
+    Baked,
+    /// The main video of a picture in picture take is the screen only; the camera goes to its own file.
+    Clean,
+}
+
 /// The corner of the frame the picture in picture camera sits in.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -900,6 +911,10 @@ pub struct Profile {
     /// always None in a profile that lives in memory.
     #[serde(default, skip_serializing)]
     pub cam_only_bg: Option<[u8; 3]>,
+    /// Whether the camera is baked into the main video; profile files without it are Baked. A take
+    /// follows [`Profile::effective_composite_mode`], not this field alone.
+    #[serde(default)]
+    pub composite_mode: CompositeMode,
 }
 
 /// The shape of a profile file, so the old `cam_only_bg` key can be read and migrated.
@@ -929,6 +944,8 @@ struct ProfileFile {
     background: BackgroundConfig,
     #[serde(default)]
     cam_only_bg: Option<[u8; 3]>,
+    #[serde(default)]
+    composite_mode: CompositeMode,
 }
 
 impl<'de> Deserialize<'de> for Profile {
@@ -951,6 +968,7 @@ impl<'de> Deserialize<'de> for Profile {
             pip: file.pip,
             background: file.background,
             cam_only_bg: None,
+            composite_mode: file.composite_mode,
         };
         // An old profile's Cam only colour moves into the new background block, so nothing is lost.
         if let Some(bg) = file.cam_only_bg {
@@ -980,6 +998,7 @@ impl Profile {
             pip: PipConfig::default(),
             background: BackgroundConfig::default(),
             cam_only_bg: None,
+            composite_mode: CompositeMode::Baked,
         }
     }
 
@@ -1002,6 +1021,7 @@ impl Profile {
             pip: PipConfig::default(),
             background: BackgroundConfig::default(),
             cam_only_bg: None,
+            composite_mode: CompositeMode::Baked,
         }
     }
 
@@ -1024,12 +1044,22 @@ impl Profile {
             pip: PipConfig::default(),
             background: BackgroundConfig { kind: BackgroundKind::Color, ..BackgroundConfig::default() },
             cam_only_bg: None,
+            composite_mode: CompositeMode::Baked,
         }
     }
 
     /// The three profiles that ship with the app.
     pub fn shipped() -> [Self; 3] {
         [Self::tutorial_av1_1440p60(), Self::premiere_hevc_1080p60(), Self::cam_only_av1_1080p30()]
+    }
+
+    /// The mode a take of this profile records in: Clean only when it is chosen, the layout is Picture in
+    /// picture and the webcam is on; otherwise Baked.
+    pub fn effective_composite_mode(&self) -> CompositeMode {
+        match (self.composite_mode, self.layout, &self.webcam) {
+            (CompositeMode::Clean, LayoutKind::Pip, Some(_)) => CompositeMode::Clean,
+            _ => CompositeMode::Baked,
+        }
     }
 
     /// Whether the output size is the size of the captured monitor.
@@ -1561,6 +1591,33 @@ mod layout_tests {
         assert_eq!(profile, Profile { background: BackgroundConfig { color: [10, 20, 30], ..BackgroundConfig::default() }, ..Profile::tutorial_av1_1440p60() });
         assert_eq!(profile.layout, LayoutKind::ScreenOnly);
         assert_eq!(profile.background.color, [10, 20, 30]);
+        Ok(())
+    }
+
+    #[test]
+    fn clean_applies_only_to_picture_in_picture_with_the_webcam_on() {
+        for layout in [LayoutKind::ScreenOnly, LayoutKind::Pip, LayoutKind::CamOnly] {
+            for webcam_on in [false, true] {
+                for composite_mode in [CompositeMode::Baked, CompositeMode::Clean] {
+                    let webcam = webcam_on.then(WebcamSettings::default);
+                    let profile = Profile { layout, webcam, composite_mode, ..Profile::tutorial_av1_1440p60() };
+                    let clean = layout == LayoutKind::Pip && webcam_on && composite_mode == CompositeMode::Clean;
+                    let expected = if clean { CompositeMode::Clean } else { CompositeMode::Baked };
+                    assert_eq!(profile.effective_composite_mode(), expected, "{layout:?}, webcam {webcam_on}, {composite_mode:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_profile_file_without_a_composite_mode_is_baked_and_the_mode_round_trips() -> Result<(), Box<dyn Error>> {
+        let mut value = serde_json::to_value(Profile::tutorial_av1_1440p60())?;
+        value.as_object_mut().ok_or("a profile is an object")?.remove("composite_mode");
+        assert_eq!(serde_json::from_value::<Profile>(value)?.composite_mode, CompositeMode::Baked);
+        let profile = Profile { composite_mode: CompositeMode::Clean, ..Profile::tutorial_av1_1440p60() };
+        let text = serde_json::to_string(&profile)?;
+        assert!(text.contains("\"composite_mode\":\"clean\""), "{text}");
+        assert_eq!(serde_json::from_str::<Profile>(&text)?, profile);
         Ok(())
     }
 

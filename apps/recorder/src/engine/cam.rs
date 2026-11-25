@@ -21,7 +21,7 @@ use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 
 use super::pacer::Pacer;
 use super::session::{ENCODER_TAG, SessionConfig, Stats, encoder_config, take_title};
-use crate::config::Container;
+use crate::config::{CompositeMode, Container};
 use crate::webcam::CamShare;
 
 /// How long the loop sleeps while it waits for the next camera frame.
@@ -319,11 +319,13 @@ pub(super) struct CamPlan {
 
 /// Works out whether the take records a camera file.
 ///
-/// None when the profile has no webcam or its ISO is off. The error is the text of the banner for a take that
+/// None when the profile has no webcam, or its ISO is off and the take is not Clean: a Clean take keeps the
+/// camera out of the main video, so it records the camera file whatever the saved ISO switch says. The error is the text of the banner for a take that
 /// could not have the camera file: the camera is not open, or the container cannot hold the codec.
 pub(super) fn plan(cfg: &SessionConfig) -> Result<Option<CamPlan>, String> {
     set_info_line(None);
-    let Some(webcam) = cfg.profile.webcam.as_ref().filter(|webcam| webcam.iso) else { return Ok(None) };
+    let clean = cfg.profile.effective_composite_mode() == CompositeMode::Clean;
+    let Some(webcam) = cfg.profile.webcam.as_ref().filter(|webcam| webcam.iso || clean) else { return Ok(None) };
     let Some(share) = crate::webcam::shared() else {
         return Err("The camera is not open, so this take has no camera file.".to_owned());
     };
