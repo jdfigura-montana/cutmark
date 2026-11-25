@@ -240,9 +240,7 @@ fn general_section(ui: &mut Ui, settings: &mut Settings, outcome: &mut Outcome) 
         );
         ui.add_space(space::SCALE_4);
     });
-    // ui_kit::switch builds its response from a plain ui.interact and never
-    // marks it `changed`, so the flip is detected by comparing the setting
-    // before and after the row.
+    // The flip is detected by comparing the setting before and after the row.
     if settings.hide_from_capture != before {
         outcome.settings_changed = true;
         outcome.hide_from_capture_changed = true;
@@ -318,8 +316,7 @@ fn recording_section(ui: &mut Ui, settings: &mut Settings, next_take: &NextTake,
     if settings.countdown_secs != before {
         outcome.settings_changed = true;
     }
-    // ui_kit::switch never marks its response `changed`, so the flip is
-    // detected by comparing the setting before and after the row.
+    // The flip is detected by comparing the setting before and after the row.
     if settings.hide_countdown_when_linked != before_switch {
         outcome.settings_changed = true;
     }
@@ -393,8 +390,7 @@ fn api_section(ui: &mut Ui, settings: &mut Settings, api: ApiUi<'_>, outcome: &m
         }
         ui.add_space(space::SCALE_4);
     });
-    // ui_kit::switch never marks its response `changed`, so the flip is
-    // detected by comparing the setting before and after the row.
+    // The flip is detected by comparing the setting before and after the row.
     if settings.api.enabled != before_enabled {
         outcome.settings_changed = true;
     }

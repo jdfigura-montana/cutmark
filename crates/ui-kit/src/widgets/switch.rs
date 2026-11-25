@@ -13,7 +13,8 @@ const KNOB_COLOR: Color32 = Color32::WHITE;
 
 /// The switch: a 40 x 24 capsule, off `bg.selected`, on `accent`, with a
 /// white knob that slides over 120ms (instant when the theme asks for
-/// reduced motion).
+/// reduced motion). The response reports `changed()` on the frame a click
+/// or key press flips the value.
 ///
 /// Usage:
 ///
@@ -24,10 +25,12 @@ const KNOB_COLOR: Color32 = Color32::WHITE;
 pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
     let width = size::SWITCH_WIDTH;
     let height = size::SWITCH_HEIGHT;
-    let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+    let (rect, mut response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
     response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, *on, ACCESSIBLE_NAME));
+    // `clicked` also covers Space and Enter on the focused switch.
     if response.clicked() {
         *on = !*on;
+        response.mark_changed();
     }
     let theme = Theme::get(ui.ctx());
     let inset = space::SCALE_2;
@@ -56,7 +59,30 @@ pub(crate) fn knob_offset(ctx: &Context, id: Id, on: bool, reduce_motion: bool, 
 
 #[cfg(test)]
 mod tests {
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
     use super::*;
+
+    /// A click flips the value, and the response reports `changed()` on
+    /// that one frame only.
+    #[test]
+    fn clicking_the_switch_flips_the_value_and_reports_changed() {
+        // The state is (value, frames that reported `changed`).
+        let mut harness = Harness::new_ui_state(
+            |ui, (on, changed_frames): &mut (bool, u32)| {
+                if switch(ui, on).changed() {
+                    *changed_frames += 1;
+                }
+            },
+            (false, 0),
+        );
+        harness.run();
+        assert_eq!(*harness.state(), (false, 0), "an untouched switch must not report a change");
+        harness.get_by_label(ACCESSIBLE_NAME).click();
+        harness.run();
+        assert_eq!(*harness.state(), (true, 1), "the click must flip the value and report changed once");
+    }
 
     /// With reduce motion the knob reaches the end position in one frame;
     /// with full motion it is still mid-travel there.
