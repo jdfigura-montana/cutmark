@@ -1,3 +1,6 @@
+## Accent per app (2026-11-24)
+- `APPEARANCE` const (audio/Blue) in app.rs, `ui_kit::apply_for` in main.rs, appearance help topic updated, new identity test in app.rs tests. Tests 729, fmt + clippy clean; check.ps1 and release build not run.
+
 ## Deck center-line alignment (2026-11-24)
 - Transport deck contents rebuilt on the Recorder's record_ui.rs pattern: one center line (allocate_ui_with_layout row, Align::Center), gaps 12/12/4/12/14 via DECK_GAP/DECK_BUTTON_GAP/DECK_TAIL, total length mono TIME_LARGE_SIZE text.tertiary, deck_contents/DeckData/DeckAction split for testability. New center-line test. Tests 729, fmt + clippy clean. PRE-EXISTING (clean HEAD): clip_view accent test fails; check.ps1 and release build not run per task scope.
 

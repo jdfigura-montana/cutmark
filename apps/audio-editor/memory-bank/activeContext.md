@@ -1,3 +1,6 @@
+## Accent per app (2026-11-24)
+Audio editor now saves its accent in `%APPDATA%\Cutmarkudioppearance.json` (default Blue): `pub const APPEARANCE` in app.rs, passed to `ui_kit::apply_for` in main.rs. View > Appearance is unchanged except the picker says "Reset to default" and has no Glass effects switch (glass is always on). help/appearance.md rewritten to match. Other apps' accents no longer follow this one. Tests 729 pass (the clip_view accent test noted below passes now). See the root memory-bank for the ui-kit details.
+
 ## Deck center-line alignment (2026-11-24)
 Deck alignment task DONE: ui/timeline/deck.rs rebuilt its contents like the Recorder's record_ui.rs deck (pattern copied, no ui-kit change).
 - deck_contents(ui, &DeckData, &mut dyn FnMut(DeckAction)): one allocate_ui_with_layout row of TRANSPORT_BUTTON height, Layout::left_to_right(Align::Center), item_spacing.x = 0, manual gaps (DECK_GAP 12 left of the timecode / before the first button / before the total length, DECK_BUTTON_GAP 4 between buttons, DECK_TAIL 14 after the length; the 6 px deck padding stays ui-kit's frame margin). DeckData/DeckAction snapshot the editor state so the layout draws without an Editor; show() routes the clicks (same actions as before).
