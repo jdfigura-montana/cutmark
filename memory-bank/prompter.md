@@ -18,9 +18,12 @@
 - Brackets in code never open or close a cue; a cue outside code may hold code. A cue ends at the last `]]` of a run, so `[[pause]]]` is plain text.
 - Cues in a heading do not split it. List depth starts at 0.
 - Open: a second paragraph in a loose list item (no cue) is a ListItem with continues false, so it would draw its own marker.
+- C2 done: index::{WordIndex, Token, FORMAT_VERSION}; rules in index/normalize.rs. Script now has source_hash (std hash of the Markdown). WordIndex::is_current checks a cache; bump FORMAT_VERSION when parsing or normalizing changes. index_10k: 9.6 ms in release (10,010 typed words, 8,151 tokens). Nothing writes the cache file yet.
+- Tokens: a word may cross spans ("**world**,"), so char_range can end past its first span. source_line_of gives the block's first line. No spoken characters, no token.
+- Forms: the aligner must split multi-word forms. Contractions expand inside one token only: typed "do not" (two tokens) gets no "dont", so normalize the heard words the same way. No readings yet for "1990s" (gives "nineteen ninety s"), a minus sign, or other currencies.
 
 ## Next
-- C2.
+- C3.
 - By hand: see-through, flash on open, move to another monitor or DPI, lock and sleep, scroll with the Library minimized, OBS capture.
 - Open from V4: only Ctrl+Alt+C shows in the menus (V4 did not read the Hotkeys section). About notices are a short hand-written list.
 - scripts\check.ps1 fails in this worktree at clippy cutmark-audio: FFmpeg headers not found.

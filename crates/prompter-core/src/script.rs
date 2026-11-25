@@ -1,5 +1,6 @@
 //! Markdown to blocks (docs/suite/prompter.md, "Scripts").
 
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 use std::{mem, slice};
 
@@ -10,6 +11,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Script {
     pub blocks: Vec<Block>,
+    /// Hash of the Markdown, to check a cached word index against. A new Rust release may
+    /// change the value, which only means the cache is rebuilt.
+    pub source_hash: u64,
 }
 
 /// One block of a script, in reading order.
@@ -145,7 +149,13 @@ pub fn parse(md: &str) -> Script {
         builder.event(event, range);
     }
     builder.flush();
-    Script { blocks: builder.blocks }
+    Script { blocks: builder.blocks, source_hash: hash_source(md) }
+}
+
+fn hash_source(md: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    md.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Text collected for the current block, before cues are cut out of it.

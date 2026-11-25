@@ -2,5 +2,6 @@
 //!
 //! No UI or OS code lives here.
 
+pub mod index;
 pub mod limits;
 pub mod script;
