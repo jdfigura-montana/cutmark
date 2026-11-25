@@ -1492,6 +1492,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cutmark-prompter"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "eframe",
+ "egui",
+ "env_logger",
+ "log",
+ "prompter-platform",
+ "ui-kit",
+]
+
+[[package]]
 name = "cutmark-recorder"
 version = "0.1.0"
 dependencies = [
@@ -5246,6 +5259,14 @@ name = "profiling"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
+
+[[package]]
+name = "prompter-platform"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
+ "windows 0.62.2",
+]
 
 [[package]]
 name = "proptest"

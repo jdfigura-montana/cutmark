@@ -1,0 +1,25 @@
+[package]
+name = "prompter-platform"
+description = "Cutmark Prompter platform layer: every OS call the Prompter makes."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# Strict lint set, same as crates/cutmark-hotkeys: unsafe_code is "deny" so a later scoped allow is possible.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[dependencies]
+thiserror.workspace = true
+
+[target."cfg(windows)".dependencies]
+windows = { workspace = true, features = ["Wdk_System_SystemServices", "Win32_Foundation", "Win32_System_SystemInformation"] }

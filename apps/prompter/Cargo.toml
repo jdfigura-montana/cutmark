@@ -1,0 +1,32 @@
+[package]
+name = "cutmark-prompter"
+description = "Cutmark Prompter: teleprompter for the Cutmark suite."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cutmark-prompter"
+path = "src/main.rs"
+
+# Strict lint set, same as crates/cutmark-hotkeys: unsafe_code is "deny" so a later scoped allow is possible.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[dependencies]
+anyhow = "1.0.104"
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }
+egui.workspace = true
+env_logger = "0.11.11"
+log.workspace = true
+prompter-platform = { version = "0.1.0", path = "../../crates/prompter-platform" }
+ui-kit = { version = "0.1.0", path = "../../crates/ui-kit" }
