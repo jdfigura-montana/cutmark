@@ -1,3 +1,12 @@
+## Deck center-line alignment (2026-11-24)
+Deck alignment task DONE: ui/timeline/deck.rs rebuilt its contents like the Recorder's record_ui.rs deck (pattern copied, no ui-kit change).
+- deck_contents(ui, &DeckData, &mut dyn FnMut(DeckAction)): one allocate_ui_with_layout row of TRANSPORT_BUTTON height, Layout::left_to_right(Align::Center), item_spacing.x = 0, manual gaps (DECK_GAP 12 left of the timecode / before the first button / before the total length, DECK_BUTTON_GAP 4 between buttons, DECK_TAIL 14 after the length; the 6 px deck padding stays ui-kit's frame margin). DeckData/DeckAction snapshot the editor state so the layout draws without an Editor; show() routes the clicks (same actions as before).
+- Total length is now fonts::mono(typography::TIME_LARGE_SIZE) in text.tertiary (was mono VALUE_SIZE); same size + centered row = the timecode's baseline. Assumption: regular mono, not semibold, for the tertiary readout.
+- Play/Record were already ui_kit::play_button (TRANSPORT_BUTTON high, centered glyphs) = the Recorder capsule's height; no change.
+- New test the_deck_items_sit_on_one_center_line (headless, 2 frames, idle + recording, 1 px tolerance).
+- Tests 729 (728 pass). PRE-EXISTING FAILURE on clean HEAD ec00180, not this task's layer: clip_view::tests::a_muted_track_dims_the_clip_and_a_selected_clip_takes_the_accent ("a selected clip is the accent tint"). fmt and clippy -p cutmark-audio --all-targets -D warnings clean. check.ps1 and the release build were NOT run (task limited commands to cargo test -p cutmark-audio -q).
+
+
 ## Phase 15 (2026-11-22)
 S1 phase 15 DONE: audio editor 1.2.0 release close-out; no code changes except the version. See progress.md for the file list and the two open items (COPYRIGHT placeholder, stale crate list in THIRD-PARTY-NOTICES.txt). Font licenses for the installer come from crates/ui-kit/assets/fonts (FontsDir define in installer/cutmark.iss), the single source for Inter and JetBrains Mono. Next: S1 milestone wrap-up (JD).
 
