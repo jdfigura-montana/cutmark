@@ -1,12 +1,14 @@
-//! The suite-wide appearance file (`appearance.json`): read, write and poll,
-//! so every running Cutmark app follows one accent and glass setting
-//! (spec: Design Language "Accent picker" rules, S1 row "Appearance file").
+//! The per-app appearance file (`<Cutmark folder>/<app>/appearance.json`):
+//! read, write and poll, so each Cutmark app keeps its own accent (spec:
+//! Design Language "accent per app" amendment). Apps do not watch each other,
+//! and the old shared `appearance.json` is neither read nor written.
 //!
-//! The file stores only the raw user inputs (the pick as `#RRGGBB` and the
-//! glass switch); the derived accent tokens are recomputed with
-//! [`crate::accent::derive`] on load. Every problem (missing file, unreadable
-//! file, bad JSON, unknown version, bad hex) falls back to the default theme:
-//! loading never panics and never returns an error.
+//! The file stores only the raw user pick as `#RRGGBB`; the derived accent
+//! tokens are recomputed with [`crate::accent::derive`] on load. Glass is
+//! always on, so old files with a `glass` field still load and the field is
+//! ignored. Every problem (missing file, unreadable file, bad JSON, unknown
+//! version, bad hex) falls back to the app's default theme: loading never
+//! panics and never returns an error.
 
 use std::fs;
 use std::path::PathBuf;
@@ -16,28 +18,95 @@ use crate::theme::Theme;
 
 /// The file format version this module reads and writes.
 const VERSION: u32 = 1;
-/// The file name inside the Cutmark config folder.
+/// The file name inside the app's folder.
 const FILE_NAME: &str = "appearance.json";
 /// How far apart two polls may be (spec: at most once per second).
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// The on-disk JSON: version, raw pick, glass switch.
+/// One of the four accent presets; an app's default accent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Preset {
+    /// The Blue preset.
+    Blue,
+    /// The Violet preset.
+    Violet,
+    /// The Teal preset.
+    Teal,
+    /// The Orange preset.
+    Orange,
+}
+
+impl Preset {
+    /// The preset's pick color.
+    pub fn pick(self) -> egui::Color32 {
+        use crate::tokens::accent;
+        match self {
+            Preset::Blue => accent::PRESET_BLUE,
+            Preset::Violet => accent::PRESET_VIOLET,
+            Preset::Teal => accent::PRESET_TEAL,
+            Preset::Orange => accent::PRESET_ORANGE,
+        }
+    }
+}
+
+/// Which app is asking: its folder name under the Cutmark config folder and
+/// the accent it starts on and resets to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppAppearance {
+    /// The app's folder name: `audio`, `recorder`, `gallery`, `video`, `prompter`.
+    pub id: &'static str,
+    /// The accent a missing or unreadable file gives, and "Reset to default" restores.
+    pub default_preset: Preset,
+}
+
+impl AppAppearance {
+    /// What a context uses when the app never called [`crate::apply_for`] (tests, examples).
+    pub const FALLBACK: AppAppearance = AppAppearance { id: "app", default_preset: Preset::Blue };
+
+    /// An app's appearance identity.
+    pub const fn new(id: &'static str, default_preset: Preset) -> Self {
+        Self { id, default_preset }
+    }
+
+    /// The theme of a fresh install of this app: its default accent.
+    pub fn default_theme(&self) -> Theme {
+        Theme { accent: crate::accent::derive(self.default_preset.pick()), reduce_motion: false }
+    }
+}
+
+/// The egui context data id under which the app identity is stored.
+fn app_id() -> egui::Id {
+    egui::Id::new("cutmark_app_appearance")
+}
+
+/// Stores the app identity in the context; [`poll`] and the accent picker read it.
+pub fn set_app(ctx: &egui::Context, app: AppAppearance) {
+    ctx.data_mut(|data| data.insert_temp(app_id(), app));
+}
+
+/// The app identity stored in the context, or [`AppAppearance::FALLBACK`].
+pub fn app(ctx: &egui::Context) -> AppAppearance {
+    ctx.data(|data| data.get_temp::<AppAppearance>(app_id())).unwrap_or(AppAppearance::FALLBACK)
+}
+
+/// The on-disk JSON: version and raw pick. A `glass` field in an old file is
+/// ignored on load (serde skips unknown fields) and never written.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct File {
     version: u32,
     accent_pick: String,
-    glass: bool,
 }
 
-/// Where the file lives: `CUTMARK_APPEARANCE_PATH` if set (tests use it),
-/// else the Cutmark folder in the OS config directory.
-pub fn path() -> Option<PathBuf> {
-    if let Ok(from_env) = std::env::var("CUTMARK_APPEARANCE_PATH")
+/// Where the app's file lives: `<folder>/<app id>/appearance.json`, where the
+/// folder is `CUTMARK_APPEARANCE_DIR` if set (tests use it), else the Cutmark
+/// folder in the OS config directory.
+pub fn path(app: &AppAppearance) -> Option<PathBuf> {
+    if let Ok(from_env) = std::env::var("CUTMARK_APPEARANCE_DIR")
         && !from_env.is_empty()
     {
-        return Some(PathBuf::from(from_env));
+        return Some(PathBuf::from(from_env).join(app.id).join(FILE_NAME));
     }
-    config_folder().map(|folder| folder.join(FILE_NAME))
+    config_folder().map(|folder| folder.join(app.id).join(FILE_NAME))
 }
 
 /// The Cutmark config folder for this OS.
@@ -62,20 +131,20 @@ fn config_folder() -> Option<PathBuf> {
     }
 }
 
-/// Loads the theme from the file, or the default for any problem.
-pub fn load() -> Theme {
-    let Some(path) = path() else { return Theme::default() };
-    load_from_str(&fs::read_to_string(path).unwrap_or_default())
+/// Loads the app's theme from its file, or the app's default for any problem.
+pub fn load(app: &AppAppearance) -> Theme {
+    let Some(path) = path(app) else { return app.default_theme() };
+    load_from_str(app, &fs::read_to_string(path).unwrap_or_default())
 }
 
-/// Parses file text into a theme; any bad input falls back to the default.
-fn load_from_str(text: &str) -> Theme {
-    let Ok(file) = serde_json::from_str::<File>(text) else { return Theme::default() };
+/// Parses file text into a theme; any bad input falls back to the app's default.
+fn load_from_str(app: &AppAppearance, text: &str) -> Theme {
+    let Ok(file) = serde_json::from_str::<File>(text) else { return app.default_theme() };
     if file.version != VERSION {
-        return Theme::default();
+        return app.default_theme();
     }
-    let Some(pick) = parse_hex(&file.accent_pick) else { return Theme::default() };
-    Theme { accent: crate::accent::derive(pick), glass: file.glass, reduce_motion: false }
+    let Some(pick) = parse_hex(&file.accent_pick) else { return app.default_theme() };
+    Theme { accent: crate::accent::derive(pick), reduce_motion: false }
 }
 
 /// Parses a `#RRGGBB` pick (the `#` optional) into an sRGB color.
@@ -88,16 +157,16 @@ fn parse_hex(text: &str) -> Option<egui::Color32> {
     Some(egui::Color32::from_rgb(byte(0..2)?, byte(2..4)?, byte(4..6)?))
 }
 
-/// Writes the theme to the file: creates the folder, writes a temp file beside
-/// the target and renames it over the target.
-pub fn save(theme: &Theme) -> Result<(), String> {
-    let Some(path) = path() else {
-        return Err("no appearance file path: CUTMARK_APPEARANCE_PATH and the OS config folder are both unset".to_string());
+/// Writes the theme to the app's file: creates the app folder on first save,
+/// writes a temp file beside the target and renames it over the target.
+pub fn save(app: &AppAppearance, theme: &Theme) -> Result<(), String> {
+    let Some(path) = path(app) else {
+        return Err("no appearance file path: CUTMARK_APPEARANCE_DIR and the OS config folder are both unset".to_string());
     };
     let folder = path.parent().ok_or_else(|| format!("{} has no parent folder", path.display()))?;
     fs::create_dir_all(folder).map_err(|error| format!("cannot create {}: {error}", folder.display()))?;
     let pick = theme.accent.pick;
-    let json = serde_json::to_string(&File { version: VERSION, accent_pick: format!("#{:02X}{:02X}{:02X}", pick.r(), pick.g(), pick.b()), glass: theme.glass })
+    let json = serde_json::to_string(&File { version: VERSION, accent_pick: format!("#{:02X}{:02X}{:02X}", pick.r(), pick.g(), pick.b()) })
         .map_err(|error| format!("cannot encode {}: {error}", path.display()))?;
     let temp = path.with_extension("json.tmp");
     fs::write(&temp, json).map_err(|error| format!("cannot write {}: {error}", temp.display()))?;
@@ -128,11 +197,12 @@ pub fn poll_at(ctx: &egui::Context, now: Instant) {
         return;
     }
     state.last_check = Some(now);
-    if let Some(path) = path() {
+    let app = app(ctx);
+    if let Some(path) = path(&app) {
         let modified = fs::metadata(&path).and_then(|meta| meta.modified()).ok();
         if modified != state.last_seen_modified {
             state.last_seen_modified = modified;
-            Theme::set(ctx, load());
+            Theme::set(ctx, load(&app));
             crate::refresh(ctx);
         }
     }
@@ -157,9 +227,35 @@ mod tests {
     /// Bad file text falls back to the default theme.
     #[test]
     fn bad_text_loads_the_default() {
-        assert_eq!(load_from_str(""), Theme::default());
-        assert_eq!(load_from_str("{ not json"), Theme::default());
-        assert_eq!(load_from_str(r##"{"version": 99, "accent_pick": "#7C5CFF", "glass": false}"##), Theme::default());
-        assert_eq!(load_from_str(r##"{"version": 1, "accent_pick": "nope", "glass": false}"##), Theme::default());
+        let app = AppAppearance::FALLBACK;
+        assert_eq!(load_from_str(&app, ""), Theme::default());
+        assert_eq!(load_from_str(&app, "{ not json"), Theme::default());
+        assert_eq!(load_from_str(&app, r##"{"version": 99, "accent_pick": "#7C5CFF"}"##), Theme::default());
+        assert_eq!(load_from_str(&app, r##"{"version": 1, "accent_pick": "nope"}"##), Theme::default());
+    }
+
+    /// Bad text gives the app's own default, not Blue.
+    #[test]
+    fn bad_text_loads_the_apps_own_default() {
+        let teal = AppAppearance::new("recorder", Preset::Teal);
+        assert_eq!(load_from_str(&teal, ""), teal.default_theme());
+        assert_ne!(teal.default_theme(), Theme::default());
+    }
+
+    /// The file lives in the app's own folder.
+    #[test]
+    fn the_path_ends_in_the_app_folder() {
+        let found = path(&AppAppearance::new("gallery", Preset::Blue));
+        assert!(found.is_some_and(|file| file.ends_with(std::path::Path::new("gallery").join("appearance.json"))));
+    }
+
+    /// A file with an old `glass` field loads; the field is ignored.
+    #[test]
+    fn an_old_glass_field_is_ignored() {
+        let app = AppAppearance::FALLBACK;
+        let with_glass = load_from_str(&app, r##"{"version": 1, "accent_pick": "#7C5CFF", "glass": false}"##);
+        let without = load_from_str(&app, r##"{"version": 1, "accent_pick": "#7C5CFF"}"##);
+        assert_eq!(with_glass, without);
+        assert_ne!(with_glass, Theme::default());
     }
 }

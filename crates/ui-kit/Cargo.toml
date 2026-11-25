@@ -8,7 +8,7 @@ publish.workspace = true
 license.workspace = true
 
 # Strict lint set (S0 spec, Lints). Same as crates/cutmark-hotkeys, except unsafe_code is "deny":
-# the appearance tests set CUTMARK_APPEARANCE_PATH (edition 2024 makes env::set_var unsafe) and the
+# the appearance tests set CUTMARK_APPEARANCE_DIR (edition 2024 makes env::set_var unsafe) and the
 # Win32 chrome in phase 7 needs it too. Each unsafe block carries #[allow(unsafe_code)] and a
 # safety comment.
 [lints.rust]

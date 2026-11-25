@@ -29,7 +29,7 @@ pub enum Section {
     ControlApi,
     /// The recent commands the engine received.
     Diagnostics,
-    /// The accent picker and the glass switch.
+    /// The accent picker.
     Appearance,
 }
 

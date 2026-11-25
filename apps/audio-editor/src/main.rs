@@ -39,7 +39,7 @@ fn main() -> eframe::Result<()> {
         crate::app::APP_NAME,
         options,
         Box::new(|cc| {
-            ui_kit::apply(&cc.egui_ctx);
+            ui_kit::apply_for(&cc.egui_ctx, crate::app::APPEARANCE);
             ui_kit::chrome::install(cc);
             Ok(Box::new(crate::app::App::default()))
         }),

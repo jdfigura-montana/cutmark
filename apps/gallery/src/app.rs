@@ -18,6 +18,8 @@ use crate::media;
 /// The ui-kit version shown in the toolbar caption. Every suite package
 /// shares the workspace version, so this tracks ui-kit's value.
 const UI_KIT_VERSION: &str = "0.1.0";
+/// The gallery's own appearance file folder and default accent.
+pub const APPEARANCE: ui_kit::AppAppearance = ui_kit::AppAppearance::new("gallery", ui_kit::Preset::Blue);
 
 /// The app mark's side (spec rev 3 "Title bar": 18).
 const APP_MARK_SIZE: f32 = 18.0;
@@ -276,15 +278,11 @@ impl Gallery {
     }
 
     /// The status bar pinned to the bottom of the window: the live accent
-    /// hex and the glass and reduce motion switches. It is the bottom panel,
+    /// hex and the reduce motion switch. It is the bottom panel,
     /// so the page's scroll area ends above it.
     fn show_status_bar(&mut self, ui: &mut egui::Ui) {
         let theme = Theme::get(ui.ctx());
-        let items = [
-            format!("accent {}", core_page::hex(theme.accent.accent)),
-            format!("glass {}", if theme.glass { "on" } else { "off" }),
-            format!("reduce motion {}", if theme.reduce_motion { "on" } else { "off" }),
-        ];
+        let items = [format!("accent {}", core_page::hex(theme.accent.accent)), format!("reduce motion {}", if theme.reduce_motion { "on" } else { "off" })];
         let items: Vec<&str> = items.iter().map(String::as_str).collect();
         egui::Panel::bottom("gallery-status-bar").exact_size(size::STATUS_BAR_HEIGHT).frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
             ui_kit::status_bar(ui, &items);
@@ -399,5 +397,17 @@ fn dialog_footer(ui: &mut egui::Ui, open: &std::cell::Cell<bool>) {
     }
     if ui_kit::primary_button(ui, "Close").clicked() {
         open.set(false);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The gallery saves its accent in its own folder and resets to Blue.
+    #[test]
+    fn the_gallery_has_its_own_appearance_identity() {
+        assert_eq!(APPEARANCE.id, "gallery");
+        assert_eq!(APPEARANCE.default_preset, ui_kit::Preset::Blue);
     }
 }

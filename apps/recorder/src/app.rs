@@ -31,6 +31,9 @@ use crate::settings_ui::{self, ApiUi, NextTake, Section, SettingsDialog};
 use crate::status_ui;
 use crate::tools_ui::{self, Tool};
 use crate::tracks_ui::{self, LiveTrackStats, TracksChanged};
+
+/// The Recorder's own appearance file folder and default accent.
+pub const APPEARANCE: ui_kit::AppAppearance = ui_kit::AppAppearance::new("recorder", ui_kit::Preset::Teal);
 use crate::tray::{Tray, TrayHandle, TrayState};
 use crate::webcam::WebcamHost;
 use crate::webcam_ui;
@@ -172,7 +175,7 @@ pub struct RecorderApp {
 impl RecorderApp {
     /// Applies the suite theme, excludes the window from capture, loads settings, starts the controller, the hotkeys and the tray icon.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        ui_kit::apply(&cc.egui_ctx);
+        ui_kit::apply_for(&cc.egui_ctx, APPEARANCE);
         let mut settings = config::load_or_init().unwrap_or_else(|err| {
             log::error!("could not load the Recorder settings, using the defaults: {err}");
             Settings::default()
@@ -1876,6 +1879,13 @@ impl eframe::App for RecorderApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The app saves its accent in its own folder and resets to its own default.
+    #[test]
+    fn the_app_has_its_own_appearance_identity() {
+        assert_eq!(APPEARANCE.id, "recorder");
+        assert_eq!(APPEARANCE.default_preset, ui_kit::Preset::Teal);
+    }
 
     /// The Setup layout, headless at 1300 x 840: the right settings column ends at the window
     /// width minus the window gap (it never grows past the window edge) and starts after the

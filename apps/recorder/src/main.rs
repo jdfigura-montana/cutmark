@@ -50,7 +50,7 @@ fn main() -> anyhow::Result<()> {
         "Cutmark Recorder",
         options,
         Box::new(|cc| {
-            ui_kit::apply(&cc.egui_ctx);
+            ui_kit::apply_for(&cc.egui_ctx, app::APPEARANCE);
             ui_kit::chrome::install(cc);
             Ok(Box::new(app::RecorderApp::new(cc)))
         }),

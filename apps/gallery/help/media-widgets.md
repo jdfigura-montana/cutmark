@@ -28,9 +28,8 @@ run on a repeating signal.
 - A pending cut band, a marquee selection, a snap line and markers in every
   category color.
 
-The two small panels below the timeline repeat the transport deck with the
-glass effects on and off. The glass switch is shared by the whole suite, so
-**Appearance** controls it.
+The two small panels below the timeline repeat the transport deck on the
+glass surface, which is always on.
 
 > Tip: With reduced motion on, the meters freeze and the deck stops fading.
 

@@ -1,7 +1,7 @@
 //! The accent picker (spec: Design Language "Accent picker"): presets, a hue
 //! and chroma wheel in OKLCH, a lightness slider, a hex field, a live preview
-//! strip, the readability and near-record notes, the reset button and the
-//! glass switch, in one inspector group. Every change applies live through
+//! strip, the readability and near-record notes and the reset button, in one
+//! inspector group. Every change applies live through
 //! [`Theme::set`] and [`crate::refresh`]; the appearance file is saved on
 //! release of a drag or on a discrete change, never every frame.
 
@@ -80,7 +80,8 @@ struct PickerState {
 }
 
 /// The accent picker: swatches, wheel, lightness, hex field, live preview,
-/// notes, reset and the glass switch, top to bottom in one inspector group.
+/// notes and reset, top to bottom in one inspector group. The theme is saved
+/// to the app's own file (the app [`crate::apply_for`] stored).
 /// Returns true when the theme changed this frame.
 ///
 /// Usage:
@@ -118,8 +119,6 @@ pub fn accent_picker(ui: &mut Ui) -> bool {
         notes(ui, before);
         ui.add_space(space::SCALE_8);
         reset_row(ui, &ctx, &mut state, before);
-        ui.add_space(space::SCALE_8);
-        glass_row(ui, &ctx, before);
         ui.add_space(space::SCALE_4);
     });
     ctx.data_mut(|data| data.insert_temp(id, state));
@@ -166,7 +165,7 @@ fn apply_pick(ctx: &Context, pick: Color32, state: &mut PickerState) {
 
 /// Saves the theme to the appearance file; an error queues a toast.
 fn persist(ctx: &Context) {
-    if let Err(error) = appearance::save(&Theme::get(ctx)) {
+    if let Err(error) = appearance::save(&appearance::app(ctx), &Theme::get(ctx)) {
         toast(ctx, format!("Cannot save the appearance: {error}"));
     }
 }
@@ -435,30 +434,14 @@ fn notes(ui: &mut Ui, theme: Theme) {
     }
 }
 
-/// The "Reset to Blue" text button.
+/// The "Reset to default" text button: back to the app's default accent.
 fn reset_row(ui: &mut Ui, ctx: &Context, state: &mut PickerState, theme: Theme) {
     let reset =
-        ui.add(egui::Button::new(egui::RichText::new("Reset to Blue").font(fonts::medium(typography::BODY_SIZE)).color(theme.accent.accent)).frame(false));
+        ui.add(egui::Button::new(egui::RichText::new("Reset to default").font(fonts::medium(typography::BODY_SIZE)).color(theme.accent.accent)).frame(false));
     if reset.clicked() {
-        apply_pick(ctx, accent::presets()[0].1, state);
+        apply_pick(ctx, appearance::app(ctx).default_preset.pick(), state);
         persist(ctx);
     }
-}
-
-/// The glass switch row: "Glass effects" bound to [`Theme::glass`]; a flip
-/// applies and saves immediately (a discrete change).
-fn glass_row(ui: &mut Ui, ctx: &Context, theme: Theme) {
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Glass effects").font(fonts::medium(typography::BODY_SIZE)).color(color::TEXT_PRIMARY));
-        let mut glass = theme.glass;
-        let response = switch(ui, &mut glass);
-        response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, glass, "Glass switch"));
-        if glass != theme.glass {
-            Theme::set(ctx, Theme { glass, ..theme });
-            crate::refresh(ctx);
-            persist(ctx);
-        }
-    });
 }
 
 #[cfg(test)]

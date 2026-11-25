@@ -430,7 +430,7 @@ fn recorder_panel(ui: &mut egui::Ui, state: &mut MediaState) {
 }
 
 /// The menus panel: a menu button opening the glass menu with five rows and
-/// a submenu (egui sizes the 32 px rows; the popup follows the glass switch).
+/// a submenu (egui sizes the 32 px rows).
 fn menus_panel(ui: &mut egui::Ui) {
     panel(ui, |ui| {
         panel_title(ui, "Menus");
@@ -452,13 +452,12 @@ fn menus_panel(ui: &mut egui::Ui) {
     });
 }
 
-/// The glass on and off panel: the same deck in two small content panels.
-/// `Theme.glass` is a global switch read from the egui context each frame and
-/// the API has no per-panel override, so the Appearance switch covers both.
+/// The glass decks panel: the same deck in two small content panels. Glass is
+/// always on.
 fn glass_panel(ui: &mut egui::Ui, state: &mut MediaState) {
     panel(ui, |ui| {
-        panel_title(ui, "Glass on and off");
-        caption(ui, "Theme.glass is global; the API has no per-panel override, so the Appearance switch covers both decks");
+        panel_title(ui, "Glass decks");
+        caption(ui, "glass is always on");
         let width = ui.available_width().min(2.0 * GLASS_PANEL_WIDTH + space::SCALE_8);
         let (rect, _) = ui.allocate_exact_size(egui::vec2(width, GLASS_PANEL_HEIGHT), egui::Sense::hover());
         let painter = ui.painter().clone();

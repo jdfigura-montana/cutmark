@@ -3,11 +3,11 @@ id: appearance
 title: Appearance
 section: Settings
 order: 700
-keywords: appearance, accent, glass, theme, color, custom, hex, preset, wheel, reset
+keywords: appearance, accent, theme, color, custom, hex, preset, wheel, reset
 context:
 ---
 
-Change the accent color and the glass effects. Every change applies as you make it.
+Change the accent color of this app. Every change applies as you make it.
 
 ## Pick an accent color
 
@@ -19,13 +19,12 @@ Change the accent color and the glass effects. Every change applies as you make 
 
 If the app adjusts your pick so text stays readable, it shows **Adjusted for readability**. If the pick is close to the record color, it shows **Close to the record color. Record buttons will still show their R and dot.**
 
-## Glass and reset
+## Reset
 
-1. Turn **Glass effects** on or off with its switch.
-2. Click **Reset to Blue** to return to the default accent.
-3. Click **Done** to close the **Appearance** window.
+1. Click **Reset to default** to return to this app's default accent (Blue in Cutmark Audio).
+2. Click **Done** to close the **Appearance** window.
 
-The accent is saved as you change it and is shared by the Cutmark apps. It recolors buttons, sliders, selections and the preview: it never changes your audio.
+The accent is saved as you change it. Each Cutmark app keeps its own accent, so changing it here does not change the other apps. It recolors buttons, sliders, selections and the preview: it never changes your audio.
 
 > Tip: Keep the window open to try colors; every change previews live and is saved when you release the control.
 

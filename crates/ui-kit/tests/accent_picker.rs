@@ -1,10 +1,10 @@
 //! kittest tests for the accent picker (spec "Accent picker"): the Teal
 //! swatch applies and saves, the hex field shows the readability and
-//! near-record notes, Reset returns to Blue, the glass switch flips and
-//! saves, and a wheel drag saves only on release.
+//! near-record notes, Reset to default returns to the app's default accent,
+//! there is no glass switch, and a wheel drag saves only on release.
 //!
-//! The appearance path is a process-wide env var, so the tests run serially:
-//! every one takes the env lock and points `CUTMARK_APPEARANCE_PATH` at its
+//! The appearance folder is a process-wide env var, so the tests run serially:
+//! every one takes the env lock and points `CUTMARK_APPEARANCE_DIR` at its
 //! own temp folder, as in `tests/appearance.rs`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -17,33 +17,37 @@ use std::sync::{Mutex, MutexGuard};
 
 use egui::{Event, PointerButton, pos2, vec2};
 use egui_kittest::{Harness, kittest::Queryable};
-use ui_kit::{Theme, accent};
+use ui_kit::{AppAppearance, Preset, Theme, accent};
 
-/// One lock for every test: the appearance path is a process-wide env var.
+/// One lock for every test: the appearance folder is a process-wide env var.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-/// A temp folder with the env var pointing at its `appearance.json`.
+/// The app the tests run as unless one says otherwise (the ui-kit fallback).
+const TEST_APP: AppAppearance = AppAppearance::FALLBACK;
+
+/// A temp folder with the env var pointing at it as the Cutmark folder.
 struct TempAppearance {
-    /// The appearance file inside the temp folder.
+    /// The appearance file of [`TEST_APP`] inside the temp folder.
     file: PathBuf,
+    /// The temp Cutmark folder.
+    folder: PathBuf,
     /// Held for the whole test so no other test touches the env var.
     _guard: MutexGuard<'static, ()>,
 }
 
 impl TempAppearance {
-    /// Creates the temp folder and points the env var at its appearance file.
+    /// Creates the temp folder and points the env var at it.
     fn new(name: &str) -> Self {
         let guard = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let folder = std::env::temp_dir().join(format!("cutmark-ui-kit-accent-picker-{name}"));
         let _ = fs::remove_dir_all(&folder);
         fs::create_dir_all(&folder).expect("create temp folder");
-        let file = folder.join("appearance.json");
         // SAFETY: the caller holds ENV_LOCK, so no other thread reads the variable.
         #[allow(unsafe_code)]
         unsafe {
-            std::env::set_var("CUTMARK_APPEARANCE_PATH", &file)
+            std::env::set_var("CUTMARK_APPEARANCE_DIR", &folder)
         };
-        Self { file, _guard: guard }
+        Self { file: folder.join(TEST_APP.id).join("appearance.json"), folder, _guard: guard }
     }
 }
 
@@ -53,21 +57,22 @@ impl Drop for TempAppearance {
         // SAFETY: the guard in self is still held, so no other thread reads the variable.
         #[allow(unsafe_code)]
         unsafe {
-            std::env::remove_var("CUTMARK_APPEARANCE_PATH")
+            std::env::remove_var("CUTMARK_APPEARANCE_DIR")
         };
-        let _ = fs::remove_dir_all(self.file.parent().expect("temp folder"));
+        let _ = fs::remove_dir_all(&self.folder);
     }
 }
 
-/// A harness with the ui-kit font set, the theme from the appearance file and
-/// an open Appearance dialog. The first pass only installs fonts and styles
-/// (egui applies a font change at the start of the next pass).
-fn new_harness(mut draw: impl FnMut(&mut egui::Ui) + 'static) -> Harness<'static> {
+/// A harness for one app with the ui-kit font set and the theme from the
+/// app's appearance file: its id picks the file, its default the reset. The
+/// first pass only installs fonts and styles (egui applies a font change at
+/// the start of the next pass).
+fn new_harness_for(app: AppAppearance, mut draw: impl FnMut(&mut egui::Ui) + 'static) -> Harness<'static> {
     let first_pass = Rc::new(Cell::new(true));
     let mut harness = Harness::builder().with_size(vec2(640.0, 820.0)).build_ui(move |ui| {
         if first_pass.get() {
             first_pass.set(false);
-            ui_kit::apply(ui.ctx());
+            ui_kit::apply_for(ui.ctx(), app);
             return;
         }
         draw(ui);
@@ -78,9 +83,14 @@ fn new_harness(mut draw: impl FnMut(&mut egui::Ui) + 'static) -> Harness<'static
 
 /// A harness showing the open Appearance dialog; returns it with the open flag.
 fn dialog_harness() -> (Harness<'static>, Rc<Cell<bool>>) {
+    dialog_harness_for(TEST_APP)
+}
+
+/// [`dialog_harness`] for one app.
+fn dialog_harness_for(app: AppAppearance) -> (Harness<'static>, Rc<Cell<bool>>) {
     let open = Rc::new(Cell::new(true));
     let open_cell = open.clone();
-    let harness = new_harness(move |ui| {
+    let harness = new_harness_for(app, move |ui| {
         let mut open = open_cell.get();
         ui_kit::appearance_dialog(ui.ctx(), &mut open);
         open_cell.set(open);
@@ -93,13 +103,6 @@ fn saved_pick(path: &std::path::Path) -> String {
     let text = fs::read_to_string(path).expect("appearance file saved");
     let json: serde_json::Value = serde_json::from_str(&text).expect("saved JSON parses");
     json["accent_pick"].as_str().expect("accent_pick").to_owned()
-}
-
-/// The `glass` value saved in the appearance file (panics when absent).
-fn saved_glass(path: &std::path::Path) -> bool {
-    let text = fs::read_to_string(path).expect("appearance file saved");
-    let json: serde_json::Value = serde_json::from_str(&text).expect("saved JSON parses");
-    json["glass"].as_bool().expect("glass")
 }
 
 /// The `#RRGGBB` text of a color, as the picker writes it.
@@ -159,9 +162,9 @@ fn typing_a_near_record_hex_shows_the_near_record_note() {
     harness.get_by_label("Close to the record color. Record buttons will still show their R and dot.");
 }
 
-/// "Reset to Blue" returns the theme and the saved file to the Blue preset.
+/// "Reset to default" returns the theme and the saved file to the Blue default.
 #[test]
-fn reset_returns_to_blue() {
+fn reset_returns_to_the_blue_default() {
     let temp = TempAppearance::new("reset");
     let (mut harness, _open) = dialog_harness();
 
@@ -169,25 +172,54 @@ fn reset_returns_to_blue() {
     harness.run();
     assert_ne!(Theme::get(&harness.ctx).accent, accent::default_accent(), "Teal must be applied first");
 
-    harness.get_by_label("Reset to Blue").click();
+    harness.get_by_label("Reset to default").click();
     harness.run();
 
     assert_eq!(Theme::get(&harness.ctx).accent, accent::default_accent(), "the accent must be Blue again");
     assert_eq!(saved_pick(&temp.file), hex(accent::presets()[0].1), "the file must hold the Blue pick");
 }
 
-/// Toggling the glass switch flips `Theme.glass` and saves the file.
+/// "Reset to default" goes to the app's own default, and saves it in that app's file.
 #[test]
-fn the_glass_switch_flips_glass_and_saves() {
-    let temp = TempAppearance::new("glass");
-    let (mut harness, _open) = dialog_harness();
-    assert!(Theme::get(&harness.ctx).glass, "the default theme has glass on");
+fn reset_returns_to_each_apps_own_default() {
+    let temp = TempAppearance::new("reset-per-app");
+    for (id, preset) in [("recorder", Preset::Teal), ("video", Preset::Orange), ("prompter", Preset::Violet)] {
+        let app = AppAppearance::new(id, preset);
+        let (mut harness, _open) = dialog_harness_for(app);
+        assert_eq!(Theme::get(&harness.ctx), app.default_theme(), "{id} starts on its default with no file");
 
-    harness.get_by_label("Glass switch").click();
-    harness.run();
+        harness.get_by_label("Blue").click();
+        harness.run();
+        harness.get_by_label("Reset to default").click();
+        harness.run();
 
-    assert!(!Theme::get(&harness.ctx).glass, "the theme glass switch must be off");
-    assert!(!saved_glass(&temp.file), "the file must hold glass off");
+        let default_pick = preset.pick();
+        assert_eq!(Theme::get(&harness.ctx).accent.pick, default_pick, "{id} resets to its own default");
+        assert_eq!(saved_pick(&temp.folder.join(id).join("appearance.json")), hex(default_pick), "{id} saved its default in its own file");
+    }
+}
+
+/// Saving in one app leaves another app's file alone.
+#[test]
+fn saving_in_one_app_does_not_touch_another_apps_file() {
+    let temp = TempAppearance::new("two-apps");
+    let (mut audio, _open) = dialog_harness_for(AppAppearance::new("audio", Preset::Blue));
+    audio.get_by_label("Violet").click();
+    audio.run();
+    let (recorder, _open) = dialog_harness_for(AppAppearance::new("recorder", Preset::Teal));
+
+    assert_eq!(saved_pick(&temp.folder.join("audio").join("appearance.json")), hex(accent::presets()[1].1), "audio saved Violet");
+    assert!(!temp.folder.join("recorder").join("appearance.json").exists(), "the recorder file was not written");
+    assert_eq!(Theme::get(&recorder.ctx).accent.pick, Preset::Teal.pick(), "the recorder still starts on Teal");
+}
+
+/// The picker has no glass switch any more.
+#[test]
+fn there_is_no_glass_switch() {
+    let _temp = TempAppearance::new("no-glass");
+    let (harness, _open) = dialog_harness();
+    assert!(harness.query_by_label("Glass switch").is_none());
+    assert!(harness.query_by_label("Glass effects").is_none());
 }
 
 /// Dragging on the wheel previews live but saves the file only on release.

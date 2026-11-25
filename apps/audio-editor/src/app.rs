@@ -26,6 +26,8 @@ use ui_kit::tour;
 /// The user-visible application name, used for the window title, the start
 /// screen heading and the installer.
 pub const APP_NAME: &str = "CutMark Audio Editor";
+/// The audio editor's own appearance file folder and default accent.
+pub const APPEARANCE: ui_kit::AppAppearance = ui_kit::AppAppearance::new("audio", ui_kit::Preset::Blue);
 
 /// The short app name shown in the start screen's toolbar title area and its
 /// panel heading.
@@ -146,8 +148,8 @@ impl App {
     /// drive the real frame without an `eframe::Frame`.
     fn run(&mut self, ui: &mut egui::Ui) {
         self.update_title(ui);
-        // The appearance file feeds the runtime theme (shared with the whole
-        // suite); toasts draw on top of everything.
+        // The app's own appearance file feeds the runtime theme; toasts draw
+        // on top of everything.
         ui_kit::appearance::poll(ui.ctx());
         ui_kit::show_toasts(ui.ctx());
         // Work on the screen outside self so menu, editor and screen can be
@@ -768,6 +770,13 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The app saves its accent in its own folder and resets to its own default.
+    #[test]
+    fn the_app_has_its_own_appearance_identity() {
+        assert_eq!(APPEARANCE.id, "audio");
+        assert_eq!(APPEARANCE.default_preset, ui_kit::Preset::Blue);
+    }
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 

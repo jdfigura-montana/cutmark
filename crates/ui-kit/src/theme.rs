@@ -1,6 +1,6 @@
-//! The runtime theme: the two inputs (`accent`, `glass`) every widget reads
-//! instead of constants, stored in the egui context (spec: S1 Audio Editor,
-//! row "Runtime theme").
+//! The runtime theme: the input (`accent`) every widget reads instead of
+//! constants, stored in the egui context (spec: S1 Audio Editor, row
+//! "Runtime theme"). Glass is always on and is not an input.
 
 use crate::accent;
 
@@ -9,21 +9,19 @@ fn id() -> egui::Id {
     egui::Id::new("cutmark_theme")
 }
 
-/// The runtime theme: the derived accent set and the glass switch.
+/// The runtime theme: the derived accent set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
     /// The derived accent set: the user's pick plus the six accent tokens.
     pub accent: accent::Accent,
-    /// True for painted glass, false for the solid `bg.group` fallback.
-    pub glass: bool,
     /// True when the OS asks for reduced motion: ui-kit animations become instant.
     pub reduce_motion: bool,
 }
 
 impl Default for Theme {
-    /// The default Blue preset with glass on and full motion.
+    /// The default Blue preset with full motion.
     fn default() -> Self {
-        Self { accent: accent::default_accent(), glass: true, reduce_motion: false }
+        Self { accent: accent::default_accent(), reduce_motion: false }
     }
 }
 
@@ -49,14 +47,13 @@ mod tests {
     fn get_on_a_fresh_context_returns_the_default() {
         let ctx = egui::Context::default();
         assert_eq!(Theme::get(&ctx), Theme::default());
-        assert!(Theme::get(&ctx).glass);
     }
 
     /// A set theme reads back unchanged.
     #[test]
     fn set_then_get_round_trips() {
         let ctx = egui::Context::default();
-        let theme = Theme { accent: accent::derive(accent::presets()[1].1), glass: false, reduce_motion: false };
+        let theme = Theme { accent: accent::derive(accent::presets()[1].1), reduce_motion: false };
         Theme::set(&ctx, theme);
         assert_eq!(Theme::get(&ctx), theme);
     }

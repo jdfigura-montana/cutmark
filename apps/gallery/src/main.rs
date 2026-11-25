@@ -20,7 +20,7 @@ fn main() -> eframe::Result {
         "Cutmark Gallery",
         options,
         Box::new(|cc| {
-            ui_kit::apply(&cc.egui_ctx);
+            ui_kit::apply_for(&cc.egui_ctx, app::APPEARANCE);
             ui_kit::chrome::install(cc);
             let book = help::book().expect("the gallery help topics are valid");
             Ok(Box::new(app::Gallery::new(book)))
