@@ -192,6 +192,14 @@ Each take gets its own folder:
 
 `session.json` is written at start and updated on stop with duration, frame counts, duplicated and dropped frames, and average bitrate.
 
+## session.json composite block
+
+Every take's `session.json` has a `composite` object, written at start, that says what is in the main video and how an editor rebuilds the Baked look: canvas, main file, camera layer and background. The schema and field rules are in [recorder-composite-mode.md](recorder-composite-mode.md), section "The `composite` block in session.json".
+
+- File names are relative to the take folder. A Baked camera layer with no camera file has `"file": null`.
+- `layers` is empty in the Screen only layout, when the webcam is off or absent at start, and in a Clean take whose camera file could not start.
+- In Cam only, `main.source` stays `screen`, the camera layer is baked, and its crop is 0 because that layout shows the whole camera frame.
+
 ## Marks system
 
 A hotkey stamps the exact recording time, and every mark reaches disk the moment it is made. The format and the time rules are the Marks Sidecar Schema v1 spec; the Recorder writes only through \`marks::SessionWriter\` and never builds the JSON itself.

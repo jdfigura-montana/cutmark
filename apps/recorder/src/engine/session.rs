@@ -17,6 +17,7 @@ use media_io::mux::{MuxSender, MuxThread, Muxer, SendParameters};
 use super::audio::{self, AudioMessage, AudioStart};
 use super::cam::{self, CamCounters, CamHandle, CamSnapshot, CamSummary};
 use super::clock::MediaClock;
+use super::composite::CompositeBlock;
 use super::marks::{MarksWarning, TakeMarks, wav_length_ms};
 use super::video;
 use crate::config::{Container, Profile};
@@ -452,6 +453,13 @@ impl SessionFile {
         }
     }
 
+    /// Adds the composite block: what the main video holds and how an editor rebuilds the look.
+    fn set_composite(&mut self, block: &CompositeBlock) {
+        if let Some(doc) = self.doc.as_object_mut() {
+            doc.insert("composite".to_owned(), serde_json::to_value(block).unwrap_or(serde_json::Value::Null));
+        }
+    }
+
     /// Writes the file through a temp file in the same folder, then renames it over the target.
     fn write(&self) -> Result<(), String> {
         crate::config::write_json(&self.path, &self.doc).map_err(|err| err.to_string())
@@ -538,6 +546,9 @@ impl RecordingSession {
         let mut session_file = SessionFile::begin(&cfg);
         // The camera file is decided before the config moves to the video thread.
         let cam_plan = cam::plan(&cfg);
+        // So is what the composite block needs: the profile and the camera's size as they are at the start.
+        let profile = cfg.profile.clone();
+        let cam_size = crate::webcam::shared().map(|share| share.capture.format()).map(|format| (format.width, format.height));
         let stats = Arc::new(Stats::new(&cfg.tracks));
         let stop_flag = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
@@ -658,6 +669,8 @@ impl RecordingSession {
             log::warn!("{notice}");
         }
         session_file.set_cam(cam.as_ref().map(CamHandle::file), cam_notice.as_deref());
+        let cam_file = cam.as_ref().map(|handle| file_name(handle.file()));
+        session_file.set_composite(&CompositeBlock::new(&profile, cam_size, &file_name(&output_file), cam_file.as_deref()));
         let marks_warning = MarksWarning::default();
         let marks = TakeMarks::begin(&take_folder, &base_name, &output_file, fps, MediaClock::new(start_qpc, qpc_freq), marks_warning.clone());
         // A session.json that cannot be written is a warning, never a reason to stop the recording.
@@ -825,6 +838,11 @@ impl RecordingSession {
         }
         (outcome, cam)
     }
+}
+
+/// A path's file name as text; empty when it has none.
+fn file_name(path: &Path) -> String {
+    path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
 /// The encoder tag every take's container carries.

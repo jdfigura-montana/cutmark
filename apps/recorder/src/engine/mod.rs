@@ -19,6 +19,9 @@ pub mod cam;
 /// The media clock: QPC times to recording time with paused time removed.
 pub mod clock;
 
+/// The composite block of session.json: the canvas, the camera layer as the compositor places it, and the background.
+pub mod composite;
+
 /// The controller thread: handles every command and owns the recording session,
 /// so hotkeys work while the window is hidden.
 pub mod controller;
