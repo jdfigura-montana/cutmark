@@ -1,4 +1,6 @@
 use prompter_core::script::{Block, BlockKind, Cue, MarkCategory, Section, Span, parse, sections};
+use serde::Deserialize;
+use serde::de::value::{Error, StrDeserializer};
 
 fn blocks(md: &str) -> Vec<Block> {
     parse(md).blocks
@@ -26,7 +28,17 @@ fn mark(label: &str, category: MarkCategory) -> Cue {
 }
 
 fn item(ordered: bool, depth: u8) -> BlockKind {
-    BlockKind::ListItem { ordered, depth }
+    BlockKind::ListItem { ordered, depth, continues: false, start: None }
+}
+
+/// The first item of an ordered list.
+fn first_item(depth: u8, start: u64) -> BlockKind {
+    BlockKind::ListItem { ordered: true, depth, continues: false, start: Some(start) }
+}
+
+/// The rest of a list item that a cue split.
+fn rest(ordered: bool, depth: u8) -> BlockKind {
+    BlockKind::ListItem { ordered, depth, continues: true, start: None }
 }
 
 #[test]
@@ -51,13 +63,39 @@ fn hard_break_is_a_newline() {
 fn tight_nested_lists() {
     assert_eq!(
         outline("- a\n  1. b\n  2. c\n- d\n"),
-        [text(item(false, 0), "a"), text(item(true, 1), "b"), text(item(true, 1), "c"), text(item(false, 0), "d"),]
+        [text(item(false, 0), "a"), text(first_item(1, 1), "b"), text(item(true, 1), "c"), text(item(false, 0), "d"),]
     );
 }
 
 #[test]
 fn loose_list_and_text_after_it() {
-    assert_eq!(outline("1. a\n\n2. b\n\nafter\n"), [text(item(true, 0), "a"), text(item(true, 0), "b"), text(BlockKind::Paragraph, "after"),]);
+    assert_eq!(outline("1. a\n\n2. b\n\nafter\n"), [text(first_item(0, 1), "a"), text(item(true, 0), "b"), text(BlockKind::Paragraph, "after"),]);
+}
+
+#[test]
+fn ordered_lists_keep_their_start_number() {
+    assert_eq!(
+        outline("7. a\n8. b\n\ntext\n\n0. c\n"),
+        [text(first_item(0, 7), "a"), text(item(true, 0), "b"), text(BlockKind::Paragraph, "text"), text(first_item(0, 0), "c"),]
+    );
+}
+
+#[test]
+fn an_item_without_text_uses_up_its_number() {
+    assert_eq!(outline("3. [[pause]]\n4. four\n5. five\n"), [cue(Cue::Pause), text(first_item(0, 4), "four"), text(item(true, 0), "five"),]);
+}
+
+#[test]
+fn split_list_item_continues() {
+    assert_eq!(
+        outline("4. a [[pause]] b [[end]] c\n5. d\n"),
+        [text(first_item(0, 4), "a"), cue(Cue::Pause), text(rest(true, 0), "b"), cue(Cue::End), text(rest(true, 0), "c"), text(item(true, 0), "d"),]
+    );
+}
+
+#[test]
+fn cue_before_an_item_does_not_split_it() {
+    assert_eq!(outline("2. [[pause]] a [[end]] b\n"), [cue(Cue::Pause), text(first_item(0, 2), "a"), cue(Cue::End), text(rest(true, 0), "b"),]);
 }
 
 #[test]
@@ -141,7 +179,7 @@ fn inline_cue_keeps_styles_on_both_sides() {
 fn inline_cue_splits_list_items_and_quotes() {
     assert_eq!(
         outline("- a [[pause]] b\n\n> c [[end]]\n"),
-        [text(item(false, 0), "a"), cue(Cue::Pause), text(item(false, 0), "b"), text(BlockKind::Quote, "c"), cue(Cue::End),]
+        [text(item(false, 0), "a"), cue(Cue::Pause), text(rest(false, 0), "b"), text(BlockKind::Quote, "c"), cue(Cue::End),]
     );
 }
 
@@ -168,21 +206,74 @@ fn unclosed_cue_does_not_swallow_the_next_one() {
 }
 
 #[test]
-fn mark_categories() {
+fn inline_code_is_never_a_cue() {
+    for (md, plain) in [("type `[[pause]]` here", "type [[pause]] here"), ("`[[`pause]]", "[[pause]]"), ("[[pause`]]`", "[[pause]]")] {
+        assert_eq!(outline(md), [text(BlockKind::Paragraph, plain)], "{md}");
+    }
+    assert_eq!(blocks("a `[[end]]` b")[0].spans, [span("a [[end]] b", false, false)]);
+}
+
+#[test]
+fn code_blocks_are_never_cues() {
+    for md in ["```\n[[pause]]\n```\n", "~~~text\n[[pause]]\n~~~\n", "    [[pause]]\n"] {
+        assert_eq!(outline(md), [text(BlockKind::Paragraph, "[[pause]]")], "{md}");
+    }
+    assert_eq!(outline("```\ncode\n```\n\n[[pause]]\n"), [text(BlockKind::Paragraph, "code"), cue(Cue::Pause)]);
+}
+
+#[test]
+fn a_cue_may_hold_code() {
+    assert_eq!(outline("[[note: type `a]] [[b` now]]"), [cue(Cue::Note("type a]] [[b now".to_owned()))]);
+}
+
+#[test]
+fn a_cue_ends_at_the_last_closing_brackets() {
+    assert_eq!(outline("[[note: click [Save]]]"), [cue(Cue::Note("click [Save]".to_owned()))]);
+    assert_eq!(outline("[[mark: [a]]] then [[pause]]"), [cue(mark("[a]", MarkCategory::Note)), text(BlockKind::Paragraph, "then"), cue(Cue::Pause),]);
+}
+
+#[test]
+fn mark_type_and_colon_are_taken_off_the_label() {
+    for (written, label, category) in [
+        ("Highlight: best take", "best take", MarkCategory::Highlight),
+        ("cut: tangent", "tangent", MarkCategory::Cut),
+        ("RETAKE:", "", MarkCategory::Retake),
+        ("Chapter : Setup", "Setup", MarkCategory::Chapter),
+        ("Note:lights", "lights", MarkCategory::Note),
+        ("B-roll: desk", "desk", MarkCategory::BRoll),
+        ("b_roll:   desk: left", "desk: left", MarkCategory::BRoll),
+    ] {
+        assert_eq!(outline(&format!("[[mark: {written}]]")), [cue(mark(label, category))], "{written}");
+    }
+}
+
+#[test]
+fn other_mark_labels_are_kept_as_written() {
     for (label, category) in [
-        ("Highlight: best take", MarkCategory::Highlight),
-        ("cut: tangent", MarkCategory::Cut),
-        ("RETAKE:", MarkCategory::Retake),
-        ("Chapter: Setup", MarkCategory::Chapter),
-        ("Note: lights", MarkCategory::Note),
-        ("B-roll: desk", MarkCategory::BRoll),
         ("B-roll here", MarkCategory::BRoll),
+        ("cut the intro", MarkCategory::Cut),
+        ("cut the intro: all of it", MarkCategory::Cut),
         ("chapter", MarkCategory::Chapter),
         ("Cutaway: desk", MarkCategory::Note),
         ("desk: B-roll", MarkCategory::Note),
+        ("system: restart", MarkCategory::Note),
         ("", MarkCategory::Note),
     ] {
         assert_eq!(outline(&format!("[[mark: {label}]]")), [cue(mark(label, category))], "{label}");
+    }
+}
+
+#[test]
+fn categories_are_spelled_as_in_the_marks_crate() {
+    for (name, category) in [
+        ("highlight", MarkCategory::Highlight),
+        ("cut", MarkCategory::Cut),
+        ("retake", MarkCategory::Retake),
+        ("chapter", MarkCategory::Chapter),
+        ("note", MarkCategory::Note),
+        ("b_roll", MarkCategory::BRoll),
+    ] {
+        assert_eq!(MarkCategory::deserialize(StrDeserializer::<Error>::new(name)), Ok(category), "{name}");
     }
 }
 
@@ -198,7 +289,7 @@ fn headings_are_sections() {
 #[test]
 fn cues_in_a_heading_leave_one_section() {
     let md = "## [[pause]] One [[mark: Chapter: one]] two [[end]]";
-    assert_eq!(outline(md), [cue(Cue::Pause), text(BlockKind::Heading(2), "One two"), cue(mark("Chapter: one", MarkCategory::Chapter)), cue(Cue::End),]);
+    assert_eq!(outline(md), [cue(Cue::Pause), text(BlockKind::Heading(2), "One two"), cue(mark("one", MarkCategory::Chapter)), cue(Cue::End),]);
     assert_eq!(sections(&parse(md)).len(), 1);
 }
 

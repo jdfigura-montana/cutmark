@@ -5,18 +5,22 @@
 - Branch: prompter
 - Spec: docs/suite/prompter.md
 
-## Done (Phase 1, pending JD's check)
+## Done (Phase 1, V4 on-screen check passed)
 - V1, V2: crates/prompter-platform (os::check_windows_11; view::ViewWindow on NativeWindow(isize); PlatformError; non-Windows stubs return Unsupported) and apps/prompter (cutmark-prompter).
 - V3: renderer.rs (DX12, DxgiFromVisual, logs surface alpha modes; PreMultiplied on JD's PC) and view.rs (one Floating view with sample text, drag bar, window setup, flag repair). White backing fix via clear_backing (JD approved the platform change).
 - V4: Library shell in app.rs (title bar, Scripts, editor and Run panels, status bar, Appearance and About dialogs). menu.rs holds the menu list and enable rules. View controls are in the Run panel. Minimum window 900 x 480.
 
 ## State
 - Phase 2 C1 done: crates/prompter-core. script::{parse, sections} and the block model; limits::{MAX_WORDS, split_at_heading}. Deps: pulldown-cmark (no default features), serde.
-- C1 choices: Mark label keeps its prefix; the category name may end in a colon, a space or the end of the label. Cues in a heading do not split it. A split list item gives two ListItem blocks, so a renderer would draw two markers. Code blocks and code spans are plain text and their cues count. List depth starts at 0.
+- C1b done. Mark "type: text" takes the category and keeps only the text; other labels are kept as written, first word may name the category. "B-roll" and "b_roll" both work.
+- MarkCategory serializes like marks::MarkType (snake_case). It has no System: marks says the app writes that one.
+- ListItem: `continues` is true after a cue split (draw no marker). `start` is set only on an ordered list's first marked block; an item with no text uses up its number.
+- Brackets in code never open or close a cue; a cue outside code may hold code. A cue ends at the last `]]` of a run, so `[[pause]]]` is plain text.
+- Cues in a heading do not split it. List depth starts at 0.
+- Open: a second paragraph in a loose list item (no cue) is a ListItem with continues false, so it would draw its own marker.
 
 ## Next
 - C2.
-- JD's check of V4 on screen is still pending.
 - By hand: see-through, flash on open, move to another monitor or DPI, lock and sleep, scroll with the Library minimized, OBS capture.
 - Open from V4: only Ctrl+Alt+C shows in the menus (V4 did not read the Hotkeys section). About notices are a short hand-written list.
 - scripts\check.ps1 fails in this worktree at clippy cutmark-audio: FFmpeg headers not found.
