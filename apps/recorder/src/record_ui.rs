@@ -36,7 +36,17 @@ const HEADER_PAD: f32 = 6.0;
 /// The 1px hairline stroke width.
 const HAIRLINE: f32 = 1.0;
 /// The idle deck's timecode (spec "Setup mode").
-const IDLE_TIMECODE: &str = "00:00:00:00";
+const IDLE_TIMECODE: &str = "00:00:00";
+/// The idle deck's timecode's frame fraction.
+const IDLE_TIMECODE_FRACTION: &str = ":00";
+/// Gaps between the deck's items (spec "Setup mode"): the timecode sits 12 px
+/// from the deck's left edge and 12 px from the first button, and the caption
+/// 12 px after the last button.
+const DECK_GAP: f32 = space::SCALE_12;
+/// Gap between the deck's buttons and the capsule (spec "Setup mode").
+const DECK_BUTTON_GAP: f32 = space::SCALE_4;
+/// Space after the deck's caption; the space scale has no 14 px step.
+const DECK_CAPTION_TAIL: f32 = 14.0;
 
 /// What the deck needs from the app for one frame.
 pub struct Deck<'a> {
@@ -66,36 +76,68 @@ pub fn deck(ui: &Ui, content_rect: Rect, id_salt: &str, d: Deck<'_>, bus: &BusSe
 
 /// The deck's buttons and captions, reporting every click through `send`.
 /// Split from [`deck`] so a test can draw the deck without a command bus.
+///
+/// Everything sits on one center line: the contents fill the deck button
+/// height in a centered row, so the timecode, the buttons, the capsule and
+/// the caption all center on the deck's center. The gaps are the deck's own
+/// (12 px around the timecode and before the caption, 4 px between the
+/// buttons and the capsule, 14 px after the caption), so egui's item spacing
+/// is off inside the row.
 fn deck_contents(ui: &mut Ui, d: Deck<'_>, send: &mut dyn FnMut(CommandKind)) {
     let running = d.phase.has_take();
-    match (running, d.frames) {
-        (true, Some(frames)) => {
-            let (main, fraction) = take_timecode(frames, d.fps);
-            ui_kit::timecode(ui, &main, &fraction);
+    let height = size::TRANSPORT_BUTTON;
+    ui.allocate_ui_with_layout(vec2(ui.available_width(), height), Layout::left_to_right(Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.add_space(DECK_GAP);
+        let timecode = match (running, d.frames) {
+            (true, Some(frames)) => {
+                let (main, fraction) = take_timecode(frames, d.fps);
+                ui_kit::timecode(ui, &main, &fraction)
+            }
+            _ => ui_kit::timecode(ui, IDLE_TIMECODE, IDLE_TIMECODE_FRACTION),
+        };
+        note_deck_item(timecode.response.rect);
+        ui.add_space(DECK_GAP);
+        let mark = ui_kit::deck_button(ui, ui_kit::icons::regular::FLAG, &tip("Add mark", &d.chords.mark));
+        if mark.clicked() {
+            send(CommandKind::Mark(MarkKind::Silent));
         }
-        _ => idle_timecode(ui),
-    }
-    if ui_kit::deck_button(ui, ui_kit::icons::regular::FLAG, &tip("Add mark", &d.chords.mark)).clicked() {
-        send(CommandKind::Mark(MarkKind::Silent));
-    }
-    let start_stop = if running { "Stop recording" } else { "Start recording" };
-    if record_capsule(ui, running, &tip(start_stop, &d.chords.start_stop)).clicked() {
-        send(CommandKind::StartStop);
-    }
-    let (icon, action) = if d.phase == Phase::Paused { (ui_kit::icons::fill::PLAY, "Resume") } else { (ui_kit::icons::fill::PAUSE, "Pause") };
-    ui.add_enabled_ui(running, |ui| {
-        if ui_kit::deck_button(ui, icon, &tip(action, &d.chords.pause_resume)).clicked() {
-            send(CommandKind::PauseResume);
+        note_deck_item(mark.rect);
+        ui.add_space(DECK_BUTTON_GAP);
+        let start_stop = if running { "Stop recording" } else { "Start recording" };
+        let capsule = record_capsule(ui, running, &tip(start_stop, &d.chords.start_stop));
+        if capsule.clicked() {
+            send(CommandKind::StartStop);
+        }
+        note_deck_item(capsule.rect);
+        ui.add_space(DECK_BUTTON_GAP);
+        let (icon, action) = if d.phase == Phase::Paused { (ui_kit::icons::fill::PLAY, "Resume") } else { (ui_kit::icons::fill::PAUSE, "Pause") };
+        ui.add_enabled_ui(running, |ui| {
+            let pause = ui_kit::deck_button(ui, icon, &tip(action, &d.chords.pause_resume));
+            if pause.clicked() {
+                send(CommandKind::PauseResume);
+            }
+            note_deck_item(pause.rect);
+        });
+        if running {
+            ui.add_space(DECK_BUTTON_GAP);
+            let mute = ui_kit::deck_button(ui, ui_kit::icons::regular::MICROPHONE_SLASH, &tip("Mute mic", &d.chords.mute_mic));
+            if mute.clicked() {
+                // The mic is assumed to sit on track 0, like the hotkey does.
+                send(CommandKind::Mute { track: 0 });
+            }
+            note_deck_item(mute.rect);
+        }
+        let caption = countdown_caption(d.phase, d.countdown_secs);
+        if !caption.is_empty() {
+            ui.add_space(DECK_GAP);
+            let label = ui.add(
+                egui::Label::new(RichText::new(caption).font(ui_kit::fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY)).selectable(false),
+            );
+            note_deck_item(label.rect);
+            ui.add_space(DECK_CAPTION_TAIL);
         }
     });
-    if running && ui_kit::deck_button(ui, ui_kit::icons::regular::MICROPHONE_SLASH, &tip("Mute mic", &d.chords.mute_mic)).clicked() {
-        // The mic is assumed to sit on track 0, like the hotkey does.
-        send(CommandKind::Mute { track: 0 });
-    }
-    let caption = countdown_caption(d.phase, d.countdown_secs);
-    if !caption.is_empty() {
-        ui.add(egui::Label::new(RichText::new(caption).font(ui_kit::fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY)).selectable(false));
-    }
 }
 
 /// The label the record capsule reports: Record while idle, Stop while a take runs.
@@ -176,9 +218,20 @@ fn faded(color: Color32) -> Color32 {
     color.gamma_multiply(DISABLED_OPACITY)
 }
 
-/// The idle deck's timecode in `text.tertiary` (spec "Setup mode").
-fn idle_timecode(ui: &mut Ui) {
-    ui.add(egui::Label::new(RichText::new(IDLE_TIMECODE).font(ui_kit::fonts::mono_semibold(typography::TIME_LARGE_SIZE)).color(color::TEXT_TERTIARY)));
+// The rects of the deck's items, recorded for the center-line test (test hook).
+#[cfg(test)]
+thread_local! {
+    static DECK_ITEM_RECTS: std::cell::RefCell<Vec<Rect>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Notes one deck item's rect for the center-line test; a no-op outside tests.
+#[cfg(not(test))]
+fn note_deck_item(_: Rect) {}
+
+/// Notes one deck item's rect for the center-line test (test builds only).
+#[cfg(test)]
+fn note_deck_item(rect: Rect) {
+    DECK_ITEM_RECTS.with(|slot| slot.borrow_mut().push(rect));
 }
 
 /// The running take's timecode: hours, minutes, seconds and the frame within
@@ -376,6 +429,49 @@ mod tests {
                 deck_contents(ui, d, &mut |_| {});
             });
             output.textures_delta.clear();
+        }
+    }
+
+    /// The deck's items all sit on one center line (spec "Setup mode"): in a
+    /// headless frame, every deck item's rect center y is within 1 px of the
+    /// deck's center y, while idle, recording and paused.
+    #[test]
+    fn the_deck_items_sit_on_one_center_line() {
+        let chords = Chords {
+            start_stop: "F10".to_owned(),
+            pause_resume: String::new(),
+            mark: "F9".to_owned(),
+            mark_label: "Shift+F9".to_owned(),
+            mute_mic: String::new(),
+        };
+        let ctx = egui::Context::default();
+        ui_kit::apply(&ctx);
+        for (phase, frames) in [(Phase::Idle, None), (Phase::Recording, Some(60 * 3601 + 1)), (Phase::Paused, Some(120))] {
+            DECK_ITEM_RECTS.with(|slot| slot.borrow_mut().clear());
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(800.0, 600.0))), ..Default::default() };
+            let mut deck_rect = Rect::NOTHING;
+            let mut output = ctx.run_ui(input.clone(), |ui| {
+                let d = Deck { phase, fps: 60, frames, countdown_secs: 3, chords: &chords };
+                let deck = ui_kit::transport_deck(ui, Rect::from_min_size(egui::Pos2::ZERO, vec2(800.0, 600.0)), Id::new("deck-center-line"), false, |ui| {
+                    deck_contents(ui, d, &mut |_| {});
+                });
+                deck_rect = deck.response.rect;
+            });
+            output.textures_delta.clear();
+            DECK_ITEM_RECTS.with(|slot| slot.borrow_mut().clear());
+            let mut output = ctx.run_ui(input, |ui| {
+                let d = Deck { phase, fps: 60, frames, countdown_secs: 3, chords: &chords };
+                let deck = ui_kit::transport_deck(ui, Rect::from_min_size(egui::Pos2::ZERO, vec2(800.0, 600.0)), Id::new("deck-center-line"), false, |ui| {
+                    deck_contents(ui, d, &mut |_| {});
+                });
+                deck_rect = deck.response.rect;
+            });
+            output.textures_delta.clear();
+            let items = DECK_ITEM_RECTS.with(|slot| slot.borrow().clone());
+            assert!(!items.is_empty(), "the deck drew its items");
+            for rect in items {
+                assert!((rect.center().y - deck_rect.center().y).abs() <= 1.0, "the deck item {rect:?} must sit on the deck's center line {deck_rect:?}");
+            }
         }
     }
 

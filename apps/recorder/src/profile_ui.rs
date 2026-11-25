@@ -504,14 +504,13 @@ impl ProfileSection {
             );
             error_line(ui, &errors, Field::Preset);
 
-            let keyframe_text = format!("{:.1} s", p.keyframe_secs);
             inspector_row(
                 ui,
                 "Keyframe every",
                 |ui| {
                     ui.add(DragValue::new(&mut p.keyframe_secs).range(0.0..=60.0).speed(0.1).max_decimals(1).suffix(" s"));
                 },
-                Some(&keyframe_text),
+                None,
             );
             error_line(ui, &errors, Field::Keyframe);
         });
@@ -653,13 +652,13 @@ pub fn rate_control_editor(ui: &mut Ui, id_salt: &str, rate: &mut RateControl, r
                 ui,
                 "Quality",
                 |ui| {
-                    ui.add(egui::Slider::new(quality, 1..=100));
+                    // The row's right-hand value carries the number; the slider itself draws none.
+                    ui.add(egui::Slider::new(quality, 1..=100).show_value(false));
                 },
                 Some(&quality_text),
             );
             error_line(ui, errors, Field::Quality);
-            let max_text = format!("{max_mbps:.1} Mbps");
-            inspector_row(ui, "Max bitrate", |ui| mbps_field(ui, max_mbps), Some(&max_text));
+            inspector_row(ui, "Max bitrate", |ui| mbps_field(ui, max_mbps), None);
             error_line(ui, errors, Field::MaxMbps);
             ui.add_space(space::SCALE_4);
             ui.label(RichText::new(SOFT_MAX_HINT).small().weak());
@@ -668,7 +667,6 @@ pub fn rate_control_editor(ui: &mut Ui, id_salt: &str, rate: &mut RateControl, r
         RateControl::ConstantQp { qp_i, qp_p } => {
             let range_i = qp_range(ranges.and_then(|r| r.qp_i.as_ref()));
             let range_p = qp_range(ranges.and_then(|r| r.qp_p.as_ref()));
-            let qp_text = format!("I {qp_i} / P {qp_p}");
             inspector_row(
                 ui,
                 "QP",
@@ -678,21 +676,18 @@ pub fn rate_control_editor(ui: &mut Ui, id_salt: &str, rate: &mut RateControl, r
                     ui.label("P");
                     ui.add(DragValue::new(qp_p).range(range_p));
                 },
-                Some(&qp_text),
+                None,
             );
             error_line(ui, errors, Field::Qp);
         }
         RateControl::Cbr { mbps } => {
-            let mbps_text = format!("{mbps:.1} Mbps");
-            inspector_row(ui, "Bitrate", |ui| mbps_field(ui, mbps), Some(&mbps_text));
+            inspector_row(ui, "Bitrate", |ui| mbps_field(ui, mbps), None);
             error_line(ui, errors, Field::Mbps);
         }
         RateControl::VbrPeak { target_mbps, max_mbps } => {
-            let target_text = format!("{target_mbps:.1} Mbps");
-            inspector_row(ui, "Target bitrate", |ui| mbps_field(ui, target_mbps), Some(&target_text));
+            inspector_row(ui, "Target bitrate", |ui| mbps_field(ui, target_mbps), None);
             error_line(ui, errors, Field::Target);
-            let max_text = format!("{max_mbps:.1} Mbps");
-            inspector_row(ui, "Max bitrate", |ui| mbps_field(ui, max_mbps), Some(&max_text));
+            inspector_row(ui, "Max bitrate", |ui| mbps_field(ui, max_mbps), None);
             error_line(ui, errors, Field::MaxMbps);
         }
     }
@@ -718,16 +713,17 @@ pub fn rate_errors(codec: Codec, rate: RateControl, ranges: Option<&OptionRanges
     errors
 }
 
-/// What the camera file's codec line says: the profile's codec, or HEVC with the reason when the container
-/// cannot hold the profile's codec at the camera's height on this GPU.
-pub fn iso_codec_text(profile: &Profile, camera_height: u32, probe: &AmfProbe) -> String {
+/// What the camera file's codec line says: the codec label for the row's value, and the reason as a
+/// caption under the row when the container cannot hold the profile's codec at the camera's height
+/// on this GPU.
+pub fn iso_codec_text(profile: &Profile, camera_height: u32, probe: &AmfProbe) -> (String, Option<String>) {
     let codec = EncoderCodec::from(profile.codec);
     let fallback =
         profile.codec == Codec::Av1 && check_combo_with(profile.container, codec, camera_height, AudioCodec::Aac { kbps: 320 }, probe.aligned_1080()).is_err();
     if fallback {
-        format!("HEVC (AV1 {camera_height}p not supported in {} on this GPU)", container_label(profile.container))
+        ("HEVC".to_owned(), Some(format!("AV1 {camera_height}p is not supported in {} on this GPU", container_label(profile.container))))
     } else {
-        codec_label(profile.codec).to_owned()
+        (codec_label(profile.codec).to_owned(), None)
     }
 }
 
@@ -933,13 +929,13 @@ mod tests {
         let probe = AmfProbe::default();
         let mut profile = Profile::tutorial_av1_1440p60();
         profile.container = Container::Mp4;
-        assert_eq!(iso_codec_text(&profile, 1080, &probe), "HEVC (AV1 1080p not supported in MP4 on this GPU)");
-        assert_eq!(iso_codec_text(&profile, 720, &probe), "AV1");
+        assert_eq!(iso_codec_text(&profile, 1080, &probe), ("HEVC".to_owned(), Some("AV1 1080p is not supported in MP4 on this GPU".to_owned())));
+        assert_eq!(iso_codec_text(&profile, 720, &probe), ("AV1".to_owned(), None));
         profile.container = Container::Mkv;
-        assert_eq!(iso_codec_text(&profile, 1080, &probe), "AV1");
+        assert_eq!(iso_codec_text(&profile, 1080, &probe), ("AV1".to_owned(), None));
         profile.codec = Codec::Hevc;
         profile.container = Container::Mp4;
-        assert_eq!(iso_codec_text(&profile, 1080, &probe), "HEVC");
+        assert_eq!(iso_codec_text(&profile, 1080, &probe), ("HEVC".to_owned(), None));
     }
 
     #[test]

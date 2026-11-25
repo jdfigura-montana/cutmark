@@ -6,8 +6,8 @@
 use std::cell::RefCell;
 
 use capture::CameraFormat;
-use egui::{CursorIcon, RichText, Sense, Ui};
-use ui_kit::tokens::space;
+use egui::{CursorIcon, Label, RichText, Sense, Ui};
+use ui_kit::tokens::{color, space, typography};
 use ui_kit::{inspector_group, inspector_row, switch};
 
 use crate::config::WebcamSettings;
@@ -28,7 +28,7 @@ pub(crate) fn iso_group(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore
     let Some(settings) = host.settings(store).cloned() else { return };
     let Some(profile) = store.get(profile_name).cloned() else { return };
     let key = (settings.format.width, settings.format.height, profile.fps);
-    let (ranges, codec_text) = ISO_PROBE.with(|cell| {
+    let (ranges, (codec_text, codec_caption)) = ISO_PROBE.with(|cell| {
         let mut probe = cell.borrow_mut();
         if !recording {
             probe.update(ui.ctx(), key);
@@ -57,6 +57,11 @@ pub(crate) fn iso_group(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore
             let errors = rate_errors(profile.codec, rate, ranges.as_ref());
             changed |= rate_control_editor(ui, "webcam-iso", &mut rate, ranges.as_ref(), &errors);
             inspector_row(ui, "Codec", |_ui| {}, Some(&codec_text));
+            if let Some(reason) = &codec_caption {
+                ui.add_space(space::SCALE_4);
+                ui.add(Label::new(RichText::new(reason).font(ui_kit::fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY)).wrap());
+                ui.add_space(space::SCALE_4);
+            }
         });
     });
     if changed {
