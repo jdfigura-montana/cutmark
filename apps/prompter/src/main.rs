@@ -3,6 +3,7 @@
 //! Cutmark Prompter: teleprompter for the Cutmark suite.
 
 mod app;
+mod menu;
 mod renderer;
 mod view;
 
@@ -15,8 +16,10 @@ fn main() -> anyhow::Result<()> {
         // The suite's undecorated window chrome: the native caption goes, resize borders and
         // Aero Snap stay.
         // Transparent because egui-wgpu takes its alpha mode choice for every viewport from this one.
-        viewport: ui_kit::chrome::viewport(egui::ViewportBuilder::default().with_title(app::ROOT_TITLE).with_inner_size([1100.0, 720.0]))
-            .with_transparent(true),
+        viewport: ui_kit::chrome::viewport(
+            egui::ViewportBuilder::default().with_title(app::ROOT_TITLE).with_inner_size([1100.0, 720.0]).with_min_inner_size([900.0, 480.0]),
+        )
+        .with_transparent(true),
         ..Default::default()
     };
     options.wgpu_options.wgpu_setup = renderer::wgpu_setup(alpha.clone());
