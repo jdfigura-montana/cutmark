@@ -8,6 +8,7 @@ use crate::workspace::Workspace;
 /// What a name being typed is for.
 #[derive(Debug, Clone)]
 pub enum Naming {
+    NewScript,
     NewFolder,
     Folder(String),
     /// The script with this id.
@@ -44,6 +45,7 @@ impl Dialog {
         match self {
             Self::Name { naming, text, error, focus } => {
                 let (title, button, hint) = match naming {
+                    Naming::NewScript => ("New script", "Create", "Script title"),
                     Naming::NewFolder => ("New folder", "Create", "Folder name"),
                     Naming::Folder(_) => ("Rename folder", "Rename", "Folder name"),
                     Naming::Script(_) => ("Rename script", "Rename", "Script title"),
@@ -76,6 +78,7 @@ impl Dialog {
                 );
                 if (accepted || entered) && !text.trim().is_empty() {
                     let result = match naming {
+                        Naming::NewScript => workspace.new_script(text.trim()),
                         Naming::NewFolder => workspace.create_folder(text),
                         Naming::Folder(from) => workspace.rename_folder(from, text),
                         Naming::Script(id) => workspace.rename(id, text),

@@ -9,9 +9,6 @@ use prompter_core::store::{Result, Store};
 use crate::autosave;
 use crate::stats::WordCount;
 
-/// The title of a script made with New.
-const NEW_TITLE: &str = "Untitled";
-
 /// The script in the editor.
 pub struct OpenScript {
     pub id: String,
@@ -127,9 +124,9 @@ impl Workspace {
     }
 
     /// Makes an empty script and opens it.
-    pub fn new_script(&mut self) -> Result<()> {
+    pub fn new_script(&mut self, title: &str) -> Result<()> {
         self.flush()?;
-        let meta = self.store.new(NEW_TITLE, None)?;
+        let meta = self.store.new(title, None)?;
         self.open(&meta.id)
     }
 

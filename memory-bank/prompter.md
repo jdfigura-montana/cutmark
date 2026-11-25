@@ -6,9 +6,7 @@
 - Spec: docs/suite/prompter.md
 
 ## Done (Phase 1, V4 on-screen check passed)
-- V1, V2: crates/prompter-platform (os::check_windows_11; view::ViewWindow on NativeWindow(isize); PlatformError; non-Windows stubs return Unsupported) and apps/prompter (cutmark-prompter).
-- V3: renderer.rs (DX12, DxgiFromVisual, logs surface alpha modes; PreMultiplied on JD's PC) and view.rs (one Floating view with sample text, drag bar, window setup, flag repair). White backing fix via clear_backing (JD approved the platform change).
-- V4: Library shell in app.rs (title bar, Scripts, editor and Run panels, status bar, Appearance and About dialogs). menu.rs holds the menu list and enable rules. View controls are in the Run panel. Minimum window 900 x 480.
+- prompter-platform and apps/prompter: DX12 renderer (PreMultiplied on JD's PC), one Floating view, white backing fix (JD approved), Library shell. Minimum window 900 x 480.
 
 ## State
 - Phase 2 C1 to C3b done: crates/prompter-core.
@@ -24,23 +22,29 @@
 - Import takes UTF-8 or UTF-16 with a BOM, else StoreError::ImportEncoding. .txt cues are copied as they are, so Markdown inside a cue still applies. Imports have no folder; split parts are "Title (part 1 of 2)". cached_index ignores cache write errors.
 - Tokens: a word may cross spans ("**world**,"), so char_range can end past its first span. source_line_of gives the block's first line. No spoken characters, no token.
 - Forms: the aligner must split multi-word forms. Contractions expand inside one token only: typed "do not" (two tokens) gets no "dont", so normalize the heard words the same way. No readings yet for "1990s" (gives "nineteen ninety s"), a minus sign, or other currencies.
-- C4 done. New app modules: workspace.rs (open script; saves before open, duplicate, delete, import, export), autosave.rs, stats.rs (word count thread), scripts_panel.rs, dialogs.rs, editor.rs.
-- Data folder: BaseDirs config_dir + Cutmark\prompter, as the Recorder does. ProjectDirs would add a subfolder. New deps: prompter-core, directories 6.0.0, rfd, chrono (clock).
-- Edit menu picks run one frame late (the click takes focus from the field). They inject key, Cut and Copy events; Paste uses ViewportCommand::RequestPaste.
+- C4 done: script library, editor, autosave, File and Edit menus.
+- Data folder: BaseDirs config_dir + Cutmark\prompter, as the Recorder does. ProjectDirs would add a subfolder.
+- Edit menu picks run a frame late (the click takes focus from the field) and inject key, Cut and Copy events.
 - Autosave runs in App::logic. A failed save retries every 500 ms with one toast. A failed save on close cancels the close once.
 - The word count uses WordIndex::build, not cached_index.
-- Open: no single-instance guard yet, so two copies could write one store. Sort and open groups are not remembered. Favorites, tabs, preview, stats bar, Paste as plain text and menu chords are not done.
+- Open: no single-instance guard yet, so two copies could write one store. Not done: remembered sort and groups, favorites, tabs, preview, stats bar, plain-text paste (Phase 3).
+- C4b done: find bar, editor and Scripts right-click menus, Edit shortcuts. New script asks for a title (read from the prompt's "same naming dialog"). Headless Library tests: app/library_tests.rs.
+- The reported Search focus failure was not reproduced: the old call also took focus headlessly.
+- editor.rs restores the selection egui drops on focus loss or right-click.
+- egui cannot read the clipboard: clipboard.rs sends RequestPaste when a menu with Paste opens and takes the reply (none if empty).
+- Esc clears egui focus before the frame, so find.rs notes focus after each frame.
+- Find rescans the text several times a frame while open; not timed on a long script.
 
 ## Next
-- C5.
-- By hand, C4: dialogs (Enter, Esc, Import, Export), right-click menus, Edit menu Paste, Find, autosave on switch and exit.
+- JD's C4 recheck, then C5.
+- By hand, C4 and C4b: dialogs (Enter, Esc, Import, Export), right-click menus, Paste with empty, text and image clipboards, Find on a long script, Ctrl+Shift+F, autosave on switch and exit.
 - By hand: see-through, flash on open, move to another monitor or DPI, lock and sleep, scroll with the Library minimized, OBS capture.
-- Open from V4: only Ctrl+Alt+C shows in the menus (V4 did not read the Hotkeys section). About notices are a short hand-written list.
-- C4 skipped check.ps1 (prompt). It fails in this worktree at clippy cutmark-audio: FFmpeg headers not found.
+- Open: File, Script, View and Help shortcuts are mostly missing (Hotkeys section unread). About notices are a short hand-written list.
+- C4 and C4b skipped check.ps1 (prompt). It fails in this worktree at clippy cutmark-audio: FFmpeg headers not found.
 
 ## White layer findings
 - The view's GDI redirection surface is opaque white after a show, under the DirectComposition visual. Who paints it is unknown. Only the area present at show was white.
-- The window class background brush already reads 0. PatBlt BLACKNESS on the window DC fixes it, but does nothing on a hidden window.
+- The class background brush reads 0. PatBlt BLACKNESS on the window DC fixes it, but does nothing on a hidden window.
 - An outside hide and show needs a new clear; the once-a-second read-back catches it.
 - A faint one-frame flash on open is not ruled out.
 
@@ -56,6 +60,6 @@
 - os::OsError is still separate from PlatformError.
 - Prompter tasks never read or edit activeContext.md or progress.md.
 - Only prompter-platform imports windows or other OS crates.
-- The Windows 11 dialog path has not been run on an older Windows. The Linux stubs have not been compiled.
+- Untested: the Windows 11 dialog on older Windows; the Linux stubs have not been compiled.
 - Do not use cargo remove here: it deleted FilmCraft profile overrides from the root Cargo.toml.
 - cargo add takes the newest release and can move the shared lockfile. Check the Cargo.lock diff.

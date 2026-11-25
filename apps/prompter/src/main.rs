@@ -4,8 +4,10 @@
 
 mod app;
 mod autosave;
+mod clipboard;
 mod dialogs;
 mod editor;
+mod find;
 mod menu;
 mod renderer;
 mod scripts_panel;

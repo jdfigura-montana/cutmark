@@ -39,15 +39,23 @@ pub struct ScriptsPanel {
     sort: Sort,
     /// Lowercased text for the search, by script id, with the edit time it was read at.
     bodies: HashMap<String, (DateTime<Utc>, String)>,
+    /// The search field, once drawn.
+    #[cfg(test)]
+    pub search_id: Option<egui::Id>,
 }
 
 impl ScriptsPanel {
-    /// Draws the panel under its header. `focus_search` gives the search field the keyboard.
+    /// Draws the panel under its header. `focus_search` gives the search field the keyboard
+    /// and selects its text.
     pub fn show(&mut self, ui: &mut egui::Ui, workspace: &Workspace, focus_search: bool) -> Option<Action> {
         ui.add_space(space::SCALE_8);
         let search = ui_kit::search_field(ui, &mut self.search, "Search scripts");
         if focus_search {
-            search.request_focus();
+            crate::find::focus_and_select(ui, search.id, &self.search);
+        }
+        #[cfg(test)]
+        {
+            self.search_id = Some(search.id);
         }
         ui.add_space(space::SCALE_8);
         let mut sort = usize::from(self.sort == Sort::LastEdited);

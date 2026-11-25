@@ -9,9 +9,11 @@ use prompter_platform::os::OsError;
 use prompter_platform::view::{NativeWindow, ViewStatus, ViewWindow};
 use ui_kit::tokens::{color, radius, size, space, typography};
 
+use crate::clipboard::ClipboardCheck;
 use crate::dialogs::{Dialog, Naming};
-use crate::editor;
-use crate::menu::{Item, MENUS, MenuState};
+use crate::editor::{self, Editor};
+use crate::find::FindBar;
+use crate::menu::{EDITOR_MENU, Item, MENUS, MenuState, SCRIPTS_MENU};
 use crate::renderer::AlphaInUse;
 use crate::scripts_panel::{Action, ScriptsPanel};
 use crate::stats;
@@ -67,6 +69,11 @@ pub struct PrompterApp {
     /// The script library, or why it could not be opened.
     workspace: Result<Workspace, String>,
     scripts: ScriptsPanel,
+    editor: Editor,
+    find: FindBar,
+    clipboard: ClipboardCheck,
+    /// The editor's right-click menu is open.
+    editor_menu_open: bool,
     dialog: Option<Dialog>,
     /// An Edit menu item picked this frame, to be done in the next one: the click that picked
     /// it would take the keyboard back from the field it is for.
@@ -90,8 +97,12 @@ impl PrompterApp {
         } else {
             Err(String::new())
         };
+        Self::with_library(os_check.is_ok(), alpha, workspace)
+    }
+
+    fn with_library(supported: bool, alpha: AlphaInUse, workspace: Result<Workspace, String>) -> Self {
         Self {
-            supported: os_check.is_ok(),
+            supported,
             alpha,
             view: None,
             last_view_number: 0,
@@ -102,6 +113,10 @@ impl PrompterApp {
             about_open: false,
             workspace,
             scripts: ScriptsPanel::default(),
+            editor: Editor::default(),
+            find: FindBar::default(),
+            clipboard: ClipboardCheck::default(),
+            editor_menu_open: false,
             dialog: None,
             queued: None,
             close_refused: false,
@@ -110,10 +125,13 @@ impl PrompterApp {
 
     fn menu_state(&self) -> MenuState {
         let workspace = self.workspace.as_ref().ok();
+        let script_open = workspace.is_some_and(|workspace| workspace.open_script().is_some());
         MenuState {
             view_open: self.view.is_some(),
             library_open: workspace.is_some(),
-            script_open: workspace.is_some_and(|workspace| workspace.open_script().is_some()),
+            script_open,
+            editor: if script_open { self.editor.status() } else { Default::default() },
+            clipboard_has_text: self.clipboard.has_text(),
         }
     }
 
@@ -138,8 +156,10 @@ impl PrompterApp {
     /// they never get here.
     fn run(&mut self, ctx: &egui::Context, frame: &eframe::Frame, item: Item) {
         match item {
-            Item::New | Item::Import | Item::Export | Item::Duplicate | Item::Delete => self.file_command(ctx, frame, item),
-            Item::Undo | Item::Redo | Item::Cut | Item::Copy | Item::Paste | Item::Find => {
+            Item::NewScript => self.dialog = Some(Dialog::name(Naming::NewScript, "")),
+            Item::NewFolder => self.dialog = Some(Dialog::name(Naming::NewFolder, "")),
+            Item::Import | Item::Export | Item::Duplicate | Item::Delete => self.file_command(ctx, frame, item),
+            Item::Undo | Item::Redo | Item::Cut | Item::Copy | Item::Paste | Item::PastePlain | Item::SelectAll | Item::FindInScript | Item::SearchAll => {
                 self.queued = Some(item);
                 ctx.request_repaint();
             }
@@ -156,14 +176,13 @@ impl PrompterApp {
         }
     }
 
-    /// The File menu's script items. All but New and Import act on the open script.
+    /// The File menu's script items. All but Import act on the open script.
     fn file_command(&mut self, ctx: &egui::Context, frame: &eframe::Frame, item: Item) {
         let Ok(workspace) = &mut self.workspace else {
             return;
         };
         let open = workspace.open_script().map(|open| open.id.clone());
         let result = match (item, open) {
-            (Item::New, _) => workspace.new_script(),
             (Item::Import, _) => {
                 let picker = rfd::FileDialog::new().set_parent(frame).add_filter("Scripts", &["txt", "md"]);
                 match picker.pick_file() {
@@ -224,16 +243,14 @@ impl PrompterApp {
     }
 
     /// The Scripts panel with its header.
-    fn scripts_column(&mut self, ui: &mut egui::Ui, focus_search: bool) {
+    fn scripts_column(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame, focus_search: bool) {
+        // Made before the panel's widgets, so that it gets only the clicks none of them take.
+        let background = ui.interact(ui.max_rect(), ui.id().with("scripts-background"), egui::Sense::click());
+        let state = self.menu_state();
         let mut new_folder = false;
-        let library_open = self.workspace.is_ok();
-        panel_header(ui, "Scripts", |ui| {
-            ui.add_enabled_ui(library_open, |ui| {
-                new_folder = ui_kit::icon_button(ui, ui_kit::icons::regular::FOLDER_PLUS, "New folder").clicked();
-            });
-        });
+        panel_header(ui, "Scripts", |ui| new_folder = new_folder_button(ui, state));
         if new_folder {
-            self.dialog = Some(Dialog::name(Naming::NewFolder, ""));
+            self.run(ui.ctx(), frame, Item::NewFolder);
         }
         let action = match &self.workspace {
             Ok(workspace) => self.scripts.show(ui, workspace, focus_search),
@@ -242,10 +259,13 @@ impl PrompterApp {
         if let Some(action) = action {
             self.script_action(ui.ctx(), action);
         }
+        if let (Some(item), _) = context_menu(&background, SCRIPTS_MENU, self.menu_state()) {
+            self.run(ui.ctx(), frame, item);
+        }
     }
 
-    /// The editor panel: its toolbar, then the open script or what to do without one.
-    /// `command` is an Edit menu item picked in the last frame.
+    /// The editor panel: its toolbar and find bar, then the open script or what to do without
+    /// one. `command` is an Edit menu item picked in the last frame.
     fn editor_column(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame, command: Option<Item>) {
         if let Some(item) = panel_toolbar(ui, self.menu_state()) {
             self.run(ui.ctx(), frame, item);
@@ -258,22 +278,40 @@ impl PrompterApp {
             }
         };
         let no_scripts = workspace.store().library().scripts.is_empty();
-        if let Some(open) = workspace.open_script_mut() {
-            let id = editor::id(open.serial);
-            if let Some(item) = command {
-                editor::command(ui, id, item);
+        let Some(open) = workspace.open_script_mut() else {
+            self.find.close();
+            self.editor_menu_open = false;
+            if !no_scripts {
+                empty_state(ui, "Pick a script or create one");
+            } else if first_script(ui) {
+                self.run(ui.ctx(), frame, Item::NewScript);
             }
-            if editor::show(ui, id, &mut open.text) {
-                workspace.text_changed(Instant::now());
-                // The title bar, already drawn, has to show the unsaved dot.
-                ui.ctx().request_repaint();
-            }
-        } else if no_scripts {
-            if first_script(ui) {
-                self.run(ui.ctx(), frame, Item::New);
-            }
-        } else {
-            empty_state(ui, "Pick a script or create one");
+            return;
+        };
+        let serial = open.serial;
+        let id = editor::id(serial);
+        match command {
+            Some(Item::FindInScript) => self.find.open(),
+            Some(item) => editor::command(ui, id, item),
+            None => {}
+        }
+        if self.find.is_open() {
+            panel_row(ui, |ui| self.find.show(ui, &open.text, id));
+        }
+        let shown = self.editor.show(ui, serial, &mut open.text, self.find.highlight());
+        self.find.note_keyboard(ui, id);
+        if shown.changed {
+            workspace.text_changed(Instant::now());
+            // The title bar and the find bar, already drawn, have to catch up.
+            ui.ctx().request_repaint();
+        }
+        let (picked, menu_open) = context_menu(&shown.response, EDITOR_MENU, self.menu_state());
+        self.editor_menu_open = menu_open;
+        if let Some(item) = picked {
+            self.run(ui.ctx(), frame, item);
+        } else if menu_open && !ui.input(|i| i.pointer.any_down() || i.pointer.any_released()) {
+            // The selection shows only while the editor has the keyboard.
+            ui.memory_mut(|memory| memory.request_focus(id));
         }
     }
 
@@ -319,9 +357,18 @@ impl PrompterApp {
         if click_through_hotkey(ui) {
             self.click_through = !self.click_through;
         }
+        // Before any field, which would take the reply as text to paste.
+        self.clipboard.take_reply(ui);
         let command = self.queued.take();
+        let modal = self.dialog.is_some() || self.appearance_open || self.about_open;
+        if let Some(item) = (!modal).then(|| shortcut(ui)).flatten()
+            && item.enabled(self.menu_state())
+        {
+            self.run(ui.ctx(), frame, item);
+        }
         let picked = Cell::new(None);
-        let bar = title_bar(ui, self.menu_state(), self.click_through, self.document().as_ref(), &picked);
+        let edit_menu_open = Cell::new(false);
+        let bar = title_bar(ui, self.menu_state(), self.click_through, self.document().as_ref(), &picked, &edit_menu_open);
         if let Some(item) = picked.get() {
             self.run(ui.ctx(), frame, item);
         }
@@ -330,12 +377,13 @@ impl PrompterApp {
         rest.min.y = bar.bottom();
         let (body, status) = rest.split_top_bottom_at_y(rest.bottom() - size::STATUS_BAR_HEIGHT);
         let [scripts, editor, run] = columns(body.shrink(space::SCALE_8));
-        column(ui, scripts, |ui| self.scripts_column(ui, command == Some(Item::Find)));
+        column(ui, scripts, |ui| self.scripts_column(ui, frame, command == Some(Item::SearchAll)));
         column(ui, editor, |ui| self.editor_column(ui, frame, command));
         column(ui, run, |ui| {
             panel_header(ui, "Run", |_| {});
             self.view_controls(ui, frame);
         });
+        self.clipboard.watch(ui.ctx(), edit_menu_open.get() || self.editor_menu_open);
 
         let capture = capture_label(self.view.as_ref().map(|view| view.status()));
         let mut items = vec!["Ready"];
@@ -438,6 +486,26 @@ fn click_through_hotkey(ui: &egui::Ui) -> bool {
     })
 }
 
+/// The menu item whose shortcut was pressed this frame, for the keys no field handles itself.
+fn shortcut(ui: &egui::Ui) -> Option<Item> {
+    let ctrl = egui::Modifiers::COMMAND;
+    let ctrl_shift = ctrl.plus(egui::Modifiers::SHIFT);
+    // A pattern without Shift also matches with it, so the Shift keys go first.
+    let shortcuts = [
+        (ctrl_shift, egui::Key::F, Item::SearchAll),
+        (ctrl, egui::Key::F, Item::FindInScript),
+        (ctrl_shift, egui::Key::N, Item::NewFolder),
+        (ctrl, egui::Key::N, Item::NewScript),
+    ];
+    ui.input_mut(|i| {
+        // AltGr is Ctrl with Alt, and types characters on some layouts.
+        if i.modifiers.alt {
+            return None;
+        }
+        shortcuts.into_iter().find(|&(modifiers, key, _)| i.consume_key(modifiers, key)).map(|(_, _, item)| item)
+    })
+}
+
 /// The open script's part of the title bar.
 struct Document {
     title: String,
@@ -446,8 +514,16 @@ struct Document {
 }
 
 /// The 44px title bar (rev 3 "Title bar"). The toolbar adds the separator and the caption
-/// buttons. A clicked menu item is reported through `picked`.
-fn title_bar(ui: &mut egui::Ui, state: MenuState, click_through: bool, document: Option<&Document>, picked: &Cell<Option<Item>>) -> egui::Rect {
+/// buttons. A clicked menu item is reported through `picked`, and an open Edit menu through
+/// `edit_menu_open`.
+fn title_bar(
+    ui: &mut egui::Ui,
+    state: MenuState,
+    click_through: bool,
+    document: Option<&Document>,
+    picked: &Cell<Option<Item>>,
+    edit_menu_open: &Cell<bool>,
+) -> egui::Rect {
     ui_kit::main_toolbar(
         ui,
         |ui| {
@@ -456,17 +532,11 @@ fn title_bar(ui: &mut egui::Ui, state: MenuState, click_through: bool, document:
                 .iter()
                 .map(|&(title, groups)| {
                     ui_kit::Menu::new(title, move |ui| {
-                        for (index, group) in groups.iter().enumerate() {
-                            if index > 0 {
-                                ui.separator();
-                            }
-                            for &item in *group {
-                                let checked = item == Item::ClickThrough && click_through;
-                                if ui.add_enabled(item.enabled(state), menu_button(item).selected(checked)).clicked() {
-                                    picked.set(Some(item));
-                                    ui.close();
-                                }
-                            }
+                        if title == "Edit" {
+                            edit_menu_open.set(true);
+                        }
+                        if let Some(item) = menu_rows(ui, groups, state, click_through) {
+                            picked.set(Some(item));
                         }
                     })
                 })
@@ -485,6 +555,41 @@ fn title_bar(ui: &mut egui::Ui, state: MenuState, click_through: bool, document:
         },
     )
     .bar
+}
+
+/// A menu's items, with a separator between groups. Returns the one clicked, which also
+/// closes the menu.
+fn menu_rows(ui: &mut egui::Ui, groups: &[&[Item]], state: MenuState, click_through: bool) -> Option<Item> {
+    let mut picked = None;
+    for (index, group) in groups.iter().enumerate() {
+        if index > 0 {
+            ui.separator();
+        }
+        for &item in *group {
+            let checked = item == Item::ClickThrough && click_through;
+            if ui.add_enabled(item.enabled(state), menu_button(item).selected(checked)).clicked() {
+                picked = Some(item);
+                ui.close();
+            }
+        }
+    }
+    picked
+}
+
+/// A right-click menu on `response`, in the glass popover look of the menu bar. Returns the
+/// item clicked and whether the menu is open.
+fn context_menu(response: &egui::Response, groups: &[&[Item]], state: MenuState) -> (Option<Item>, bool) {
+    let ctx = response.ctx.clone();
+    let frame = ui_kit::glass_frame(&ctx, radius::GROUP).inner_margin(egui::Margin::same(space::SCALE_6 as i8));
+    // The first frame of a popover is an invisible sizing pass.
+    let was_shown = ctx.read_response(egui::Popup::default_response_id(response)).is_some();
+    let Some(shown) = egui::Popup::context_menu(response).frame(frame).show(|ui| menu_rows(ui, groups, state, false)) else {
+        return (None, false);
+    };
+    if was_shown {
+        ui_kit::paint_glass_highlight(&ctx.layer_painter(shown.response.layer_id), shown.response.rect, radius::GROUP);
+    }
+    (shown.inner, true)
 }
 
 /// A menu row: the label, then the shortcut if the item has one.
@@ -545,6 +650,17 @@ fn panel_header(ui: &mut egui::Ui, title: &str, trailing: impl FnOnce(&mut egui:
         ui.add(egui::Label::new(text).selectable(false));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), trailing);
     });
+}
+
+/// The Scripts header's button. True if it was clicked.
+fn new_folder_button(ui: &mut egui::Ui, state: MenuState) -> bool {
+    let item = Item::NewFolder;
+    let icon = egui::TextFormat::simple(ui_kit::fonts::icon_regular(typography::BODY_SIZE), color::TEXT_SECONDARY);
+    let text = egui::TextFormat::simple(ui_kit::fonts::medium(typography::BODY_SIZE), color::TEXT_PRIMARY);
+    let mut job = egui::text::LayoutJob::default();
+    job.append(ui_kit::icons::regular::FOLDER_PLUS, 0.0, icon);
+    job.append(item.label(), space::SCALE_4, text);
+    ui.add_enabled(item.enabled(state), egui::Button::new(job)).on_hover_text(item.chord()).clicked()
 }
 
 /// The editor's toolbar (rev 3 "Panel toolbar"). Returns the button clicked, as its menu item.
@@ -668,6 +784,9 @@ fn unsupported_dialog(ctx: &egui::Context) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 }
+
+#[cfg(test)]
+mod library_tests;
 
 #[cfg(test)]
 mod tests {
