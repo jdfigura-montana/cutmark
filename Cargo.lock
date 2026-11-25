@@ -1496,11 +1496,15 @@ name = "cutmark-prompter"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
+ "directories",
  "eframe",
  "egui",
  "env_logger",
  "log",
+ "prompter-core",
  "prompter-platform",
+ "rfd",
  "ui-kit",
 ]
 

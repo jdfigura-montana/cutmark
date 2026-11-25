@@ -1,14 +1,22 @@
 //! The Prompter's root window: the Library (spec "Library window").
 
 use std::cell::Cell;
+use std::time::{Duration, Instant};
 
+use anyhow::Context as _;
+use prompter_core::store::{Store, StoreError};
 use prompter_platform::os::OsError;
 use prompter_platform::view::{NativeWindow, ViewStatus, ViewWindow};
 use ui_kit::tokens::{color, radius, size, space, typography};
 
-use crate::menu::{Item, MENUS};
+use crate::dialogs::{Dialog, Naming};
+use crate::editor;
+use crate::menu::{Item, MENUS, MenuState};
 use crate::renderer::AlphaInUse;
+use crate::scripts_panel::{Action, ScriptsPanel};
+use crate::stats;
 use crate::view::{self, FloatingView, log_failure};
+use crate::workspace::{Autosave, Workspace};
 
 /// The Prompter's appearance identity: its settings folder name and default accent.
 pub const APPEARANCE: ui_kit::AppAppearance = ui_kit::AppAppearance::new("prompter", ui_kit::Preset::Violet);
@@ -29,6 +37,8 @@ const RUN_WIDTH: f32 = 320.0;
 const HEADER_PAD: f32 = 6.0;
 /// The hairline stroke width.
 const HAIRLINE: f32 = 1.0;
+/// How often to repaint while a toast shows, so that it goes away on time.
+const TOAST_TICK: Duration = Duration::from_millis(250);
 
 const ABOUT: ui_kit::widgets::AboutInfo = ui_kit::widgets::AboutInfo {
     app_name: "Cutmark Prompter",
@@ -54,6 +64,15 @@ pub struct PrompterApp {
     root_find_frames: u8,
     appearance_open: bool,
     about_open: bool,
+    /// The script library, or why it could not be opened.
+    workspace: Result<Workspace, String>,
+    scripts: ScriptsPanel,
+    dialog: Option<Dialog>,
+    /// An Edit menu item picked this frame, to be done in the next one: the click that picked
+    /// it would take the keyboard back from the field it is for.
+    queued: Option<Item>,
+    /// A save failed while closing, so closing again quits without saving.
+    close_refused: bool,
 }
 
 impl PrompterApp {
@@ -62,6 +81,15 @@ impl PrompterApp {
         if let Err(err) = &os_check {
             log::error!("unsupported system: {err}");
         }
+        // An unsupported system only ever sees its dialog, so no library is made on it.
+        let workspace = if os_check.is_ok() {
+            open_library().map_err(|err| {
+                log::error!("the script library could not be opened: {err:#}");
+                format!("The script library could not be opened.\n{err:#}")
+            })
+        } else {
+            Err(String::new())
+        };
         Self {
             supported: os_check.is_ok(),
             alpha,
@@ -72,6 +100,20 @@ impl PrompterApp {
             root_find_frames: ROOT_FIND_FRAMES,
             appearance_open: false,
             about_open: false,
+            workspace,
+            scripts: ScriptsPanel::default(),
+            dialog: None,
+            queued: None,
+            close_refused: false,
+        }
+    }
+
+    fn menu_state(&self) -> MenuState {
+        let workspace = self.workspace.as_ref().ok();
+        MenuState {
+            view_open: self.view.is_some(),
+            library_open: workspace.is_some(),
+            script_open: workspace.is_some_and(|workspace| workspace.open_script().is_some()),
         }
     }
 
@@ -94,8 +136,13 @@ impl PrompterApp {
 
     /// Does what a menu item or a Run panel button asks. Items not wired yet are disabled, so
     /// they never get here.
-    fn run(&mut self, ctx: &egui::Context, item: Item) {
+    fn run(&mut self, ctx: &egui::Context, frame: &eframe::Frame, item: Item) {
         match item {
+            Item::New | Item::Import | Item::Export | Item::Duplicate | Item::Delete => self.file_command(ctx, frame, item),
+            Item::Undo | Item::Redo | Item::Cut | Item::Copy | Item::Paste | Item::Find => {
+                self.queued = Some(item);
+                ctx.request_repaint();
+            }
             Item::Exit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Item::ShowView if self.view.is_none() => {
                 self.last_view_number += 1;
@@ -109,33 +156,185 @@ impl PrompterApp {
         }
     }
 
+    /// The File menu's script items. All but New and Import act on the open script.
+    fn file_command(&mut self, ctx: &egui::Context, frame: &eframe::Frame, item: Item) {
+        let Ok(workspace) = &mut self.workspace else {
+            return;
+        };
+        let open = workspace.open_script().map(|open| open.id.clone());
+        let result = match (item, open) {
+            (Item::New, _) => workspace.new_script(),
+            (Item::Import, _) => {
+                let picker = rfd::FileDialog::new().set_parent(frame).add_filter("Scripts", &["txt", "md"]);
+                match picker.pick_file() {
+                    Some(source) => workspace.import(&source).map(|split| {
+                        if let Some(parts) = split {
+                            toast(ctx, format!("The file was over the word limit, so it was split into {parts} scripts."));
+                        }
+                    }),
+                    None => Ok(()),
+                }
+            }
+            (Item::Export, Some(id)) => {
+                let name = export_name(workspace.title(&id));
+                let picker = rfd::FileDialog::new().set_parent(frame).add_filter("Markdown", &["md"]).set_file_name(name);
+                match picker.save_file() {
+                    Some(dest) => workspace.export(&id, &dest).map(|()| toast(ctx, "Script exported.")),
+                    None => Ok(()),
+                }
+            }
+            (Item::Duplicate, Some(id)) => workspace.duplicate(&id),
+            (Item::Delete, Some(id)) => {
+                self.dialog = Some(Dialog::Delete { title: workspace.title(&id).to_owned(), id });
+                Ok(())
+            }
+            _ => Ok(()),
+        };
+        report(ctx, result);
+        ctx.request_repaint();
+    }
+
+    /// What a click in the Scripts panel asks for.
+    fn script_action(&mut self, ctx: &egui::Context, action: Action) {
+        let Ok(workspace) = &mut self.workspace else {
+            return;
+        };
+        let result = match action {
+            Action::Open(id) => workspace.open(&id),
+            Action::Duplicate(id) => workspace.duplicate(&id),
+            Action::Move(id, folder) => workspace.move_to_folder(&id, folder.as_deref()),
+            Action::DeleteFolder(folder) => workspace.delete_folder(&folder),
+            Action::Rename(id) => {
+                let title = workspace.title(&id).to_owned();
+                self.dialog = Some(Dialog::name(Naming::Script(id), &title));
+                Ok(())
+            }
+            Action::RenameFolder(folder) => {
+                self.dialog = Some(Dialog::name(Naming::Folder(folder.clone()), &folder));
+                Ok(())
+            }
+            Action::Delete(id) => {
+                self.dialog = Some(Dialog::Delete { title: workspace.title(&id).to_owned(), id });
+                Ok(())
+            }
+        };
+        report(ctx, result);
+        // What is already drawn this frame shows the old library.
+        ctx.request_repaint();
+    }
+
+    /// The Scripts panel with its header.
+    fn scripts_column(&mut self, ui: &mut egui::Ui, focus_search: bool) {
+        let mut new_folder = false;
+        let library_open = self.workspace.is_ok();
+        panel_header(ui, "Scripts", |ui| {
+            ui.add_enabled_ui(library_open, |ui| {
+                new_folder = ui_kit::icon_button(ui, ui_kit::icons::regular::FOLDER_PLUS, "New folder").clicked();
+            });
+        });
+        if new_folder {
+            self.dialog = Some(Dialog::name(Naming::NewFolder, ""));
+        }
+        let action = match &self.workspace {
+            Ok(workspace) => self.scripts.show(ui, workspace, focus_search),
+            Err(_) => None,
+        };
+        if let Some(action) = action {
+            self.script_action(ui.ctx(), action);
+        }
+    }
+
+    /// The editor panel: its toolbar, then the open script or what to do without one.
+    /// `command` is an Edit menu item picked in the last frame.
+    fn editor_column(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame, command: Option<Item>) {
+        if let Some(item) = panel_toolbar(ui, self.menu_state()) {
+            self.run(ui.ctx(), frame, item);
+        }
+        let workspace = match &mut self.workspace {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                empty_state(ui, error);
+                return;
+            }
+        };
+        let no_scripts = workspace.store().library().scripts.is_empty();
+        if let Some(open) = workspace.open_script_mut() {
+            let id = editor::id(open.serial);
+            if let Some(item) = command {
+                editor::command(ui, id, item);
+            }
+            if editor::show(ui, id, &mut open.text) {
+                workspace.text_changed(Instant::now());
+                // The title bar, already drawn, has to show the unsaved dot.
+                ui.ctx().request_repaint();
+            }
+        } else if no_scripts {
+            if first_script(ui) {
+                self.run(ui.ctx(), frame, Item::New);
+            }
+        } else {
+            empty_state(ui, "Pick a script or create one");
+        }
+    }
+
+    /// Saves the open script when due, keeps its word count up to date, and saves it before
+    /// the window closes.
+    fn keep_saved(&mut self, ctx: &egui::Context) {
+        let Ok(workspace) = &mut self.workspace else {
+            return;
+        };
+        let now = Instant::now();
+        match workspace.autosave(now) {
+            Autosave::Done => {}
+            Autosave::Waiting(wait) => ctx.request_repaint_after(wait),
+            Autosave::Failed { error, first } => {
+                if first {
+                    log::error!("autosave failed: {error}");
+                    toast(ctx, format!("The script could not be saved: {error}"));
+                }
+                ctx.request_repaint_after(crate::autosave::DELAY);
+            }
+        }
+        if let Some(open) = workspace.open_script_mut() {
+            open.count.tick(ctx, &open.text, now);
+        }
+        // With everything saved, the next failure on close is refused once again.
+        if !workspace.open_script().is_some_and(|open| open.unsaved()) {
+            self.close_refused = false;
+        }
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.close_refused
+            && let Err(error) = workspace.flush()
+        {
+            log::error!("the script was not saved on close: {error}");
+            toast(ctx, "The script could not be saved. Close again to quit without saving it.");
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.close_refused = true;
+        }
+    }
+
     /// The title bar, the three panels and the status bar.
-    fn library(&mut self, ui: &mut egui::Ui) {
+    fn library(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame) {
         // Before the menu bar, which has to see the hotkey's key press.
         if click_through_hotkey(ui) {
             self.click_through = !self.click_through;
         }
+        let command = self.queued.take();
         let picked = Cell::new(None);
-        let bar = title_bar(ui, self.view.is_some(), self.click_through, &picked);
+        let bar = title_bar(ui, self.menu_state(), self.click_through, self.document().as_ref(), &picked);
         if let Some(item) = picked.get() {
-            self.run(ui.ctx(), item);
+            self.run(ui.ctx(), frame, item);
         }
 
         let mut rest = ui.max_rect();
         rest.min.y = bar.bottom();
         let (body, status) = rest.split_top_bottom_at_y(rest.bottom() - size::STATUS_BAR_HEIGHT);
         let [scripts, editor, run] = columns(body.shrink(space::SCALE_8));
-        column(ui, scripts, |ui| {
-            panel_header(ui, "Scripts");
-            empty_state(ui, "No scripts yet");
-        });
-        column(ui, editor, |ui| {
-            panel_toolbar(ui);
-            empty_state(ui, "Scripts come in Phase 2");
-        });
+        column(ui, scripts, |ui| self.scripts_column(ui, command == Some(Item::Find)));
+        column(ui, editor, |ui| self.editor_column(ui, frame, command));
         column(ui, run, |ui| {
-            panel_header(ui, "Run");
-            self.view_controls(ui);
+            panel_header(ui, "Run", |_| {});
+            self.view_controls(ui, frame);
         });
 
         let capture = capture_label(self.view.as_ref().map(|view| view.status()));
@@ -147,16 +346,42 @@ impl PrompterApp {
 
         ui_kit::appearance_dialog(ui.ctx(), &mut self.appearance_open);
         ui_kit::about_dialog(ui.ctx(), &mut self.about_open, &ABOUT);
+        self.show_dialog(ui.ctx());
+        if ui_kit::widgets::show_toasts(ui.ctx()).is_some() {
+            ui.ctx().request_repaint_after(TOAST_TICK);
+        }
+    }
+
+    /// Draws the open library dialog, if there is one.
+    fn show_dialog(&mut self, ctx: &egui::Context) {
+        let (Some(dialog), Ok(workspace)) = (&mut self.dialog, &mut self.workspace) else {
+            return;
+        };
+        let (open, failure) = dialog.show(ctx, workspace);
+        if let Some(error) = failure {
+            report(ctx, Err(error));
+        }
+        if !open {
+            self.dialog = None;
+            ctx.request_repaint();
+        }
+    }
+
+    /// The open script as the title bar shows it.
+    fn document(&self) -> Option<Document> {
+        let workspace = self.workspace.as_ref().ok()?;
+        let open = workspace.open_script()?;
+        Some(Document { title: workspace.title(&open.id).to_owned(), unsaved: open.unsaved(), caption: open.count.words().map(stats::caption) })
     }
 
     /// The Run panel's view controls and diagnostics line.
-    fn view_controls(&mut self, ui: &mut egui::Ui) {
-        let view_open = self.view.is_some();
+    fn view_controls(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame) {
+        let state = self.menu_state();
         let mut picked = None;
         ui.add_space(space::SCALE_8);
         ui.horizontal_wrapped(|ui| {
             for (item, label) in [(Item::ShowView, "Show"), (Item::HideView, "Hide")] {
-                if ui.add_enabled(item.enabled(view_open), egui::Button::new(label)).clicked() {
+                if ui.add_enabled(item.enabled(state), egui::Button::new(label)).clicked() {
                     picked = Some(item);
                 }
             }
@@ -166,12 +391,37 @@ impl PrompterApp {
             }
         });
         if let Some(item) = picked {
-            self.run(ui.ctx(), item);
+            self.run(ui.ctx(), frame, item);
         }
         ui.add_space(space::SCALE_8);
         let status = self.view.as_ref().map(|view| view.status());
         ui.label(diagnostics(self.alpha.get().map(|mode| format!("{mode:?}")), status));
     }
+}
+
+/// Opens the library in `%APPDATA%\Cutmark\prompter`.
+fn open_library() -> anyhow::Result<Workspace> {
+    let dirs = directories::BaseDirs::new().context("the user's config folder could not be found")?;
+    let store = Store::open(&dirs.config_dir().join("Cutmark").join("prompter"))?;
+    Ok(Workspace::new(store))
+}
+
+fn toast(ctx: &egui::Context, text: impl Into<String>) {
+    ui_kit::widgets::toast(ctx, text);
+}
+
+/// Tells the user about a library operation that failed.
+fn report(ctx: &egui::Context, result: Result<(), StoreError>) {
+    if let Err(error) = result {
+        log::error!("{error}");
+        toast(ctx, error.to_string());
+    }
+}
+
+/// The file name Export suggests for a title.
+fn export_name(title: &str) -> String {
+    let safe: String = title.chars().map(|c| if c.is_control() || r#"<>:"/\|?*"#.contains(c) { '_' } else { c }).collect();
+    format!("{safe}.md")
 }
 
 /// True on the frame Ctrl+Alt+C is pressed in the Library.
@@ -188,9 +438,16 @@ fn click_through_hotkey(ui: &egui::Ui) -> bool {
     })
 }
 
+/// The open script's part of the title bar.
+struct Document {
+    title: String,
+    unsaved: bool,
+    caption: Option<String>,
+}
+
 /// The 44px title bar (rev 3 "Title bar"). The toolbar adds the separator and the caption
 /// buttons. A clicked menu item is reported through `picked`.
-fn title_bar(ui: &mut egui::Ui, view_open: bool, click_through: bool, picked: &Cell<Option<Item>>) -> egui::Rect {
+fn title_bar(ui: &mut egui::Ui, state: MenuState, click_through: bool, document: Option<&Document>, picked: &Cell<Option<Item>>) -> egui::Rect {
     ui_kit::main_toolbar(
         ui,
         |ui| {
@@ -205,7 +462,7 @@ fn title_bar(ui: &mut egui::Ui, view_open: bool, click_through: bool, picked: &C
                             }
                             for &item in *group {
                                 let checked = item == Item::ClickThrough && click_through;
-                                if ui.add_enabled(item.enabled(view_open), menu_button(item).selected(checked)).clicked() {
+                                if ui.add_enabled(item.enabled(state), menu_button(item).selected(checked)).clicked() {
                                     picked.set(Some(item));
                                     ui.close();
                                 }
@@ -217,7 +474,11 @@ fn title_bar(ui: &mut egui::Ui, view_open: bool, click_through: bool, picked: &C
             ui_kit::menu_bar(ui, &mut menus);
         },
         |ui| {
-            ui_kit::title_block(ui, &ui_kit::Title::App(ROOT_TITLE));
+            let title = match document {
+                Some(document) => ui_kit::Title::Document { name: &document.title, unsaved: document.unsaved, caption: document.caption.as_deref() },
+                None => ui_kit::Title::App(ROOT_TITLE),
+            };
+            ui_kit::title_block(ui, &title);
         },
         |ui| {
             ui.add_enabled_ui(false, |ui| ui_kit::primary_button(ui, "Start Prompter"));
@@ -275,27 +536,47 @@ fn panel_row(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
     ui.painter().hline(rect.x_range().expand(space::PANEL_PADDING), rect.bottom(), egui::Stroke::new(HAIRLINE, color::STROKE_HAIRLINE));
 }
 
-/// A side panel's header row (rev 3 "Panel header").
-fn panel_header(ui: &mut egui::Ui, title: &str) {
+/// A side panel's header row (rev 3 "Panel header"). `trailing` adds to its right end, from
+/// right to left.
+fn panel_header(ui: &mut egui::Ui, title: &str, trailing: impl FnOnce(&mut egui::Ui)) {
     panel_row(ui, |ui| {
         ui.add_space(HEADER_PAD);
         let text = egui::RichText::new(title).font(ui_kit::fonts::semibold(typography::BODY_SIZE)).color(color::TEXT_PRIMARY);
         ui.add(egui::Label::new(text).selectable(false));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), trailing);
     });
 }
 
-/// The editor's toolbar (rev 3 "Panel toolbar"). Nothing can be undone until there is an editor.
-fn panel_toolbar(ui: &mut egui::Ui) {
+/// The editor's toolbar (rev 3 "Panel toolbar"). Returns the button clicked, as its menu item.
+fn panel_toolbar(ui: &mut egui::Ui, state: MenuState) -> Option<Item> {
+    let mut picked = None;
     panel_row(ui, |ui| {
-        ui.add_enabled_ui(false, |ui| {
-            ui_kit::icon_button(ui, ui_kit::icons::regular::ARROW_COUNTER_CLOCKWISE, "Undo");
-            ui_kit::icon_button(ui, ui_kit::icons::regular::ARROW_CLOCKWISE, "Redo");
-        });
+        let buttons = [(Item::Undo, ui_kit::icons::regular::ARROW_COUNTER_CLOCKWISE), (Item::Redo, ui_kit::icons::regular::ARROW_CLOCKWISE)];
+        for (item, icon) in buttons {
+            ui.add_enabled_ui(item.enabled(state), |ui| {
+                if ui_kit::icon_button(ui, icon, item.label()).clicked() {
+                    picked = Some(item);
+                }
+            });
+        }
     });
+    picked
+}
+
+/// The editor panel with no scripts at all. True if New was clicked.
+fn first_script(ui: &mut egui::Ui) -> bool {
+    ui.vertical_centered(|ui| {
+        ui.add_space((ui.available_height() / 2.0 - size::LIST_ROW_HEIGHT).max(0.0));
+        let text = egui::RichText::new("Create your first script").font(ui_kit::fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY);
+        ui.label(text);
+        ui.add_space(space::SCALE_8);
+        ui_kit::primary_button(ui, "New").clicked()
+    })
+    .inner
 }
 
 /// A caption in the middle of the space left in a panel.
-fn empty_state(ui: &mut egui::Ui, caption: &str) {
+pub(crate) fn empty_state(ui: &mut egui::Ui, caption: &str) {
     let text = egui::RichText::new(caption).font(ui_kit::fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY);
     ui.centered_and_justified(|ui| ui.label(text));
 }
@@ -332,13 +613,27 @@ impl eframe::App for PrompterApp {
         ui_kit::tokens::color::BG_GROUND.to_normalized_gamma_f32()
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    /// Runs before each frame, and also while the window is hidden.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.keep_saved(ctx);
+    }
+
+    /// The last chance to save, for an exit that asked for no frame.
+    fn on_exit(&mut self) {
+        if let Ok(workspace) = &mut self.workspace
+            && let Err(error) = workspace.flush()
+        {
+            log::error!("the script was not saved on exit: {error}");
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         if self.monitor.is_none() {
             self.monitor = ui.input(|i| i.viewport().monitor_size);
         }
         egui::CentralPanel::default().frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
             if self.supported {
-                self.library(ui);
+                self.library(ui, frame);
             } else {
                 unsupported_dialog(ui.ctx());
             }
@@ -412,6 +707,11 @@ mod tests {
         assert_eq!(capture_label(Some(None)), Some("Visible to capture"));
         assert_eq!(capture_label(Some(Some(ViewStatus::default()))), Some("Visible to capture"));
         assert_eq!(capture_label(Some(Some(hidden))), Some("Hidden from capture"));
+    }
+
+    #[test]
+    fn the_export_name_drops_characters_windows_does_not_allow() {
+        assert_eq!(export_name("Intro: take 1/2?"), "Intro_ take 1_2_.md");
     }
 
     #[test]

@@ -24,9 +24,13 @@ panic = "deny"
 
 [dependencies]
 anyhow = "1.0.104"
+chrono = { workspace = true, features = ["clock"] }
+directories = "6.0.0"
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }
 egui.workspace = true
 env_logger = "0.11.11"
 log.workspace = true
+prompter-core = { version = "0.1.0", path = "../../crates/prompter-core" }
 prompter-platform = { version = "0.1.0", path = "../../crates/prompter-platform" }
+rfd.workspace = true
 ui-kit = { version = "0.1.0", path = "../../crates/ui-kit" }

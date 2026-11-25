@@ -11,27 +11,32 @@
 - V4: Library shell in app.rs (title bar, Scripts, editor and Run panels, status bar, Appearance and About dialogs). menu.rs holds the menu list and enable rules. View controls are in the Run panel. Minimum window 900 x 480.
 
 ## State
-- Phase 2 C1 done: crates/prompter-core. script::{parse, sections} and the block model; limits::{MAX_WORDS, split_at_heading}. Deps: pulldown-cmark (no default features), serde.
-- C1b done. Mark "type: text" takes the category and keeps only the text; other labels are kept as written, first word may name the category. "B-roll" and "b_roll" both work.
+- Phase 2 C1 to C3b done: crates/prompter-core.
+- Mark "type: text" takes the category and keeps only the text; other labels are kept as written, first word may name the category. "B-roll" and "b_roll" both work.
 - MarkCategory serializes like marks::MarkType (snake_case). It has no System: marks says the app writes that one.
 - ListItem: `continues` is true after a cue split (draw no marker). `start` is set only on an ordered list's first marked block; an item with no text uses up its number.
 - Brackets in code never open or close a cue; a cue outside code may hold code. A cue ends at the last `]]` of a run, so `[[pause]]]` is plain text.
 - Cues in a heading do not split it. List depth starts at 0.
 - Open: a second paragraph in a loose list item (no cue) is a ListItem with continues false, so it would draw its own marker.
-- C2 done: index::{WordIndex, Token, FORMAT_VERSION}; rules in index/normalize.rs. Script now has source_hash (std hash of the Markdown). WordIndex::is_current checks a cache; bump FORMAT_VERSION when parsing or normalizing changes. index_10k: 9.6 ms in release (10,010 typed words, 8,151 tokens).
-- C3 done: store::{Store, Library, ScriptMeta, SnapshotMeta, Imported, StoreError}; .txt escaping and the split in store/import.rs. New deps: serde_json, uuid, chrono (now, serde), thiserror (JD approved); dev tempfile.
-- Store::open takes the prompter data folder; the app finds it with `directories`. No app code uses the store yet. One Store per folder. A bad library.json is an error and is never overwritten; a failed library write leaves memory unchanged.
+- WordIndex::is_current checks a cache; bump FORMAT_VERSION when parsing or normalizing changes.
+- Store: one per folder. A bad library.json is an error and is never overwritten; a failed library write leaves memory unchanged.
 - `edited` changes on save and restore only. duplicate adds " copy" and drops favorite, last_position and unknown fields. Unknown fields are kept; views, tabs and overrides have no typed fields yet.
-- C3b done: import takes UTF-8 (BOM or not) and UTF-16 with a BOM; anything else, or text with a NUL, is StoreError::ImportEncoding. .txt escaping covers the whole line, only where a character would take effect; [[...]] cues are copied as they are, so Markdown inside a cue still applies.
-- Import makes scripts with no folder and numbers split parts "Title (part 1 of 2)". cached_index parses the text to check the hash and ignores cache write errors.
+- Import takes UTF-8 or UTF-16 with a BOM, else StoreError::ImportEncoding. .txt cues are copied as they are, so Markdown inside a cue still applies. Imports have no folder; split parts are "Title (part 1 of 2)". cached_index ignores cache write errors.
 - Tokens: a word may cross spans ("**world**,"), so char_range can end past its first span. source_line_of gives the block's first line. No spoken characters, no token.
 - Forms: the aligner must split multi-word forms. Contractions expand inside one token only: typed "do not" (two tokens) gets no "dont", so normalize the heard words the same way. No readings yet for "1990s" (gives "nineteen ninety s"), a minus sign, or other currencies.
+- C4 done. New app modules: workspace.rs (open script; saves before open, duplicate, delete, import, export), autosave.rs, stats.rs (word count thread), scripts_panel.rs, dialogs.rs, editor.rs.
+- Data folder: BaseDirs config_dir + Cutmark\prompter, as the Recorder does. ProjectDirs would add a subfolder. New deps: prompter-core, directories 6.0.0, rfd, chrono (clock).
+- Edit menu picks run one frame late (the click takes focus from the field). They inject key, Cut and Copy events; Paste uses ViewportCommand::RequestPaste.
+- Autosave runs in App::logic. A failed save retries every 500 ms with one toast. A failed save on close cancels the close once.
+- The word count uses WordIndex::build, not cached_index.
+- Open: no single-instance guard yet, so two copies could write one store. Sort and open groups are not remembered. Favorites, tabs, preview, stats bar, Paste as plain text and menu chords are not done.
 
 ## Next
-- C4.
+- C5.
+- By hand, C4: dialogs (Enter, Esc, Import, Export), right-click menus, Edit menu Paste, Find, autosave on switch and exit.
 - By hand: see-through, flash on open, move to another monitor or DPI, lock and sleep, scroll with the Library minimized, OBS capture.
 - Open from V4: only Ctrl+Alt+C shows in the menus (V4 did not read the Hotkeys section). About notices are a short hand-written list.
-- scripts\check.ps1 fails in this worktree at clippy cutmark-audio: FFmpeg headers not found.
+- C4 skipped check.ps1 (prompt). It fails in this worktree at clippy cutmark-audio: FFmpeg headers not found.
 
 ## White layer findings
 - The view's GDI redirection surface is opaque white after a show, under the DirectComposition visual. Who paints it is unknown. Only the area present at show was white.

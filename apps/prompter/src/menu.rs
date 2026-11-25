@@ -33,6 +33,15 @@ pub enum Item {
     About,
 }
 
+/// What the enable rules depend on.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MenuState {
+    pub view_open: bool,
+    /// False if the script library could not be opened.
+    pub library_open: bool,
+    pub script_open: bool,
+}
+
 /// The menus in bar order. Each is a list of groups, drawn with a separator between them.
 pub const MENUS: [(&str, &[&[Item]]); 5] = [
     ("File", &[&[Item::New, Item::Import, Item::Export, Item::Duplicate, Item::Delete], &[Item::Settings], &[Item::Exit]]),
@@ -84,13 +93,14 @@ impl Item {
         }
     }
 
-    /// Whether the item can be used while no script is open, which is always the case until
-    /// scripts exist.
-    pub fn enabled(self, view_open: bool) -> bool {
+    /// Whether the item can be used now.
+    pub fn enabled(self, state: MenuState) -> bool {
         match self {
             Self::Exit | Self::ClickThrough | Self::Appearance | Self::About => true,
-            Self::ShowView => !view_open,
-            Self::HideView => view_open,
+            Self::ShowView => !state.view_open,
+            Self::HideView => state.view_open,
+            Self::New | Self::Import | Self::Find => state.library_open,
+            Self::Export | Self::Duplicate | Self::Delete | Self::Undo | Self::Redo | Self::Cut | Self::Copy | Self::Paste => state.script_open,
             _ => false,
         }
     }
@@ -104,18 +114,36 @@ mod tests {
         MENUS.iter().flat_map(|(_, groups)| groups.iter().copied().flatten().copied()).collect()
     }
 
-    fn enabled(view_open: bool) -> Vec<Item> {
-        all().into_iter().filter(|item| item.enabled(view_open)).collect()
+    fn enabled(view_open: bool, script_open: bool) -> Vec<Item> {
+        let state = MenuState { view_open, library_open: true, script_open };
+        all().into_iter().filter(|item| item.enabled(state)).collect()
     }
 
     #[test]
-    fn with_no_script_and_no_view_only_the_wired_items_are_enabled() {
-        assert_eq!(enabled(false), [Item::Exit, Item::ShowView, Item::ClickThrough, Item::Appearance, Item::About]);
+    fn with_no_script_the_items_that_need_one_are_disabled() {
+        use Item::*;
+        assert_eq!(enabled(false, false), [New, Import, Exit, Find, ShowView, ClickThrough, Appearance, About]);
+    }
+
+    #[test]
+    fn an_open_script_enables_the_file_and_edit_items() {
+        use Item::*;
+        let expected = [New, Import, Export, Duplicate, Delete, Exit, Undo, Redo, Cut, Copy, Paste, Find, ShowView, ClickThrough, Appearance, About];
+        assert_eq!(enabled(false, true), expected);
+    }
+
+    #[test]
+    fn with_no_library_nothing_that_needs_it_is_enabled() {
+        use Item::*;
+        let enabled: Vec<Item> = all().into_iter().filter(|item| item.enabled(MenuState::default())).collect();
+        assert_eq!(enabled, [Exit, ShowView, ClickThrough, Appearance, About]);
     }
 
     #[test]
     fn an_open_view_swaps_show_for_hide() {
-        assert_eq!(enabled(true), [Item::Exit, Item::HideView, Item::ClickThrough, Item::Appearance, Item::About]);
+        assert!(!enabled(true, false).contains(&Item::ShowView));
+        assert!(enabled(true, false).contains(&Item::HideView));
+        assert!(!enabled(false, false).contains(&Item::HideView));
     }
 
     #[test]

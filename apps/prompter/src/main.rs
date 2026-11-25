@@ -3,9 +3,15 @@
 //! Cutmark Prompter: teleprompter for the Cutmark suite.
 
 mod app;
+mod autosave;
+mod dialogs;
+mod editor;
 mod menu;
 mod renderer;
+mod scripts_panel;
+mod stats;
 mod view;
+mod workspace;
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
