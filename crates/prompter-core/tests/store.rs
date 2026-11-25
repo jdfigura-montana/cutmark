@@ -432,7 +432,7 @@ fn import_refuses_other_types_and_text_that_is_not_utf8() {
     assert!(matches!(store.import(Path::new("a.docx")), Err(StoreError::UnsupportedImport(_))));
     let source = dir.path().join("latin1.txt");
     fs::write(&source, b"caf\xe9").unwrap();
-    assert!(matches!(store.import(&source), Err(StoreError::Io { .. })));
+    assert!(matches!(store.import(&source), Err(StoreError::ImportEncoding)));
     assert!(store.library().scripts.is_empty());
 }
 

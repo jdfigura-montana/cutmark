@@ -47,6 +47,8 @@ pub enum StoreError {
     UnknownSnapshot,
     #[error("{}: only .md and .txt files can be imported", .0.display())]
     UnsupportedImport(PathBuf),
+    #[error("This file is not UTF-8 or UTF-16. Save it as UTF-8 and import again.")]
+    ImportEncoding,
 }
 
 pub type Result<T, E = StoreError> = std::result::Result<T, E>;

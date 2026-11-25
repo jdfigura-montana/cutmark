@@ -22,8 +22,8 @@
 - C3 done: store::{Store, Library, ScriptMeta, SnapshotMeta, Imported, StoreError}; .txt escaping and the split in store/import.rs. New deps: serde_json, uuid, chrono (now, serde), thiserror (JD approved); dev tempfile.
 - Store::open takes the prompter data folder; the app finds it with `directories`. No app code uses the store yet. One Store per folder. A bad library.json is an error and is never overwritten; a failed library write leaves memory unchanged.
 - `edited` changes on save and restore only. duplicate adds " copy" and drops favorite, last_position and unknown fields. Unknown fields are kept; views, tabs and overrides have no typed fields yet.
-- Import needs UTF-8 (a BOM is dropped), makes scripts with no folder, and numbers split parts "Title (part 1 of 2)". cached_index parses the text to check the hash and ignores cache write errors.
-- Open: .txt escaping covers line starts only, as the prompt said. Mid-line Markdown still applies: "press <Enter>" loses the tag, "*word*" turns italic. The spec says .txt drops nothing.
+- C3b done: import takes UTF-8 (BOM or not) and UTF-16 with a BOM; anything else, or text with a NUL, is StoreError::ImportEncoding. .txt escaping covers the whole line, only where a character would take effect; [[...]] cues are copied as they are, so Markdown inside a cue still applies.
+- Import makes scripts with no folder and numbers split parts "Title (part 1 of 2)". cached_index parses the text to check the hash and ignores cache write errors.
 - Tokens: a word may cross spans ("**world**,"), so char_range can end past its first span. source_line_of gives the block's first line. No spoken characters, no token.
 - Forms: the aligner must split multi-word forms. Contractions expand inside one token only: typed "do not" (two tokens) gets no "dont", so normalize the heard words the same way. No readings yet for "1990s" (gives "nineteen ninety s"), a minus sign, or other currencies.
 
