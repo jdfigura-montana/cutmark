@@ -266,7 +266,7 @@ A profile holds every capture, encode, audio, webcam, and layout setting, and sw
 
 ## UI, hotkeys, monitoring
 
-One egui window on eframe's wgpu renderer, in the suite's dark theme from `ui-kit`, with the preview, meters and controls, plus a tray icon (`tray-icon`) while recording. Global hotkeys go through `cutmark-hotkeys`; the window handle gets `WDA_EXCLUDEFROMCAPTURE` at creation.
+Since Phase 13 the window follows docs/suite/recorder-phase-13-ui.md (modes Setup, Record, Review) and the accent-per-app amendment (Recorder default Teal, glass always on). One egui window on eframe's wgpu renderer, in the suite's dark theme from `ui-kit`, with the preview, meters and controls, plus a tray icon (`tray-icon`) while recording. Global hotkeys go through `cutmark-hotkeys`; the window handle gets `WDA_EXCLUDEFROMCAPTURE` at creation.
 
 **Main window**
 
@@ -386,6 +386,7 @@ Nine phases, each ending in a test you can run yourself; each phase becomes one 
 | 7 | Monitoring | Status bar, disk meter, warnings, auto-stop, counters, countdown, pre-flight | Pre-flight reports correctly; auto-stop fires on a nearly full test drive |
 | 8 | Webcam ISO | MF capture, camera control lock, own encoder session, cam offset | Cam file and main video align within 1 frame |
 | 9 | Compositor and key | Chroma key shader, matte view, garbage matte, backgrounds, PiP and cam-only layouts, output scaling | 1440p60 with keyed PiP cam records 30 min with 0 dropped frames on AMD, and 10 min on Nvidia and Intel |
+| 13 | UI restyle (done Nov 24, 2026, tag `recorder-p13`) | `ui-kit` chrome and menu bar, Setup / Record / Review modes, tool strip, Sources panel, Settings dialog, deck, Review with playback, style lint. Spec: docs/suite/recorder-phase-13-ui.md | Done |
 
 ## Deferred
 

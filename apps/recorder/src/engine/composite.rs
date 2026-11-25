@@ -360,7 +360,7 @@ mod tests {
         assert_eq!(layer["shape"], "circle");
         assert_eq!(layer["corner_radius_px"], 0);
         assert_eq!(layer["crop"], serde_json::json!({ "left": 0.22, "right": 0.06, "top": 0.0, "bottom": 0.0 }));
-        assert_eq!(layer["border"], serde_json::json!({ "width_px": 5, "color": "#3D4BFF" }));
+        assert_eq!(layer["border"], serde_json::json!({ "width_px": 5, "color": "#3D4BFF" })); // style-lint: allow test fixture color, the profile value under test
         assert_eq!(layer["key"]["garbage_crop"], serde_json::json!({ "left": 0.0, "right": 0.0, "top": 0.1, "bottom": 0.0 }));
         assert_eq!(layer["key"]["mask"], serde_json::json!({ "x": 0.4, "y": 0.4, "w": 0.2, "h": 0.2 }));
         assert_eq!(value["background"]["kind"], "video");
