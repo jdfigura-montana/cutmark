@@ -8,6 +8,7 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 use thiserror::Error;
 
+use crate::config::CompositeMode;
 #[cfg(test)]
 use crate::engine::controller::WarningNote;
 use crate::engine::controller::{ControllerState, Phase};
@@ -359,6 +360,8 @@ pub struct StatusData {
     pub remaining_secs: Option<u64>,
     /// Packets waiting for the muxer; 0 when idle.
     pub queue_depth: usize,
+    /// The effective composite mode, `baked` or `clean`: the running take's, or the next take's when idle.
+    pub composite_mode: CompositeMode,
 }
 
 impl StatusData {
@@ -383,6 +386,7 @@ impl StatusData {
             disk_free_bytes: state.take_stats.as_ref().map_or(state.idle_free_bytes, |live| live.disk_free_bytes),
             remaining_secs: state.take_stats.as_ref().and_then(|live| live.remaining_secs),
             queue_depth: state.take_stats.as_ref().map_or(0, |live| live.queue_depth),
+            composite_mode: state.composite_mode,
         }
     }
 
@@ -550,5 +554,8 @@ mod tests {
         assert_eq!(sent[0].0, 2);
         assert_eq!(status.to_value()["marksCount"], json!(0));
         assert_eq!(status.to_value()["elapsedMs"], json!(0));
+        assert_eq!(status.to_value()["compositeMode"], json!("baked"));
+        let clean = ControllerState { composite_mode: crate::config::CompositeMode::Clean, ..ControllerState::default() };
+        assert_eq!(StatusData::from_state(&clean).to_value()["compositeMode"], json!("clean"));
     }
 }

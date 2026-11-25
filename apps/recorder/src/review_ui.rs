@@ -19,6 +19,7 @@ use media_io::player::video::RgbaFrame;
 use ui_kit::tokens::{color, radius, size, space, typography};
 use ui_kit::{MarkerKind, PlayKind, Theme, inspector_group, inspector_row, marker_color, paint_marker, paint_playhead};
 
+use crate::config::CompositeMode;
 use crate::playback::Playback;
 use crate::review::{self, Day, Take};
 
@@ -471,6 +472,11 @@ pub fn take_panel(
             if let Some(iso) = &take.iso {
                 row(ui, "Camera ISO format", &format_label(iso));
             }
+            let composite = match take.composite {
+                CompositeMode::Baked => "Baked",
+                CompositeMode::Clean => "Clean",
+            };
+            row(ui, "Composite", composite);
         });
         ui.add_space(space::SCALE_8);
         group_caption(ui, "Marks");
@@ -720,6 +726,7 @@ mod tests {
                 video: PathBuf::new(),
                 iso: None,
                 marks: Vec::new(),
+                composite: CompositeMode::Baked,
             }],
         }];
         let mut state = CenterState::default();

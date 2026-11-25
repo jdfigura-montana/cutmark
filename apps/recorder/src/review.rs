@@ -21,6 +21,9 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local, NaiveDate, Utc};
 use media_io::player::probe::probe;
+use serde::Deserialize;
+
+use crate::config::CompositeMode;
 
 /// The file extensions that make a file group a take (spec "Review mode").
 const MEDIA_EXTENSIONS: [&str; 3] = ["mkv", "mp4", "mov"];
@@ -56,6 +59,8 @@ pub struct Take {
     pub iso: Option<PathBuf>,
     /// The marks from the sidecar, in timeline order; empty without a sidecar.
     pub marks: Vec<marks::Mark>,
+    /// The composite mode from the take's session.json; Baked without a composite block.
+    pub composite: CompositeMode,
 }
 
 /// One day of takes, newest first.
@@ -301,7 +306,18 @@ fn build_take(name: String, mut files: Vec<TakeFile>) -> Option<Take> {
         None => DateTime::<Utc>::from(modified).with_timezone(&Local),
     };
     let iso = files.iter().find(|file| file.path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("iso"))).map(|file| file.path.clone());
-    Some(Take { name, start, duration_ms, total_size: files.iter().map(|file| file.size).sum(), files, video, iso, marks })
+    let composite = load_composite_mode(&video.with_file_name(format!("{name}_session.json")));
+    Some(Take { name, start, duration_ms, total_size: files.iter().map(|file| file.size).sum(), files, video, iso, marks, composite })
+}
+
+/// The `composite.mode` of a take's session.json; Baked when the file or the block is missing or
+/// cannot be read (takes made before the block existed are all baked).
+fn load_composite_mode(session_file: &Path) -> CompositeMode {
+    fs::read(session_file)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|doc| CompositeMode::deserialize(&doc["composite"]["mode"]).ok())
+        .unwrap_or_default()
 }
 
 /// Loads the sidecar of `video`, logging problems; None when there is none or
@@ -561,7 +577,17 @@ mod tests {
 
     /// A take for the summary tests, with only the fields they read.
     fn take_named(name: &str, start: DateTime<Local>, duration_ms: Option<u64>) -> Take {
-        Take { name: name.to_owned(), start, duration_ms, total_size: 0, files: Vec::new(), video: PathBuf::new(), iso: None, marks: Vec::new() }
+        Take {
+            name: name.to_owned(),
+            start,
+            duration_ms,
+            total_size: 0,
+            files: Vec::new(),
+            video: PathBuf::new(),
+            iso: None,
+            marks: Vec::new(),
+            composite: CompositeMode::Baked,
+        }
     }
 
     #[test]

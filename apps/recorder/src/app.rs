@@ -10,7 +10,7 @@ use ui_kit::tokens::{color, size, space, typography};
 
 use crate::api::{ApiServer, token};
 use crate::compositor::{ComposeConfig, CompositorThread};
-use crate::config::{self, Mode, ModeState, PanelWidths, Settings};
+use crate::config::{self, CompositeMode, Mode, ModeState, PanelWidths, Settings};
 use crate::engine::bus::{BusSender, Command, CommandKind, MarkKind};
 use crate::engine::controller::{Controller, ControllerState, Phase, lock};
 use crate::hotkeys::Hotkeys;
@@ -21,7 +21,7 @@ use crate::platform;
 use crate::playback::Playback;
 use crate::preflight_ui::PreflightSection;
 use crate::preview_ui::PreviewView;
-use crate::profile_ui::{ProfileOutcome, ProfileSection};
+use crate::profile_ui::{self, ProfileOutcome, ProfileSection};
 use crate::profiles::ProfileStore;
 use crate::record_ui;
 use crate::recovery::{self, RecoveryReport};
@@ -976,6 +976,8 @@ impl RecorderApp {
                     self.profile_section.output_panel(ui, &mut self.profile_store, &mut self.settings, self.source_size, active, &mut outcome);
                     self.on_profile_outcome(&outcome);
                     ui.add_space(space::SCALE_8);
+                    profile_ui::composite_group(ui, &mut self.profile_store, &self.settings.active_profile, active);
+                    ui.add_space(space::SCALE_8);
                     webcam_ui::iso_group(ui, &self.webcam, &mut self.profile_store, active, &state.active_profile);
                 }
                 Tool::Audio => {
@@ -1030,6 +1032,8 @@ impl RecorderApp {
     /// Matte view chips, and the next take on the right with its full path as the tooltip.
     fn preview_toolbar(&mut self, ui: &mut egui::Ui, active: bool, outcome: &mut ProfileOutcome) {
         let key_on = self.webcam.settings(&self.profile_store).is_some_and(|settings| settings.key.enabled);
+        let profile = self.profile_store.get(&self.settings.active_profile);
+        let clean = profile.is_some_and(|profile| profile.effective_composite_mode() == CompositeMode::Clean);
         let (take_label, take_path) = self.profile_section.next_take(&self.profile_store, &self.settings);
         let next_take = match take_label {
             Some(label) => format!("Next take {label}"),
@@ -1053,6 +1057,12 @@ impl RecorderApp {
             ui.add_enabled_ui(key_on, |ui| {
                 ui_kit::chip(ui, &mut self.key_ui.matte, "Matte view");
             });
+            if clean {
+                ui.add_space(space::SCALE_4);
+                // Read-only: the value is made new every frame, so a click changes nothing.
+                let mut on = true;
+                ui_kit::chip(ui, &mut on, "Clean");
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add(
                     egui::Label::new(egui::RichText::new(next_take).font(ui_kit::fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY))

@@ -10,7 +10,7 @@ use egui::{CursorIcon, Label, RichText, Sense, Ui};
 use ui_kit::tokens::{color, space, typography};
 use ui_kit::{inspector_group, inspector_row, switch};
 
-use crate::config::WebcamSettings;
+use crate::config::{CompositeMode, Profile, WebcamSettings};
 use crate::preview_ui::Pick;
 use crate::profile_ui::{AmfProbe, iso_codec_text, rate_control_editor, rate_errors};
 use crate::profiles::ProfileStore;
@@ -23,7 +23,9 @@ thread_local! {
 
 /// The Camera ISO file group of the Output tool (spec "Setup mode"): whether the raw camera is
 /// saved on its own and how it is encoded. The rows are disabled while the switch is off, and the
-/// group is read-only while recording. The camera offset lives in the Camera tool's Sync group.
+/// group is read-only while recording. While Clean applies the switch is locked on, and the saved
+/// switch is left alone so it comes back when Clean goes off. The camera offset lives in the Camera
+/// tool's Sync group.
 pub(crate) fn iso_group(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, recording: bool, profile_name: &str) {
     let Some(settings) = host.settings(store).cloned() else { return };
     let Some(profile) = store.get(profile_name).cloned() else { return };
@@ -39,21 +41,29 @@ pub(crate) fn iso_group(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore
     let mut rate = settings.iso_rc;
     let mut changed = false;
     inspector_group(ui, |ui| {
-        ui.add_enabled_ui(!recording, |ui| {
-            let state = if iso { "On" } else { "Off" };
+        let (mut shown, locked) = iso_switch(&profile, iso);
+        ui.add_enabled_ui(!recording && !locked, |ui| {
+            let state = if shown { "On" } else { "Off" };
+            let before = shown;
             inspector_row(
                 ui,
                 "Camera ISO file",
                 |ui| {
-                    changed |= switch(ui, &mut iso).changed();
+                    switch(ui, &mut shown);
                 },
                 Some(state),
             );
-            ui.add_space(space::SCALE_4);
-            ui.label(RichText::new("Also save the raw camera as its own file.").small().weak());
-            ui.add_space(space::SCALE_4);
+            // ui_kit's switch never marks its response changed, so the value is compared.
+            if shown != before {
+                iso = shown;
+                changed = true;
+            }
         });
-        ui.add_enabled_ui(!recording && iso, |ui| {
+        let caption = if locked { "Clean mode records the camera to its own file" } else { "Also save the raw camera as its own file." };
+        ui.add_space(space::SCALE_4);
+        ui.label(RichText::new(caption).small().weak());
+        ui.add_space(space::SCALE_4);
+        ui.add_enabled_ui(!recording && shown, |ui| {
             let errors = rate_errors(profile.codec, rate, ranges.as_ref());
             changed |= rate_control_editor(ui, "webcam-iso", &mut rate, ranges.as_ref(), &errors);
             inspector_row(ui, "Codec", |_ui| {}, Some(&codec_text));
@@ -72,6 +82,13 @@ pub(crate) fn iso_group(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore
             }
         });
     }
+}
+
+/// What the Camera ISO switch shows for a profile with the saved switch `saved`: whether it is on,
+/// and whether it is locked there because a Clean take records the camera to its own file.
+fn iso_switch(profile: &Profile, saved: bool) -> (bool, bool) {
+    let locked = profile.effective_composite_mode() == CompositeMode::Clean;
+    (saved || locked, locked)
 }
 
 /// Draws the camera picture at the full width of its panel; while the eyedropper is armed
@@ -112,6 +129,20 @@ mod tests {
     use capture::CameraSubtype;
 
     use super::*;
+    use crate::config::LayoutKind;
+
+    #[test]
+    fn the_camera_file_switch_is_locked_on_under_clean_picture_in_picture() {
+        let webcam = Some(WebcamSettings::default());
+        let clean = Profile { layout: LayoutKind::Pip, webcam, composite_mode: CompositeMode::Clean, ..Profile::tutorial_av1_1440p60() };
+        for saved in [false, true] {
+            assert_eq!(iso_switch(&clean, saved), (true, true));
+            let baked = Profile { composite_mode: CompositeMode::Baked, ..clean.clone() };
+            assert_eq!(iso_switch(&baked, saved), (saved, false));
+            let screen = Profile { layout: LayoutKind::ScreenOnly, ..clean.clone() };
+            assert_eq!(iso_switch(&screen, saved), (saved, false));
+        }
+    }
 
     #[test]
     fn frame_rates_lose_their_trailing_zeros() {

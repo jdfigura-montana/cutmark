@@ -6,14 +6,15 @@ use std::ops::RangeInclusive;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
-use egui::{Button, ComboBox, DragValue, RichText, TextEdit, Ui};
+use egui::{Button, ComboBox, DragValue, Label, RichText, TextEdit, Ui};
 use media_io::AudioCodec;
 use media_io::encode::{Codec as EncoderCodec, CodecSupport, ConfigError, MAX_MBPS, NumericOption, OptionRanges, amf_options, check_combo_with, probe_amf};
-use ui_kit::tokens::{color, space};
+use ui_kit::tokens::{color, space, typography};
 use ui_kit::{inspector_group, inspector_row};
 
-use crate::config::{AudioCodecChoice, Codec, Container, Preset, Profile, RateControl, Settings, takes_root};
+use crate::config::{AudioCodecChoice, Codec, CompositeMode, Container, LayoutKind, Preset, Profile, RateControl, Settings, takes_root};
 use crate::engine::session::encoder_config;
+use crate::layout_ui;
 use crate::profiles::{self, ProfileStore};
 use crate::takes;
 
@@ -618,6 +619,46 @@ impl ProfileSection {
     }
 }
 
+/// Whether the Composite choice is offered for a layout (Clean exists only for Picture in picture),
+/// and the caption under the control for the saved mode.
+fn composite_control(layout: LayoutKind, mode: CompositeMode) -> (bool, &'static str) {
+    match (layout, mode) {
+        (LayoutKind::Pip, CompositeMode::Baked) => (true, "Camera and key are burned into the video."),
+        (LayoutKind::Pip, CompositeMode::Clean) => (true, "Screen only in the video; the camera goes to its own file for editing."),
+        _ => (false, "Only for Picture in picture"),
+    }
+}
+
+/// The Composite group of the Output tool: whether the camera is baked into the main video or only
+/// recorded to its own file. Disabled outside Picture in picture and, like every profile field,
+/// while recording.
+pub(crate) fn composite_group(ui: &mut Ui, store: &mut ProfileStore, profile_name: &str, recording: bool) {
+    let Some(profile) = store.get(profile_name) else { return };
+    let (layout, saved) = (profile.layout, profile.composite_mode);
+    let mut mode = saved;
+    inspector_group(ui, |ui| {
+        let (offered, _) = composite_control(layout, mode);
+        ui.add_enabled_ui(offered && !recording, |ui| {
+            inspector_row(
+                ui,
+                "Composite",
+                |ui| {
+                    layout_ui::choice(ui, "composite-mode", &mut mode, &[(CompositeMode::Baked, "Baked"), (CompositeMode::Clean, "Clean")]);
+                },
+                None,
+            );
+        });
+        // Read after the control, so the caption follows a click in the same frame.
+        let (_, caption) = composite_control(layout, mode);
+        ui.add_space(space::SCALE_4);
+        ui.add(Label::new(RichText::new(caption).font(ui_kit::fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY)).wrap());
+        ui.add_space(space::SCALE_4);
+    });
+    if mode != saved {
+        store.edit(profile_name, |profile| profile.composite_mode = mode);
+    }
+}
+
 /// Draws the rate control picker and the fields of the chosen mode as inspector rows, and returns
 /// whether the rate control changed.
 ///
@@ -889,6 +930,16 @@ mod tests {
         assert_eq!(take_label("take12"), "take12");
         assert_eq!(take_label("Show AV1 #12"), "Show AV1 #12");
         assert_eq!(take_label("My Show_07"), "My Show_07");
+    }
+
+    #[test]
+    fn the_composite_group_is_disabled_outside_picture_in_picture() {
+        for mode in [CompositeMode::Baked, CompositeMode::Clean] {
+            for layout in [LayoutKind::ScreenOnly, LayoutKind::CamOnly] {
+                assert_eq!(composite_control(layout, mode), (false, "Only for Picture in picture"), "{layout:?}, {mode:?}");
+            }
+            assert!(composite_control(LayoutKind::Pip, mode).0, "{mode:?}");
+        }
     }
 
     #[test]

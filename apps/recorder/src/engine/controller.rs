@@ -20,7 +20,7 @@ use super::preflight::{self, PreflightReport};
 use super::script::{PositionMsg, ScriptMsg, ScriptSnapshot, TakeScript};
 use super::session::{RecordingSession, SessionConfig, StatsSnapshot, Summary, TrackSpec};
 use super::stats::{self, GIB, StatsTracker, TakeStats};
-use crate::config::{AudioCodecChoice, Profile, Settings, TrackKind};
+use crate::config::{AudioCodecChoice, CompositeMode, Profile, Settings, TrackKind};
 use crate::countdown::CountdownHandle;
 use crate::label_popup::PopupHandle;
 use crate::profiles;
@@ -210,6 +210,8 @@ pub struct ControllerState {
     pub audio_notice: Option<String>,
     /// The active profile name.
     pub active_profile: String,
+    /// The effective composite mode of the running take, or of the active profile while idle.
+    pub composite_mode: CompositeMode,
     /// Whether each track in the settings is muted, in settings order.
     pub track_muted: Vec<bool>,
     /// The name of each track in the settings, in settings order.
@@ -738,7 +740,12 @@ impl Worker {
 
     /// Applies the queued settings; false once the stop request came or the app dropped its handles.
     fn drain_control(&mut self) -> bool {
+        let profile_before = self.settings.active_profile.clone();
         let (keep_running, changed) = apply_control(&self.control, &mut self.settings);
+        if self.settings.active_profile != profile_before {
+            // The idle check then reads the new profile's composite mode right away.
+            self.last_idle_check = None;
+        }
         if changed {
             self.forward_live_controls();
             let names: Vec<String> = self.settings.audio.tracks.iter().map(|track| track.name.clone()).collect();
@@ -948,6 +955,7 @@ impl Worker {
         let profile = profiles::find(&self.settings.active_profile).unwrap_or_else(Profile::tutorial_av1_1440p60);
         let take = takes::next_take_for(&self.settings, chrono::Local::now(), profile.container).map_err(|err| StartError::Take(err.to_string()))?;
         let fps = profile.fps;
+        let composite_mode = profile.effective_composite_mode();
         let (tracks, missing) = track_specs(&self.settings);
         if !missing.is_empty() {
             log::warn!("recording without these audio devices: {}", missing.join(", "));
@@ -986,6 +994,7 @@ impl Worker {
             state.phase = Phase::Recording;
             state.take = Some(take);
             state.fps = fps;
+            state.composite_mode = composite_mode;
             state.stats = None;
             state.mbps = 0.0;
         });
@@ -1528,6 +1537,7 @@ impl Worker {
             return;
         }
         self.settings.active_profile = name.to_owned();
+        self.last_idle_check = None;
         self.publish_settings();
     }
 
@@ -1636,7 +1646,8 @@ impl Worker {
         }
     }
 
-    /// While no take runs, reads the free space on the volume the next take goes to every couple of seconds.
+    /// While no take runs, reads the free space on the volume the next take goes to every couple of seconds,
+    /// and the active profile's composite mode, since profile edits reach its file without a message.
     fn poll_idle_disk(&mut self) {
         if self.active.is_some() {
             return;
@@ -1649,6 +1660,11 @@ impl Worker {
         let free = stats::free_space(&crate::config::takes_root(&self.settings), 0);
         if lock(&self.shared).idle_free_bytes != free {
             self.update(|state| state.idle_free_bytes = free);
+        }
+        let profile = profiles::find(&self.settings.active_profile).unwrap_or_else(Profile::tutorial_av1_1440p60);
+        let composite_mode = profile.effective_composite_mode();
+        if lock(&self.shared).composite_mode != composite_mode {
+            self.update(|state| state.composite_mode = composite_mode);
         }
     }
 }
