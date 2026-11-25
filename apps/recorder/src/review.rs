@@ -17,7 +17,7 @@
 //! writes a Note to the sidecar through the marks crate and regenerates the
 //! derived `_marks` files from the marks exports.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -274,18 +274,37 @@ fn collect_folder(folder: &Path, groups: &mut HashMap<String, Vec<TakeFile>>) {
         log::warn!("could not read {}, its takes are skipped", folder.display());
         return;
     };
-    for entry in entries.flatten().filter(|entry| entry.file_type().map(|kind| kind.is_file()).unwrap_or(false)) {
-        let path = entry.path();
-        let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
-        let name = entry.file_name().to_string_lossy().into_owned();
-        groups.entry(take_stem(&name)).or_default().push(TakeFile { path, size });
+    let files: Vec<(String, TakeFile)> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().map(|kind| kind.is_file()).unwrap_or(false))
+        .map(|entry| {
+            let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+            (entry.file_name().to_string_lossy().into_owned(), TakeFile { path: entry.path(), size })
+        })
+        .collect();
+    let videos: HashSet<String> = files
+        .iter()
+        .map(|(name, _)| Path::new(name))
+        .filter(|path| is_media(path))
+        .filter_map(|path| path.file_stem())
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .collect();
+    for (name, file) in files {
+        groups.entry(take_stem(&name, &videos)).or_default().push(file);
     }
+}
+
+/// The take's stem inside a video's stem when the video is a camera file: it
+/// ends in `_cam` and the folder's `videos` (their stems) hold the main video
+/// it belongs to. A `_cam` video without one is a main take itself.
+fn camera_base<'a>(stem: &'a str, videos: &HashSet<String>) -> Option<&'a str> {
+    stem.strip_suffix(CAM_SUFFIX).filter(|base| videos.contains(*base) && camera_base(base, videos).is_none())
 }
 
 /// The stem a file belongs to: the sidecars and derived files, the camera
 /// file and the track WAV files keep the take's stem, everything else uses its
-/// own `file_stem`.
-fn take_stem(file_name: &str) -> String {
+/// own `file_stem`. `videos` holds the stems of the videos in the file's folder.
+fn take_stem(file_name: &str, videos: &HashSet<String>) -> String {
     for suffix in SIDECAR_SUFFIXES {
         if let Some(stem) = file_name.strip_suffix(suffix) {
             return stem.to_owned();
@@ -294,7 +313,7 @@ fn take_stem(file_name: &str) -> String {
     let path = Path::new(file_name);
     let stem = path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
     let base = if is_media(path) {
-        stem.strip_suffix(CAM_SUFFIX)
+        camera_base(&stem, videos)
     } else if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("wav")) {
         track_wav_base(&stem)
     } else {
@@ -456,14 +475,18 @@ pub fn rename_take(take: &Take, new_name: &str) -> Result<(), String> {
         }
         done.push((from, to));
     }
-    // Both JSON files record the take's file names; give them the new stem too.
+    // Both JSON files record the take's file names; point those at the new ones.
+    let names: HashMap<String, String> = done.iter().filter_map(|(from, to)| Some((file_name_of(from)?, file_name_of(to)?))).collect();
+    // The sidecar's file names are its `media[].path` values. session.json has
+    // them in `composite.main.file`, `composite.layers[].file` and possibly
+    // elsewhere, so there any value naming one of the take's files counts.
     let mut rewritten: Vec<(&Path, String)> = Vec::new();
-    for (suffix, what) in [(MARKS_SUFFIX, "the marks sidecar"), (SESSION_SUFFIX, "session.json")] {
+    for (suffix, what, only_key) in [(MARKS_SUFFIX, "the marks sidecar", Some("path")), (SESSION_SUFFIX, "session.json", None)] {
         let old_name = format!("{}{suffix}", take.name);
         let Some((_, json)) = done.iter().find(|(from, _)| from.file_name().is_some_and(|name| name.to_string_lossy() == old_name)) else {
             continue;
         };
-        match rewrite_stem(json, &take.name, new_name) {
+        match rewrite_json(json, &names, only_key) {
             Ok(original) => rewritten.push((json, original)),
             Err(err) => {
                 log::warn!("could not rewrite {}: {err}", json.display());
@@ -489,12 +512,68 @@ fn roll_back(done: &[(PathBuf, PathBuf)]) {
     }
 }
 
-/// Replaces every occurrence of the old take stem in the file's text (the
-/// recorded file names carry it), writes the result atomically and returns the
-/// old text for a rollback.
-fn rewrite_stem(path: &Path, old_stem: &str, new_stem: &str) -> Result<String, String> {
+/// The file name of `path` as text.
+fn file_name_of(path: &Path) -> Option<String> {
+    path.file_name().map(|name| name.to_string_lossy().into_owned())
+}
+
+/// Gives `text` its new name when it names a renamed file, either bare or as
+/// the last part of a path. Any other text is left alone.
+fn rename_file_name(text: &mut String, names: &HashMap<String, String>) {
+    let start = text.rfind(['/', '\\']).map_or(0, |at| at + 1);
+    if let Some(new_name) = names.get(&text[start..]) {
+        text.replace_range(start.., new_name);
+    }
+}
+
+/// Renames the file names in the string values of the JSON `text`, only those
+/// under the key `only_key` when there is one. Everything else stays byte for
+/// byte, so the writer's key order and formatting survive (a round trip through
+/// `Value` would sort the keys). `text` must be valid JSON.
+fn rename_json_strings(text: &str, names: &HashMap<String, String>, only_key: Option<&str>) -> Result<String, serde_json::Error> {
+    let mut updated = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut key = String::new();
+    let mut open: Option<usize> = None;
+    let mut escaped = false;
+    for (at, byte) in text.bytes().enumerate() {
+        let Some(start) = open else {
+            if byte == b'"' {
+                open = Some(at);
+            }
+            continue;
+        };
+        if escaped || byte == b'\\' {
+            escaped = !escaped;
+        } else if byte == b'"' {
+            open = None;
+            let mut value: String = serde_json::from_str(&text[start..=at])?;
+            if text[at + 1..].trim_start().starts_with(':') {
+                key = value;
+            } else if only_key.is_none_or(|only| only == key) {
+                let old = value.clone();
+                rename_file_name(&mut value, names);
+                if value != old {
+                    updated.push_str(&text[copied..start]);
+                    updated.push_str(&serde_json::to_string(&value)?);
+                    copied = at + 1;
+                }
+            }
+        }
+    }
+    updated.push_str(&text[copied..]);
+    Ok(updated)
+}
+
+/// Parses the JSON file, renames its file name fields (see
+/// [`rename_json_strings`]), writes the result atomically and returns the old
+/// text for a rollback.
+fn rewrite_json(path: &Path, names: &HashMap<String, String>, only_key: Option<&str>) -> Result<String, String> {
     let text = fs::read_to_string(path).map_err(|err| format!("{} could not be read: {err}", path.display()))?;
-    write_file(path, text.replace(old_stem, new_stem).as_bytes())?;
+    let invalid = |err: serde_json::Error| format!("{} is not valid JSON: {err}", path.display());
+    serde_json::from_str::<serde_json::Value>(&text).map_err(invalid)?;
+    let updated = rename_json_strings(&text, names, only_key).map_err(invalid)?;
+    write_file(path, updated.as_bytes())?;
     Ok(text)
 }
 
@@ -700,6 +779,51 @@ mod tests {
         assert_eq!(take.composite, CompositeMode::Clean, "a Clean take stays Clean");
         assert_eq!(take.files.len(), suffixes.len());
         assert_eq!(take.iso, Some(folder.join(format!("{new_name}_cam.mp4"))));
+        fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    /// A short stem also turns up in timestamps, IDs and labels; only the file name fields may change.
+    #[test]
+    fn renaming_a_short_stem_changes_only_the_file_name_fields() -> Result<(), Box<dyn std::error::Error>> {
+        let root = fresh_dir("review-rename-short")?;
+        let project = root.join("Show");
+        fs::create_dir_all(&project)?;
+        for name in ["01.mkv", "01_cam.mkv", "01_t1_Mic.wav"] {
+            fs::write(project.join(name), b"data")?;
+        }
+        let sidecar = sidecar_json_media("2026-11-01T01:01:01.001Z", 1_001, 2, "01.mkv");
+        fs::write(project.join("01.marks.json"), &sidecar)?;
+        let session = r#"{"id":"0196f3a2-0101","started_at":"2026-11-01T01:01:01.001Z","label":"take 01","frames":101,"composite":{"mode":"clean","main":{"file":"01.mkv"},"layers":[{"file":"01_cam.mkv"}]},"tracks":[{"name":"Mic 01","file":"01_t1_Mic.wav"}]}"#;
+        fs::write(project.join("01_session.json"), session)?;
+        let days = scan(&project);
+
+        rename_take(&days[0].takes[0], "intro")?;
+
+        // Compared as text: apart from the file names, not one byte may differ.
+        let expected = sidecar.replace(r#""01.mkv""#, r#""intro.mkv""#);
+        assert_eq!(fs::read_to_string(project.join("intro.marks.json"))?, expected);
+        let expected = session
+            .replace(r#""01.mkv""#, r#""intro.mkv""#)
+            .replace(r#""01_cam.mkv""#, r#""intro_cam.mkv""#)
+            .replace(r#""01_t1_Mic.wav""#, r#""intro_t1_Mic.wav""#);
+        assert_eq!(fs::read_to_string(project.join("intro_session.json"))?, expected);
+        fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_cam_video_without_its_main_video_is_its_own_take() -> Result<(), Box<dyn std::error::Error>> {
+        let root = fresh_dir("review-lone-cam")?;
+        let project = root.join("Show");
+        fs::create_dir_all(&project)?;
+        fs::write(project.join("x_cam.mkv"), b"video")?;
+        let days = scan(&project);
+        let takes: Vec<&Take> = days.iter().flat_map(|day| &day.takes).collect();
+        assert_eq!(takes.len(), 1);
+        assert_eq!(takes[0].name, "x_cam");
+        assert_eq!(takes[0].video, project.join("x_cam.mkv"));
+        assert_eq!(takes[0].iso, None);
         fs::remove_dir_all(&root)?;
         Ok(())
     }
