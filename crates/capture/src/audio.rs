@@ -21,20 +21,21 @@ use windows::Win32::System::Variant::VT_LPWSTR;
 use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
 use windows::core::{GUID, HRESULT, HSTRING};
 
+use crate::app_audio::AudioPacket;
 use crate::{CaptureError, with_context};
 
 /// WAV format tag for IEEE float samples.
-const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
+pub(crate) const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
 /// WAV format tag for extensible formats described by a sub format GUID.
 const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
 /// Sub format GUID for IEEE float inside a WAVEFORMATEXTENSIBLE.
 const IEEE_FLOAT_SUBFORMAT: GUID = GUID::from_values(0x0000_0003, 0x0000, 0x0010, [0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71]);
 /// WASAPI stream flag: deliver packets through an event handle.
-const AUDCLNT_STREAMFLAGS_EVENTCALLBACK: u32 = 0x0004_0000;
+pub(crate) const AUDCLNT_STREAMFLAGS_EVENTCALLBACK: u32 = 0x0004_0000;
 /// WASAPI stream flag: capture the render mix of an output device.
-const AUDCLNT_STREAMFLAGS_LOOPBACK: u32 = 0x0002_0000;
+pub(crate) const AUDCLNT_STREAMFLAGS_LOOPBACK: u32 = 0x0002_0000;
 /// WASAPI stream flag: let WASAPI convert between the given and the device format.
-const AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM: u32 = 0x8000_0000;
+pub(crate) const AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM: u32 = 0x8000_0000;
 /// GetBuffer flag: the buffer holds silence.
 const AUDCLNT_BUFFERFLAGS_SILENT: u32 = 0x2;
 /// GetBuffer flag: there was a gap since the last packet.
@@ -44,9 +45,9 @@ const AUDCLNT_E_DEVICE_INVALIDATED: i32 = 0x8889_0004u32 as i32;
 /// HRESULT for AUDCLNT_S_BUFFEREMPTY.
 const AUDCLNT_S_BUFFEREMPTY: i32 = 0x0889_0007u32 as i32;
 /// Buffer duration for event driven capture: 20 ms in 100 nanosecond units.
-const BUFFER_100NS: i64 = 200_000;
+pub(crate) const BUFFER_100NS: i64 = 200_000;
 /// Bound for the packet queue handed to the consumer.
-const CHANNEL_CAPACITY: usize = 256;
+pub(crate) const CHANNEL_CAPACITY: usize = 256;
 /// Event wait timeout in ms, only a safety net; the event drives the loop.
 const WAIT_TIMEOUT_MS: u32 = 2000;
 /// EDataFlow value for render (output) endpoints.
@@ -58,11 +59,11 @@ const E_ROLE_CONSOLE: ERole = ERole(0);
 
 /// A Windows event handle, wrapped as an integer so it can move between threads.
 #[derive(Clone, Copy)]
-struct Event(isize);
+pub(crate) struct Event(isize);
 
 impl Event {
     /// The raw handle for a single Windows call.
-    fn handle(self) -> HANDLE {
+    pub(crate) fn handle(self) -> HANDLE {
         HANDLE(self.0 as *mut core::ffi::c_void)
     }
 }
@@ -91,24 +92,6 @@ pub struct AudioDevice {
     pub sample_rate: u32,
     /// Mix format channel count.
     pub channels: u16,
-}
-
-/// One packet of interleaved 32 bit float samples from a running capture.
-pub struct AudioPacket {
-    /// QPC timestamp of the first frame in 100 nanosecond units, comparable with video frames.
-    pub qpc_100ns: i64,
-    /// Number of frames (sample sets) in the packet.
-    pub frames: u32,
-    /// Channel count, the same for every packet of one capture.
-    pub channels: u16,
-    /// Sample rate in Hz, the same for every packet of one capture.
-    pub sample_rate: u32,
-    /// Interleaved 32 bit float samples, frames times channels values.
-    pub samples: Vec<f32>,
-    /// True when WASAPI flagged a gap before this packet.
-    pub discontinuity: bool,
-    /// True when WASAPI flagged the buffer as silence; samples are zeros.
-    pub silent: bool,
 }
 
 /// Everything the capture thread shares with the AudioCapture handle.
@@ -263,7 +246,7 @@ fn endpoints(kind: DeviceKind) -> Result<Vec<AudioDevice>, CaptureError> {
 }
 
 /// Creates the MMDevice enumerator through COM activation of its class.
-fn device_enumerator() -> Result<IMMDeviceEnumerator, CaptureError> {
+pub(crate) fn device_enumerator() -> Result<IMMDeviceEnumerator, CaptureError> {
     with_context("failed to create the MMDevice enumerator", create_enumerator())
 }
 
@@ -345,7 +328,7 @@ fn capture_thread(state: &ThreadState) {
 
 /// Initializes COM as MTA and returns true when this thread owns the init.
 #[allow(unsafe_code)]
-fn init_com() -> bool {
+pub(crate) fn init_com() -> bool {
     // SAFETY: CoInitializeEx only sets this thread's COM apartment mode.
     let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
     hr.is_ok()
@@ -353,7 +336,7 @@ fn init_com() -> bool {
 
 /// Releases COM on the calling thread after a successful init.
 #[allow(unsafe_code)]
-fn uninit_com() {
+pub(crate) fn uninit_com() {
     // SAFETY: balances a successful CoInitializeEx on this thread.
     unsafe { CoUninitialize() };
 }
@@ -366,14 +349,14 @@ fn co_initialize_mta() -> HRESULT {
 }
 
 /// Holds COM initialization for the calling thread and releases it on drop.
-struct ComGuard {
+pub(crate) struct ComGuard {
     /// True when this call initialized COM and must balance it on drop.
     owns_com: bool,
 }
 
 impl ComGuard {
     /// Initializes COM for this thread, tolerating a thread already in another apartment.
-    fn new() -> Result<Self, CaptureError> {
+    pub(crate) fn new() -> Result<Self, CaptureError> {
         let hr = co_initialize_mta();
         if hr.is_ok() {
             // S_OK and S_FALSE both make COM ours to uninitialize.
@@ -462,7 +445,7 @@ fn capture_loop(session: Session, state: &ThreadState) -> Result<(), CaptureErro
 }
 
 /// Why a GetBuffer call produced no packet.
-enum BufferError {
+pub(crate) enum BufferError {
     /// No data was ready; wait for the next event.
     Empty,
     /// The endpoint was invalidated.
@@ -473,7 +456,7 @@ enum BufferError {
 
 /// Calls GetBuffer, copies the samples, and releases the WASAPI buffer.
 #[allow(unsafe_code)]
-fn read_buffer(capture: &IAudioCaptureClient, channels: u16, sample_rate: u32) -> Result<AudioPacket, BufferError> {
+pub(crate) fn read_buffer(capture: &IAudioCaptureClient, channels: u16, sample_rate: u32) -> Result<AudioPacket, BufferError> {
     let mut data: *mut u8 = std::ptr::null_mut();
     let mut frames: u32 = 0;
     let mut flags: u32 = 0;
@@ -514,7 +497,7 @@ fn read_buffer(capture: &IAudioCaptureClient, channels: u16, sample_rate: u32) -
 
 /// Stops the audio client, tolerating a device that is already gone.
 #[allow(unsafe_code)]
-fn stop_client(client: &IAudioClient) -> Result<(), CaptureError> {
+pub(crate) fn stop_client(client: &IAudioClient) -> Result<(), CaptureError> {
     // SAFETY: client is the live session we started; Stop ends packet delivery.
     match audio_client_stop(client) {
         Ok(()) => Ok(()),
@@ -541,7 +524,7 @@ fn is_float_format(mix: &WAVEFORMATEX) -> bool {
 
 /// Creates the auto reset event that wakes the capture thread.
 #[allow(unsafe_code)]
-fn create_event() -> Result<Event, CaptureError> {
+pub(crate) fn create_event() -> Result<Event, CaptureError> {
     // SAFETY: the event has no security attributes or name; we keep the returned handle.
     let handle = with_context("failed to create the audio capture event", unsafe { CreateEventW(None, false, false, None) })?;
     Ok(Event(handle.0 as isize))
@@ -582,16 +565,21 @@ fn enum_audio_endpoints(enumerator: &IMMDeviceEnumerator, flow: EDataFlow) -> wi
     unsafe { enumerator.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE) }
 }
 
+/// The active render endpoints.
+pub(crate) fn enum_render_endpoints(enumerator: &IMMDeviceEnumerator) -> windows::core::Result<IMMDeviceCollection> {
+    enum_audio_endpoints(enumerator, E_DATA_FLOW_RENDER)
+}
+
 /// Wraps IMMDeviceCollection::GetCount.
 #[allow(unsafe_code)]
-fn collection_count(collection: &IMMDeviceCollection) -> windows::core::Result<u32> {
+pub(crate) fn collection_count(collection: &IMMDeviceCollection) -> windows::core::Result<u32> {
     // SAFETY: only writes the out parameter we pass.
     unsafe { collection.GetCount() }
 }
 
 /// Wraps IMMDeviceCollection::Item.
 #[allow(unsafe_code)]
-fn collection_item(collection: &IMMDeviceCollection, index: u32) -> windows::core::Result<IMMDevice> {
+pub(crate) fn collection_item(collection: &IMMDeviceCollection, index: u32) -> windows::core::Result<IMMDevice> {
     // SAFETY: index comes from GetCount and the result is a new owned reference.
     unsafe { collection.Item(index) }
 }
@@ -677,28 +665,28 @@ fn initialize_client(
 
 /// Wraps IAudioClient::GetService for the capture client.
 #[allow(unsafe_code)]
-fn get_capture_client(client: &IAudioClient) -> windows::core::Result<IAudioCaptureClient> {
+pub(crate) fn get_capture_client(client: &IAudioClient) -> windows::core::Result<IAudioCaptureClient> {
     // SAFETY: generic COM GetService; the result is a new owned reference.
     unsafe { client.GetService() }
 }
 
 /// Wraps IAudioClient::SetEventHandle.
 #[allow(unsafe_code)]
-fn set_event_handle(client: &IAudioClient, event: Event) -> windows::core::Result<()> {
+pub(crate) fn set_event_handle(client: &IAudioClient, event: Event) -> windows::core::Result<()> {
     // SAFETY: event is our live handle.
     unsafe { client.SetEventHandle(event.handle()) }
 }
 
 /// Wraps IAudioClient::Start.
 #[allow(unsafe_code)]
-fn start_client(client: &IAudioClient) -> windows::core::Result<()> {
+pub(crate) fn start_client(client: &IAudioClient) -> windows::core::Result<()> {
     // SAFETY: client is initialized but not yet started.
     unsafe { client.Start() }
 }
 
 /// Wraps IAudioCaptureClient::GetNextPacketSize.
 #[allow(unsafe_code)]
-fn next_packet_size(capture: &IAudioCaptureClient) -> windows::core::Result<u32> {
+pub(crate) fn next_packet_size(capture: &IAudioCaptureClient) -> windows::core::Result<u32> {
     // SAFETY: only writes the out parameter we pass.
     unsafe { capture.GetNextPacketSize() }
 }

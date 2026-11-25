@@ -5,6 +5,11 @@
 //! on arrival. See the recorder spec: Screen capture, and Sync and reliability
 //! rules, Clock and frame rate.
 
+mod app_audio;
+#[cfg(windows)]
+mod app_list;
+#[cfg(windows)]
+mod app_loopback;
 #[cfg(windows)]
 mod audio;
 #[cfg(windows)]
@@ -22,8 +27,15 @@ mod webcam;
 #[cfg(windows)]
 mod wgc;
 
+#[cfg(not(windows))]
+pub use app_audio::{AppLoopback, list_audio_apps};
+pub use app_audio::{AppTarget, AudioApp, AudioPacket, LoopbackMode};
 #[cfg(windows)]
-pub use audio::{AudioCapture, AudioDevice, AudioPacket, DeviceKind, find_device, list_audio_devices};
+pub use app_list::list_audio_apps;
+#[cfg(windows)]
+pub use app_loopback::AppLoopback;
+#[cfg(windows)]
+pub use audio::{AudioCapture, AudioDevice, DeviceKind, find_device, list_audio_devices};
 #[cfg(windows)]
 pub use compose::{
     BackgroundFit, BackgroundKind, BackgroundPlacement, BackgroundSettings, CamColor, CamPlacement, ComposedFrame, Compositor, Corner, KeySettings, Layout,
@@ -87,7 +99,11 @@ pub enum CaptureError {
 /// Placeholder error so the crate still compiles on non-Windows targets.
 #[cfg(not(windows))]
 #[derive(Debug, thiserror::Error)]
-pub enum CaptureError {}
+pub enum CaptureError {
+    /// The feature needs Windows.
+    #[error("{0} is only supported on Windows")]
+    Unsupported(&'static str),
+}
 
 /// Maps a Windows result into a CaptureError with a context string.
 #[cfg(windows)]
