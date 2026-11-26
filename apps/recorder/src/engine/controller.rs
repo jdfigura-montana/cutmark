@@ -18,7 +18,7 @@ use super::cam::CamSummary;
 use super::marks::{MarksWarning, RecentMark, TakeMarks};
 use super::preflight::{self, PreflightReport};
 use super::script::{PositionMsg, ScriptMsg, ScriptSnapshot, TakeScript};
-use super::session::{RecordingSession, SessionConfig, StatsSnapshot, Summary, TrackSpec};
+use super::session::{AppSpec, RecordingSession, SessionConfig, StatsSnapshot, Summary, TrackSpec};
 use super::stats::{self, GIB, StatsTracker, TakeStats};
 use crate::config::{AudioCodecChoice, CompositeMode, Profile, Settings, TrackKind};
 use crate::countdown::CountdownHandle;
@@ -216,6 +216,10 @@ pub struct ControllerState {
     pub track_muted: Vec<bool>,
     /// The name of each track in the settings, in settings order.
     pub track_names: Vec<String>,
+    /// What each track in the settings records, in settings order.
+    pub track_kinds: Vec<TrackKind>,
+    /// Whether each track in the settings is recorded, in settings order.
+    pub track_enabled: Vec<bool>,
     /// Counts the changes the controller made to the settings, so the window can copy them.
     pub settings_rev: u64,
     /// The commands handled most recently, oldest first.
@@ -447,6 +451,8 @@ impl Controller {
             active_profile: settings.active_profile.clone(),
             track_muted: settings.audio.tracks.iter().map(|track| track.muted).collect(),
             track_names: settings.audio.tracks.iter().map(|track| track.name.clone()).collect(),
+            track_kinds: settings.audio.tracks.iter().map(|track| track.kind.clone()).collect(),
+            track_enabled: settings.audio.tracks.iter().map(|track| track.enabled).collect(),
             ..ControllerState::default()
         }));
         let listeners = Arc::new(Listeners::default());
@@ -749,7 +755,13 @@ impl Worker {
         if changed {
             self.forward_live_controls();
             let names: Vec<String> = self.settings.audio.tracks.iter().map(|track| track.name.clone()).collect();
-            self.update_quietly(|state| state.track_names = names);
+            let kinds = self.settings.audio.tracks.iter().map(|track| track.kind.clone()).collect();
+            let enabled = self.settings.audio.tracks.iter().map(|track| track.enabled).collect();
+            self.update_quietly(|state| {
+                state.track_names = names;
+                state.track_kinds = kinds;
+                state.track_enabled = enabled;
+            });
         }
         keep_running
     }
@@ -1546,8 +1558,12 @@ impl Worker {
         let profile = self.settings.active_profile.clone();
         let muted: Vec<bool> = self.settings.audio.tracks.iter().map(|track| track.muted).collect();
         let names: Vec<String> = self.settings.audio.tracks.iter().map(|track| track.name.clone()).collect();
+        let kinds = self.settings.audio.tracks.iter().map(|track| track.kind.clone()).collect();
+        let enabled = self.settings.audio.tracks.iter().map(|track| track.enabled).collect();
         self.update(|state| {
             state.active_profile = profile;
+            state.track_kinds = kinds;
+            state.track_enabled = enabled;
             state.track_muted = muted;
             state.track_names = names;
             state.settings_rev += 1;
@@ -1566,6 +1582,10 @@ impl Worker {
 
     /// Samples the running take's counters, works out the bitrate, and publishes both.
     fn poll_stats(&mut self) {
+        // App tracks that attached or detached since the last poll get their marks now.
+        if self.active.as_mut().is_some_and(|active| active.session.apply_app_events()) {
+            self.with_marks(|_| {});
+        }
         let Some(active) = &mut self.active else { return };
         let mut stats = active.session.stats();
         let now = Instant::now();
@@ -1885,8 +1905,13 @@ fn track_specs(settings: &Settings) -> (Vec<TrackSpec>, Vec<String>) {
     let mut specs = Vec::new();
     let mut missing = Vec::new();
     for track in settings.audio.tracks.iter().filter(|track| track.enabled) {
-        let device = capture::find_device(&track.device_id, &track.device_name);
-        if device.is_none() {
+        let app = match &track.kind {
+            TrackKind::App { exe, app_name } => Some(AppSpec { exe: capture::AppTarget::new(exe).exe().to_owned(), app_name: app_name.clone() }),
+            TrackKind::Input | TrackKind::Output => None,
+        };
+        // An app track has no device, and an app that is not running is not a missing device.
+        let device = if app.is_some() { None } else { capture::find_device(&track.device_id, &track.device_name) };
+        if device.is_none() && app.is_none() {
             missing.push(if track.device_name.is_empty() { track.name.clone() } else { format!("{} ({})", track.name, track.device_name) });
         }
         specs.push(TrackSpec {
@@ -1898,6 +1923,7 @@ fn track_specs(settings: &Settings) -> (Vec<TrackSpec>, Vec<String>) {
             muted: track.muted,
             offset_ms: track.offset_ms,
             in_mixdown: track.in_mixdown,
+            app,
         });
     }
     (specs, missing)

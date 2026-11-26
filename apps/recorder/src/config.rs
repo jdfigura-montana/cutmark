@@ -66,14 +66,21 @@ impl Default for ApiSettings {
     }
 }
 
-/// Whether a track's device captures sound or renders it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// What a track records: a capture device, a render device, or one app's audio.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrackKind {
     /// A capture device such as a microphone.
     Input,
     /// A render device, captured through loopback.
     Output,
+    /// One app and its child processes, captured through process loopback. The track's device fields are unused.
+    App {
+        /// The executable's file name in lowercase, for example `discord.exe`.
+        exe: String,
+        /// The app's name for display.
+        app_name: String,
+    },
 }
 
 impl From<DeviceKind> for TrackKind {
@@ -1511,6 +1518,19 @@ mod tests {
         assert_eq!(track.kind, TrackKind::Output);
         assert!(track.enabled);
         assert_eq!(track.gain_db, 0.0);
+        Ok(())
+    }
+
+    #[test]
+    fn an_app_track_round_trips_and_device_kinds_keep_their_saved_names() -> Result<(), Box<dyn Error>> {
+        let kind = TrackKind::App { exe: "discord.exe".to_owned(), app_name: "Discord".to_owned() };
+        let track = TrackSettings { name: "Discord".to_owned(), kind, ..TrackSettings::default() };
+        let audio = AudioSettings { tracks: vec![track], ..AudioSettings::default() };
+        let text = serde_json::to_string(&audio)?;
+        assert_eq!(serde_json::from_str::<AudioSettings>(&text)?, audio);
+        assert!(text.contains(r#""kind":{"app":{"exe":"discord.exe","app_name":"Discord"}}"#), "{text}");
+        assert_eq!(serde_json::to_string(&TrackKind::Input)?, "\"input\"");
+        assert_eq!(serde_json::to_string(&TrackKind::Output)?, "\"output\"");
         Ok(())
     }
 

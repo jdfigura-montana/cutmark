@@ -10,16 +10,16 @@ use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
-use capture::{AudioCapture, DeviceKind, find_device, qpc_now};
+use capture::{AppLoopback, AppTarget, AudioApp, AudioCapture, AudioPacket, CaptureError, DeviceKind, LoopbackMode, find_device, list_audio_apps, qpc_now};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use media_io::mux::{MuxSender, SendParameters};
 use media_io::{AudioCodec, AudioEncoder};
 
-use super::audio_track::TrackPipeline;
-use super::session::{AudioStreamSpec, EngineError, Stats, TrackSpec};
+use super::audio_track::{AppChange, AppLink, AppSource, StartApp, TrackPipeline, app_pids};
+use super::session::{AppEvent, AudioStreamSpec, EngineError, Stats, TrackSpec};
 
 /// The audio thread's tick, about one AAC frame.
 const TICK: Duration = Duration::from_millis(10);
@@ -41,6 +41,8 @@ const INPUT_LEAD_FRAMES: u64 = 24_000;
 const MAX_BLOCK_FRAMES: usize = 4_800;
 /// How often every lost track looks for its device again.
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(2);
+/// How often the running apps are listed for the app tracks.
+const APP_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Messages from the audio thread back to the session.
 pub(super) enum AudioMessage {
@@ -115,6 +117,8 @@ fn record(
     for track in tracks {
         let capture = match &track.device {
             Some(device) => Some(AudioCapture::start(device)?),
+            // An app track has no device; its capture comes and goes with the app.
+            None if track.app.is_some() => None,
             None => {
                 log::warn!("audio track {}: its device is missing, recording silence until it returns", track.name);
                 None
@@ -148,6 +152,17 @@ fn record(
             });
         }
     }
+    // Apps that already run are attached before the take starts; the thread started here keeps listing them.
+    let mut apps = app_links(tracks);
+    let app_listings = apps.iter().any(Option::is_some).then(|| {
+        match list_audio_apps(true) {
+            Ok(listing) => {
+                poll_links(&mut apps, &listing, &mut start_loopback);
+            }
+            Err(err) => log::warn!("the running apps could not be listed: {err}"),
+        }
+        spawn_app_lister()
+    });
     let _ = tx.send(AudioMessage::Setup(Ok(AudioSetup { streams })));
     // The session releases the thread once the muxer holds every stream.
     let start = match start_rx.recv() {
@@ -167,6 +182,7 @@ fn record(
         start.start_qpc,
         start.streams,
     )?;
+    rig.attach_at_start(apps, stats);
     let mut start_100ns = start.start_qpc;
     let mut paused_at: Option<i64> = None;
     let mut was_paused = false;
@@ -199,6 +215,11 @@ fn record(
         }
         rig.apply_controls(stats);
         rig.drain_captures();
+        // After the drain, so a replaced capture's queued packets are already in. Pauses are polled too.
+        if let Some(listing) = app_listings.as_ref().and_then(|listings| listings.try_iter().last()) {
+            let t_ms = take_ms(paused_at.unwrap_or(now), start_100ns);
+            rig.poll_apps(&listing, t_ms, stats, &mut start_loopback);
+        }
         rig.fold_stats(stats);
         if last_reconnect.elapsed() >= RECONNECT_INTERVAL {
             rig.reconnect_lost();
@@ -259,8 +280,10 @@ struct AudioRig {
     pipelines: Vec<TrackPipeline>,
     /// Frames already taken from each pipeline, in track order.
     taken: Vec<u64>,
-    /// Whether each track's device was lost, in track order.
+    /// Whether each track's device was lost, or its app is not attached, in track order.
     lost: Vec<bool>,
+    /// The app link of each app track, in track order; None for a device track.
+    apps: Vec<Option<AppLink>>,
     /// One WAV sidecar per track when sidecars are on, in track order.
     wavs: Vec<Option<SidecarWav>>,
     /// The mixdown encoder, when the mixdown is on and a track feeds it.
@@ -315,6 +338,7 @@ impl AudioRig {
             };
             wavs.push(wav);
         }
+        let apps = app_links(&tracks);
         // A track with no capture starts lost.
         let lost = captures.iter().map(Option::is_none).collect();
         Ok(Self {
@@ -322,6 +346,7 @@ impl AudioRig {
             pipelines,
             taken: vec![0; tracks.len()],
             lost,
+            apps,
             wavs,
             mix_encoder,
             track_encoders,
@@ -331,6 +356,36 @@ impl AudioRig {
             stream_indexes,
         })
     }
+    /// Takes over the app links polled before the start, and reports the attached ones as attached at time 0.
+    fn attach_at_start(&mut self, apps: Vec<Option<AppLink>>, stats: &Stats) {
+        self.apps = apps;
+        for (index, (track, link)) in self.tracks.iter().zip(&self.apps).enumerate() {
+            let Some((app, link)) = track.app.as_ref().zip(link.as_ref()) else {
+                continue;
+            };
+            if link.source().is_some() {
+                self.lost[index] = false;
+                stats.set_track_attached(index, true);
+                stats.push_app_event(AppEvent { track: index, app_name: app.app_name.clone(), attached: true, t_ms: 0, mark: false });
+            }
+        }
+    }
+
+    /// Attaches, detaches or restarts every app track from a listing of the running apps, at `t_ms` on the take clock.
+    fn poll_apps(&mut self, listing: &[AudioApp], t_ms: u64, stats: &Stats, start: &mut StartApp<'_>) {
+        for (index, change) in poll_links(&mut self.apps, listing, start) {
+            let attached = change == AppChange::Attached;
+            self.lost[index] = !attached;
+            stats.set_track_attached(index, attached);
+            let Some(app) = &self.tracks[index].app else {
+                continue;
+            };
+            // A rare event, logged once per change, never per tick.
+            log::info!("audio track {}: {} {}", self.tracks[index].name, app.exe, if attached { "attached" } else { "detached, recording silence" });
+            stats.push_app_event(AppEvent { track: index, app_name: app.app_name.clone(), attached, t_ms, mark: true });
+        }
+    }
+
     /// Applies the gain and mute the UI set since the last tick to each track's pipeline.
     fn apply_controls(&mut self, stats: &Stats) {
         for (index, (track, pipeline)) in self.tracks.iter_mut().zip(&mut self.pipelines).enumerate() {
@@ -350,6 +405,13 @@ impl AudioRig {
 
     /// Moves every queued packet from each capture into its pipeline.
     fn drain_captures(&mut self) {
+        for (link, pipeline) in self.apps.iter().zip(&mut self.pipelines) {
+            if let Some(source) = link.as_ref().and_then(AppLink::source) {
+                while let Ok(packet) = source.receiver().try_recv() {
+                    pipeline.push(&packet);
+                }
+            }
+        }
         for (((capture, pipeline), lost), track) in self.captures.iter().zip(&mut self.pipelines).zip(self.lost.iter_mut()).zip(&self.tracks) {
             // A track with no capture stays lost until reconnect_lost finds its device.
             let Some(capture) = capture else {
@@ -373,7 +435,8 @@ impl AudioRig {
     /// the gap in between stays silence.
     fn reconnect_lost(&mut self) {
         for ((track, capture), lost) in self.tracks.iter_mut().zip(&mut self.captures).zip(&mut self.lost) {
-            if !*lost {
+            // App tracks come back through poll_apps.
+            if !*lost || track.app.is_some() {
                 continue;
             }
             let Some(device) = find_device(&track.device_id, &track.device_name) else {
@@ -394,11 +457,22 @@ impl AudioRig {
 
     /// Folds each track's capture counters and meter into the live stats.
     fn fold_stats(&mut self, stats: &Stats) {
-        for (n, ((capture, pipeline), lost)) in self.captures.iter().zip(&mut self.pipelines).zip(self.lost.iter_mut()).enumerate() {
+        for (n, ((capture, pipeline), lost)) in self.captures.iter().zip(&mut self.pipelines).zip(&self.lost).enumerate() {
             let peak = pipeline.peak_since_last_read();
             let clipped = pipeline.clipped();
-            let (packets, overflows) = capture.as_ref().map_or((0, 0), |capture| (capture.packets(), capture.overflows()));
-            stats.fold_audio_track(n, peak, clipped, packets, overflows, *lost);
+            // A detached app is not a lost device: it has its own marks and state.
+            let (packets, overflows, device_lost) = match &self.apps[n] {
+                Some(link) => {
+                    let (packets, overflows) = link.source().map_or((0, 0), |source| (source.packets(), source.overflows()));
+                    (packets, overflows, false)
+                }
+                None => {
+                    let (packets, overflows) = capture.as_ref().map_or((0, 0), |capture| (capture.packets(), capture.overflows()));
+                    stats.set_track_attached(n, !*lost);
+                    (packets, overflows, *lost)
+                }
+            };
+            stats.fold_audio_track(n, peak, clipped, packets, overflows, device_lost);
         }
     }
 
@@ -406,7 +480,8 @@ impl AudioRig {
     fn fill_silence(&mut self, now_index: u64) {
         for ((track, pipeline), lost) in self.tracks.iter().zip(&mut self.pipelines).zip(&self.lost) {
             let kind = track.device.as_ref().map(|device| device.kind);
-            if kind == Some(DeviceKind::Output) || *lost {
+            // An app that makes no sound may send no packets, like an idle output device.
+            if kind == Some(DeviceKind::Output) || track.app.is_some() || *lost {
                 pipeline.fill_silence_to(now_index.saturating_sub(OUTPUT_LEAD_FRAMES));
             }
             if kind == Some(DeviceKind::Input) {
@@ -485,6 +560,78 @@ impl AudioRig {
     }
 }
 
+/// A detached link for every app track, in track order.
+fn app_links(tracks: &[TrackSpec]) -> Vec<Option<AppLink>> {
+    tracks.iter().map(|track| track.app.as_ref().map(|app| AppLink::new(&app.exe))).collect()
+}
+
+/// Polls every app link against a listing and returns the tracks that attached or detached.
+fn poll_links(links: &mut [Option<AppLink>], listing: &[AudioApp], start: &mut StartApp<'_>) -> Vec<(usize, AppChange)> {
+    let mut changes = Vec::new();
+    for (index, link) in links.iter_mut().enumerate() {
+        let Some(link) = link else {
+            continue;
+        };
+        let running = app_pids(listing, link.exe());
+        if let Some(change) = link.poll(running, start) {
+            changes.push((index, change));
+        }
+    }
+    changes
+}
+
+/// Starts the real capture of an app and its child processes.
+fn start_loopback(exe: &str) -> Result<Box<dyn AppSource>, CaptureError> {
+    Ok(Box::new(AppLoopback::start(AppTarget::new(exe), LoopbackMode::Include)?))
+}
+
+impl AppSource for AppLoopback {
+    fn receiver(&self) -> &Receiver<AudioPacket> {
+        AppLoopback::receiver(self)
+    }
+    fn lost(&self) -> bool {
+        AppLoopback::lost(self)
+    }
+    fn instance_pids(&self) -> &[u32] {
+        AppLoopback::instance_pids(self)
+    }
+    fn packets(&self) -> u64 {
+        AppLoopback::packets(self)
+    }
+    fn overflows(&self) -> u64 {
+        AppLoopback::overflows(self)
+    }
+}
+
+/// Lists the running apps once a second on a thread of its own, so a slow listing never delays the audio tick.
+///
+/// The thread ends within about a second of the receiver being dropped. If it cannot start, the receiver stays empty.
+fn spawn_app_lister() -> Receiver<Vec<AudioApp>> {
+    let (sender, receiver) = mpsc::channel();
+    let spawned = std::thread::Builder::new().name("app-list".to_owned()).spawn(move || {
+        loop {
+            std::thread::sleep(APP_POLL_INTERVAL);
+            match list_audio_apps(true) {
+                Ok(listing) => {
+                    if sender.send(listing).is_err() {
+                        break;
+                    }
+                }
+                Err(err) => log::debug!("the running apps could not be listed: {err}"),
+            }
+        }
+    });
+    if let Err(err) = spawned {
+        log::warn!("the app list thread could not be started, app tracks will not attach or detach: {err}");
+    }
+    receiver
+}
+
+/// The time on the take's clock in ms of a QPC stamp in 100 ns units; `start_100ns` is already shifted by earlier pauses.
+fn take_ms(now_100ns: i64, start_100ns: i64) -> u64 {
+    (now_100ns - start_100ns).max(0) as u64 / 10_000
+}
+
 /// Feeds one interleaved block into its encoder and queues the packets.
 fn encode_stream(encoder: Option<&mut AudioEncoder>, stream: usize, block: &[f32], mux: &MuxSender, stats: &Stats) -> Result<(), EngineError> {
     let Some(encoder) = encoder else {
@@ -530,4 +677,96 @@ fn wav_spec() -> WavSpec {
 fn safe_file_name(name: &str) -> String {
     let safe: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
     if safe.is_empty() { "track".to_string() } else { safe }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::audio_track::fake::FakeSystem;
+    use super::super::clock::MediaClock;
+    use super::super::marks::{MarksWarning, TakeMarks};
+    use super::super::session::AppSpec;
+    use super::*;
+
+    /// A rig with one app track for Discord, no encoders and no files, and its stats.
+    fn discord_rig() -> Result<(AudioRig, Stats), EngineError> {
+        let app = AppSpec { exe: "discord.exe".to_owned(), app_name: "Discord".to_owned() };
+        let tracks = vec![TrackSpec {
+            name: "Discord".to_owned(),
+            device: None,
+            device_id: String::new(),
+            device_name: String::new(),
+            gain_db: 0.0,
+            muted: false,
+            offset_ms: 0,
+            in_mixdown: true,
+            app: Some(app),
+        }];
+        let stats = Stats::new(&tracks);
+        let rig = AudioRig::new(tracks, vec![None], None, vec![None], false, false, Path::new("."), "take", 0, Vec::new())?;
+        Ok((rig, stats))
+    }
+
+    fn discord_running() -> Vec<AudioApp> {
+        vec![AudioApp { exe: "discord.exe".to_owned(), display_name: "Discord".to_owned(), pids: vec![40, 41], active: true }]
+    }
+
+    #[test]
+    fn silence_is_written_while_an_app_track_is_detached() -> Result<(), EngineError> {
+        let (mut rig, stats) = discord_rig()?;
+        let system = FakeSystem::default();
+        let mut start = |_: &str| system.start();
+        rig.fill_silence(48_000);
+        let before = rig.pipelines[0].take(96_000);
+        assert_eq!(before.len() as u64 / 2, 48_000 - OUTPUT_LEAD_FRAMES);
+        assert!(before.iter().all(|sample| *sample == 0.0));
+
+        // Attached: the app's packets reach the track.
+        rig.poll_apps(&discord_running(), 1_000, &stats, &mut start);
+        let packet =
+            AudioPacket { qpc_100ns: 10_000_000, frames: 480, channels: 2, sample_rate: OUT_RATE, samples: vec![0.5; 960], discontinuity: true, silent: false };
+        assert!(system.sender.borrow().as_ref().is_some_and(|sender| sender.send(packet).is_ok()));
+        rig.drain_captures();
+        assert!(rig.pipelines[0].take(96_000).iter().any(|sample| *sample > 0.1));
+
+        // Detached again: silence up to the timeline, and the track is not reported as a lost device.
+        rig.poll_apps(&[], 2_000, &stats, &mut start);
+        rig.pipelines[0].take(96_000);
+        rig.fill_silence(144_000);
+        let after = rig.pipelines[0].take(144_000);
+        assert!(!after.is_empty() && after.iter().all(|sample| *sample == 0.0));
+        assert_eq!(rig.pipelines[0].produced_frames(), 144_000 - OUTPUT_LEAD_FRAMES);
+        rig.fold_stats(&stats);
+        let snapshot = stats.snapshot();
+        assert!(!snapshot.tracks[0].attached && !snapshot.tracks[0].device_lost);
+        Ok(())
+    }
+
+    #[test]
+    fn polling_marks_each_attach_and_detach_at_its_time() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut rig, stats) = discord_rig()?;
+        let system = FakeSystem::default();
+        let mut start = |_: &str| system.start();
+        for (t_ms, running) in [(1_000, false), (2_000, true), (3_000, true), (65_500, false), (66_500, false), (70_000, true)] {
+            rig.poll_apps(&if running { discord_running() } else { Vec::new() }, t_ms, &stats, &mut start);
+        }
+        let events = stats.take_app_events();
+        assert_eq!(
+            events.iter().map(|event| (event.attached, event.t_ms, event.mark)).collect::<Vec<_>>(),
+            [(true, 2_000, true), (false, 65_500, true), (true, 70_000, true)]
+        );
+
+        let dir = std::env::temp_dir().join(format!("cutmark-app-marks-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let mut marks = TakeMarks::begin(&dir, "take", &dir.join("take.mkv"), 60, MediaClock::new(0, 10_000_000), MarksWarning::default());
+        for event in &events {
+            marks.app(&event.app_name, event.attached, event.t_ms);
+        }
+        let listed: Vec<_> = marks.recent().iter().cloned().collect();
+        let expected = [(2_000, "App attached: Discord"), (65_500, "App detached: Discord"), (70_000, "App attached: Discord")]
+            .map(|(t_ms, label)| (::marks::format_tc(t_ms), "System".to_owned(), Some(label.to_owned())));
+        assert_eq!(listed, expected);
+        drop(marks);
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
 }

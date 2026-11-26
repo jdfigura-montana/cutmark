@@ -424,7 +424,7 @@ mod tests {
 
     /// A snapshot with the given peak and clip state.
     fn snapshot(peak_dbfs: f32, clipped: bool) -> TrackSnapshot {
-        TrackSnapshot { name: "Mic".to_owned(), peak_dbfs, clipped, packets: 0, overflows: 0, device_lost: false }
+        TrackSnapshot { name: "Mic".to_owned(), peak_dbfs, clipped, packets: 0, overflows: 0, device_lost: false, attached: true }
     }
 
     /// A real track group paints no text over another at the narrowest right panel, and its Gain

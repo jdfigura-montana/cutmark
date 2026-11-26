@@ -2,9 +2,12 @@
 //! to the recording timeline out. Pure logic, no WASAPI, no files, no egui.
 //!
 //! See the recorder spec: Audio capture and tracks (Per-track controls, Format)
-//! and Sync and reliability rules (Audio, Pause).
+//! and Sync and reliability rules (Audio, Pause). [`AppLink`] is the attach and
+//! detach state of an app track (per-app audio spec, Tracks).
 
-use capture::AudioPacket;
+use std::sync::mpsc::Receiver;
+
+use capture::{AppTarget, AudioApp, AudioPacket, CaptureError};
 use rubato::audioadapter_buffers::direct::{InterleavedSlice, SequentialSliceOfVecs};
 use rubato::{Adjustable, Async, FixedAsync, PolynomialDegree, Resampler, Resizable};
 
@@ -308,9 +311,224 @@ impl TrackPipeline {
     }
 }
 
+/// A running capture of one app, as an app track uses it; the real one is `capture::AppLoopback`.
+pub(super) trait AppSource {
+    /// The packet queue.
+    fn receiver(&self) -> &Receiver<AudioPacket>;
+    /// Whether the capture ended on its own.
+    fn lost(&self) -> bool;
+    /// The app's top-level processes the capture was started for.
+    fn instance_pids(&self) -> &[u32];
+    /// Packets produced so far.
+    fn packets(&self) -> u64;
+    /// Packets dropped because the queue was full.
+    fn overflows(&self) -> u64;
+}
+
+/// Starts a capture of the app with the given executable name.
+pub(super) type StartApp<'a> = dyn FnMut(&str) -> Result<Box<dyn AppSource>, CaptureError> + 'a;
+
+/// A change of an app track that is worth a mark; a restart for new processes is not one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AppChange {
+    /// The track has a capture again.
+    Attached,
+    /// The track lost its capture and records silence.
+    Detached,
+}
+
+/// Every process of `exe` in a listing, or None when the app is not running.
+pub(super) fn app_pids<'a>(apps: &'a [AudioApp], exe: &str) -> Option<&'a [u32]> {
+    apps.iter().find(|app| app.exe == exe).map(|app| app.pids.as_slice()).filter(|pids| !pids.is_empty())
+}
+
+/// One app track's capture: attached while the app runs, detached otherwise.
+pub(super) struct AppLink {
+    /// The executable's file name in lowercase.
+    exe: String,
+    /// The running capture; None while detached.
+    source: Option<Box<dyn AppSource>>,
+    /// Every process of the app when the capture's instances were last checked.
+    seen_pids: Vec<u32>,
+}
+
+impl AppLink {
+    /// A detached link to the app named by `exe`.
+    pub(super) fn new(exe: &str) -> Self {
+        Self { exe: AppTarget::new(exe).exe().to_owned(), source: None, seen_pids: Vec::new() }
+    }
+
+    /// The executable's file name in lowercase.
+    pub(super) fn exe(&self) -> &str {
+        &self.exe
+    }
+
+    /// The running capture, if attached.
+    pub(super) fn source(&self) -> Option<&dyn AppSource> {
+        self.source.as_deref()
+    }
+
+    /// One poll step; `running` holds every process of the app, or None when it is not running.
+    ///
+    /// A capture covers only the top-level processes it started with. A listing names every process,
+    /// children included, so when that list changes a second capture is started to ask which
+    /// top-level processes exist now. It replaces the running one only when they differ.
+    pub(super) fn poll(&mut self, running: Option<&[u32]>, start: &mut StartApp<'_>) -> Option<AppChange> {
+        let Some(pids) = running else {
+            return self.source.take().map(|_| AppChange::Detached);
+        };
+        let Some(source) = &self.source else {
+            return match start(&self.exe) {
+                Ok(source) => {
+                    self.source = Some(source);
+                    self.seen_pids = pids.to_vec();
+                    Some(AppChange::Attached)
+                }
+                Err(err) => {
+                    log::debug!("{} is running but cannot be captured yet: {err}", self.exe);
+                    None
+                }
+            };
+        };
+        if source.lost() {
+            self.source = None;
+            return Some(AppChange::Detached);
+        }
+        if pids != self.seen_pids.as_slice() {
+            match start(&self.exe) {
+                Ok(next) => {
+                    if sorted(next.instance_pids()) != sorted(source.instance_pids()) {
+                        log::info!("{} has a different set of processes, restarting its capture", self.exe);
+                        self.source = Some(next);
+                    }
+                    self.seen_pids = pids.to_vec();
+                }
+                // The running capture stays, and the next poll tries again.
+                Err(err) => log::debug!("{} changed its processes but cannot be captured again yet: {err}", self.exe),
+            }
+        }
+        None
+    }
+}
+
+/// A sorted copy of a list of process IDs.
+fn sorted(pids: &[u32]) -> Vec<u32> {
+    let mut pids = pids.to_vec();
+    pids.sort_unstable();
+    pids
+}
+
+#[cfg(test)]
+pub(super) mod fake {
+    //! A stand-in for `capture::AppLoopback`.
+
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    use std::sync::mpsc::{self, SyncSender};
+
+    use super::*;
+
+    pub(in crate::engine) struct FakeSource {
+        receiver: Receiver<AudioPacket>,
+        lost: Rc<Cell<bool>>,
+        pids: Vec<u32>,
+    }
+
+    impl AppSource for FakeSource {
+        fn receiver(&self) -> &Receiver<AudioPacket> {
+            &self.receiver
+        }
+        fn lost(&self) -> bool {
+            self.lost.get()
+        }
+        fn instance_pids(&self) -> &[u32] {
+            &self.pids
+        }
+        fn packets(&self) -> u64 {
+            0
+        }
+        fn overflows(&self) -> u64 {
+            0
+        }
+    }
+
+    /// What the fake system reports, and what was started on it.
+    #[derive(Clone, Default)]
+    pub(in crate::engine) struct FakeSystem {
+        /// The top-level processes the next capture reports.
+        pub(in crate::engine) instances: Rc<RefCell<Vec<u32>>>,
+        /// How many captures were started.
+        pub(in crate::engine) starts: Rc<Cell<usize>>,
+        /// Makes every start fail.
+        pub(in crate::engine) refuse: Rc<Cell<bool>>,
+        /// The lost flag of the capture started last.
+        pub(in crate::engine) lost: Rc<RefCell<Rc<Cell<bool>>>>,
+        /// The packet sender of the capture started last.
+        pub(in crate::engine) sender: Rc<RefCell<Option<SyncSender<AudioPacket>>>>,
+    }
+
+    impl FakeSystem {
+        pub(in crate::engine) fn start(&self) -> Result<Box<dyn AppSource>, CaptureError> {
+            if self.refuse.get() {
+                return Err(CaptureError::Missing("the fake refuses to start"));
+            }
+            let (sender, receiver) = mpsc::sync_channel(256);
+            let lost = Rc::new(Cell::new(false));
+            *self.sender.borrow_mut() = Some(sender);
+            *self.lost.borrow_mut() = Rc::clone(&lost);
+            self.starts.set(self.starts.get() + 1);
+            Ok(Box::new(FakeSource { receiver, lost, pids: self.instances.borrow().clone() }))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_app_link_attaches_detaches_and_attaches_again() {
+        let system = fake::FakeSystem::default();
+        *system.instances.borrow_mut() = vec![10];
+        let mut start = |_: &str| system.start();
+        let mut link = AppLink::new("C:\\Apps\\Discord.exe");
+        assert_eq!(link.exe(), "discord.exe");
+        assert_eq!(link.poll(None, &mut start), None);
+        system.refuse.set(true);
+        assert_eq!(link.poll(Some(&[10]), &mut start), None);
+        system.refuse.set(false);
+        assert_eq!(link.poll(Some(&[10]), &mut start), Some(AppChange::Attached));
+        assert_eq!(link.poll(Some(&[10]), &mut start), None);
+        assert_eq!(link.poll(None, &mut start), Some(AppChange::Detached));
+        assert!(link.source().is_none());
+        assert_eq!(link.poll(None, &mut start), None);
+        assert_eq!(link.poll(Some(&[10]), &mut start), Some(AppChange::Attached));
+        // A capture that ends on its own detaches, and the next poll attaches again.
+        system.lost.borrow().set(true);
+        assert_eq!(link.poll(Some(&[10]), &mut start), Some(AppChange::Detached));
+        assert_eq!(link.poll(Some(&[10]), &mut start), Some(AppChange::Attached));
+    }
+
+    #[test]
+    fn an_app_link_restarts_only_when_the_top_level_processes_change() {
+        let system = fake::FakeSystem::default();
+        *system.instances.borrow_mut() = vec![10];
+        let mut start = |_: &str| system.start();
+        let mut link = AppLink::new("game.exe");
+        assert_eq!(link.poll(Some(&[10, 11]), &mut start), Some(AppChange::Attached));
+        let first = system.lost.borrow().clone();
+        // A new child process: one probe, and the running capture stays.
+        assert_eq!(link.poll(Some(&[10, 11, 12]), &mut start), None);
+        assert_eq!(link.poll(Some(&[10, 11, 12]), &mut start), None);
+        assert_eq!(system.starts.get(), 2);
+        first.set(true);
+        assert!(link.source().is_some_and(|source| source.lost()), "the first capture was replaced");
+        first.set(false);
+        // A second instance: the new capture takes over with no attach or detach.
+        *system.instances.borrow_mut() = vec![10, 20];
+        assert_eq!(link.poll(Some(&[10, 11, 12, 20]), &mut start), None);
+        assert_eq!(link.source().map(|source| source.instance_pids().to_vec()), Some(vec![10, 20]));
+    }
 
     const OUT_RATE: u32 = 48_000;
     const PACKET_100NS: i64 = 100_000;

@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 use thiserror::Error;
 
-use crate::config::CompositeMode;
+use crate::config::{CompositeMode, TrackKind};
 #[cfg(test)]
 use crate::engine::controller::WarningNote;
 use crate::engine::controller::{ControllerState, Phase};
@@ -362,6 +362,44 @@ pub struct StatusData {
     pub queue_depth: usize,
     /// The effective composite mode, `baked` or `clean`: the running take's, or the next take's when idle.
     pub composite_mode: CompositeMode,
+    /// The audio tracks in the settings, in settings order.
+    pub tracks: Vec<TrackStatus>,
+}
+
+/// One audio track as clients see it in the status.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TrackStatus {
+    /// The track name.
+    pub name: String,
+    /// `input`, `output` or `app`.
+    pub kind: &'static str,
+    /// The executable an app track records; absent for a device track.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exe: Option<String>,
+    /// Whether the running take is capturing the track's device or app; false while no take records.
+    pub attached: bool,
+}
+
+/// The status of every track in the settings. The take's counters cover only the enabled tracks, in the same order.
+fn track_statuses(state: &ControllerState) -> Vec<TrackStatus> {
+    let live = state.stats.as_ref().filter(|_| matches!(state.phase, Phase::Recording | Phase::Paused));
+    let mut slot = 0;
+    state
+        .track_names
+        .iter()
+        .zip(&state.track_kinds)
+        .zip(&state.track_enabled)
+        .map(|((name, kind), enabled)| {
+            let attached = *enabled && live.and_then(|stats| stats.tracks.get(slot)).is_some_and(|track| track.attached);
+            slot += usize::from(*enabled);
+            let (kind, exe) = match kind {
+                TrackKind::Input => ("input", None),
+                TrackKind::Output => ("output", None),
+                TrackKind::App { exe, .. } => ("app", Some(exe.clone())),
+            };
+            TrackStatus { name: name.clone(), kind, exe, attached }
+        })
+        .collect()
 }
 
 impl StatusData {
@@ -387,6 +425,7 @@ impl StatusData {
             remaining_secs: state.take_stats.as_ref().and_then(|live| live.remaining_secs),
             queue_depth: state.take_stats.as_ref().map_or(0, |live| live.queue_depth),
             composite_mode: state.composite_mode,
+            tracks: track_statuses(state),
         }
     }
 
@@ -436,6 +475,20 @@ mod tests {
         assert!(matches!(rejected(r#"{"op":"auth"}"#).error, ParseError::BadArgument(_)));
         assert!(matches!(rejected(r#"{"op":"auth","token":5}"#).error, ParseError::BadArgument(_)));
         assert!(matches!(rejected(r#"{"op":"auth","token":"  "}"#).error, ParseError::BadArgument(_)));
+    }
+
+    #[test]
+    fn the_status_lists_each_track_with_its_kind_and_exe() {
+        let state = ControllerState {
+            track_names: vec!["Mic".to_owned(), "Discord".to_owned()],
+            track_kinds: vec![TrackKind::Input, TrackKind::App { exe: "discord.exe".to_owned(), app_name: "Discord".to_owned() }],
+            track_enabled: vec![true, true],
+            ..ControllerState::default()
+        };
+        assert_eq!(
+            StatusData::from_state(&state).to_value()["tracks"],
+            json!([{ "name": "Mic", "kind": "input", "attached": false }, { "name": "Discord", "kind": "app", "exe": "discord.exe", "attached": false }])
+        );
     }
 
     #[test]

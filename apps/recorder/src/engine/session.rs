@@ -67,6 +67,32 @@ pub struct TrackSpec {
     pub offset_ms: i32,
     /// Whether the track takes part in the mixdown stream.
     pub in_mixdown: bool,
+    /// The app this track records; None for a device track. An app track has no device.
+    pub app: Option<AppSpec>,
+}
+
+/// The app an app track records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppSpec {
+    /// The executable's file name in lowercase, for example `discord.exe`.
+    pub exe: String,
+    /// The app's name for display.
+    pub app_name: String,
+}
+
+/// An app track gaining or losing its capture during a take.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AppEvent {
+    /// The track, counted in track order.
+    pub(super) track: usize,
+    /// The app's name for display.
+    pub(super) app_name: String,
+    /// True when the track attached, false when it detached.
+    pub(super) attached: bool,
+    /// The moment on the take's clock, in ms.
+    pub(super) t_ms: u64,
+    /// False for an app already attached when the take started, which gets no mark.
+    pub(super) mark: bool,
 }
 
 /// Everything the video thread needs to record one take.
@@ -123,10 +149,12 @@ pub struct Stats {
     pub(super) cam: CamCounters,
     /// One entry per audio track, folded in by the audio thread.
     tracks: Vec<TrackSlot>,
+    /// App attach and detach events the session has not applied yet, oldest first.
+    app_events: Mutex<Vec<AppEvent>>,
 }
 
 impl Stats {
-    fn new(tracks: &[TrackSpec]) -> Self {
+    pub(super) fn new(tracks: &[TrackSpec]) -> Self {
         Self {
             frames: AtomicU64::new(0),
             duplicated: AtomicU64::new(0),
@@ -147,10 +175,31 @@ impl Stats {
                     packets: AtomicU64::new(0),
                     overflows: AtomicU64::new(0),
                     device_lost: AtomicBool::new(false),
+                    attached: AtomicBool::new(track.device.is_some()),
                     gain_db_bits: AtomicU32::new(track.gain_db.to_bits()),
                     muted: AtomicBool::new(track.muted),
                 })
                 .collect(),
+            app_events: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Queues an app event for the session.
+    pub(super) fn push_app_event(&self, event: AppEvent) {
+        if let Ok(mut events) = self.app_events.lock() {
+            events.push(event);
+        }
+    }
+
+    /// Takes the queued app events, oldest first.
+    pub(super) fn take_app_events(&self) -> Vec<AppEvent> {
+        self.app_events.lock().map(|mut events| std::mem::take(&mut *events)).unwrap_or_default()
+    }
+
+    /// Records whether a track has a running capture.
+    pub(super) fn set_track_attached(&self, index: usize, attached: bool) {
+        if let Some(slot) = self.tracks.get(index) {
+            slot.attached.store(attached, Ordering::Relaxed);
         }
     }
 
@@ -268,6 +317,8 @@ pub struct TrackSnapshot {
     pub overflows: u64,
     /// Whether the track's device was lost.
     pub device_lost: bool,
+    /// Whether the track has a running capture: its device, or its app while that runs.
+    pub attached: bool,
 }
 
 /// One audio track's live state, shared between the audio thread and snapshots.
@@ -282,6 +333,8 @@ struct TrackSlot {
     overflows: AtomicU64,
     /// Whether the endpoint was invalidated.
     device_lost: AtomicBool,
+    /// Whether the track has a running capture.
+    attached: AtomicBool,
     /// The track's live gain in dB, as f32 bits, set by the UI and applied by the audio thread.
     gain_db_bits: AtomicU32,
     /// Whether the track is muted right now, set by the UI and applied by the audio thread.
@@ -317,6 +370,7 @@ impl TrackSlot {
             packets: self.packets.load(Ordering::Relaxed),
             overflows: self.overflows.load(Ordering::Relaxed),
             device_lost: self.device_lost.load(Ordering::Relaxed),
+            attached: self.attached.load(Ordering::Relaxed),
         }
     }
 }
@@ -406,24 +460,7 @@ struct SessionFile {
 impl SessionFile {
     /// Describes the take from its config: the app, the profile and the audio tracks with their devices.
     fn begin(cfg: &SessionConfig) -> Self {
-        let tracks: Vec<serde_json::Value> = cfg
-            .tracks
-            .iter()
-            .map(|track| {
-                serde_json::json!({
-                    "name": track.name,
-                    "device_id": track.device_id,
-                    "device_name": track.device_name,
-                    "device_found": track.device.is_some(),
-                    "sample_rate": track.device.as_ref().map(|device| device.sample_rate),
-                    "channels": track.device.as_ref().map(|device| device.channels),
-                    "gain_db": track.gain_db,
-                    "muted": track.muted,
-                    "offset_ms": track.offset_ms,
-                    "in_mixdown": track.in_mixdown,
-                })
-            })
-            .collect();
+        let tracks: Vec<serde_json::Value> = cfg.tracks.iter().map(track_entry).collect();
         let doc = serde_json::json!({
             "app": "CutMark Recorder",
             "version": env!("CARGO_PKG_VERSION"),
@@ -443,6 +480,14 @@ impl SessionFile {
             "result": serde_json::Value::Null,
         });
         Self { path: cfg.take_folder.join(format!("{}_session.json", cfg.base_name)), doc }
+    }
+
+    /// Adds an attach or detach time to the app track's entry.
+    fn app_event(&mut self, event: &AppEvent) {
+        let key = if event.attached { "attached_ms" } else { "detached_ms" };
+        if let Some(times) = self.doc.pointer_mut(&format!("/audio/tracks/{}/{key}", event.track)).and_then(serde_json::Value::as_array_mut) {
+            times.push(event.t_ms.into());
+        }
     }
 
     /// Lists the camera ISO file, or the reason the take has none although the profile asked for one.
@@ -504,6 +549,30 @@ impl SessionFile {
             doc.insert("result".to_owned(), result);
         }
     }
+}
+
+/// A track's entry in session.json; an app track also names its app and has lists of its attach and detach times.
+fn track_entry(track: &TrackSpec) -> serde_json::Value {
+    let mut entry = serde_json::json!({
+        "name": track.name,
+        "device_id": track.device_id,
+        "device_name": track.device_name,
+        "device_found": track.device.is_some(),
+        "sample_rate": track.device.as_ref().map(|device| device.sample_rate),
+        "channels": track.device.as_ref().map(|device| device.channels),
+        "gain_db": track.gain_db,
+        "muted": track.muted,
+        "offset_ms": track.offset_ms,
+        "in_mixdown": track.in_mixdown,
+    });
+    if let (Some(app), Some(fields)) = (&track.app, entry.as_object_mut()) {
+        fields.insert("kind".to_owned(), "app".into());
+        fields.insert("exe".to_owned(), app.exe.clone().into());
+        fields.insert("app_name".to_owned(), app.app_name.clone().into());
+        fields.insert("attached_ms".to_owned(), serde_json::Value::Array(Vec::new()));
+        fields.insert("detached_ms".to_owned(), serde_json::Value::Array(Vec::new()));
+    }
+    entry
 }
 
 /// One running recording: talks to the video thread through atomics and a channel.
@@ -705,6 +774,23 @@ impl RecordingSession {
         self.marks.as_mut()
     }
 
+    /// Moves the app tracks' attach and detach events into the marks and session.json.
+    ///
+    /// The controller calls this while a take runs, so the marks appear when they happen. True when a mark was added.
+    pub fn apply_app_events(&mut self) -> bool {
+        let mut marked = false;
+        for event in self.stats.take_app_events() {
+            self.session_file.app_event(&event);
+            if event.mark
+                && let Some(marks) = self.marks.as_mut()
+            {
+                marks.app(&event.app_name, event.attached, event.t_ms);
+                marked = true;
+            }
+        }
+        marked
+    }
+
     /// A handle to the take's last marks error, which stays readable after the take is stopped.
     pub fn marks_warning(&self) -> MarksWarning {
         self.marks_warning.clone()
@@ -766,6 +852,8 @@ impl RecordingSession {
         if let Some(handle) = self.audio_handle.take() {
             let _ = handle.join();
         }
+        // The audio thread is done, so these are the take's last app events, in before the marks are finished.
+        self.apply_app_events();
         let mut outcome = Err(EngineError::Failed("the video thread ended without reporting a summary".into()));
         while let Ok(message) = self.rx.recv() {
             if let ThreadMessage::Finished(result) = message {
@@ -931,5 +1019,36 @@ pub(crate) fn encoder_config(profile: &Profile) -> EncoderConfig {
         rate_control: profile.rate_control,
         preset: profile.preset,
         keyframe_secs: profile.keyframe_secs,
+    }
+}
+
+#[cfg(test)]
+mod app_track_tests {
+    use super::*;
+
+    #[test]
+    fn session_json_names_an_app_track_and_lists_its_attach_and_detach_times() {
+        let mut track = TrackSpec {
+            name: "Discord".to_owned(),
+            device: None,
+            device_id: String::new(),
+            device_name: String::new(),
+            gain_db: 0.0,
+            muted: false,
+            offset_ms: 0,
+            in_mixdown: true,
+            app: Some(AppSpec { exe: "discord.exe".to_owned(), app_name: "Discord".to_owned() }),
+        };
+        let app = track_entry(&track);
+        track.app = None;
+        assert!(track_entry(&track).get("kind").is_none());
+        let mut file = SessionFile { path: PathBuf::new(), doc: serde_json::json!({ "audio": { "tracks": [app] } }) };
+        for (attached, t_ms) in [(true, 0), (false, 4_000), (true, 9_000)] {
+            file.app_event(&AppEvent { track: 0, app_name: "Discord".to_owned(), attached, t_ms, mark: t_ms > 0 });
+        }
+        let entry = &file.doc["audio"]["tracks"][0];
+        assert_eq!((&entry["kind"], &entry["exe"], &entry["app_name"]), (&"app".into(), &"discord.exe".into(), &"Discord".into()));
+        assert_eq!(entry["attached_ms"], serde_json::json!([0, 9_000]));
+        assert_eq!(entry["detached_ms"], serde_json::json!([4_000]));
     }
 }

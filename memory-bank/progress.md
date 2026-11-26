@@ -1,6 +1,7 @@
 # Progress
 
 ## Done
+- Recorder Phase 10 A2a (2026-11-26): app tracks in the engine (settings kind, once-a-second attach/detach/restart, silence while detached, System marks, session.json times, status `tracks`). 332 recorder tests passed, fmt + clippy clean; check.ps1 and release build not run. Idle polling and A3 are open. Details in activeContext.md.
 - Recorder Phase 9e C3c (2026-11-24, 3bd78c1): renaming a take changes only the file name values in `.marks.json` (`media[].path`) and `_session.json`, keeping each file's key order and formatting; a `_cam` video without its main video in the same folder lists as its own take. cargo test -p cutmark-recorder 299 passed, fmt + clippy clean; check.ps1 and release build not run. Details in activeContext.md.
 - Brand N1 (2026-11-26): "CutMark" in user-facing text and docs; paths, identifiers, egui Ids and Recorder DEFAULT_PROJECT keep "Cutmark". Each app has a test that its window title starts with "CutMark". check.ps1 green. The prompter branch (and ae-1.3 additions) still need the same casing.
 - Brand M1 (2026-11-26): default accents audio/Orange, recorder/Teal, video/Violet, prompter/Blue as `AppAppearance::{AUDIO, RECORDER, VIDEO, PROMPTER}` in ui-kit appearance.rs; load() moves a file with no `scheme` holding the old default and writes it back; save() always writes scheme 2. video-ui does not use ui-kit yet (its accent is FilmCraft's highlight setting): the video track wires VIDEO. The Prompter track uses PROMPTER.

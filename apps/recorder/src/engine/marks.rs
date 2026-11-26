@@ -153,6 +153,13 @@ impl TakeMarks {
         self.add_system(kind, label, t_ms);
     }
 
+    /// Adds the System mark of an app track attaching or detaching, at `t_ms` already on the take's clock.
+    pub fn app(&mut self, app_name: &str, attached: bool, t_ms: u64) {
+        let t_ms = ::marks::snap_to_frame(t_ms, self.fps, 1);
+        let (kind, verb) = if attached { ("recorder.app_attached", "attached") } else { ("recorder.app_detached", "detached") };
+        self.add_system(kind, &format!("App {verb}: {app_name}"), t_ms);
+    }
+
     /// Ends the take's marks: writes the sidecar with the Markdown and CSV logs, and returns the chapters for the MKV.
     ///
     /// `wav_files` are the WAV sidecars of the take. `durations_ms` holds the video's length, then each WAV's length.
