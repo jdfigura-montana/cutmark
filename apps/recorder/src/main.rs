@@ -9,6 +9,7 @@ mod bar_ui;
 mod compositor;
 mod config;
 mod countdown;
+mod data_text;
 mod engine;
 mod hotkeys;
 mod key_ui;

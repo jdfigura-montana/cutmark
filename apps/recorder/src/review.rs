@@ -108,25 +108,6 @@ pub fn find<'a>(days: &'a [Day], selected: Option<&str>) -> Option<&'a Take> {
     days.iter().flat_map(|day| &day.takes).find(|take| take.name == selected)
 }
 
-/// The takes of today with their total length: the count, the summed duration
-/// in milliseconds, and how many of the takes had a duration at all.
-pub fn today_summary(days: &[Day]) -> (usize, u64, usize) {
-    let today = Local::now().date_naive();
-    let mut count = 0;
-    let mut total_ms = 0;
-    let mut timed = 0;
-    for take in days.iter().flat_map(|day| &day.takes) {
-        if take.start.date_naive() == today {
-            count += 1;
-            if let Some(duration) = take.duration_ms {
-                total_ms += duration;
-                timed += 1;
-            }
-        }
-    }
-    (count, total_ms, timed)
-}
-
 /// Formats a length in milliseconds as HH:MM:SS.
 pub fn format_duration(ms: u64) -> String {
     let seconds = ms / 1000;
@@ -705,31 +686,6 @@ mod tests {
         assert!(scan(&project).is_empty());
         fs::remove_dir_all(&root)?;
         Ok(())
-    }
-
-    /// A take for the summary tests, with only the fields they read.
-    fn take_named(name: &str, start: DateTime<Local>, duration_ms: Option<u64>) -> Take {
-        Take {
-            name: name.to_owned(),
-            start,
-            duration_ms,
-            total_size: 0,
-            files: Vec::new(),
-            video: PathBuf::new(),
-            iso: None,
-            marks: Vec::new(),
-            composite: CompositeMode::Baked,
-        }
-    }
-
-    #[test]
-    fn the_today_summary_counts_todays_takes_and_their_length() {
-        let yesterday = Local::now() - chrono::Duration::days(1);
-        let days = vec![
-            Day { date: yesterday.date_naive(), takes: vec![take_named("old", yesterday, Some(60_000))] },
-            Day { date: Local::now().date_naive(), takes: vec![take_named("a", Local::now(), Some(30_000)), take_named("b", Local::now(), None)] },
-        ];
-        assert_eq!(today_summary(&days), (2, 30_000, 1));
     }
 
     #[test]

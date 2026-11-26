@@ -11,6 +11,7 @@ use ui_kit::tokens::{color, space, typography};
 use ui_kit::{inspector_group, inspector_row, switch};
 
 use crate::config::{CompositeMode, Profile, WebcamSettings};
+use crate::data_text;
 use crate::preview_ui::Pick;
 use crate::profile_ui::{AmfProbe, iso_codec_text, rate_control_editor, rate_errors};
 use crate::profiles::ProfileStore;
@@ -110,7 +111,12 @@ pub(crate) fn fps_text(fps: f64) -> String {
 
 /// How a camera mode is listed in the dropdown.
 pub(crate) fn format_label(format: &CameraFormat) -> String {
-    format!("{} {}x{} @ {} fps", format.subtype, format.width, format.height, fps_text(format.fps()))
+    mode_text(&format.subtype.to_string(), format.width, format.height, format.fps())
+}
+
+/// A camera mode's size, rate and pixel format as separate items, drawn in Martian Mono.
+pub(crate) fn mode_text(subtype: &str, width: u32, height: u32, fps: f64) -> String {
+    format!("{}  {} fps  {subtype}", data_text::size_text(width, height), fps_text(fps))
 }
 
 /// How many whole frames a residual is off by, or none when it is within one frame either way.
@@ -173,6 +179,6 @@ mod tests {
     #[test]
     fn a_mode_is_listed_with_its_format_size_and_rate() {
         let format = CameraFormat { subtype: CameraSubtype::Mjpg, width: 1920, height: 1080, fps_num: 30000, fps_den: 1001 };
-        assert_eq!(format_label(&format), "MJPG 1920x1080 @ 29.97 fps");
+        assert_eq!(format_label(&format), "1920\u{d7}1080  29.97 fps  MJPG");
     }
 }

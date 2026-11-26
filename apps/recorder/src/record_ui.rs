@@ -20,9 +20,9 @@ const HEADER_PAD: f32 = 6.0;
 /// The 1px hairline stroke width.
 const HAIRLINE: f32 = 1.0;
 
-/// The recording pill's text: REC while a take runs, PAUSED while it is paused.
+/// The recording pill's text: Rec while a take runs, Paused while it is paused.
 pub(crate) fn pill_label(paused: bool) -> &'static str {
-    if paused { "PAUSED" } else { "REC" }
+    if paused { "Paused" } else { "Rec" }
 }
 
 /// The Record mode's right Live panel (spec "Record mode"): the levels, the
@@ -127,11 +127,11 @@ fn last_take_group(ui: &mut Ui, summary: &Summary) {
 fn footer(ui: &mut Ui) {
     ui.horizontal(|ui| {
         ui_kit::shortcuts::key_caps(ui, &KeyboardShortcut::new(Modifiers::NONE, Key::F9));
-        ui.label(RichText::new("mark").font(ui_kit::fonts::medium(typography::BODY_SIZE)).color(color::TEXT_SECONDARY));
+        ui.label(RichText::new("Mark").font(ui_kit::fonts::medium(typography::BODY_SIZE)).color(color::TEXT_SECONDARY));
     });
     ui.horizontal(|ui| {
         ui_kit::shortcuts::key_caps(ui, &KeyboardShortcut::new(Modifiers::SHIFT, Key::F9));
-        ui.label(RichText::new("mark with label").font(ui_kit::fonts::medium(typography::BODY_SIZE)).color(color::TEXT_SECONDARY));
+        ui.label(RichText::new("Mark with label").font(ui_kit::fonts::medium(typography::BODY_SIZE)).color(color::TEXT_SECONDARY));
     });
 }
 
@@ -144,10 +144,10 @@ fn format_hms(total_seconds: u64) -> String {
 mod tests {
     use super::*;
 
-    /// The recording pill reads REC while recording and PAUSED while paused.
+    /// The recording pill reads Rec while recording and Paused while paused.
     #[test]
     fn the_rec_pill_reads_paused_while_paused() {
-        assert_eq!(pill_label(false), "REC");
-        assert_eq!(pill_label(true), "PAUSED");
+        assert_eq!(pill_label(false), "Rec");
+        assert_eq!(pill_label(true), "Paused");
     }
 }

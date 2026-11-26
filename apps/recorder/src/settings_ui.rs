@@ -289,9 +289,9 @@ fn recording_section(ui: &mut Ui, settings: &mut Settings, next_take: &NextTake,
             ui,
             "Countdown",
             |ui| {
-                let _combo = egui::ComboBox::from_id_salt("settings-countdown").selected_text(countdown_label(settings.countdown_secs)).show_ui(ui, |ui| {
+                let _combo = egui::ComboBox::from_id_salt("settings-countdown").selected_text(countdown_job(settings.countdown_secs)).show_ui(ui, |ui| {
                     for secs in COUNTDOWN_CHOICES {
-                        let _choice = ui.selectable_value(&mut settings.countdown_secs, secs, countdown_label(secs));
+                        let _choice = ui.selectable_value(&mut settings.countdown_secs, secs, countdown_job(secs));
                         #[cfg(test)]
                         test_record_control(TestControl::CountdownChoice(secs), _choice.rect);
                     }
@@ -512,6 +512,11 @@ fn parse_chord(chord: &str) -> Option<KeyboardShortcut> {
 /// The text for a countdown length in the settings.
 fn countdown_label(secs: u8) -> String {
     if secs == 0 { "Off".to_owned() } else { format!("{secs} seconds") }
+}
+
+/// [`countdown_label`] as the dropdown draws it, with the number in Martian Mono.
+fn countdown_job(secs: u8) -> egui::text::LayoutJob {
+    crate::data_text::with_data(&countdown_label(secs), &[&secs.to_string()], egui::Color32::PLACEHOLDER)
 }
 
 // The interactive controls the tests record each frame, keyed by the Settings

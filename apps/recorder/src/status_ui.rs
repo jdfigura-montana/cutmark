@@ -2,11 +2,12 @@
 //! state and the free disk space on the left, the camera warning and the Control API
 //! clients on the right, and an empty center under the stage's notch button.
 
-use egui::text::{LayoutJob, TextWrapping};
+use egui::text::TextWrapping;
 use egui::{Color32, Galley, Pos2, Rangef, Rect, Sense, Ui, Vec2};
 use std::sync::Arc;
-use ui_kit::tokens::{color, space, typography};
+use ui_kit::tokens::{color, space};
 
+use crate::data_text;
 use crate::engine::controller::{ControllerState, Phase};
 use crate::engine::stats::GIB;
 
@@ -46,8 +47,10 @@ pub fn show(ui: &mut Ui, state: &ControllerState, api_clients: Option<usize>, bl
     x += DOT_DIAMETER + space::SCALE_8;
     // The free disk space, while idle and while a take writes.
     let free = state.take_stats.as_ref().and_then(|stats| stats.disk_free_bytes).or(state.idle_free_bytes);
-    for item in [label.to_owned(), format_free(free)] {
-        let galley = layout(ui, item, text);
+    let free = format_free(free);
+    let free_value = free.strip_suffix(" free").unwrap_or_default();
+    for job in [data_text::with_data(label, &[], text), data_text::with_data(&free, &[free_value], text)] {
+        let galley = ui.painter().layout_job(job);
         let width = galley.size().x;
         if x + width > left_end {
             break;
@@ -61,7 +64,8 @@ pub fn show(ui: &mut Ui, state: &ControllerState, api_clients: Option<usize>, bl
     let right_start = gap.max.max(rect.left() + space::SCALE_4);
     let mut right = rect.right() - space::SCALE_4;
     if let Some(clients) = api_clients {
-        let galley = layout(ui, clients_label(clients), text);
+        let count = clients.to_string();
+        let galley = ui.painter().layout_job(data_text::with_data(&clients_label(clients), &[&count], text));
         let start = right - galley.size().x;
         if start >= right_start {
             place(start, galley);
@@ -71,7 +75,7 @@ pub fn show(ui: &mut Ui, state: &ControllerState, api_clients: Option<usize>, bl
     if let Some(note) = camera_note {
         let room = right - right_start;
         if room >= MIN_WARNING_WIDTH {
-            let galley = layout_within(ui, CAMERA_WARNING.to_owned(), text, room);
+            let galley = layout_within(ui, CAMERA_WARNING, text, room);
             let size = galley.size();
             let area = Rect::from_min_size(Pos2::new(right - size.x, rect.center().y - size.y / 2.0), size);
             painter.galley(area.min, galley, text);
@@ -80,14 +84,9 @@ pub fn show(ui: &mut Ui, state: &ControllerState, api_clients: Option<usize>, bl
     }
 }
 
-/// One caption item on one line.
-fn layout(ui: &Ui, item: String, color: Color32) -> Arc<Galley> {
-    layout_within(ui, item, color, f32::INFINITY)
-}
-
 /// One caption item on one line at most `max_width` wide, ending in an ellipsis when cut.
-fn layout_within(ui: &Ui, item: String, color: Color32, max_width: f32) -> Arc<Galley> {
-    let mut job = LayoutJob::simple_singleline(item, ui_kit::fonts::medium(typography::CAPTION_SIZE), color);
+fn layout_within(ui: &Ui, item: &str, color: Color32, max_width: f32) -> Arc<Galley> {
+    let mut job = data_text::with_data(item, &[], color);
     job.wrap = TextWrapping::truncate_at_width(max_width);
     ui.painter().layout_job(job)
 }

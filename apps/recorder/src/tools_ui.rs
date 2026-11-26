@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use capture::{CameraFormat, ControlInfo};
-use egui::{Align, Align2, Button, Color32, ComboBox, DragValue, Layout, ProgressBar, Rect, Ui, UiBuilder, pos2};
+use egui::{Align, Align2, Button, Color32, ComboBox, DragValue, Label, Layout, ProgressBar, Rect, RichText, Ui, UiBuilder, pos2};
 use media_io::SyncReport;
 use serde::{Deserialize, Serialize};
 use ui_kit::icons;
@@ -15,6 +15,7 @@ use ui_kit::tokens::{size, space, typography};
 use ui_kit::{SliderKind, Theme, icon_button, inspector_group, inspector_row, switch};
 
 use crate::config::ControlSetting;
+use crate::data_text;
 use crate::engine::bus::{BusSender, Command, CommandKind};
 use crate::engine::controller::{ControllerState, Phase};
 use crate::key_ui::{self, KeyUiState};
@@ -186,21 +187,17 @@ pub(crate) fn camera_row(ui: &mut Ui, host: &mut WebcamHost, store: &mut Profile
 /// Also drawn in the Sources panel's camera popover, under the camera dropdown.
 pub(crate) fn format_row(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore) {
     let Some(settings) = host.settings(store) else { return };
-    let selected = format!(
-        "{} {}x{} @ {} fps",
-        settings.format.subtype,
-        settings.format.width,
-        settings.format.height,
-        webcam_ui::fps_text(f64::from(settings.format.fps))
-    );
+    let selected = webcam_ui::mode_text(&settings.format.subtype, settings.format.width, settings.format.height, f64::from(settings.format.fps));
     let mut picked: Option<CameraFormat> = None;
     inspector_row(
         ui,
         "Format",
         |ui| {
-            ComboBox::from_id_salt("webcam-format").selected_text(selected).width(ui.available_width()).show_ui(ui, |ui| {
+            let selected = RichText::new(selected).monospace();
+            ComboBox::from_id_salt("webcam-format").selected_text(selected).width(ui.available_width()).truncate().show_ui(ui, |ui| {
                 for format in host.formats(store) {
-                    if ui.selectable_label(host.is_current_format(store, format), webcam_ui::format_label(format)).clicked() {
+                    let entry = RichText::new(webcam_ui::format_label(format)).monospace();
+                    if ui.selectable_label(host.is_current_format(store, format), entry).clicked() {
                         picked = Some(*format);
                     }
                 }
@@ -360,16 +357,22 @@ fn sync_group(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore, reco
 
 /// The measured offset, the verdict, and the button that saves the opposite offset to the profile.
 fn sync_result(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, report: &SyncReport, profile: &str) {
-    ui.label(format!("Measured offset {:+.0} ms (spread {:.0} ms over {} flashes)", report.median_ms, report.spread_ms, report.offsets_ms.len()));
+    let neutrals = Theme::get(ui.ctx()).neutrals;
+    let median = format!("{:+.0} ms", report.median_ms);
+    let spread = format!("{:.0} ms", report.spread_ms);
+    let flashes = report.offsets_ms.len().to_string();
+    data_line(ui, &format!("Measured offset {median} (spread {spread} over {flashes} flashes)"), &[&median, &spread, &flashes], neutrals.text_primary);
     // The test records with the offset at zero, so what the current offset leaves over is the raw median plus that offset.
     let residual_ms = report.median_ms + f64::from(host.settings(store).map_or(0, |settings| settings.offset_ms));
-    ui.label(format!("Residual with current offset: {residual_ms:+.0} ms"));
+    let residual = format!("{residual_ms:+.0} ms");
+    data_line(ui, &format!("Residual with current offset: {residual}"), &[&residual], neutrals.text_primary);
     match webcam_ui::frames_off(residual_ms, report.main_fps) {
         None => {
             ui.colored_label(SYNC_GOOD, "Within 1 frame");
         }
         Some(frames) => {
-            ui.colored_label(SYNC_WARN, format!("Off by {frames} frame{}", if frames == 1 { "" } else { "s" }));
+            let count = frames.to_string();
+            data_line(ui, &format!("Off by {count} frame{}", if frames == 1 { "" } else { "s" }), &[&count], SYNC_WARN);
         }
     }
     ui.horizontal(|ui| {
@@ -383,9 +386,15 @@ fn sync_result(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, report:
             store.flush();
         }
         if let Some(settings) = host.settings(store) {
-            ui.weak(format!("Camera offset is {} ms", settings.offset_ms));
+            let offset = format!("{} ms", settings.offset_ms);
+            data_line(ui, &format!("Camera offset is {offset}"), &[&offset], neutrals.text_tertiary);
         }
     });
+}
+
+/// One wrapping line of the sync result, with its numbers in Martian Mono.
+fn data_line(ui: &mut Ui, text: &str, data: &[&str], color: Color32) {
+    ui.add(Label::new(data_text::with_data(text, data, color)).wrap());
 }
 
 /// The kittest harness and the overlap checks the row layout tests share.
@@ -417,6 +426,7 @@ pub(crate) mod row_checks {
             // The fonts a style asks for are only there from the next pass on.
             if std::mem::take(&mut first_pass) {
                 ui_kit::apply(ui.ctx());
+                crate::data_text::apply(ui.ctx());
                 return;
             }
             let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(width, HEIGHT));

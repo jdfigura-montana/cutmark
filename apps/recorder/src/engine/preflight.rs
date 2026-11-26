@@ -42,6 +42,22 @@ impl Status {
     }
 }
 
+/// One measured number of a check, as the window shows it in a stat block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stat {
+    /// The number with its unit, such as "8.0 ms".
+    pub value: String,
+    /// What the number is, such as "Budget".
+    pub label: String,
+}
+
+impl Stat {
+    /// A number and what it is.
+    fn new(value: String, label: &str) -> Self {
+        Self { value, label: label.to_owned() }
+    }
+}
+
 /// One line of the report: what was checked, how it went and the numbers behind it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckLine {
@@ -51,6 +67,8 @@ pub struct CheckLine {
     pub status: Status,
     /// The measured numbers in words.
     pub detail: String,
+    /// The same numbers one by one; empty for a line without numbers.
+    pub stats: Vec<Stat>,
 }
 
 /// The verdict on a pre-flight take: an overall result and one line per check.
@@ -71,7 +89,12 @@ pub fn judge_with_cam(summary: &Summary, cam: Option<&CamSummary>, fps: u32) -> 
     let budget_ms = 1000.0 / f64::from(fps.max(1));
     let mut lines = vec![
         dropped_line(summary.dropped),
-        CheckLine { label: "Duplicated frames".to_owned(), status: Status::Pass, detail: summary.duplicated.to_string() },
+        CheckLine {
+            label: "Duplicated frames".to_owned(),
+            status: Status::Pass,
+            detail: summary.duplicated.to_string(),
+            stats: vec![Stat::new(summary.duplicated.to_string(), "Frames")],
+        },
         encode_line(summary.encode_avg_ms, summary.encode_p95_ms, budget_ms),
     ];
     lines.extend(cam.map(cam_line));
@@ -86,6 +109,7 @@ pub fn dnd_line() -> CheckLine {
         label: DND_LABEL.to_owned(),
         status: Status::Info,
         detail: "Reminder: turn on Do Not Disturb (Win+N) so notifications stay out of your recording".to_owned(),
+        stats: Vec::new(),
     }
 }
 
@@ -109,7 +133,7 @@ fn track_status(peak_dbfs: f32) -> Status {
 /// The line for dropped frames: any drop fails.
 fn dropped_line(dropped: u64) -> CheckLine {
     let status = if dropped > 0 { Status::Fail } else { Status::Pass };
-    CheckLine { label: "Dropped frames".to_owned(), status, detail: dropped.to_string() }
+    CheckLine { label: "Dropped frames".to_owned(), status, detail: dropped.to_string(), stats: vec![Stat::new(dropped.to_string(), "Frames")] }
 }
 
 /// The line for encode time: the average and the 95th percentile against the budget.
@@ -118,7 +142,13 @@ fn encode_line(avg_ms: f64, p95_ms: f64, budget_ms: f64) -> CheckLine {
         label: "Encode time".to_owned(),
         status: encode_status(p95_ms, budget_ms),
         detail: format!("average {avg_ms:.1} ms, 95th percentile {p95_ms:.1} ms, budget {budget_ms:.1} ms"),
+        stats: encode_stats(avg_ms, p95_ms, budget_ms),
     }
+}
+
+/// The stats of an encode line: the average, the 95th percentile and the budget.
+fn encode_stats(avg_ms: f64, p95_ms: f64, budget_ms: f64) -> Vec<Stat> {
+    [(avg_ms, "Average"), (p95_ms, "95th percentile"), (budget_ms, "Budget")].map(|(ms, label)| Stat::new(format!("{ms:.1} ms"), label)).into()
 }
 
 /// The line for the camera file: the main video's rules, with any dropped camera frame failing it, at the camera's frame rate.
@@ -128,6 +158,8 @@ fn cam_line(cam: &CamSummary) -> CheckLine {
     if cam.dropped > 0 {
         status = Status::Fail;
     }
+    let mut stats = encode_stats(cam.encode_avg_ms, cam.encode_p95_ms, budget_ms);
+    stats.push(Stat::new(cam.dropped.to_string(), "Dropped"));
     CheckLine {
         label: "Camera encode".to_owned(),
         status,
@@ -135,18 +167,24 @@ fn cam_line(cam: &CamSummary) -> CheckLine {
             "average {:.1} ms, 95th percentile {:.1} ms, budget {:.1} ms, dropped {}",
             cam.encode_avg_ms, cam.encode_p95_ms, budget_ms, cam.dropped
         ),
+        stats,
     }
 }
 
 /// The line for one track's peak level.
 fn track_line(track: &TrackPeak) -> CheckLine {
     let status = track_status(track.peak_dbfs);
-    let note = match status {
-        Status::Pass => "",
-        _ if track.peak_dbfs < SILENT_BELOW_DBFS => " (silent)",
-        _ => " (clipping)",
+    let (note, stat_label) = match status {
+        Status::Pass => ("", "Peak"),
+        _ if track.peak_dbfs < SILENT_BELOW_DBFS => (" (silent)", "Peak, silent"),
+        _ => (" (clipping)", "Peak, clipping"),
     };
-    CheckLine { label: format!("Track {}", track.name), status, detail: format!("peak {:.1} dBFS{note}", track.peak_dbfs) }
+    CheckLine {
+        label: format!("Track {}", track.name),
+        status,
+        detail: format!("peak {:.1} dBFS{note}", track.peak_dbfs),
+        stats: vec![Stat::new(format!("{:.1} dBFS", track.peak_dbfs), stat_label)],
+    }
 }
 
 #[cfg(test)]
@@ -291,6 +329,21 @@ mod tests {
     fn the_camera_encode_line_names_the_numbers_and_the_budget() {
         let report = judge_with_cam(&summary(0, 5.0, &[]), Some(&cam(25.0, 8.0, 2)), 60);
         assert_eq!(report.lines[3].detail, "average 4.0 ms, 95th percentile 8.0 ms, budget 40.0 ms, dropped 2");
+    }
+
+    #[test]
+    fn every_check_line_carries_its_numbers_as_stats() {
+        let report = judge_with_cam(&summary(0, 8.0, &[-75.0]), Some(&cam(25.0, 8.0, 2)), 50);
+        let stats: Vec<Vec<(&str, &str)>> =
+            report.lines.iter().map(|line| line.stats.iter().map(|stat| (stat.value.as_str(), stat.label.as_str())).collect()).collect();
+        let expected: [Vec<(&str, &str)>; 5] = [
+            vec![("0", "Frames")],
+            vec![("2", "Frames")],
+            vec![("4.0 ms", "Average"), ("8.0 ms", "95th percentile"), ("20.0 ms", "Budget")],
+            vec![("4.0 ms", "Average"), ("8.0 ms", "95th percentile"), ("40.0 ms", "Budget"), ("2", "Dropped")],
+            vec![("-75.0 dBFS", "Peak, silent")],
+        ];
+        assert_eq!(stats, expected);
     }
 
     #[test]

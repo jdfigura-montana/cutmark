@@ -9,6 +9,7 @@ use ui_kit::tokens::{space, typography};
 use ui_kit::{PlayKind, PrimaryButton, STAGE_BAR_BUTTON_DIAMETER, StageResponse, Theme, TimecodeSize};
 
 use crate::app::{Chords, send};
+use crate::data_text;
 use crate::engine::bus::{BusSender, CommandKind, MarkKind};
 use crate::engine::controller::Phase;
 
@@ -290,8 +291,11 @@ fn next_take(ui: &mut Ui, bar: &TakeBar<'_>, width: f32) {
 /// The countdown readout of the right side, when there is one to show.
 fn countdown_readout(ui: &Ui, bar: &TakeBar<'_>) -> Option<LayoutJob> {
     let caption = countdown_caption(bar.phase, bar.countdown_secs);
-    (!caption.is_empty())
-        .then(|| LayoutJob::simple_singleline(caption, ui_kit::fonts::medium(typography::CAPTION_SIZE), Theme::get(ui.ctx()).neutrals.text_tertiary))
+    let number = match bar.phase {
+        Phase::Countdown(left) => left.to_string(),
+        _ => format!("{} s", bar.countdown_secs),
+    };
+    (!caption.is_empty()).then(|| data_text::with_data(&caption, &[&number], Theme::get(ui.ctx()).neutrals.text_tertiary))
 }
 
 /// The running take's timecode: hours, minutes, seconds and the frame within
@@ -346,6 +350,7 @@ pub(crate) mod bar_checks {
             // The fonts a style asks for are only there from the next pass on.
             if first_pass.replace(false) {
                 ui_kit::apply(ui.ctx());
+                crate::data_text::apply(ui.ctx());
                 return;
             }
             let rect = Rect::from_min_size(pos2(100.0, 0.0), vec2(width, STAGE_HEIGHT));

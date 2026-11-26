@@ -28,6 +28,7 @@ use ui_kit::{
 
 use crate::bar_ui::{self, BarButton, Companion};
 use crate::config::CompositeMode;
+use crate::data_text;
 use crate::playback::Playback;
 use crate::review::{self, Day, Take};
 
@@ -219,11 +220,13 @@ fn take_row(ui: &mut Ui, selected: bool, take: &Take) -> Response {
     let shown = fit_name(&take.name, inner.width(), width_of);
     let cut = shown != take.name;
     let name = painter.layout_no_wrap(shown, body.clone(), name_color);
+    // The word after the mark count is not data; the time, the count and the length are.
+    let count = take.marks.len().to_string();
     let details: Vec<_> = take_row_details(take)
         .iter()
         .map(|text| {
-            let font = ui_kit::fonts::mono(typography::VALUE_SIZE);
-            painter.layout_job(ui_kit::fonts::tracked(text, font, neutrals.text_tertiary, ui_kit::fonts::MONO_LETTER_SPACING_EM))
+            let data = if text.ends_with(" marks") { count.as_str() } else { text.as_str() };
+            painter.layout_job(data_text::with_data(text, &[data], neutrals.text_tertiary))
         })
         .collect();
     let details_height = details.iter().map(|galley| galley.size().y).fold(0.0, f32::max);
@@ -584,16 +587,7 @@ pub fn take_panel(
             let duration = take.duration_ms.map(review::format_duration).unwrap_or_else(|| "\u{2014}".to_owned());
             row(ui, "Duration", &duration);
             // The hover names every file of the take with its own size.
-            let file_list = take
-                .files
-                .iter()
-                .map(|file| {
-                    let name = file.path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-                    format!("{name} ({})", review::format_size(file.size))
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            row(ui, "Size", &review::format_size(take.total_size)).on_hover_text(file_list);
+            row(ui, "Size", &review::format_size(take.total_size)).on_hover_ui(|ui| file_list(ui, take));
             row(ui, "Video format", &format_label(&take.video));
             if let Some(iso) = &take.iso {
                 row(ui, "Camera ISO format", &format_label(iso));
@@ -726,6 +720,16 @@ fn take_header(ui: &mut Ui, take: Option<&Take>, state: &mut TakePanelState) -> 
     submitted
 }
 
+/// Every file of `take` on its own line with its size.
+fn file_list(ui: &mut Ui, take: &Take) {
+    let tint = Theme::get(ui.ctx()).neutrals.text_primary;
+    for file in &take.files {
+        let name = file.path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+        let size = review::format_size(file.size);
+        ui.add(egui::Label::new(data_text::with_data(&format!("{name} ({size})"), &[&size], tint)).wrap());
+    }
+}
+
 /// One read-only inspector row with its value.
 fn row(ui: &mut Ui, label: &str, value: &str) -> egui::Response {
     inspector_row(ui, label, |_ui| {}, Some(value))
@@ -798,10 +802,7 @@ pub fn delete_dialog(ctx: &egui::Context, take: Option<&Take>, open: &mut bool) 
             ui.add_space(space::SCALE_8);
             egui::ScrollArea::vertical().max_height(220.0).auto_shrink(false).show(ui, |ui| {
                 ui.set_max_width(ui.available_width());
-                for file in &take.files {
-                    let name = file.path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-                    ui.label(format!("{name} ({})", review::format_size(file.size)));
-                }
+                file_list(ui, take);
             });
         },
         |ui| {

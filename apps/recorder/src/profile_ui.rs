@@ -13,6 +13,7 @@ use ui_kit::tokens::{color, space, typography};
 use ui_kit::{inspector_group, inspector_row};
 
 use crate::config::{AudioCodecChoice, Codec, CompositeMode, Container, LayoutKind, Preset, Profile, RateControl, Settings, takes_root};
+use crate::data_text;
 use crate::engine::session::encoder_config;
 use crate::layout_ui;
 use crate::profiles::{self, ProfileStore};
@@ -530,15 +531,16 @@ impl ProfileSection {
                     } else if custom {
                         "Custom".to_owned()
                     } else {
-                        format!("{}x{}", p.width, p.height)
+                        data_text::size_text(p.width, p.height)
                     };
+                    let text = if p.is_source_size() || custom { RichText::new(text) } else { RichText::new(text).monospace() };
                     ComboBox::from_id_salt("profile-size").selected_text(text).show_ui(ui, |ui| {
                         if ui.selectable_label(p.is_source_size(), "Source").clicked() {
                             (p.width, p.height) = (0, 0);
                             size_custom = false;
                         }
                         for (w, h) in SIZES {
-                            if ui.selectable_label(!custom && p.width == w && p.height == h, format!("{w}x{h}")).clicked() {
+                            if ui.selectable_label(!custom && p.width == w && p.height == h, RichText::new(data_text::size_text(w, h)).monospace()).clicked() {
                                 (p.width, p.height) = (w, h);
                                 size_custom = false;
                             }
@@ -551,10 +553,10 @@ impl ProfileSection {
                         }
                     });
                     if p.is_source_size() {
-                        ui.colored_label(color::TEXT_TERTIARY, format!("{}x{}", source.0, source.1));
+                        ui.label(RichText::new(data_text::size_text(source.0, source.1)).monospace().color(color::TEXT_TERTIARY));
                     } else if custom {
                         ui.add(DragValue::new(&mut p.width).range(16..=16384));
-                        ui.label("x");
+                        ui.label("\u{d7}");
                         ui.add(DragValue::new(&mut p.height).range(16..=16384));
                     }
                 },
@@ -568,10 +570,10 @@ impl ProfileSection {
                 |ui| {
                     let preset = FPS_CHOICES.contains(&p.fps);
                     let custom = fps_custom || !preset;
-                    let text = if custom { "Custom".to_owned() } else { format!("{} fps", p.fps) };
+                    let text = if custom { RichText::new("Custom") } else { RichText::new(format!("{} fps", p.fps)).monospace() };
                     ComboBox::from_id_salt("profile-fps").selected_text(text).show_ui(ui, |ui| {
                         for fps in FPS_CHOICES {
-                            if ui.selectable_label(!custom && p.fps == fps, format!("{fps} fps")).clicked() {
+                            if ui.selectable_label(!custom && p.fps == fps, RichText::new(format!("{fps} fps")).monospace()).clicked() {
                                 p.fps = fps;
                                 fps_custom = false;
                             }

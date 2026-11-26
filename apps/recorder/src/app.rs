@@ -13,6 +13,7 @@ use crate::api::{ApiServer, token};
 use crate::bar_ui;
 use crate::compositor::{ComposeConfig, CompositorThread};
 use crate::config::{self, CompositeMode, Mode, ModeState, PanelWidths, Settings};
+use crate::data_text;
 use crate::engine::bus::{BusSender, Command, CommandKind, MarkKind};
 use crate::engine::controller::{Controller, ControllerState, Phase, lock};
 use crate::hotkeys::Hotkeys;
@@ -180,6 +181,7 @@ impl RecorderApp {
     /// Applies the suite theme, excludes the window from capture, loads settings, starts the controller, the hotkeys and the tray icon.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         ui_kit::apply_for(&cc.egui_ctx, APPEARANCE);
+        data_text::apply(&cc.egui_ctx);
         let mut settings = config::load_or_init().unwrap_or_else(|err| {
             log::error!("could not load the Recorder settings, using the defaults: {err}");
             Settings::default()
@@ -664,30 +666,6 @@ impl RecorderApp {
         }
     }
 
-    /// The caption next to the project name: in Review the takes of today and
-    /// their total length, otherwise the profile, its output size and frame
-    /// rate (spec "Title bar").
-    fn title_caption(&self) -> String {
-        if self.modes.mode == Mode::Review {
-            return self.review_caption();
-        }
-        let profile = self.profile_store.get(&self.settings.active_profile);
-        let size = match profile {
-            Some(profile) if !profile.is_source_size() => format!("{}x{}", profile.width, profile.height),
-            _ => format!("Source {}x{}", self.source_size.0 & !1, self.source_size.1 & !1),
-        };
-        let fps = profile.map_or(0, |profile| profile.fps);
-        format!("{} \u{b7} {} \u{b7} {} fps", self.settings.active_profile, size, fps)
-    }
-
-    /// The Review title caption (spec "Title bar"): the takes of today and
-    /// their total length; the length is left out when no sidecar knows it.
-    fn review_caption(&self) -> String {
-        let (count, total_ms, timed) = review::today_summary(&self.review_days);
-        let count_text = if count == 1 { "1 take today".to_owned() } else { format!("{count} takes today") };
-        if timed == 0 { count_text } else { format!("{count_text} \u{b7} {}", review::format_duration(total_ms)) }
-    }
-
     /// Draws the 44px title bar (spec "Title bar", rev 3): the app mark and the menus on the
     /// left, the project name with its caption in the center, and the mode switch on the
     /// right; the separator and the caption buttons are the toolbar's own. Clicking the project
@@ -701,7 +679,8 @@ impl RecorderApp {
         let project_changed = Cell::new(false);
         let open_settings = Cell::new(false);
         let open_appearance = Cell::new(false);
-        let caption = self.title_caption();
+        // The caption is one fact, the profile (docs/suite/Recorder-E3.md, section 5).
+        let caption = self.settings.active_profile.clone();
         let chords = Chords::of(&self.hotkeys);
         let project_folder = project_folder(&self.settings);
         // The pre-flight button is enabled while idle and not already running; the sync test
@@ -909,22 +888,21 @@ impl RecorderApp {
     /// The camera row of the video group: the camera's name, its format and a status dot;
     /// clicking it opens the Camera tool's Camera and Format pickers as a popover.
     fn camera_source_row(&mut self, ui: &mut egui::Ui) {
-        let (name, caption, ok) = match self.webcam.settings(&self.profile_store) {
+        let (name, values, ok) = match self.webcam.settings(&self.profile_store) {
             Some(settings) => {
                 let present = self.webcam.cameras().iter().any(|camera| camera.id == settings.camera_id);
                 let name = if settings.camera_name.is_empty() { "No camera".to_owned() } else { settings.camera_name.clone() };
-                let caption = format!(
-                    "{} {}x{} @ {} fps",
-                    settings.format.subtype,
-                    settings.format.width,
-                    settings.format.height,
-                    webcam_ui::fps_text(f64::from(settings.format.fps))
-                );
-                (name, caption, present)
+                // The least needed value is last, so it is the one a narrow panel leaves out.
+                let values = vec![
+                    data_text::size_text(settings.format.width, settings.format.height),
+                    format!("{} fps", webcam_ui::fps_text(f64::from(settings.format.fps))),
+                    settings.format.subtype.clone(),
+                ];
+                (name, values, present)
             }
-            None => ("Camera off".to_owned(), String::new(), false),
+            None => ("Camera off".to_owned(), Vec::new(), false),
         };
-        let response = source_row(ui, ui_kit::icons::regular::CAMERA, &name, &caption, ok);
+        let response = source_row(ui, ui_kit::icons::regular::CAMERA, &name, &values, ok);
         egui::Popup::menu(&response).width(320.0).show(|ui| {
             tools_ui::camera_row(ui, &mut self.webcam, &mut self.profile_store);
             tools_ui::format_row(ui, &mut self.webcam, &mut self.profile_store);
@@ -1530,34 +1508,32 @@ const DOT_DIAMETER: f32 = 8.0;
 /// frame rate it is captured at, and a status dot. There is no display picker today, so the row
 /// is info only (spec "Mapping").
 fn display_source_row(ui: &mut egui::Ui, size: (u32, u32), fps: Option<u32>) {
-    let caption = match fps {
-        Some(fps) if fps > 0 => format!("{}x{} @ {} fps", size.0, size.1, fps),
-        _ => format!("{}x{}", size.0, size.1),
-    };
-    source_row(ui, ui_kit::icons::regular::MONITOR, "Primary monitor", &caption, true);
+    let mut values = vec![data_text::size_text(size.0, size.1)];
+    if let Some(fps) = fps.filter(|fps| *fps > 0) {
+        values.push(format!("{fps} fps"));
+    }
+    source_row(ui, ui_kit::icons::regular::MONITOR, "Primary monitor", &values, true);
 }
 
-/// One source row of the video group: the icon, the name with its detail caption and a status
+/// One source row of the video group: the icon, the name over its values and a status
 /// dot. Returns the row's response so the camera row can open its picker popover on click.
-fn source_row(ui: &mut egui::Ui, icon: &'static str, name: &str, caption: &str, ok: bool) -> egui::Response {
+fn source_row(ui: &mut egui::Ui, icon: &'static str, name: &str, values: &[String], ok: bool) -> egui::Response {
     let row = egui::vec2(ui.available_width(), SOURCE_ROW_HEIGHT);
     let inner = ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.add(
             egui::Label::new(egui::RichText::new(icon).font(ui_kit::fonts::icon_regular(typography::BODY_SIZE)).color(color::TEXT_SECONDARY)).selectable(false),
         );
         ui.add_space(space::SCALE_4);
+        let text_width = (ui.available_width() - DOT_DIAMETER - ui.spacing().item_spacing.x).max(0.0);
         ui.vertical(|ui| {
+            ui.set_max_width(text_width);
             ui.add(
                 egui::Label::new(egui::RichText::new(name).font(ui_kit::fonts::medium(typography::BODY_SIZE)).color(color::TEXT_PRIMARY))
                     .selectable(false)
                     .truncate(),
             );
-            if !caption.is_empty() {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(caption).font(ui_kit::fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY))
-                        .selectable(false)
-                        .truncate(),
-                );
+            if !values.is_empty() {
+                source_values(ui, values, text_width);
             }
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1565,6 +1541,26 @@ fn source_row(ui: &mut egui::Ui, icon: &'static str, name: &str, caption: &str, 
         });
     });
     ui.interact(inner.response.rect, ui.id().with(("source-row", name)), egui::Sense::click())
+}
+
+/// A source row's values as separate items in Martian Mono, `width` wide at most. A value that
+/// does not fit whole is left out, with every value after it.
+fn source_values(ui: &mut egui::Ui, values: &[String], width: f32) {
+    let font = ui_kit::fonts::mono(typography::VALUE_SIZE);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::SCALE_8;
+        let mut used = 0.0;
+        for value in values {
+            let job = ui_kit::fonts::tracked(value, font.clone(), color::TEXT_TERTIARY, ui_kit::fonts::MONO_LETTER_SPACING_EM);
+            let galley = ui.painter().layout_job(job);
+            used += galley.size().x;
+            if used > width {
+                break;
+            }
+            used += space::SCALE_8;
+            ui.add(egui::Label::new(galley).selectable(false));
+        }
+    });
 }
 
 /// The small status dot at a source row's right edge.

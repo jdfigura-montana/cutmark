@@ -72,7 +72,7 @@ impl PreviewView {
 
     /// Draws the recording preview (spec "Record mode"): the 16:9 box grown to
     /// fill the space, the `sem.record` rim at 35% around it and the REC pill
-    /// at its top left ("PAUSED" in `sem.meter.warn` while paused); returns
+    /// at its top left ("Paused" in `sem.meter.warn` while paused); returns
     /// the box rect.
     pub fn show_recording(&mut self, ui: &mut Ui, preview: Option<&Preview>, enabled: bool, paused: bool) -> Rect {
         let box_rect = allocate_area(ui);
@@ -169,8 +169,8 @@ fn draw_message(ui: &Ui, area: Rect, message: &str) {
     ui.painter().text(area.center(), Align2::CENTER_CENTER, message, ui_kit::fonts::medium(typography::HEADLINE_SIZE), color::TEXT_TERTIARY);
 }
 
-/// The REC pill at the preview box's top left: a `sem.record` tint capsule
-/// with a dot and "REC", or "PAUSED" in `sem.meter.warn` while paused
+/// The recording pill at the preview box's top left: a `sem.record` tint capsule
+/// with a dot and "Rec", or "Paused" in `sem.meter.warn` while paused
 /// (spec "Record mode").
 fn rec_pill(ui: &Ui, box_rect: Rect, paused: bool) {
     let mark = if paused { color::SEM_METER_WARN } else { Color32::WHITE };
