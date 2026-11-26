@@ -13,7 +13,7 @@ use ui_kit::tokens::{color, radius, size, space, typography};
 
 use crate::clipboard::{Clipboard, MenuClipboard, SystemClipboard};
 use crate::dialogs::{Dialog, Naming};
-use crate::editor::{self, Editor};
+use crate::editor::{self, Editor, PasteKeys};
 use crate::file_drop;
 use crate::find::FindBar;
 use crate::menu::{EDITOR_MENU, Item, MENUS, MenuState, SCRIPTS_MENU};
@@ -22,6 +22,7 @@ use crate::renderer::AlphaInUse;
 use crate::scripts_panel::{Action, ScriptsPanel};
 use crate::snapshots::Snapshots;
 use crate::stats;
+use crate::tabs::{self, TabBar};
 use crate::view::{self, FloatingView, log_failure};
 use crate::workspace::{Autosave, Workspace};
 
@@ -83,10 +84,12 @@ pub struct PrompterApp {
     workspace: Result<Workspace, String>,
     scripts: ScriptsPanel,
     editor: Editor,
+    tab_bar: TabBar,
     find: FindBar,
     preview: Preview,
     clipboard: Box<dyn Clipboard>,
     menu_clipboard: MenuClipboard,
+    paste_keys: PasteKeys,
     /// The modifier keys held at the end of the last frame.
     held: egui::Modifiers,
     /// This copy's hold on being the only one, through which later copies are heard.
@@ -138,10 +141,12 @@ impl PrompterApp {
             workspace,
             scripts: ScriptsPanel::default(),
             editor: Editor::default(),
+            tab_bar: TabBar::default(),
             find: FindBar::default(),
             preview: Preview::default(),
             clipboard: Box::new(SystemClipboard),
             menu_clipboard: MenuClipboard::default(),
+            paste_keys: PasteKeys::default(),
             held: egui::Modifiers::default(),
             instance: None,
             root_window: None,
@@ -252,6 +257,9 @@ impl PrompterApp {
             Action::Open(id) => workspace.open(&id),
             Action::Duplicate(id) => workspace.duplicate(&id),
             Action::Move(id, folder) => workspace.move_to_folder(&id, folder.as_deref()),
+            Action::SetFavorite(id, favorite) => workspace.set_favorite(&id, favorite),
+            Action::SetSort(sort) => workspace.set_sort(sort),
+            Action::SetCollapsed(folder, collapsed) => workspace.set_folder_collapsed(&folder, collapsed),
             Action::DeleteFolder(folder) => workspace.delete_folder(&folder),
             Action::Rename(id) => {
                 let title = workspace.title(&id).to_owned();
@@ -278,7 +286,10 @@ impl PrompterApp {
         let background = ui.interact(ui.max_rect(), ui.id().with("scripts-background"), egui::Sense::click());
         let state = self.menu_state();
         let mut new_folder = false;
-        panel_header(ui, "Scripts", |ui| new_folder = new_folder_button(ui, state));
+        panel_header(ui, "Scripts", |ui| {
+            new_folder = new_folder_button(ui, state);
+            ui.add_enabled_ui(state.library_open, |ui| ui_kit::widgets::chip(ui, &mut self.scripts.favorites_only, "Favorites"));
+        });
         if new_folder {
             self.run(ui.ctx(), frame, Item::NewFolder);
         }
@@ -294,9 +305,47 @@ impl PrompterApp {
         }
     }
 
-    /// The editor panel: its toolbar and find bar, then the open script or what to do without
-    /// one. `command` is an Edit menu item picked in the last frame.
+    /// Shows, closes or steps through tabs. If the editor had the keyboard, the editor of
+    /// the tab now shown takes it.
+    fn change_tabs(&mut self, ctx: &egui::Context, change: TabChange) {
+        let Ok(workspace) = &mut self.workspace else {
+            return;
+        };
+        let editor_of = |workspace: &Workspace| workspace.open_script().map(|open| editor::id(open.serial));
+        let typing = editor_of(workspace).is_some_and(|id| ctx.memory(|memory| memory.has_focus(id)));
+        let result = match change {
+            TabChange::Click(tabs::Action::Activate(id)) => {
+                workspace.activate(&id);
+                Ok(())
+            }
+            TabChange::Click(tabs::Action::Close(id)) => workspace.close(&id),
+            TabChange::CloseActive => match workspace.open_script().map(|open| open.id.clone()) {
+                Some(id) => workspace.close(&id),
+                None => Ok(()),
+            },
+            TabChange::Cycle { forward } => {
+                workspace.cycle_tab(forward);
+                Ok(())
+            }
+        };
+        report(ctx, result);
+        if typing && let Some(id) = editor_of(workspace) {
+            ctx.memory_mut(|memory| memory.request_focus(id));
+        }
+        // The title bar, already drawn, shows the old tab.
+        ctx.request_repaint();
+    }
+
+    /// The editor panel: its tab bar, toolbar and find bar, then the open script or what to do
+    /// without one. `command` is an Edit menu item picked in the last frame.
     fn editor_column(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame, command: Option<Item>) {
+        let clicked = match &self.workspace {
+            Ok(workspace) => self.tab_bar.show(ui, workspace),
+            Err(_) => None,
+        };
+        if let Some(action) = clicked {
+            self.change_tabs(ui.ctx(), TabChange::Click(action));
+        }
         let state = self.menu_state();
         if let Some(item) = panel_toolbar(ui, state, &mut self.preview.open) {
             self.run(ui.ctx(), frame, item);
@@ -308,6 +357,11 @@ impl PrompterApp {
                 return;
             }
         };
+        let open_serials: Vec<u64> = workspace.tabs().iter().map(|tab| tab.serial).collect();
+        self.editor.forget_closed(ui.ctx(), &open_serials);
+        // Before the menu's pastes, which are ready as they are.
+        let shown_editor = workspace.open_script().map(|open| editor::id(open.serial));
+        editor::rich_paste(ui, shown_editor, self.clipboard.as_ref(), &mut self.paste_keys, self.held);
         let no_scripts = workspace.store().library().scripts.is_empty();
         let Some(open) = workspace.open_script_mut() else {
             self.find.close();
@@ -321,8 +375,6 @@ impl PrompterApp {
         };
         let serial = open.serial;
         let id = editor::id(serial);
-        // Before the menu's pastes, which are ready as they are.
-        editor::rich_paste(ui, id, self.clipboard.as_ref(), self.held);
         match command {
             Some(Item::FindInScript) => self.find.open(),
             Some(item) => editor::command(ui, id, item, self.clipboard.as_ref()),
@@ -358,8 +410,8 @@ impl PrompterApp {
         }
     }
 
-    /// Saves the open script when due, keeps its word count up to date, and saves it before
-    /// the window closes.
+    /// Saves each open script when due, keeps the shown one's word count up to date, and
+    /// saves them all before the window closes.
     fn keep_saved(&mut self, ctx: &egui::Context) {
         let Ok(workspace) = &mut self.workspace else {
             return;
@@ -380,7 +432,7 @@ impl PrompterApp {
             open.count.tick(ctx, &open.text, now);
         }
         // With everything saved, the next failure on close is refused once again.
-        if !workspace.open_script().is_some_and(|open| open.unsaved()) {
+        if !workspace.tabs().iter().any(|tab| tab.unsaved()) {
             self.close_refused = false;
         }
         if ctx.input(|i| i.viewport().close_requested())
@@ -402,6 +454,10 @@ impl PrompterApp {
         }
         let command = self.queued.take();
         let modal = self.dialog.is_some() || self.appearance_open || self.about_open;
+        // Before the editor, which would take Tab and Ctrl+W for itself.
+        if let Some(change) = (!modal).then(|| tab_shortcut(ui)).flatten() {
+            self.change_tabs(ui.ctx(), change);
+        }
         if let Some(item) = (!modal).then(|| shortcut(ui)).flatten()
             && item.enabled(self.menu_state())
         {
@@ -465,9 +521,10 @@ impl PrompterApp {
         }
     }
 
-    /// Files dragged in from another program. While they are over the window, the folder row
-    /// under the pointer is marked, or else the whole Scripts panel, which is `panel`. A drop
-    /// imports them into that folder, or into no folder. `blocked` is a dialog being open.
+    /// Files dragged in from another program. While they are over the window, the row under
+    /// the pointer is marked if it is a folder's or one of its scripts', or else the whole
+    /// Scripts panel, which is `panel`. A drop imports them into that folder, or into no
+    /// folder. `blocked` is a dialog being open.
     fn file_drag(&mut self, ui: &egui::Ui, panel: egui::Rect, blocked: bool) {
         let (hovering, dropped) = ui.input(|i| {
             let dropped: Vec<_> = i.raw.dropped_files.iter().map(|file| file.path().to_owned()).collect();
@@ -626,6 +683,32 @@ fn report(ctx: &egui::Context, result: Result<(), StoreError>) {
 fn export_name(title: &str) -> String {
     let safe: String = title.chars().map(|c| if c.is_control() || r#"<>:"/\|?*"#.contains(c) { '_' } else { c }).collect();
     format!("{safe}.md")
+}
+
+/// What the tab bar or its keys ask for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TabChange {
+    Click(tabs::Action),
+    CloseActive,
+    Cycle { forward: bool },
+}
+
+/// The tab change whose keys were pressed this frame: Ctrl+Tab, Ctrl+Shift+Tab or Ctrl+W.
+fn tab_shortcut(ui: &egui::Ui) -> Option<TabChange> {
+    let ctrl = egui::Modifiers::COMMAND;
+    // A pattern without Shift also matches with it, so the Shift keys go first.
+    let shortcuts = [
+        (ctrl.plus(egui::Modifiers::SHIFT), egui::Key::Tab, TabChange::Cycle { forward: false }),
+        (ctrl, egui::Key::Tab, TabChange::Cycle { forward: true }),
+        (ctrl, egui::Key::W, TabChange::CloseActive),
+    ];
+    ui.input_mut(|i| {
+        // AltGr is Ctrl with Alt, and types characters on some layouts.
+        if i.modifiers.alt {
+            return None;
+        }
+        shortcuts.into_iter().find(|&(modifiers, key, _)| i.consume_key(modifiers, key)).map(|(_, _, change)| change)
+    })
 }
 
 /// True on the frame Ctrl+Alt+C is pressed in the Library.
@@ -787,7 +870,7 @@ fn column(ui: &mut egui::Ui, rect: egui::Rect, add_contents: impl FnOnce(&mut eg
 }
 
 /// A 44px row at the top of a panel, with a hairline along its bottom that runs edge to edge.
-fn panel_row(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+pub(crate) fn panel_row(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
     let row = egui::vec2(ui.available_width(), size::PANEL_TOOLBAR_HEIGHT);
     let inner = ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.set_min_size(row);

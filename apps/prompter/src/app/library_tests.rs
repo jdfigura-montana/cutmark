@@ -53,6 +53,10 @@ impl egui::DroppedFile for Dropped {
     }
 }
 
+fn release(key: Key, modifiers: Modifiers) -> Event {
+    Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers }
+}
+
 struct Library {
     ctx: egui::Context,
     app: PrompterApp,
@@ -116,13 +120,87 @@ impl Library {
         self.shapes = output.shapes;
     }
 
-    /// Ctrl+V or Ctrl+Shift+V as the window reports it: no key press, only a paste with the
-    /// clipboard's text, which the app does not use.
+    /// Ctrl+V or Ctrl+Shift+V as the window reports it: for the press, no key, only a paste
+    /// with the clipboard's text, which the app does not use, and nothing at all with no text.
+    /// Then the release of V.
     fn press_paste(&mut self, modifiers: Modifiers) {
-        let window_text = self.clipboard.read_text().unwrap_or_default();
-        self.step(vec![Event::ModifiersChanged(modifiers), Event::Paste(window_text)]);
+        self.step_paste(modifiers);
+        self.step(vec![release(Key::V, modifiers)]);
         self.step(vec![Event::ModifiersChanged(Modifiers::NONE)]);
         self.settle();
+    }
+
+    /// The press alone.
+    fn step_paste(&mut self, modifiers: Modifiers) {
+        let window_text = self.clipboard.read_text().filter(|text| !text.is_empty());
+        let mut events = vec![Event::ModifiersChanged(modifiers)];
+        events.extend(window_text.map(Event::Paste));
+        self.step(events);
+    }
+
+    /// Adds a script, which opens in a tab of its own.
+    fn add_script(&mut self, title: &str, text: &str) {
+        let workspace = self.app.workspace.as_mut().unwrap();
+        workspace.new_script(title).unwrap();
+        workspace.open_script_mut().unwrap().text = text.to_owned();
+        workspace.text_changed(Instant::now());
+        self.settle();
+    }
+
+    fn workspace(&self) -> &Workspace {
+        self.app.workspace.as_ref().unwrap()
+    }
+
+    /// The tabs' titles, in order.
+    fn tab_titles(&self) -> Vec<&str> {
+        self.workspace().tabs().iter().map(|tab| self.workspace().title(&tab.id)).collect()
+    }
+
+    fn active_title(&self) -> &str {
+        self.workspace().title(&self.workspace().open_script().unwrap().id)
+    }
+
+    fn id_of(&self, title: &str) -> String {
+        let scripts = &self.workspace().store().library().scripts;
+        scripts.iter().find(|script| script.title == title).unwrap().id.clone()
+    }
+
+    fn is_favorite(&self, title: &str) -> bool {
+        self.workspace().store().library().scripts.iter().any(|script| script.title == title && script.favorite)
+    }
+
+    /// The tab at `at`, where the last frame drew it.
+    fn tab_rect(&self, at: usize) -> Rect {
+        self.app.tab_bar.rects[at]
+    }
+
+    /// The title of a script's row in the Scripts panel.
+    fn row(&self, title: &str) -> Rect {
+        self.find_text_in(title, Rect::from_min_max(Pos2::ZERO, egui::pos2(SCRIPTS_WIDTH, self.size.y))).unwrap_or_else(|| panic!("\"{title}\" has no row"))
+    }
+
+    fn find_text_in(&self, text: &str, area: Rect) -> Option<Rect> {
+        self.text_rects(text).into_iter().find(|rect| area.contains(rect.center()))
+    }
+
+    /// Everywhere the last frame painted exactly `text`.
+    fn text_rects(&self, text: &str) -> Vec<Rect> {
+        fn search(shape: &egui::Shape, text: &str, found: &mut Vec<Rect>) {
+            match shape {
+                egui::Shape::Text(painted) if painted.galley.text() == text => found.push(painted.visual_bounding_rect()),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| search(shape, text, found)),
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        self.shapes.iter().for_each(|clipped| search(&clipped.shape, text, &mut found));
+        found
+    }
+
+    /// The star at the left of a script's row.
+    fn star(&self, title: &str) -> Pos2 {
+        let row = self.row(title);
+        egui::pos2(row.left() - 8.0, row.center().y)
     }
 
     fn put_on_clipboard(&self, html: Option<&str>, text: Option<&str>) {
@@ -231,6 +309,30 @@ impl Library {
 
     fn focused(&self) -> Option<egui::Id> {
         self.ctx.memory(|memory| memory.focused())
+    }
+
+    /// Gives the editor the keyboard without a click, which empty text has nothing to aim at.
+    fn focus_editor(&mut self) {
+        let id = self.editor_id();
+        self.ctx.memory_mut(|memory| memory.request_focus(id));
+        self.settle();
+        assert_eq!(self.focused(), Some(id));
+    }
+
+    /// True if the Scripts panel shows exactly `text`.
+    fn in_scripts(&self, text: &str) -> bool {
+        self.find_text_in(text, Rect::from_min_max(Pos2::ZERO, egui::pos2(SCRIPTS_WIDTH, self.size.y))).is_some()
+    }
+
+    /// Starts the app again on the same library.
+    fn restart(&mut self) {
+        eframe::App::on_exit(&mut self.app);
+        self.ctx = egui::Context::default();
+        ui_kit::apply(&self.ctx);
+        let workspace = Workspace::new(Store::open(&self.folder).unwrap());
+        self.app = PrompterApp::with_library(true, AlphaInUse::default(), Ok(workspace));
+        self.app.clipboard = Box::new(self.clipboard.clone());
+        self.settle();
     }
 
     /// Clicks into the editor, past the end of its text.
@@ -557,4 +659,374 @@ fn a_right_click_on_empty_space_in_the_scripts_panel_offers_new_and_import() {
     }
     library.click_text("New folderCtrl+Shift+N");
     assert!(matches!(library.app.dialog, Some(Dialog::Name { naming: Naming::NewFolder, .. })));
+}
+
+#[test]
+fn ctrl_tab_and_ctrl_w_work_from_the_editor_without_editing_it() {
+    let mut library = Library::with_script("first words");
+    library.add_script("Two", "second words");
+    library.add_script("Three", "third words");
+    library.click_into_editor();
+
+    library.key(CTRL, Key::Tab);
+    assert_eq!(library.active_title(), "Test");
+    assert_eq!(library.focused(), Some(library.editor_id()));
+    library.key(CTRL_SHIFT, Key::Tab);
+    assert_eq!(library.active_title(), "Three");
+    library.key(CTRL_SHIFT, Key::Tab);
+    assert_eq!(library.active_title(), "Two");
+    assert_eq!(library.script(), "second words");
+
+    // egui's editor would delete a word on Ctrl+W.
+    library.key(CTRL, Key::W);
+    assert_eq!(library.tab_titles(), ["Test", "Three"]);
+    assert_eq!(library.active_title(), "Three");
+    assert_eq!(library.focused(), Some(library.editor_id()));
+    let texts: Vec<&str> = library.workspace().tabs().iter().map(|tab| tab.text.as_str()).collect();
+    assert_eq!(texts, ["first words", "third words"]);
+    assert_eq!(library.workspace().store().load(&library.id_of("Two")).unwrap(), "second words");
+
+    // With a dialog open, the keys leave the tabs alone.
+    library.pick("File", Item::NewFolder);
+    library.key(CTRL, Key::W);
+    assert_eq!(library.tab_titles().len(), 2);
+}
+
+#[test]
+fn each_tab_keeps_its_cursor_selection_and_undo_history() {
+    let mut library = Library::with_script("alpha beta");
+    library.add_script("Two", "gamma delta");
+    library.key(CTRL, Key::Tab);
+    library.click_into_editor();
+    library.type_text(" one");
+    library.key(CTRL, Key::Home);
+    for _ in 0..5 {
+        library.key(Modifiers::SHIFT, Key::ArrowRight);
+    }
+
+    library.key(CTRL, Key::Tab);
+    library.key(CTRL, Key::End);
+    library.type_text(" two");
+    assert_eq!(library.script(), "gamma delta two");
+
+    // Back on the first tab, the selection is still there.
+    library.key(CTRL, Key::Tab);
+    assert!(library.app.menu_state().editor.has_selection);
+    assert!(library.app.menu_state().editor.can_undo);
+    library.type_text("ALPHA");
+    assert_eq!(library.script(), "ALPHA beta one");
+    library.key(CTRL, Key::Z);
+    library.key(CTRL, Key::Z);
+    assert_eq!(library.script(), "alpha beta");
+
+    // The other tab's history is its own.
+    library.key(CTRL, Key::Tab);
+    assert_eq!(library.script(), "gamma delta two");
+    library.key(CTRL, Key::Z);
+    assert_eq!(library.script(), "gamma delta");
+}
+
+#[test]
+fn each_tab_keeps_its_scroll_until_it_is_closed() {
+    let long = (1..=200).map(|n| format!("line {n}")).collect::<Vec<_>>().join("\n");
+    let mut library = Library::with_script(&long);
+    library.add_script("Two", "short");
+    library.key(CTRL, Key::Tab);
+    let top = |library: &Library| library.find_text(library.script()).unwrap().top();
+    let unscrolled = top(&library);
+
+    // Scrolled by the wheel, so the cursor stays at the top.
+    library.step(vec![Event::PointerMoved(egui::pos2(500.0, 300.0))]);
+    library.step(vec![Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -600.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    }]);
+    for _ in 0..8 {
+        library.settle();
+    }
+    let scrolled = top(&library);
+    assert!(scrolled < unscrolled - 100.0, "{scrolled} {unscrolled}");
+
+    library.key(CTRL, Key::Tab);
+    library.key(CTRL, Key::Tab);
+    assert_eq!(top(&library), scrolled);
+
+    // A closed and reopened script starts at the top.
+    library.key(CTRL, Key::W);
+    library.app.script_action(&library.ctx.clone(), Action::Open(library.id_of("Test")));
+    library.settle();
+    assert_eq!(top(&library), unscrolled);
+}
+
+#[test]
+fn a_closed_tab_leaves_no_editor_state_behind() {
+    let mut library = Library::with_script("words");
+    library.add_script("Two", "more");
+    library.click_into_editor();
+    let closed = library.editor_id();
+    assert!(egui::text_edit::TextEditState::load(&library.ctx, closed).is_some());
+    library.key(CTRL, Key::W);
+    assert!(egui::text_edit::TextEditState::load(&library.ctx, closed).is_none());
+}
+
+#[test]
+fn tabs_open_on_a_click_and_close_by_their_button_or_a_middle_click() {
+    let mut library = Library::with_script("words");
+    library.add_script("Two", "two");
+    library.add_script("Three", "three");
+
+    library.click(library.tab_rect(0).center(), PointerButton::Primary);
+    assert_eq!(library.active_title(), "Test");
+
+    // The close button shows only with the pointer over the tab.
+    library.step(vec![Event::PointerGone]);
+    library.settle();
+    assert!(library.find_text(ui_kit::icons::regular::X).is_none());
+    library.step(vec![Event::PointerMoved(library.tab_rect(1).center())]);
+    library.settle();
+    let close = library.find_text(ui_kit::icons::regular::X).unwrap();
+    assert!(library.tab_rect(1).contains(close.center()));
+    library.click(close.center(), PointerButton::Primary);
+    assert_eq!(library.tab_titles(), ["Test", "Three"]);
+    assert_eq!(library.active_title(), "Test", "closing a tab must not show it");
+
+    library.click(library.tab_rect(1).center(), PointerButton::Middle);
+    assert_eq!(library.tab_titles(), ["Test"]);
+    library.click(library.tab_rect(0).center(), PointerButton::Middle);
+    assert!(library.app.tab_bar.rects.is_empty());
+    assert!(library.find_text("Pick a script or create one").is_some());
+}
+
+#[test]
+fn twelve_tabs_in_the_smallest_window_scroll_the_shown_one_into_view() {
+    let mut library = Library::with_script("words");
+    library.size = egui::vec2(900.0, 480.0);
+    for number in 2..=13 {
+        library.add_script(&format!("Script {number}"), "words");
+    }
+    assert_eq!(library.app.tab_bar.rects.len(), 12);
+    let [_, editor, _] = columns(Rect::from_min_size(Pos2::ZERO, library.size).shrink(space::SCALE_8));
+    let in_view = |library: &Library, at: usize| {
+        let tab = library.tab_rect(at);
+        tab.left() >= editor.left() && tab.right() <= editor.right()
+    };
+    for _ in 0..4 {
+        library.settle();
+    }
+    assert!(in_view(&library, 11), "{:?} {editor:?}", library.tab_rect(11));
+    library.key(CTRL, Key::Tab);
+    for _ in 0..4 {
+        library.settle();
+    }
+    assert!(in_view(&library, 0), "{:?} {editor:?}", library.tab_rect(0));
+}
+
+#[test]
+fn only_a_live_tab_shows_the_live_badge() {
+    let mut library = Library::with_script("words");
+    library.add_script("Two", "two");
+    assert!(library.find_text("Live").is_none());
+    let id = library.id_of("Test");
+    library.app.workspace.as_mut().unwrap().tab_mut(&id).unwrap().live = true;
+    library.settle();
+    // It stays on the running script's tab with another one shown.
+    let badge = library.find_text("Live").unwrap();
+    assert!(library.tab_rect(0).contains(badge.center()), "{badge:?}");
+    assert_eq!(library.text_rects("Live").len(), 1);
+}
+
+#[test]
+fn the_star_marks_a_favorite_without_opening_the_script() {
+    let mut library = Library::with_script("words");
+    library.add_script("Alpha", "a");
+    library.add_script("Zulu", "z");
+    assert!(library.row("Alpha").top() < library.row("Zulu").top());
+
+    library.click(library.star("Zulu"), PointerButton::Primary);
+    library.click(library.star("Test"), PointerButton::Primary);
+    assert!(library.is_favorite("Zulu") && library.is_favorite("Test"));
+    library.click(library.star("Test"), PointerButton::Primary);
+    assert!(!library.is_favorite("Test"));
+    assert_eq!(library.active_title(), "Zulu");
+    // Favorites come first.
+    assert!(library.row("Zulu").top() < library.row("Alpha").top());
+
+    // The row's menu, from the row and from its star.
+    library.click(library.row("Alpha").center(), PointerButton::Secondary);
+    library.click_text("Add to favorites");
+    assert!(library.is_favorite("Alpha"));
+    library.click(library.star("Alpha"), PointerButton::Secondary);
+    library.click_text("Remove from favorites");
+    assert!(!library.is_favorite("Alpha"));
+}
+
+#[test]
+fn the_favorites_chip_lists_only_favorites() {
+    let mut library = Library::with_script("shared words");
+    library.add_script("Alpha", "shared words");
+    library.app.workspace.as_mut().unwrap().create_folder("Ads").unwrap();
+    library.settle();
+    // The header has room for the title, the chip and New folder side by side.
+    let [title, chip] = ["Scripts", "Favorites"].map(|text| library.row(text));
+    let button = format!("{}{}", ui_kit::icons::regular::FOLDER_PLUS, Item::NewFolder.label());
+    let button = library.find_text(&button).unwrap();
+    assert!(title.right() < chip.left() && chip.right() < button.left() && button.right() < SCRIPTS_WIDTH, "{title:?} {chip:?} {button:?}");
+    library.click_text("Favorites");
+    assert!(library.find_text("No favorites yet").is_some());
+    library.click_text("Favorites");
+
+    library.click(library.star("Alpha"), PointerButton::Primary);
+    library.click_text("Favorites");
+    assert!(library.in_scripts("Alpha") && !library.in_scripts("Test"));
+    assert!(!library.in_scripts("Ads"), "an empty folder is listed under the filter");
+
+    // A search looks only through the favorites.
+    library.key(CTRL_SHIFT, Key::F);
+    library.type_text("shared");
+    assert!(library.in_scripts("Alpha") && !library.in_scripts("Test"));
+    library.click_text("Favorites");
+    assert!(library.in_scripts("Alpha") && library.in_scripts("Test"));
+}
+
+#[test]
+fn the_sort_and_closed_folders_are_remembered() {
+    let mut library = Library::with_script("words");
+    library.add_script("Alpha", "a");
+    let workspace = library.app.workspace.as_mut().unwrap();
+    workspace.create_folder("Ads").unwrap();
+    let id = workspace.open_script().unwrap().id.clone();
+    workspace.move_to_folder(&id, Some("Ads")).unwrap();
+    library.settle();
+
+    library.click_text("Last edited");
+    assert_eq!(library.workspace().store().library().sort, prompter_core::store::Sort::Edited);
+
+    library.click(library.row("Ads").center(), PointerButton::Primary);
+    assert_eq!(library.workspace().store().library().collapsed_folders, ["Ads"]);
+    for _ in 0..4 {
+        library.settle();
+    }
+    assert!(!library.in_scripts("Alpha"));
+
+    // The app starts again on the same folder, and shows both choices.
+    library.restart();
+    assert!(!library.in_scripts("Alpha"));
+    assert_eq!(library.tab_titles(), ["Test", "Alpha"]);
+    assert_eq!(library.active_title(), "Alpha");
+    assert_eq!(library.script(), "a");
+
+    // A search shows the match in a closed folder, and the folder stays closed after it.
+    library.key(CTRL_SHIFT, Key::F);
+    library.type_text("Alpha");
+    for _ in 0..4 {
+        library.settle();
+    }
+    assert!(library.in_scripts("Alpha"));
+    assert_eq!(library.workspace().store().library().collapsed_folders, ["Ads"]);
+    library.app.scripts = ScriptsPanel::default();
+    library.settle();
+
+    library.click(library.row("Ads").center(), PointerButton::Primary);
+    assert!(library.workspace().store().library().collapsed_folders.is_empty());
+}
+
+#[test]
+fn files_dropped_on_a_script_row_import_into_its_folder() {
+    let mut library = Library::with_script("words");
+    library.add_script("Filed", "f");
+    let workspace = library.app.workspace.as_mut().unwrap();
+    workspace.create_folder("Ads").unwrap();
+    let id = workspace.open_script().unwrap().id.clone();
+    workspace.move_to_folder(&id, Some("Ads")).unwrap();
+    library.settle();
+    // Past the title's end, as far across as the row reaches.
+    let on_row = |library: &Library, title: &str| egui::pos2(200.0, library.row(title).center().y);
+
+    let at = on_row(&library, "Filed");
+    library.hovered = vec![egui::HoveredFile::default()];
+    library.app.drag_pointer_at = Some(at);
+    library.settle();
+    let mark = library.drop_mark().unwrap();
+    assert!(mark.contains(at) && mark.height() < 40.0, "{mark:?}");
+    library.drop_files(&[library.outside_file("first.md", "one")], at);
+    assert!(library.filed().contains(&("first".to_owned(), Some("Ads".to_owned()))), "{:?}", library.filed());
+
+    // An unfiled script's row, then the Unfiled heading.
+    for (name, row) in [("second", "Test"), ("third", "Unfiled")] {
+        let file = [library.outside_file(&format!("{name}.md"), "two")];
+        let at = on_row(&library, row);
+        library.drop_files(&file, at);
+        assert!(library.filed().contains(&(name.to_owned(), None)), "{row}: {:?}", library.filed());
+    }
+}
+
+#[test]
+fn ctrl_v_with_html_and_no_text_pastes_on_the_release_of_v() {
+    let mut library = Library::with_script("");
+    library.focus_editor();
+    library.put_on_clipboard(Some("<b>only</b>"), None);
+    library.press_paste(CTRL);
+    assert_eq!(library.script(), "**only**");
+    // One undo step, like any paste.
+    library.key(CTRL, Key::Z);
+    assert_eq!(library.script(), "");
+
+    // Ctrl let go before V.
+    library.step_paste(CTRL);
+    library.step(vec![Event::ModifiersChanged(Modifiers::NONE)]);
+    library.step(vec![release(Key::V, Modifiers::NONE)]);
+    library.settle();
+    assert_eq!(library.script(), "**only**");
+
+    // Twice with Ctrl held throughout.
+    library.step_paste(CTRL);
+    library.step(vec![release(Key::V, CTRL)]);
+    library.step(vec![release(Key::V, CTRL)]);
+    library.step(vec![Event::ModifiersChanged(Modifiers::NONE)]);
+    library.settle();
+    assert_eq!(library.script(), "**only****only****only**");
+
+    // A plain-text paste has nothing to take.
+    library.press_paste(CTRL_SHIFT);
+    assert_eq!(library.script(), "**only****only****only**");
+}
+
+#[test]
+fn the_release_of_v_pastes_only_for_a_press_that_sent_nothing() {
+    let mut library = Library::with_script("");
+    library.focus_editor();
+    library.put_on_clipboard(Some("<b>html</b>"), Some("html"));
+    // With text too, the window's paste arrives, and the release adds nothing.
+    library.press_paste(CTRL);
+    assert_eq!(library.script(), "**html**");
+
+    // A typed v, with Ctrl down before it is let go.
+    library.put_on_clipboard(Some("<b>only</b>"), None);
+    let press = Event::Key { key: Key::V, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE };
+    library.step(vec![press, Event::Text("v".to_owned())]);
+    library.step(vec![Event::ModifiersChanged(CTRL)]);
+    library.step(vec![release(Key::V, CTRL)]);
+    library.step(vec![Event::ModifiersChanged(Modifiers::NONE)]);
+    library.settle();
+    assert_eq!(library.script(), "**html**v");
+
+    // A release with Ctrl not held since the window came back.
+    library.step(vec![Event::ModifiersChanged(CTRL), Event::WindowFocused(false), Event::ModifiersChanged(Modifiers::NONE)]);
+    library.step(vec![Event::WindowFocused(true), release(Key::V, Modifiers::NONE)]);
+    library.settle();
+    library.focus_editor();
+    assert_eq!(library.script(), "**html**v");
+
+    // Shift+Insert pastes without a V, and the next Ctrl+V still works.
+    library.step(vec![Event::Paste("x".to_owned())]);
+    library.settle();
+    library.press_paste(CTRL);
+    assert_eq!(library.script(), "**html**v**only****only**");
+
+    // In the find field, the release does not paste into the script.
+    library.key(CTRL, Key::F);
+    library.press_paste(CTRL);
+    assert_eq!(library.script(), "**html**v**only****only**");
 }

@@ -15,6 +15,7 @@ mod renderer;
 mod scripts_panel;
 mod snapshots;
 mod stats;
+mod tabs;
 mod view;
 mod workspace;
 

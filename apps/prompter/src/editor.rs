@@ -1,6 +1,7 @@
 //! The script editor: a monospace text field that keeps its selection while a menu or the
 //! find bar has the keyboard, and the Edit menu's commands for it.
 
+use std::collections::HashSet;
 use std::ops::Range;
 
 use egui::text::{CCursor, CCursorRange, CharIndex, LayoutJob, TextFormat};
@@ -20,32 +21,78 @@ pub fn id(serial: u64) -> egui::Id {
     egui::Id::new(("script-editor", serial))
 }
 
+/// Watches for a Ctrl+V the window sends no paste for. With no text on the clipboard, such as
+/// with HTML alone, the window sends nothing at all for the press of V, only its release.
+#[derive(Debug, Default)]
+pub struct PasteKeys {
+    /// The modifiers as of the last time Ctrl was held, since V was last released.
+    chord: Option<egui::Modifiers>,
+    /// The press of V has arrived, so it was no paste.
+    typed: bool,
+    /// A paste has arrived since Ctrl went down.
+    pasted: bool,
+}
+
+impl PasteKeys {
+    /// Takes in one event, with the modifiers held before it. For the release of a V whose
+    /// press sent nothing, returns the modifiers the paste was asked with. Ctrl may have been
+    /// let go first.
+    fn missed(&mut self, event: &egui::Event, held: egui::Modifiers) -> Option<egui::Modifiers> {
+        match event {
+            egui::Event::ModifiersChanged(modifiers) if modifiers.command => {
+                if !held.command {
+                    self.pasted = false;
+                }
+                self.chord = Some(*modifiers);
+            }
+            egui::Event::Paste(_) => self.pasted = true,
+            egui::Event::Key { key: egui::Key::V, pressed: true, .. } => self.typed = true,
+            egui::Event::Key { key: egui::Key::V, pressed: false, .. } => {
+                let chord = if held.command { Some(held) } else { self.chord.take() };
+                let typed = std::mem::take(&mut self.typed);
+                let pasted = std::mem::take(&mut self.pasted);
+                return chord.filter(|_| !typed && !pasted);
+            }
+            // What happens in another window is not heard.
+            egui::Event::WindowFocused(false) => *self = Self::default(),
+            _ => {}
+        }
+        None
+    }
+}
+
 /// Puts what the clipboard holds in place of the text of each paste the window reported, if
 /// the editor has the keyboard: its HTML as Markdown, or with Ctrl+Shift held its plain text.
-/// With nothing to paste, the event is dropped. Call it before [`Editor::show`] and before
-/// [`command`], whose pastes are ready as they are. `held` is the modifiers as of the end of
-/// the last frame.
-pub fn rich_paste(ui: &egui::Ui, id: egui::Id, clipboard: &dyn Clipboard, mut held: egui::Modifiers) {
-    if !ui.memory(|memory| memory.has_focus(id)) {
-        return;
-    }
+/// With nothing to paste, the event is dropped. A Ctrl+V the window reported no paste for is
+/// pasted as the Edit menu would. Call it every frame, with `id` `None` with no script open,
+/// before [`Editor::show`] and before [`command`], whose pastes are ready as they are. `held`
+/// is the modifiers as of the end of the last frame.
+pub fn rich_paste(ui: &egui::Ui, id: Option<egui::Id>, clipboard: &dyn Clipboard, keys: &mut PasteKeys, mut held: egui::Modifiers) {
+    let focused = id.filter(|&id| ui.memory(|memory| memory.has_focus(id)));
+    let mut missed = None;
     ui.input_mut(|input| {
-        input.events.retain_mut(|event| match event {
-            // The modifiers may change again in the same frame, so they are followed in order.
-            egui::Event::ModifiersChanged(modifiers) => {
-                held = *modifiers;
-                true
-            }
-            egui::Event::Paste(text) => match clipboard::paste_from(clipboard, held.command && held.shift) {
-                Some(pasted) => {
-                    *text = pasted;
+        input.events.retain_mut(|event| {
+            missed = keys.missed(event, held).or(missed);
+            match event {
+                // The modifiers may change again in the same frame, so they are followed in order.
+                egui::Event::ModifiersChanged(modifiers) => {
+                    held = *modifiers;
                     true
                 }
-                None => false,
-            },
-            _ => true,
+                egui::Event::Paste(text) if focused.is_some() => match clipboard::paste_from(clipboard, held.command && held.shift) {
+                    Some(pasted) => {
+                        *text = pasted;
+                        true
+                    }
+                    None => false,
+                },
+                _ => true,
+            }
         });
     });
+    if let (Some(id), Some(chord)) = (focused, missed) {
+        command(ui, id, if chord.shift { Item::PastePlain } else { Item::Paste }, clipboard);
+    }
 }
 
 /// Gives the editor the keyboard and has it do what an Edit menu item asks, as if the keys had
@@ -99,12 +146,15 @@ pub struct Shown {
     pub response: egui::Response,
 }
 
-/// What is remembered about the open script's editor between frames.
+/// What is remembered about the editors between frames. The status and cursor are the shown
+/// one's. egui keeps each one's cursor, selection, scroll and undo history under its ids.
 #[derive(Default)]
 pub struct Editor {
     serial: u64,
-    /// The text has changed since the script was opened.
-    edited: bool,
+    /// The openings that have been shown, whose state egui holds.
+    shown: HashSet<u64>,
+    /// The openings whose text has changed since they were opened.
+    edited: HashSet<u64>,
     /// The selection the undo flags were last read at.
     seen: Option<CCursorRange>,
     status: Status,
@@ -122,15 +172,30 @@ impl Editor {
         self.cursor_line
     }
 
+    /// Drops the cursor and undo history of each opening that is no longer open.
+    pub fn forget_closed(&mut self, ctx: &egui::Context, open: &[u64]) {
+        self.edited.retain(|serial| open.contains(serial));
+        self.shown.retain(|&serial| {
+            let keep = open.contains(&serial);
+            if !keep {
+                ctx.data_mut(|data| data.remove::<TextEditState>(id(serial)));
+            }
+            keep
+        });
+    }
+
     /// The editor, filling the space left.
     pub fn show(&mut self, ui: &mut egui::Ui, serial: u64, text: &mut String, highlight: Option<Highlight<'_>>) -> Shown {
         if self.serial != serial {
-            *self = Self { serial, ..Default::default() };
+            (self.serial, self.seen, self.status) = (serial, None, Status::default());
         }
+        self.shown.insert(serial);
         let id = id(serial);
         let shown = egui::ScrollArea::vertical().id_salt(id).auto_shrink(false).show(ui, |ui| field(ui, id, text, highlight)).inner;
 
-        self.edited |= shown.changed;
+        if shown.changed {
+            self.edited.insert(serial);
+        }
         let state = TextEditState::load(ui.ctx(), id).unwrap_or_default();
         let range = state.cursor.char_range().unwrap_or_default();
         self.cursor_line = line_of(text, range.primary.index);
@@ -142,7 +207,7 @@ impl Editor {
             let undoer = state.undoer();
             let now = (range, text.clone());
             // Before the first change, the history holds only where the cursor was.
-            self.status.can_undo = self.edited && undoer.has_undo(&now);
+            self.status.can_undo = self.edited.contains(&serial) && undoer.has_undo(&now);
             self.status.can_redo = undoer.has_redo(&now);
         }
         shown
