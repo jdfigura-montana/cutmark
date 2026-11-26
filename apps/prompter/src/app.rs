@@ -1,7 +1,7 @@
 //! The Prompter's root window: the Library (spec "Library window").
 
 use std::cell::Cell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
@@ -17,6 +17,7 @@ use crate::editor::{self, Editor, PasteKeys};
 use crate::file_drop;
 use crate::find::FindBar;
 use crate::menu::{EDITOR_MENU, Item, MENUS, MenuState, SCRIPTS_MENU};
+use crate::prefs::EditorPrefs;
 use crate::preview::Preview;
 use crate::renderer::AlphaInUse;
 use crate::scripts_panel::{Action, ScriptsPanel};
@@ -84,6 +85,7 @@ pub struct PrompterApp {
     workspace: Result<Workspace, String>,
     scripts: ScriptsPanel,
     editor: Editor,
+    prefs: EditorPrefs,
     tab_bar: TabBar,
     find: FindBar,
     preview: Preview,
@@ -116,15 +118,16 @@ impl PrompterApp {
             log::error!("unsupported system: {err}");
         }
         // An unsupported system only ever sees its dialog, so no library is made on it.
-        let workspace = if os_check.is_ok() {
-            open_library().map_err(|err| {
+        let folder = if os_check.is_ok() { Some(data_folder()) } else { None };
+        let prefs = folder.as_ref().and_then(|folder| folder.as_deref().ok()).map(EditorPrefs::load).unwrap_or_default();
+        let workspace = match folder {
+            Some(folder) => folder.and_then(|folder| open_library(&folder)).map_err(|err| {
                 log::error!("the script library could not be opened: {err:#}");
                 format!("The script library could not be opened.\n{err:#}")
-            })
-        } else {
-            Err(String::new())
+            }),
+            None => Err(String::new()),
         };
-        Self { instance: Some(instance), ..Self::with_library(os_check.is_ok(), alpha, workspace) }
+        Self { instance: Some(instance), prefs, ..Self::with_library(os_check.is_ok(), alpha, workspace) }
     }
 
     fn with_library(supported: bool, alpha: AlphaInUse, workspace: Result<Workspace, String>) -> Self {
@@ -141,6 +144,7 @@ impl PrompterApp {
             workspace,
             scripts: ScriptsPanel::default(),
             editor: Editor::default(),
+            prefs: EditorPrefs::default(),
             tab_bar: TabBar::default(),
             find: FindBar::default(),
             preview: Preview::default(),
@@ -167,6 +171,7 @@ impl PrompterApp {
             library_open: workspace.is_some(),
             script_open,
             several_tabs: workspace.is_some_and(|workspace| workspace.tabs().len() > 1),
+            show_markdown: self.prefs.show_markdown(),
             editor: if script_open { self.editor.status() } else { Default::default() },
             clipboard_has_text: self.menu_clipboard.has_text(),
             clipboard_has_html: self.menu_clipboard.has_html(),
@@ -212,10 +217,19 @@ impl PrompterApp {
             }
             Item::HideView => self.view = None,
             Item::ClickThrough => self.click_through = !self.click_through,
+            Item::ShowMarkdown => self.toggle_show_markdown(ctx),
             Item::Appearance => self.appearance_open = true,
             Item::About => self.about_open = true,
             _ => {}
         }
+    }
+
+    fn toggle_show_markdown(&mut self, ctx: &egui::Context) {
+        if let Err(error) = self.prefs.set_show_markdown(!self.prefs.show_markdown()) {
+            log::error!("the editor settings were not saved: {error}");
+            toast(ctx, format!("Show Markdown could not be saved for next time: {error}"));
+        }
+        ctx.request_repaint();
     }
 
     /// The File menu's script items. All but Import act on the open script.
@@ -392,6 +406,7 @@ impl PrompterApp {
         let (left, right) = split(ui.available_rect_before_wrap(), self.preview.open);
         // Both layouts go through this scope, so that the editor keeps its scroll position.
         let left = egui::UiBuilder::new().id_salt("editor-half").max_rect(left);
+        self.editor.show_markdown(self.prefs.show_markdown());
         let shown = ui.scope_builder(left, |ui| self.editor.show(ui, serial, &mut open.text, self.find.highlight())).inner;
         self.find.note_keyboard(ui, id);
         match right {
@@ -646,11 +661,15 @@ impl PrompterApp {
     }
 }
 
-/// Opens the library in `%APPDATA%\Cutmark\prompter`.
-fn open_library() -> anyhow::Result<Workspace> {
+/// The Prompter's folder, `%APPDATA%\Cutmark\prompter`.
+fn data_folder() -> anyhow::Result<PathBuf> {
     let dirs = directories::BaseDirs::new().context("the user's config folder could not be found")?;
-    let store = Store::open(&dirs.config_dir().join("Cutmark").join("prompter"))?;
-    Ok(Workspace::new(store))
+    Ok(dirs.config_dir().join("Cutmark").join("prompter"))
+}
+
+/// Opens the library kept in `folder`.
+fn open_library(folder: &Path) -> anyhow::Result<Workspace> {
+    Ok(Workspace::new(Store::open(folder)?))
 }
 
 fn toast(ctx: &egui::Context, text: impl Into<String>) {
@@ -817,7 +836,7 @@ fn menu_rows(ui: &mut egui::Ui, groups: &[&[Item]], state: MenuState, click_thro
             ui.separator();
         }
         for &item in *group {
-            let checked = item == Item::ClickThrough && click_through;
+            let checked = (item == Item::ClickThrough && click_through) || (item == Item::ShowMarkdown && state.show_markdown);
             if ui.add_enabled(item.enabled(state), menu_button(item).selected(checked)).clicked() {
                 picked = Some(item);
                 ui.close();

@@ -63,16 +63,16 @@ const PREVIEW_SIZE: f32 = 28.0;
 /// Line height as a multiple of the text size.
 const LINE_HEIGHT: f32 = 1.35;
 /// Heading sizes for levels 1 to 6, as multiples of the text size.
-const HEADING_SCALE: [f32; 6] = [1.6, 1.4, 1.25, 1.15, 1.15, 1.15];
+pub(crate) const HEADING_SCALE: [f32; 6] = [1.6, 1.4, 1.25, 1.15, 1.15, 1.15];
 /// The size of the pause glyph and of a mark's flag and label.
 const CUE_SCALE: f32 = 0.7;
 
 // The lengths below are multiples of the text size.
 
 /// The indent of one list level. A two-digit number fits in it.
-const LIST_INDENT: f32 = 1.8;
+pub(crate) const LIST_INDENT: f32 = 1.8;
 /// The gap between a list marker and its text.
-const MARKER_GAP: f32 = 0.35;
+pub(crate) const MARKER_GAP: f32 = 0.35;
 const QUOTE_INDENT: f32 = 0.8;
 const QUOTE_BAR: f32 = 0.15;
 /// The space between two blocks, and between two list items.

@@ -33,6 +33,7 @@ pub enum Item {
     HideView,
     ClickThrough,
     Outline,
+    ShowMarkdown,
     NextTab,
     PreviousTab,
     Appearance,
@@ -51,6 +52,8 @@ pub struct MenuState {
     pub script_open: bool,
     /// More than one tab is open.
     pub several_tabs: bool,
+    /// The editor shows all its Markdown syntax.
+    pub show_markdown: bool,
     /// All false with no script open.
     pub editor: editor::Status,
     pub clipboard_has_text: bool,
@@ -70,7 +73,15 @@ pub const MENUS: [(&str, &[&[Item]]); 5] = [
     ),
     ("Edit", &[&[Item::Undo, Item::Redo], &[Item::Cut, Item::Copy, Item::Paste, Item::PastePlain], &[Item::SelectAll, Item::FindInScript, Item::SearchAll]]),
     ("Script", &[&[Item::StartOrPause, Item::ResetToTop, Item::JumpToSection, Item::ToggleMode]]),
-    ("View", &[&[Item::Views, Item::ShowView, Item::HideView, Item::ClickThrough], &[Item::Outline], &[Item::NextTab, Item::PreviousTab], &[Item::Appearance]]),
+    (
+        "View",
+        &[
+            &[Item::Views, Item::ShowView, Item::HideView, Item::ClickThrough],
+            &[Item::Outline, Item::ShowMarkdown],
+            &[Item::NextTab, Item::PreviousTab],
+            &[Item::Appearance],
+        ],
+    ),
     ("Help", &[&[Item::Help, Item::KeyboardShortcuts, Item::Tour], &[Item::About]]),
 ];
 
@@ -114,6 +125,7 @@ impl Item {
             Self::HideView => "Hide view",
             Self::ClickThrough => "Click-through",
             Self::Outline => "Outline",
+            Self::ShowMarkdown => "Show Markdown",
             Self::Appearance => "Appearance",
             Self::Help => "Help",
             Self::KeyboardShortcuts => "Keyboard shortcuts",
@@ -147,7 +159,7 @@ impl Item {
     /// Whether the item can be used now.
     pub fn enabled(self, state: MenuState) -> bool {
         match self {
-            Self::Exit | Self::ClickThrough | Self::Appearance | Self::About => true,
+            Self::Exit | Self::ClickThrough | Self::ShowMarkdown | Self::Appearance | Self::About => true,
             Self::ShowView => !state.view_open,
             Self::HideView => state.view_open,
             Self::NewScript | Self::NewFolder | Self::Import | Self::SearchAll => state.library_open,
@@ -183,7 +195,7 @@ mod tests {
     #[test]
     fn with_no_script_the_items_that_need_one_are_disabled() {
         use Item::*;
-        assert_eq!(enabled(false, false), [NewScript, NewFolder, Import, Exit, SearchAll, ShowView, ClickThrough, Appearance, About]);
+        assert_eq!(enabled(false, false), [NewScript, NewFolder, Import, Exit, SearchAll, ShowView, ClickThrough, ShowMarkdown, Appearance, About]);
         // Text on the clipboard has nowhere to go.
         let state = MenuState { library_open: true, clipboard_has_text: true, ..Default::default() };
         assert_eq!(enabled_in(state), enabled(false, false));
@@ -193,7 +205,7 @@ mod tests {
     fn an_open_script_with_nothing_to_edit_enables_its_file_items_and_find() {
         use Item::*;
         let mut expected = vec![NewScript, NewFolder, Import, Export, Duplicate, Delete, Snapshots, CloseTab, Exit];
-        expected.extend([FindInScript, SearchAll, ShowView, ClickThrough, Appearance, About]);
+        expected.extend([FindInScript, SearchAll, ShowView, ClickThrough, ShowMarkdown, Appearance, About]);
         assert_eq!(enabled(false, true), expected);
     }
 
@@ -230,7 +242,7 @@ mod tests {
     #[test]
     fn with_no_library_nothing_that_needs_it_is_enabled() {
         use Item::*;
-        assert_eq!(enabled_in(MenuState::default()), [Exit, ShowView, ClickThrough, Appearance, About]);
+        assert_eq!(enabled_in(MenuState::default()), [Exit, ShowView, ClickThrough, ShowMarkdown, Appearance, About]);
     }
 
     #[test]
@@ -251,7 +263,7 @@ mod tests {
     #[test]
     fn every_item_from_the_spec_is_listed_once() {
         let counts: Vec<(&str, usize)> = MENUS.iter().map(|(title, groups)| (*title, groups.iter().map(|group| group.len()).sum())).collect();
-        assert_eq!(counts, [("File", 10), ("Edit", 9), ("Script", 4), ("View", 8), ("Help", 4)]);
+        assert_eq!(counts, [("File", 10), ("Edit", 9), ("Script", 4), ("View", 9), ("Help", 4)]);
         let items = all();
         for (index, item) in items.iter().enumerate() {
             assert!(!items[..index].contains(item), "{item:?} is listed twice");

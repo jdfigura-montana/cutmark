@@ -1,16 +1,17 @@
-//! The script editor: a monospace text field that keeps its selection while a menu or the
-//! find bar has the keyboard, and the Edit menu's commands for it.
+//! The script editor: a styled Markdown text field that keeps its selection while a menu or
+//! the find bar has the keyboard, and the Edit menu's commands for it.
 
 use std::collections::HashSet;
 use std::ops::Range;
 
-use egui::text::{CCursor, CCursorRange, CharIndex, LayoutJob, TextFormat};
+use egui::text::{CCursor, CCursorRange, CharIndex};
 use egui::text_edit::TextEditState;
-use ui_kit::tokens::{color, typography};
+use ui_kit::tokens::{color, space};
 
 use crate::clipboard::{self, Clipboard};
 use crate::find;
 use crate::menu::Item;
+use crate::styled::{self, ParseCache, Reveal};
 
 /// How strongly the accent color backs a find match, and the current one.
 const MATCH_TINT: f32 = 0.3;
@@ -160,6 +161,57 @@ pub struct Editor {
     status: Status,
     /// The 1-based line of the text the cursor is on.
     cursor_line: u32,
+    look: Look,
+}
+
+/// What the styled layout needs besides the text.
+#[derive(Default)]
+struct Look {
+    cache: ParseCache,
+    /// The View menu's Show Markdown.
+    show_markdown: bool,
+    /// The 0-based line whose syntax shows: the cursor's, as of the last time no mouse button
+    /// was held.
+    revealed: Option<usize>,
+    /// The latest click, or the first of a run of them.
+    click: Option<Click>,
+}
+
+#[derive(Clone, Copy)]
+struct Click {
+    at: egui::Pos2,
+    /// What was revealed in the layout it was aimed at.
+    revealed: Option<usize>,
+    /// When the button was last let go.
+    released: Option<f64>,
+}
+
+impl Look {
+    /// Picks the line to reveal in this frame's layout. Call it before the field is shown.
+    ///
+    /// A press places the cursor in the layout on screen. Showing the new line's syntax while
+    /// the button is held would move the text under the pointer, and so drag out a selection.
+    /// A double or triple click would also pick from text that has moved since its first
+    /// click, so a press that repeats a click goes back to that click's layout.
+    fn follow_cursor(&mut self, ui: &egui::Ui, id: egui::Id, text: &str) {
+        let (delay, distance) = ui.ctx().options(|options| (options.input_options.max_double_click_delay, options.input_options.max_click_dist));
+        let (pressed, released, held, at, now) = ui.input(|i| {
+            let held = i.pointer.any_down() || i.pointer.any_released();
+            (i.pointer.primary_pressed(), i.pointer.primary_released(), held, i.pointer.interact_pos(), i.time)
+        });
+        if let Some(at) = at.filter(|_| pressed) {
+            let repeated = self.click.filter(|click| click.released.is_some_and(|released| now - released <= delay) && click.at.distance(at) <= distance);
+            match repeated {
+                Some(first) => self.revealed = first.revealed,
+                None => self.click = Some(Click { at, revealed: self.revealed, released: None }),
+            }
+        } else if !held {
+            self.revealed = cursor_row(ui.ctx(), id, text);
+        }
+        if let Some(click) = self.click.as_mut().filter(|_| released) {
+            click.released = Some(now);
+        }
+    }
 }
 
 impl Editor {
@@ -184,14 +236,21 @@ impl Editor {
         });
     }
 
+    /// Shows every line's Markdown syntax, or hides it all but on the cursor's line.
+    pub fn show_markdown(&mut self, show: bool) {
+        self.look.show_markdown = show;
+    }
+
     /// The editor, filling the space left.
     pub fn show(&mut self, ui: &mut egui::Ui, serial: u64, text: &mut String, highlight: Option<Highlight<'_>>) -> Shown {
         if self.serial != serial {
             (self.serial, self.seen, self.status) = (serial, None, Status::default());
+            (self.look.revealed, self.look.click) = (None, None);
         }
         self.shown.insert(serial);
         let id = id(serial);
-        let shown = egui::ScrollArea::vertical().id_salt(id).auto_shrink(false).show(ui, |ui| field(ui, id, text, highlight)).inner;
+        let look = &mut self.look;
+        let shown = egui::ScrollArea::vertical().id_salt(id).auto_shrink(false).show(ui, |ui| field(ui, id, text, highlight, look)).inner;
 
         if shown.changed {
             self.edited.insert(serial);
@@ -220,8 +279,14 @@ fn line_of(text: &str, index: CharIndex) -> u32 {
     u32::try_from(breaks).map_or(u32::MAX, |breaks| breaks.saturating_add(1))
 }
 
+/// The 0-based line the field's cursor is on, or `None` before it has had one.
+fn cursor_row(ctx: &egui::Context, id: egui::Id, text: &str) -> Option<usize> {
+    let range = TextEditState::load(ctx, id)?.cursor.char_range()?;
+    Some(line_of(text, range.primary.index) as usize - 1)
+}
+
 /// The text field inside its scroll area.
-fn field(ui: &mut egui::Ui, id: egui::Id, text: &mut String, highlight: Option<Highlight<'_>>) -> Shown {
+fn field(ui: &mut egui::Ui, id: egui::Id, text: &mut String, highlight: Option<Highlight<'_>>, look: &mut Look) -> Shown {
     // egui drops the selection of a field without the keyboard, and a right-click moves the
     // cursor. The selection is put back below, so that menus and the find bar can act on it.
     let mut kept = TextEditState::load(ui.ctx(), id).and_then(|state| state.cursor.char_range());
@@ -234,28 +299,27 @@ fn field(ui: &mut egui::Ui, id: egui::Id, text: &mut String, highlight: Option<H
         kept = Some(range);
     }
 
-    let font = ui_kit::fonts::mono(typography::BODY_SIZE);
+    look.follow_cursor(ui, id, text);
+    let reveal = Reveal { line: look.revealed, all: look.show_markdown };
+
+    let font = styled::body_font();
     let line = ui.fonts_mut(|fonts| fonts.row_height(&font));
     // Enough empty rows that a click anywhere in the panel lands in the field.
     let rows = (ui.available_height() / line).floor().max(1.0) as usize;
     let accent = ui_kit::Theme::get(ui.ctx()).accent.accent;
-    let mut plain = TextFormat::simple(font.clone(), color::TEXT_PRIMARY);
-    plain.line_height = Some(line + ui.spacing().extra_text_line_spacing);
-    // egui's own layout for a multiline field, with the matches backed.
+    let cache = &mut look.cache;
     let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, wrap_width: f32| {
         let text = buffer.as_str();
-        let mut job = LayoutJob { keep_trailing_whitespace: true, ..Default::default() };
-        job.wrap.max_width = wrap_width;
-        let mut end = 0;
-        if let Some(highlight) = highlight {
-            for (index, found) in find::matches(text, highlight.query).into_iter().enumerate() {
-                let tint = if index == highlight.current { CURRENT_TINT } else { MATCH_TINT };
-                job.append(&text[end..found.start], 0.0, plain.clone());
-                job.append(&text[found.clone()], 0.0, TextFormat { background: accent.gamma_multiply(tint), ..plain.clone() });
-                end = found.end;
-            }
-        }
-        job.append(&text[end..], 0.0, plain.clone());
+        let found = highlight.map_or_else(Vec::new, |highlight| find::matches(text, highlight.query));
+        let tinted: Vec<_> = found
+            .into_iter()
+            .enumerate()
+            .map(|(index, found)| {
+                let current = highlight.is_some_and(|highlight| index == highlight.current);
+                (found, accent.gamma_multiply(if current { CURRENT_TINT } else { MATCH_TINT }))
+            })
+            .collect();
+        let job = styled::layout_job(ui, text, &cache.get(text), reveal, &tinted, wrap_width);
         ui.fonts_mut(|fonts| fonts.layout_job(job))
     };
 
@@ -266,11 +330,15 @@ fn field(ui: &mut egui::Ui, id: egui::Id, text: &mut String, highlight: Option<H
         add_undo_point(ui.ctx(), id, text);
     }
     let right_button = ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary) || i.pointer.button_released(egui::PointerButton::Secondary));
+    // A place under the text, for what is only known once the text is laid out.
+    let behind = ui.painter().add(egui::Shape::Noop);
+    let margin = egui::Margin { left: styled::GUTTER as i8, ..egui::Margin::symmetric(space::SCALE_4 as i8, space::SCALE_2 as i8) };
     let output = egui::TextEdit::multiline(text)
         .id(id)
         .font(font)
         .text_color(color::TEXT_PRIMARY)
         .frame(egui::Frame::NONE)
+        .margin(margin)
         .desired_width(f32::INFINITY)
         .desired_rows(rows)
         .layouter(&mut layouter)
@@ -279,6 +347,9 @@ fn field(ui: &mut egui::Ui, id: egui::Id, text: &mut String, highlight: Option<H
     if pasting {
         add_undo_point(ui.ctx(), id, text);
     }
+    let decorations = styled::decorations(ui, &look.cache.get(text), &output.galley, output.galley_pos.to_vec2(), reveal);
+    ui.painter().set(behind, egui::Shape::Vec(decorations.behind));
+    ui.painter().extend(decorations.front);
 
     if let Some(range) = kept {
         // A right-click inside the selection keeps it. Anywhere else, it moves the cursor.
@@ -298,6 +369,10 @@ fn field(ui: &mut egui::Ui, id: egui::Id, text: &mut String, highlight: Option<H
         let [first, _] = range.sorted_cursors();
         let at = output.galley.pos_from_cursor(first).translate(output.galley_pos.to_vec2());
         ui.scroll_to_rect(at, Some(egui::Align::Center));
+    }
+    // The cursor may have changed lines since the layout was made.
+    if !ui.input(|i| i.pointer.any_down()) && cursor_row(ui.ctx(), id, text) != reveal.line {
+        ui.ctx().request_repaint();
     }
     Shown { changed: response.changed(), response }
 }

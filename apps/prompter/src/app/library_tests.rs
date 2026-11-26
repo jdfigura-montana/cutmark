@@ -96,6 +96,7 @@ impl Library {
         let ctx = egui::Context::default();
         ui_kit::apply(&ctx);
         let mut app = PrompterApp::with_library(true, AlphaInUse::default(), Ok(workspace));
+        app.prefs = EditorPrefs::load(&folder);
         let clipboard = FakeClipboard::default();
         app.clipboard = Box::new(clipboard.clone());
         let frame = eframe::Frame::_new_kittest();
@@ -413,6 +414,7 @@ impl Library {
         ui_kit::apply(&self.ctx);
         let workspace = Workspace::new(Store::open(&self.folder).unwrap());
         self.app = PrompterApp::with_library(true, AlphaInUse::default(), Ok(workspace));
+        self.app.prefs = EditorPrefs::load(&self.folder);
         self.app.clipboard = Box::new(self.clipboard.clone());
         self.settle();
     }
@@ -1382,4 +1384,239 @@ fn the_tab_menu_items_do_what_the_tab_keys_do() {
     library.pick("File", Item::CloseTab);
     assert!(!library.app.menu_state().several_tabs);
     assert!(!Item::NextTab.enabled(library.app.menu_state()));
+}
+
+/// Where the editor drew its text, and the layout it drew.
+fn editor_galley(library: &Library) -> (Pos2, Arc<egui::Galley>) {
+    library
+        .shapes
+        .iter()
+        .find_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(painted) if painted.galley.text() == library.script() => Some((painted.pos, Arc::clone(&painted.galley))),
+            _ => None,
+        })
+        .unwrap()
+}
+
+/// The middle of the left edge of the character at `index` as the editor shows it now.
+fn character_at(library: &Library, index: usize) -> Pos2 {
+    let (pos, galley) = editor_galley(library);
+    let cursor = galley.pos_from_cursor(egui::text::CCursor::new(egui::text::CharIndex(index)));
+    pos + cursor.left_center().to_vec2()
+}
+
+/// The editor's selection, from where it started to the cursor.
+fn selection(library: &Library) -> (usize, usize) {
+    let state = egui::text_edit::TextEditState::load(&library.ctx, library.editor_id()).unwrap();
+    let range = state.cursor.char_range().unwrap();
+    (range.secondary.index.0, range.primary.index.0)
+}
+
+/// True if the syntax that starts at byte `at` is drawn see-through.
+fn is_hidden(library: &Library, at: usize) -> bool {
+    let (_, galley) = editor_galley(library);
+    let section = galley.job.sections.iter().find(|section| section.byte_range.contains(&egui::text::ByteIndex(at))).unwrap();
+    section.format.color == egui::Color32::TRANSPARENT
+}
+
+/// Two lines of ASCII, whose second starts with syntax at 16.
+const TWO_LINES: &str = "**first** line\n\n**second** line";
+
+#[test]
+fn syntax_shows_on_the_line_the_cursor_moves_to() {
+    let mut library = Library::with_script(TWO_LINES);
+    assert!(is_hidden(&library, 0) && is_hidden(&library, 16), "no line shows its syntax before there is a cursor");
+    let at = character_at(&library, 4);
+    library.click(at, PointerButton::Primary);
+    assert!(!is_hidden(&library, 0) && is_hidden(&library, 16));
+    library.key(Modifiers::NONE, Key::ArrowDown);
+    library.key(Modifiers::NONE, Key::ArrowDown);
+    assert!(is_hidden(&library, 0) && !is_hidden(&library, 16));
+}
+
+#[test]
+fn a_click_on_formatted_text_lands_on_that_character_and_selects_nothing() {
+    let mut library = Library::with_script(TWO_LINES);
+    // The "c" of "second", past the hidden syntax.
+    let index = TWO_LINES.find("cond").unwrap();
+    let at = character_at(&library, index);
+    library.hold(at);
+    // Held still, the layout stays as it was, so no selection is dragged out.
+    for _ in 0..5 {
+        library.step(Vec::new());
+    }
+    assert!(is_hidden(&library, 16), "the syntax must wait for the button to be let go");
+    assert_eq!(selection(&library), (index, index));
+    library.let_go(at);
+    assert!(!is_hidden(&library, 16));
+    assert_eq!(selection(&library), (index, index));
+}
+
+#[test]
+fn a_drag_selects_the_real_text_under_it() {
+    let mut library = Library::with_script(TWO_LINES);
+    let (from, to) = (TWO_LINES.find("rst").unwrap(), TWO_LINES.find("cond").unwrap());
+    let (start, end) = (character_at(&library, from), character_at(&library, to));
+    library.hold(start);
+    library.move_to(end);
+    library.let_go(end);
+    assert_eq!(selection(&library), (from, to));
+    // The window reports Ctrl+C as a copy.
+    library.step(vec![Event::Copy]);
+    assert_eq!(library.copied(), TWO_LINES[from..to]);
+}
+
+/// Clicks `times` in a row at `at`, with a frame or more between the events, as a hand
+/// would.
+fn click_times(library: &mut Library, at: Pos2, times: usize) {
+    let event = |pressed| Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+    library.step(vec![Event::PointerMoved(at)]);
+    for pressed in [true, false].repeat(times) {
+        // Frames 10 ms apart, so that the clicks are close enough in time to count as one run.
+        for events in [vec![event(pressed)], Vec::new(), Vec::new()] {
+            library.time -= 0.09;
+            library.step(events);
+        }
+    }
+    library.settle();
+}
+
+#[test]
+fn a_double_click_selects_the_word_aimed_at_on_a_line_that_then_shows_its_syntax() {
+    let cases = [
+        (
+            "first
+
+## Opening the big show today",
+            "big",
+        ),
+        (
+            "first
+
+some **bold words** and more text here",
+            "more",
+        ),
+        (
+            "first
+
+some **bold words** and more text here",
+            "text",
+        ),
+        (
+            "first
+
+> one two three four",
+            "two",
+        ),
+    ];
+    for (text, word) in cases {
+        let mut library = Library::with_script(text);
+        let from = text.find(word).unwrap();
+        let (start, end) = (character_at(&library, from), character_at(&library, from + word.len()));
+        click_times(&mut library, start + (end - start) / 2.0, 2);
+        assert_eq!(selection(&library), (from, from + word.len()), "{word} in {text:?}");
+        let first_syntax = text.find(['#', '*', '>']).unwrap();
+        assert!(!is_hidden(&library, first_syntax), "the line shows its syntax afterwards");
+    }
+}
+
+#[test]
+fn a_later_click_in_the_same_place_uses_the_layout_on_screen() {
+    let mut library = Library::with_script(TWO_LINES);
+    let index = TWO_LINES.find("cond").unwrap();
+    let at = character_at(&library, index);
+    library.click(at, PointerButton::Primary);
+    // The line now shows its syntax, so the same place holds an earlier character.
+    let moved = (0..TWO_LINES.len()).min_by_key(|&n| (character_at(&library, n).distance(at) * 100.0) as u32).unwrap();
+    assert!(moved < index);
+    for _ in 0..5 {
+        library.step(Vec::new());
+    }
+    library.click(at, PointerButton::Primary);
+    assert_eq!(selection(&library), (moved, moved));
+}
+
+#[test]
+fn typing_markdown_formats_it_and_keeps_the_text() {
+    let mut library = Library::with_script("");
+    library.focus_editor();
+    library.type_text("# T");
+    library.key(Modifiers::NONE, Key::Enter);
+    library.type_text("[[pause]]");
+    assert_eq!(library.script(), "# T\n[[pause]]");
+    assert!(is_hidden(&library, 0), "the cursor has left the heading");
+    assert!(!is_hidden(&library, 4));
+}
+
+#[test]
+fn show_markdown_in_the_view_menu_shows_every_marker_and_is_remembered() {
+    let mut library = Library::with_script(TWO_LINES);
+    library.pick("View", Item::ShowMarkdown);
+    assert!(library.app.menu_state().show_markdown);
+    assert!(!is_hidden(&library, 0) && !is_hidden(&library, 16));
+    library.restart();
+    assert!(library.app.menu_state().show_markdown);
+    assert!(!is_hidden(&library, 0) && !is_hidden(&library, 16));
+    library.pick("View", Item::ShowMarkdown);
+    library.restart();
+    assert!(!library.app.menu_state().show_markdown);
+    assert!(is_hidden(&library, 0) && is_hidden(&library, 16));
+}
+
+/// About 10,000 words with each Markdown and cue form the editor styles.
+fn long_script() -> String {
+    let words = "the quick brown fox jumps over a lazy dog while the camera keeps rolling on";
+    let sentence: Vec<&str> = words.split(' ').collect();
+    let line = |count: usize| sentence.iter().cycle().take(count).copied().collect::<Vec<_>>().join(" ");
+    let mut text = String::new();
+    for section in 1..=50 {
+        text.push_str(&format!("## Section {section}\n\n"));
+        text.push_str(&format!("{} **{}** {} *{}* [[pause]] {}.\n\n", line(20), line(3), line(20), line(3), line(14)));
+        text.push_str(&format!("- {}\n- {} [[mark: B-roll: desk]]\n- {}\n\n", line(10), line(10), line(10)));
+        text.push_str(&format!("> {}\n\n[[note: wave at the camera]]\n\n{}.\n\n", line(20), line(80)));
+    }
+    text.push_str("[[end]]\n");
+    text
+}
+
+/// Measures the time of a whole Library frame, layout and tessellation, while typing in the
+/// middle of a long script. Run it in release:
+/// `cargo test -p cutmark-prompter --release -q typing_time -- --ignored --nocapture`
+#[test]
+#[ignore = "a measurement, run by hand in release"]
+fn typing_time_on_10_000_words() {
+    let text = long_script();
+    let words = text.split_whitespace().count();
+    let mut library = Library::with_script(&text);
+    library.focus_editor();
+    let id = library.editor_id();
+    // The cursor goes to the end of a paragraph near the middle.
+    let middle = text.find("## Section 26").unwrap() - 2;
+    let at = egui::text::CCursor::new(egui::text::CharIndex(text[..middle].chars().count()));
+    let mut state = egui::text_edit::TextEditState::load(&library.ctx, id).unwrap();
+    state.cursor.set_char_range(Some(egui::text::CCursorRange::one(at)));
+    state.store(&library.ctx, id);
+    library.settle();
+
+    let mut timed = |events: &mut dyn FnMut(usize) -> Vec<Event>| {
+        let mut times: Vec<Duration> = (0..300)
+            .map(|n| {
+                let events = events(n);
+                let start = Instant::now();
+                library.step(events);
+                let primitives = library.ctx.tessellate(std::mem::take(&mut library.shapes), 1.0);
+                let time = start.elapsed();
+                assert!(!primitives.is_empty());
+                time
+            })
+            .collect();
+        times.sort();
+        let ms = |time: Duration| time.as_secs_f64() * 1000.0;
+        let mean = times.iter().sum::<Duration>() / times.len() as u32;
+        format!("mean {:.2} ms, median {:.2} ms, p95 {:.2} ms, worst {:.2} ms", ms(mean), ms(times[150]), ms(times[285]), ms(times[299]))
+    };
+    let typing = timed(&mut |n| vec![Event::Text(if n % 6 == 5 { " " } else { "a" }.to_owned())]);
+    let idle = timed(&mut |_| Vec::new());
+    println!("{words} words, {} bytes\ntyping: {typing}\nidle:   {idle}", text.len());
+    assert!(library.script().len() > text.len());
 }

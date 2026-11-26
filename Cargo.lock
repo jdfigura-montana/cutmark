@@ -1513,6 +1513,7 @@ dependencies = [
  "log",
  "prompter-core",
  "prompter-platform",
+ "pulldown-cmark",
  "rfd",
  "ui-kit",
 ]
