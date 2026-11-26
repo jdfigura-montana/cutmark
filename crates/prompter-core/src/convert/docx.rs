@@ -1,6 +1,6 @@
-//! .docx to Markdown. Paragraphs, headings, bold, italic, lists and line breaks are read
-//! from `word/document.xml`; everything else is dropped. A table's paragraphs are kept as
-//! paragraphs.
+//! .docx to Markdown. Paragraphs, headings, bold, italic, underline, strikethrough, lists
+//! and line breaks are read from `word/document.xml`; everything else is dropped. A table's
+//! paragraphs are kept as paragraphs.
 //!
 //! Only what a paragraph or run says itself is read. Formatting and numbering that come
 //! from a style in `word/styles.xml` are not.
@@ -111,11 +111,11 @@ fn inline(reader: &mut Reader, element: &Element, style: Style) {
 
 fn run_style(run: &Element) -> Style {
     let properties = run.child("w:rPr");
-    let on = |name: &str| {
-        let property = properties.and_then(|properties| properties.child(name));
-        property.is_some_and(|property| !matches!(property.attr("w:val"), Some("0" | "false" | "off")))
-    };
-    Style { bold: on("w:b"), italic: on("w:i") }
+    let property = |name: &str| properties.and_then(|properties| properties.child(name));
+    let on = |name: &str| property(name).is_some_and(|property| !matches!(property.attr("w:val"), Some("0" | "false" | "off")));
+    // The value of `w:u` is a kind of line, not on or off.
+    let underline = property("w:u").is_some_and(|property| property.attr("w:val") != Some("none"));
+    Style { bold: on("w:b"), italic: on("w:i"), underline, strike: on("w:strike") }
 }
 
 /// The `w:val` of a child element.

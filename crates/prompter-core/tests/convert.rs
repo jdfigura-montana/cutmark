@@ -321,3 +321,114 @@ fn nothing_gives_an_empty_string() {
         assert_eq!(html_to_markdown(html), "", "{html:?}");
     }
 }
+
+/// Each run of text with its underline and strikethrough.
+fn lines_of(html: &str) -> Vec<(String, bool, bool)> {
+    blocks(html).into_iter().flat_map(|block| block.spans).map(|span| (span.text, span.underline, span.strike)).collect()
+}
+
+#[test]
+fn underline_and_strikethrough_tags_are_kept() {
+    assert_eq!(html_to_markdown("<p>a <u>b</u> <s>c</s> d <strike>e</strike> f <del>g</del> h</p>"), "a <u>b</u> ~~c~~ d ~~e~~ f ~~g~~ h\n");
+    assert_eq!(html_to_markdown("<h2><u>Title</u></h2><ul><li><s>item</s></li></ul>"), "## <u>Title</u>\n\n- ~~item~~\n");
+    assert_eq!(html_to_markdown("<p><u>a b</u> <s>c d</s></p>"), "<u>a b</u> ~~c d~~\n");
+    assert_eq!(html_to_markdown("<p><u>one<br>two</u></p>"), "<u>one\\\ntwo</u>\n");
+}
+
+#[test]
+fn text_decoration_styles_are_kept() {
+    let google = concat!(
+        r#"<p><span style="text-decoration:underline;-webkit-text-decoration-skip:none;text-decoration-skip-ink:none;">a</span> "#,
+        r#"<span style="text-decoration:line-through;">b</span> "#,
+        r#"<span style="TEXT-DECORATION: Underline Line-Through solid red !important">c</span> "#,
+        r#"<span style="text-decoration-line: underline; text-decoration-color: initial">d</span> "#,
+        r#"<span style="text-decoration:none">e</span></p>"#,
+    );
+    // As with bold, the space between two struck words joins their runs.
+    assert_eq!(
+        lines_of(google),
+        [("a", true, false), (" ", false, false), ("b ", false, true), ("c", true, true), (" ", false, false), ("d", true, false), (" e", false, false)]
+            .map(|(text, underline, strike)| (text.to_owned(), underline, strike))
+    );
+    // A style removes what its own tag draws, but not a line from an element around it.
+    assert_eq!(html_to_markdown(r#"<p><u style="text-decoration:none">a</u> <del style="text-decoration: none">b</del></p>"#), "a b\n");
+    assert_eq!(html_to_markdown(r#"<p><u><span style="text-decoration:none">a</span></u></p>"#), "<u>a</u>\n");
+}
+
+#[test]
+fn underline_goes_outside_the_markers_that_cannot_touch_it() {
+    let cases = [
+        ("<p>a<u><b>b</b></u>c</p>", "a<u>**b**</u>c\n"),
+        // The underline starts where the bold does and ends first, between two letters.
+        ("<p>x<b><u>a</u>b</b>y</p>", "x<u>**a**</u>**b**y\n"),
+        // It starts inside the bold, between two letters, and ends with it.
+        ("<p><b>a<u>b</u></b>c</p>", "**a**<u>**b**</u>c\n"),
+        ("<p>x<s><u>a</u></s>y</p>", "x<u>~~a~~</u>y\n"),
+    ];
+    for (html, markdown) in cases {
+        assert_eq!(html_to_markdown(html), markdown, "{html}");
+    }
+}
+
+#[test]
+fn typed_underline_and_strikethrough_markers_stay_text() {
+    for line in ["~~gone~~", "~one~", "<u>typed</u>", "a <u> alone", "~~~"] {
+        let escaped = line.replace('<', "&lt;").replace('>', "&gt;");
+        for html in [format!("<p>{escaped}</p>"), format!("<p><u><s>{escaped}</s></u></p>")] {
+            let read = blocks(&html);
+            assert_eq!(read.iter().map(Block::text).collect::<String>(), line, "{html}");
+        }
+        let plain = blocks(&format!("<p>{escaped}</p>"));
+        assert!(plain.iter().flat_map(|block| &block.spans).all(|span| !span.underline && !span.strike), "{line:?}");
+    }
+}
+
+/// As [`no_mix_of_styles_changes_the_text`], with all four styles. Whole words keep every
+/// one. Inside a word Markdown cannot always nest '~' and '*', so only underline is sure.
+#[test]
+fn no_mix_of_lines_and_emphasis_changes_the_text() {
+    const TEXTS: [&str; 4] = ["a", "(b)", ".", "~"];
+    const TAGS: [&str; 4] = ["b", "i", "u", "s"];
+    // Each run's HTML, its text and one bit for each of its tags.
+    let runs: Vec<(String, &str, usize)> = TEXTS
+        .iter()
+        .flat_map(|&text| {
+            (0..16_usize).map(move |styles| {
+                let html = TAGS.iter().enumerate().filter(|(bit, _)| styles & (1 << bit) != 0);
+                (html.fold(text.to_owned(), |inside, (_, tag)| format!("<{tag}>{inside}</{tag}>")), text, styles)
+            })
+        })
+        .collect();
+    for between in ["", " "] {
+        for (first, a, first_styles) in &runs {
+            for (second, b, second_styles) in &runs {
+                for (third, c, third_styles) in &runs {
+                    let html = format!("<p>x{between}{first}{between}{second}{between}{third}{between}y</p>");
+                    let shown: Vec<(char, [bool; 4])> = blocks(&html)
+                        .iter()
+                        .flat_map(|block| &block.spans)
+                        .flat_map(|span| span.text.chars().map(|c| (c, [span.bold, span.italic, span.underline, span.strike])))
+                        .filter(|(c, _)| !c.is_whitespace())
+                        .collect();
+                    let mut expected = vec![('x', 0)];
+                    for (text, styles) in [(a, *first_styles), (b, *second_styles), (c, *third_styles)] {
+                        expected.extend(text.chars().map(|c| (c, styles)));
+                    }
+                    expected.push(('y', 0));
+                    assert_eq!(shown.len(), expected.len(), "{html}");
+                    for ((read, got), (c, want)) in shown.into_iter().zip(expected) {
+                        assert_eq!(read, c, "{html}");
+                        for (style, (tag, got)) in TAGS.iter().zip(got).enumerate() {
+                            let wanted = want & (1 << style) != 0;
+                            assert!(!got || wanted, "{html} gained <{tag}>");
+                            // Punctuation may lose a style where no marker can reach it.
+                            if c.is_alphabetic() && (between == " " || *tag == "u") {
+                                assert_eq!(got, wanted, "{html} lost <{tag}> on {c:?}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

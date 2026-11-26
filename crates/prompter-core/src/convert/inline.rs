@@ -1,11 +1,12 @@
-//! One block's text as Markdown: escapes, cues and emphasis.
+//! One block's text as Markdown: escapes, cues and styles.
 
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 
 use super::{Glyph, Style};
+use crate::script::{MARKDOWN_OPTIONS, underline_tag};
 use crate::store::escape_plan;
 
-/// Stands for a cue while the emphasis is checked. It is punctuation, as a cue's brackets
+/// Stands for a cue while the styles are checked. It is punctuation, as a cue's brackets
 /// are, and means nothing to Markdown without a '[' after it.
 const CUE_STAND_IN: char = '!';
 
@@ -26,17 +27,50 @@ struct Mark {
 struct Attempt {
     bold: bool,
     italic: Option<&'static str>,
+    strike: bool,
+    underline: bool,
+    /// Every other marker closes where an underline starts, so that `<u>` is outside them
+    /// all. A tag works anywhere, but a '*' or '~' beside one may not.
+    split: bool,
 }
 
+/// No styles at all.
+const PLAIN: Attempt = Attempt { bold: false, italic: None, strike: false, underline: false, split: false };
+
+/// The ways to write bold and italic, from the best to the plainest.
+const EMPHASIS: [(bool, Option<&str>); 5] = [(true, Some("*")), (true, Some("_")), (true, None), (false, Some("*")), (false, None)];
+
 /// From the best to the plainest. Markdown cannot express every mix of styles, so each is
-/// read back before it is used: a style may be lost, but never turned into stray '*'.
-const ATTEMPTS: [Attempt; 5] = [
-    Attempt { bold: true, italic: Some("*") },
-    Attempt { bold: true, italic: Some("_") },
-    Attempt { bold: true, italic: None },
-    Attempt { bold: false, italic: Some("*") },
-    Attempt { bold: false, italic: None },
-];
+/// read back before it is used: a style may be lost, but never turned into stray '*' or '~'.
+/// Strikethrough is given up after bold and italic, and underline only with all the rest.
+fn attempts() -> impl Iterator<Item = Attempt> {
+    [true, false].into_iter().flat_map(|strike| {
+        EMPHASIS.into_iter().flat_map(move |(bold, italic)| [false, true].map(|split| Attempt { bold, italic, strike, underline: true, split }))
+    })
+}
+
+/// A style as the Markdown marks it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Marker {
+    Underline,
+    Bold,
+    Italic,
+    Strike,
+}
+
+/// Of two that open together and last as long, the first here goes outside.
+const MARKERS: [Marker; 4] = [Marker::Underline, Marker::Bold, Marker::Italic, Marker::Strike];
+
+impl Marker {
+    fn wanted(self, style: Style) -> bool {
+        match self {
+            Self::Underline => style.underline,
+            Self::Bold => style.bold,
+            Self::Italic => style.italic,
+            Self::Strike => style.strike,
+        }
+    }
+}
 
 /// The Markdown for one block's text. Line breaks come out as a backslash and a newline.
 pub(super) fn markdown(text: &[Glyph], heading: bool) -> String {
@@ -49,17 +83,24 @@ pub(super) fn markdown(text: &[Glyph], heading: bool) -> String {
         last.escaped = true;
     }
     if marks.iter().all(|mark| mark.glyph.style == Style::default()) {
-        return render(&marks, ATTEMPTS[4], false).0;
+        return render(&marks, PLAIN, false).0;
     }
     join_over_spaces(&mut marks);
-    for attempt in ATTEMPTS {
+    for attempt in attempts() {
         let mut styled = marks.clone();
         for glyph in styled.iter_mut().map(|mark| &mut mark.glyph) {
             glyph.style.bold &= attempt.bold;
             glyph.style.italic &= attempt.italic.is_some();
+            glyph.style.strike &= attempt.strike;
+            glyph.style.underline &= attempt.underline;
         }
+        if attempt.split {
+            part_at_underlines(&mut styled);
+        }
+        // An underline's tags need no fitting.
         fit_to_words(&mut styled, |style| &mut style.bold);
         fit_to_words(&mut styled, |style| &mut style.italic);
+        fit_to_words(&mut styled, |style| &mut style.strike);
         let (checked, expected) = render(&styled, attempt, true);
         if reads_as(&checked, &expected) {
             return render(&styled, attempt, false).0;
@@ -68,7 +109,7 @@ pub(super) fn markdown(text: &[Glyph], heading: bool) -> String {
     for mark in &mut marks {
         mark.glyph.style = Style::default();
     }
-    render(&marks, ATTEMPTS[4], false).0
+    render(&marks, PLAIN, false).0
 }
 
 /// Finds the cues and the characters to escape, line by line. Cues lose their styles, since a
@@ -103,9 +144,34 @@ fn join_over_spaces(marks: &mut [Mark]) {
         }
         let end = marks[at..].iter().position(|mark| !mark.glyph.c.is_whitespace()).map_or(marks.len(), |n| at + n);
         let after = marks.get(end).map(|mark| mark.glyph.style).unwrap_or_default();
-        let shared = Style { bold: before.bold && after.bold, italic: before.italic && after.italic };
+        let shared = Style {
+            bold: before.bold && after.bold,
+            italic: before.italic && after.italic,
+            underline: before.underline && after.underline,
+            strike: before.strike && after.strike,
+        };
         for mark in &mut marks[at..end] {
             mark.glyph.style = shared;
+        }
+        at = end;
+    }
+}
+
+/// Takes every style off the spaces beside the start or end of an underline, so that no
+/// marker has to close after one of them.
+fn part_at_underlines(marks: &mut [Mark]) {
+    let underlined = |mark: Option<&Mark>| mark.is_some_and(|mark| mark.glyph.style.underline);
+    let mut at = 0;
+    while at < marks.len() {
+        if !marks[at].glyph.c.is_whitespace() {
+            at += 1;
+            continue;
+        }
+        let end = marks[at..].iter().position(|mark| !mark.glyph.c.is_whitespace()).map_or(marks.len(), |n| at + n);
+        if underlined(at.checked_sub(1).map(|n| &marks[n])) != underlined(marks.get(end)) {
+            for mark in &mut marks[at..end] {
+                mark.glyph.style = Style::default();
+            }
         }
         at = end;
     }
@@ -146,30 +212,39 @@ fn blocks_marker(inside: char, outside: Option<char>) -> bool {
 /// Writes the marks. With `check`, each cue is written as [`CUE_STAND_IN`]. The second value
 /// is the text and styles the Markdown should read as.
 fn render(marks: &[Mark], attempt: Attempt, check: bool) -> (String, Vec<Glyph>) {
-    let marker = |bold: bool| if bold { "**" } else { attempt.italic.unwrap_or("*") };
-    let wants = |style: Style, bold: bool| if bold { style.bold } else { style.italic };
+    let opener = |marker: Marker| match marker {
+        Marker::Underline => "<u>",
+        Marker::Bold => "**",
+        Marker::Italic => attempt.italic.unwrap_or("*"),
+        Marker::Strike => "~~",
+    };
+    let closer = |marker: Marker| if marker == Marker::Underline { "</u>" } else { opener(marker) };
     let mut markdown = String::new();
     let mut expected = Vec::with_capacity(marks.len());
-    // The open styles, outermost first. True is bold and false is italic.
-    let mut open: Vec<bool> = Vec::new();
+    // The open styles, outermost first.
+    let mut open: Vec<Marker> = Vec::new();
     for (at, mark) in marks.iter().enumerate() {
         if check && mark.cue && !mark.cue_start {
             continue;
         }
         let Glyph { c, style } = mark.glyph;
-        if let Some(first) = open.iter().position(|&bold| !wants(style, bold)) {
-            for bold in open.drain(first..).rev() {
-                markdown.push_str(marker(bold));
+        let parts = attempt.split && style.underline && !c.is_whitespace() && !open.contains(&Marker::Underline);
+        if let Some(first) = open.iter().position(|marker| parts || !marker.wanted(style)) {
+            for marker in open.drain(first..).rev() {
+                markdown.push_str(closer(marker));
             }
         }
         // Nothing opens in front of a space.
         if !c.is_whitespace() {
-            let mut opening: Vec<bool> = [true, false].into_iter().filter(|&bold| wants(style, bold) && !open.contains(&bold)).collect();
-            // The one that lasts longer goes outside.
-            opening.sort_by_key(|&bold| std::cmp::Reverse(marks[at..].iter().take_while(|mark| wants(mark.glyph.style, bold)).count()));
-            for bold in opening {
-                markdown.push_str(marker(bold));
-                open.push(bold);
+            let mut opening: Vec<Marker> = MARKERS.into_iter().filter(|marker| marker.wanted(style) && !open.contains(marker)).collect();
+            // The one that lasts longer goes outside. When splitting, an underline always does.
+            opening.sort_by_key(|&marker| {
+                let lasts = marks[at..].iter().take_while(|mark| marker.wanted(mark.glyph.style)).count();
+                (!(attempt.split && marker == Marker::Underline), std::cmp::Reverse(lasts))
+            });
+            for marker in opening {
+                markdown.push_str(opener(marker));
+                open.push(marker);
             }
         }
         if c == '\n' {
@@ -185,8 +260,8 @@ fn render(marks: &[Mark], attempt: Attempt, check: bool) -> (String, Vec<Glyph>)
         let c = if check && mark.cue { CUE_STAND_IN } else { c };
         expected.push(Glyph { c, style });
     }
-    for bold in open.into_iter().rev() {
-        markdown.push_str(marker(bold));
+    for marker in open.into_iter().rev() {
+        markdown.push_str(closer(marker));
     }
     (markdown, expected)
 }
@@ -195,15 +270,22 @@ fn render(marks: &[Mark], attempt: Attempt, check: bool) -> (String, Vec<Glyph>)
 /// space does not show.
 fn reads_as(markdown: &str, expected: &[Glyph]) -> bool {
     let mut read = Vec::with_capacity(expected.len());
-    let (mut bold, mut italic) = (0_usize, 0_usize);
-    for event in Parser::new(markdown) {
-        let style = Style { bold: bold > 0, italic: italic > 0 };
+    let (mut bold, mut italic, mut underline, mut strike) = (0_usize, 0_usize, 0_usize, 0_usize);
+    for event in Parser::new_ext(markdown, MARKDOWN_OPTIONS) {
+        let style = Style { bold: bold > 0, italic: italic > 0, underline: underline > 0, strike: strike > 0 };
         match event {
             Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph) => {}
             Event::Start(Tag::Strong) => bold += 1,
             Event::End(TagEnd::Strong) => bold = bold.saturating_sub(1),
             Event::Start(Tag::Emphasis) => italic += 1,
             Event::End(TagEnd::Emphasis) => italic = italic.saturating_sub(1),
+            Event::Start(Tag::Strikethrough) => strike += 1,
+            Event::End(TagEnd::Strikethrough) => strike = strike.saturating_sub(1),
+            Event::InlineHtml(html) => match underline_tag(&html) {
+                Some(true) => underline += 1,
+                Some(false) => underline = underline.saturating_sub(1),
+                None => return false,
+            },
             Event::Text(text) => read.extend(text.chars().map(|c| Glyph { c, style })),
             Event::HardBreak => read.push(Glyph { c: '\n', style }),
             _ => return false,

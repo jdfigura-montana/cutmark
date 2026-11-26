@@ -12,7 +12,67 @@ fn outline(md: &str) -> Vec<(BlockKind, String)> {
 }
 
 fn span(text: &str, bold: bool, italic: bool) -> Span {
-    Span { text: text.to_owned(), bold, italic }
+    Span { text: text.to_owned(), bold, italic, underline: false, strike: false }
+}
+
+fn underlined(text: &str) -> Span {
+    Span { underline: true, ..span(text, false, false) }
+}
+
+fn struck(text: &str) -> Span {
+    Span { strike: true, ..span(text, false, false) }
+}
+
+/// The spans of each block.
+fn spans(md: &str) -> Vec<Vec<Span>> {
+    blocks(md).into_iter().map(|block| block.spans).collect()
+}
+
+#[test]
+fn underline_and_strikethrough() {
+    let plain = |text| span(text, false, false);
+    assert_eq!(spans("a <u>b</u> ~~c~~ d"), [vec![plain("a "), underlined("b"), plain(" "), struck("c"), plain(" d")]]);
+    // With other styles, inside words, over a line break and in any block.
+    let all = Span { bold: true, italic: true, underline: true, strike: true, ..plain("x") };
+    assert_eq!(spans("<u>~~***x***~~</u>"), [vec![all]]);
+    assert_eq!(spans("a<u>b</u>c~~d~~e"), [vec![plain("a"), underlined("b"), plain("c"), struck("d"), plain("e")]]);
+    assert_eq!(spans("<u>one\\\ntwo</u>"), [vec![underlined("one\ntwo")]]);
+    assert_eq!(spans("# <u>a</u>\n\n- ~~b~~\n\n> <u>c</u>"), [vec![underlined("a")], vec![struck("b")], vec![underlined("c")]]);
+    // The tags may be in capitals or hold space before the '>'.
+    assert_eq!(spans("<U>a</u >"), [vec![underlined("a")]]);
+    assert_eq!(spans("<u><u>a</u>b</u>c"), [vec![underlined("ab"), plain("c")]]);
+}
+
+#[test]
+fn an_underline_ends_with_its_block() {
+    let plain = |text| span(text, false, false);
+    assert_eq!(spans("a <u>b\n\nc"), [vec![plain("a "), underlined("b")], vec![plain("c")]]);
+    assert_eq!(spans("- <u>a\n  - b\n- c"), [vec![underlined("a")], vec![plain("b")], vec![plain("c")]]);
+    // A closing tag alone does nothing.
+    assert_eq!(spans("a</u> <u>b</u>"), [vec![plain("a "), underlined("b")]]);
+}
+
+#[test]
+fn a_cue_splits_underlined_and_struck_text() {
+    assert_eq!(spans("<u>a [[pause]] b</u>"), [vec![underlined("a")], vec![], vec![underlined("b")]]);
+    assert_eq!(spans("~~a [[pause]] b~~"), [vec![struck("a")], vec![], vec![struck("b")]]);
+}
+
+#[test]
+fn other_inline_html_is_dropped_and_other_tildes_are_text() {
+    let plain = |text| span(text, false, false);
+    for md in ["a <b>b</b> c", "a <s>b</s> c", "a <del>b</del> c", "a <ul>b</ul> c", "a <u class=\"x\">b c", "a <u/>b c", "a <!-- <u> -->b c"] {
+        assert_eq!(spans(md), [vec![plain("a b c")]], "{md:?}");
+    }
+    for text in ["a ~b~ c", "H~2~O", "~5 to ~10", "a ~~ b ~~ c", "~**a**~", "~~a~"] {
+        let read: String = blocks(text).iter().map(Block::text).collect();
+        assert_eq!(read, text.replace("**", ""), "{text:?}");
+        assert!(blocks(text).iter().flat_map(|block| &block.spans).all(|span| !span.strike), "{text:?}");
+    }
+    assert_eq!(spans("~a ~~b~~ c~"), [vec![plain("~a "), struck("b"), plain(" c~")]]);
+    // Escapes and code keep the markers as text.
+    assert_eq!(spans(r"\~\~a\~\~ \<u>b\</u>"), [vec![plain("~~a~~ <u>b</u>")]]);
+    assert_eq!(spans("`~~a~~ <u>b</u>`"), [vec![plain("~~a~~ <u>b</u>")]]);
 }
 
 fn text(kind: BlockKind, text: &str) -> (BlockKind, String) {

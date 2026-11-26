@@ -4,7 +4,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 use std::{mem, slice};
 
-use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 
 /// A parsed script.
@@ -60,6 +60,16 @@ pub struct Span {
     pub text: String,
     pub bold: bool,
     pub italic: bool,
+    /// `<u>text</u>`.
+    pub underline: bool,
+    /// `~~text~~`.
+    pub strike: bool,
+}
+
+impl Span {
+    fn same_style(&self, other: &Self) -> bool {
+        (self.bold, self.italic, self.underline, self.strike) == (other.bold, other.italic, other.underline, other.strike)
+    }
 }
 
 /// A `[[...]]` cue. Cues are never spoken.
@@ -137,16 +147,37 @@ pub fn sections(script: &Script) -> Vec<Section> {
         .collect()
 }
 
+/// The Markdown extensions a script uses. With strikethrough on, pulldown-cmark also reads
+/// `~one tilde~` as struck, which [`parse`] turns back into text.
+pub(crate) const MARKDOWN_OPTIONS: Options = Options::ENABLE_STRIKETHROUGH;
+
+/// `Some(true)` for the inline HTML `<u>`, `Some(false)` for `</u>` and `None` for any other.
+/// A `<u>` with attributes is one of the others.
+pub(crate) fn underline_tag(html: &str) -> Option<bool> {
+    let name = html.strip_prefix('<')?.strip_suffix('>')?.trim_end();
+    let (name, opens) = name.strip_prefix('/').map_or((name, true), |name| (name, false));
+    name.eq_ignore_ascii_case("u").then_some(opens)
+}
+
 /// Parses a Markdown script into blocks.
 ///
-/// Links and images become their plain text and HTML is dropped. A cue inside a block splits
-/// it into the text before, the cue block and the text after. Cues inside a heading do not
-/// split it, so that one heading stays one section. Brackets inside inline code and code
-/// blocks never open or close a cue.
+/// Links and images become their plain text. HTML is dropped, except that an inline `<u>`
+/// underlines the text up to its `</u>`, or to the end of its block.
+///
+/// A cue inside a block splits it into the text before, the cue block and the text after.
+/// Cues inside a heading do not split it, so that one heading stays one section. Brackets
+/// inside inline code and code blocks never open or close a cue.
 pub fn parse(md: &str) -> Script {
     let mut builder = Builder::new(md);
-    for (event, range) in Parser::new(md).into_offset_iter() {
-        builder.event(event, range);
+    for (event, range) in Parser::new_ext(md, MARKDOWN_OPTIONS).into_offset_iter() {
+        let strike = matches!(event, Event::Start(Tag::Strikethrough) | Event::End(TagEnd::Strikethrough));
+        if strike && !md[range.clone()].starts_with("~~") {
+            // One tilde is not a marker. The range covers the whole run, so it has both.
+            let at = if matches!(event, Event::Start(_)) { range.start } else { range.end - 1 };
+            builder.text("~", at, false);
+        } else {
+            builder.event(event, range);
+        }
     }
     builder.flush();
     Script { blocks: builder.blocks, source_hash: hash_source(md) }
@@ -185,6 +216,9 @@ struct Builder {
     code_block: bool,
     bold: usize,
     italic: usize,
+    /// Open `<u>` tags. They never reach past their block.
+    underline: usize,
+    strike: usize,
 }
 
 impl Builder {
@@ -199,6 +233,8 @@ impl Builder {
             code_block: false,
             bold: 0,
             italic: 0,
+            underline: 0,
+            strike: 0,
         }
     }
 
@@ -215,7 +251,12 @@ impl Builder {
                 let line = self.line(range.start);
                 self.push_block(BlockKind::Rule, Vec::new(), line);
             }
-            // HTML is dropped. The other events need parser options that are not enabled.
+            Event::InlineHtml(html) => match underline_tag(&html) {
+                Some(true) => self.underline += 1,
+                Some(false) => self.underline = self.underline.saturating_sub(1),
+                None => {}
+            },
+            // Other HTML is dropped. The other events need parser options that are not enabled.
             _ => {}
         }
     }
@@ -224,6 +265,7 @@ impl Builder {
         match tag {
             Tag::Strong => self.bold += 1,
             Tag::Emphasis => self.italic += 1,
+            Tag::Strikethrough => self.strike += 1,
             Tag::Link { .. } | Tag::Image { .. } => {}
             // Every other tag starts a block. A tight list item has no paragraph of its own,
             // so its text must end here when a nested block begins.
@@ -244,6 +286,7 @@ impl Builder {
         match tag {
             TagEnd::Strong => self.bold = self.bold.saturating_sub(1),
             TagEnd::Emphasis => self.italic = self.italic.saturating_sub(1),
+            TagEnd::Strikethrough => self.strike = self.strike.saturating_sub(1),
             TagEnd::Link | TagEnd::Image => {}
             other => {
                 // Flush first: the block's kind depends on the containers still open.
@@ -268,7 +311,7 @@ impl Builder {
     }
 
     fn text(&mut self, text: &str, offset: usize, code: bool) {
-        let span = Span { text: text.to_owned(), bold: self.bold > 0, italic: self.italic > 0 };
+        let span = Span { text: text.to_owned(), bold: self.bold > 0, italic: self.italic > 0, underline: self.underline > 0, strike: self.strike > 0 };
         self.pieces.push(Piece { span, offset, code });
     }
 
@@ -290,6 +333,8 @@ impl Builder {
     /// Cues are found in the joined text because the parser reports each bracket as its own
     /// text event.
     fn flush(&mut self) {
+        // A `<u>` left open ends here.
+        self.underline = 0;
         if self.pieces.is_empty() {
             return;
         }
@@ -420,10 +465,10 @@ fn collect_spans(pieces: &[Piece], range: Range<usize>, spans: &mut Vec<Span>) -
                 first = Some(piece.offset + (from - piece_start) + (part.len() - visible.len()));
             }
             match spans.last_mut() {
-                Some(last) if last.bold == piece.span.bold && last.italic == piece.span.italic => {
+                Some(last) if last.same_style(&piece.span) => {
                     last.text.push_str(part);
                 }
-                _ => spans.push(Span { text: part.to_owned(), bold: piece.span.bold, italic: piece.span.italic }),
+                _ => spans.push(Span { text: part.to_owned(), ..piece.span }),
             }
         }
         piece_start = piece_end;

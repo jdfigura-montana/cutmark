@@ -11,7 +11,7 @@ use crate::script::{Block, Script};
 
 /// Bump this when the cached layout or the parsing or normalizing rules change, so that old
 /// caches are rebuilt.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 /// One spoken word, as typed between two stretches of whitespace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

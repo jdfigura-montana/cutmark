@@ -188,6 +188,53 @@ fn docx_headings_and_run_properties() {
 }
 
 #[test]
+fn docx_underline_and_strikethrough() {
+    let body = [
+        paragraph(
+            "",
+            &[
+                run(r#"<w:u w:val="single"/>"#, "a"),
+                run("", " and "),
+                run(r#"<w:u w:val="wavyDouble" w:color="FF0000"/>"#, "b"),
+                run("", " "),
+                run(r#"<w:u w:val="none"/>"#, "c"),
+                run("", " "),
+                run("<w:strike/>", "d"),
+                run("", " "),
+                run(r#"<w:strike w:val="0"/>"#, "e"),
+                run(r#"<w:strike w:val="false"/>"#, "f"),
+                run("", " "),
+                run(r#"<w:u w:val="single"/><w:strike w:val="true"/>"#, "g"),
+            ]
+            .concat(),
+        ),
+        // The paragraph mark's own formatting, and old formatting in a tracked change.
+        paragraph(
+            r#"<w:rPr><w:u w:val="single"/><w:strike/></w:rPr>"#,
+            &run(r#"<w:rPrChange><w:rPr><w:u w:val="single"/><w:strike/></w:rPr></w:rPrChange>"#, "h"),
+        ),
+    ];
+    assert_eq!(converted("a.docx", &docx(&body.concat())).0, "<u>a</u> and <u>b</u> c ~~d~~ ef <u>~~g~~</u>\n\nh\n");
+}
+
+#[test]
+fn odt_underline_and_strikethrough() {
+    let styles = r#"
+        <style:style style:name="U" style:family="text"><style:text-properties style:text-underline-style="solid"/></style:style>
+        <style:style style:name="S" style:family="text"><style:text-properties style:text-line-through-style="solid"/></style:style>
+        <style:style style:name="N" style:family="text"><style:text-properties style:text-underline-style="none" style:text-line-through-style="none"/></style:style>
+        <style:style style:name="B" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>
+    "#;
+    let body = r#"
+        <text:p><text:span text:style-name="U">a</text:span> <text:span text:style-name="S">b</text:span> <text:span text:style-name="N">c</text:span></text:p>
+        <text:p><text:span text:style-name="U">d <text:span text:style-name="B">e</text:span> <text:span text:style-name="N">f</text:span></text:span></text:p>
+        <text:p><text:span text:style-name="S"><text:span text:style-name="U">g</text:span></text:span></text:p>
+    "#;
+    let bytes = zipped(&[("content.xml", &content_xml(styles, body))]);
+    assert_eq!(converted("a.odt", &bytes).0, "<u>a</u> ~~b~~ c\n\n<u>d **e**</u> f\n\n<u>~~g~~</u>\n");
+}
+
+#[test]
 fn docx_keeps_the_text_and_drops_the_rest() {
     let body = r#"<w:p><w:r><w:t>a</w:t><w:tab/><w:t>b</w:t><w:noBreakHyphen/><w:t>c &amp; &lt;d&gt; &#233;</w:t></w:r>
         <w:hyperlink><w:r><w:t xml:space="preserve"> link</w:t></w:r></w:hyperlink>

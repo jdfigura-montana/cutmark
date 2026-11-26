@@ -1,6 +1,6 @@
-//! .odt to Markdown. Paragraphs, headings, lists, line breaks, and the bold and italic of
-//! spans are read from `content.xml`; everything else is dropped. A table's paragraphs are
-//! kept as paragraphs.
+//! .odt to Markdown. Paragraphs, headings, lists, line breaks, and the bold, italic,
+//! underline and strikethrough of spans are read from `content.xml`; everything else is
+//! dropped. A table's paragraphs are kept as paragraphs.
 //!
 //! `styles.xml` is read only for the list styles that have a name, so that their numbered
 //! lists stay numbered.
@@ -20,6 +20,8 @@ const SKIPPED: [&str; 9] =
 struct TextStyle {
     bold: Option<bool>,
     italic: Option<bool>,
+    underline: Option<bool>,
+    strike: Option<bool>,
 }
 
 /// For each level of a list style, counted from 1, the first number, or `None` for a bullet.
@@ -78,6 +80,8 @@ fn text_style(style: &Element) -> TextStyle {
     TextStyle {
         bold: properties.attr("fo:font-weight").map(weight),
         italic: properties.attr("fo:font-style").map(|style| matches!(style, "italic" | "oblique")),
+        underline: properties.attr("style:text-underline-style").map(|line| line != "none"),
+        strike: properties.attr("style:text-line-through-style").map(|line| line != "none"),
     }
 }
 
@@ -143,7 +147,12 @@ impl Odt {
         match element.name.as_str() {
             "text:span" => {
                 let named = element.attr("text:style-name").and_then(|name| self.text_styles.get(name)).copied().unwrap_or_default();
-                let style = Style { bold: named.bold.unwrap_or(style.bold), italic: named.italic.unwrap_or(style.italic) };
+                let style = Style {
+                    bold: named.bold.unwrap_or(style.bold),
+                    italic: named.italic.unwrap_or(style.italic),
+                    underline: named.underline.unwrap_or(style.underline),
+                    strike: named.strike.unwrap_or(style.strike),
+                };
                 self.content(element, style);
             }
             // A run of spaces and a tab both come out as one space.

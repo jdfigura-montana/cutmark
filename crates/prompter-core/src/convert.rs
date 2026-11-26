@@ -60,6 +60,8 @@ const BLOCKS: [&str; 24] = [
 struct Style {
     bold: bool,
     italic: bool,
+    underline: bool,
+    strike: bool,
 }
 
 /// One character of text. A `\n` is a line break.
@@ -102,8 +104,8 @@ struct Block {
 
 /// Converts HTML, a whole document or a fragment of one, to the Markdown a script uses.
 ///
-/// Headings, bold, italic, lists, blockquotes, horizontal rules and line breaks are kept, and
-/// `[[...]]` cues stay cues. Each table cell becomes its own paragraph, links become their
+/// Headings, bold, italic, underline, strikethrough, lists, blockquotes, horizontal rules and
+/// line breaks are kept, and `[[...]]` cues stay cues. Each table cell becomes its own paragraph, links become their
 /// text, and everything else is dropped. The result ends with a newline unless it is empty.
 pub fn html_to_markdown(html: &str) -> String {
     // htmd parses a string without reading or decoding anything, so this does not fail.
@@ -386,6 +388,18 @@ fn style_of(node: &Node<'_>, tag: &str, mut style: Style) -> Style {
         Some("normal") => style.italic = false,
         _ => {}
     }
+    // The lines this element draws itself. Its `style` attribute replaces what its tag draws,
+    // but cannot remove a line drawn by an element around it.
+    let mut underline = tag == "u";
+    let mut strike = matches!(tag, "s" | "strike" | "del");
+    for property in ["text-decoration", "text-decoration-line"] {
+        if let Some(lines) = css(node, property) {
+            underline = lines.split_whitespace().any(|line| line == "underline");
+            strike = lines.split_whitespace().any(|line| line == "line-through");
+        }
+    }
+    style.underline |= underline;
+    style.strike |= strike;
     style
 }
 

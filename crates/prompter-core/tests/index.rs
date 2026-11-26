@@ -298,3 +298,12 @@ fn index_10k() {
     assert!(index.token_count() > 8_000);
     assert!(elapsed < Duration::from_millis(50), "{elapsed:?}");
 }
+
+#[test]
+fn underline_and_strikethrough_do_not_change_the_spoken_words() {
+    let spoken = |md| index(md).tokens().iter().map(|token| (token.display.clone(), token.forms.clone())).collect::<Vec<_>>();
+    // Struck words are still spoken, and a style that changes partway does not end a word.
+    let plain = spoken("Don't open the settings, in 2026.");
+    assert_eq!(spoken("<u>Don't</u> ~~open the~~ set<u>ti</u>ngs, in ~~20~~26."), plain);
+    assert_eq!(plain.len(), 6);
+}

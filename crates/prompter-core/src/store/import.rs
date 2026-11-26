@@ -208,7 +208,7 @@ mod tests {
         let blocks = script::parse(markdown).blocks;
         assert_eq!(blocks.len(), 1, "{markdown:?} gave {blocks:?}");
         assert_eq!(blocks[0].kind, BlockKind::Paragraph, "{markdown:?}");
-        assert!(blocks[0].spans.iter().all(|span| !span.bold && !span.italic), "{markdown:?}");
+        assert!(blocks[0].spans.iter().all(|span| !span.bold && !span.italic && !span.underline && !span.strike), "{markdown:?}");
         assert_eq!(blocks[0].text(), text, "{markdown:?}");
     }
 
@@ -228,6 +228,10 @@ mod tests {
             "```",
             "~~~",
             "a ~~b~~ __c__ **d** _e_ `f` g",
+            "~~struck~~",
+            "~one tilde~",
+            "<u>underlined</u>",
+            "a <U >b</u> c",
             "[a](b) ![c](d) [e][f]",
             "[g]: http://example.com",
             "<http://example.com> &amp; &#65; R&D",
