@@ -1,3 +1,6 @@
+## E3 header column separation (2026-11-26)
+DONE: track headers and lanes are separate surfaces (layout and color only). check.ps1 green; release built. JD hand checks pending.
+
 ## E3 track header cleanup (2026-11-26)
 - Track header layout only: row 1 (number, elided name, M S R right-aligned), Vol/Pan slider rows with a fixed 56 px value column (pan row drops first, then vol; row 1 + meter always show), 4 px meter strip inset 12 px at the bottom, 12 px right padding. The header is drawn in-app from tokens; ui_kit::track_header is no longer used by the app (gallery keeps the kit widget). Ruler labels get +2 px top padding in ui-kit paint_ruler. Tests 742, check.ps1 green, release exe rebuilt. Hand-check list in activeContext.md.
 

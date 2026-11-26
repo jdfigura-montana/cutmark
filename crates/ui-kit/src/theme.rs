@@ -45,6 +45,8 @@ pub struct Neutrals {
     pub bg_track_alt: Color32,
     /// `bg.track.empty`.
     pub bg_track_empty: Color32,
+    /// `bg.lane.selected`.
+    pub bg_lane_selected: Color32,
     /// `bg.clip`.
     pub bg_clip: Color32,
     /// `stroke.hairline`.
@@ -93,6 +95,7 @@ impl Neutrals {
             bg_track_header_selected: tint(neutral::BG_TRACK_HEADER_SELECTED),
             bg_track_alt: tint(neutral::BG_TRACK_ALT),
             bg_track_empty: tint(neutral::BG_TRACK_EMPTY),
+            bg_lane_selected: tint(neutral::BG_LANE_SELECTED),
             bg_clip: tint(neutral::BG_CLIP),
             stroke_hairline: tint(neutral::STROKE_HAIRLINE),
             stroke_separator: tint(neutral::STROKE_SEPARATOR),

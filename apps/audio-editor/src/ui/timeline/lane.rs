@@ -2,14 +2,27 @@
 
 use eframe::egui;
 
-/// Draws one track lane background over `rect`.
+use crate::ui::timeline::metrics;
+
+/// Draws one track lane over `rect`.
 ///
-/// The fill is the ui-kit track row: `bg.track.alt` on every other row (odd
-/// `index`), `bg.track.selected` when `selected`, nothing on the rest so the
-/// panel shows through. The row then ends in the ui-kit `stroke.track` line,
-/// painted after the fill so it sits above it.
-pub fn draw(painter: &egui::Painter, rect: egui::Rect, index: usize, selected: bool) {
-    ui_kit::paint_track_row(painter, rect, index, selected);
+/// The lanes surface (`bg.stage.inner`) is already painted under every row, so
+/// a lane adds only the faint `bg.lane.selected` tint when `selected`, then
+/// the `bg.ground` line along its bottom edge.
+pub fn draw(painter: &egui::Painter, rect: egui::Rect, selected: bool) {
+    if selected {
+        let neutral = crate::ui::neutrals(painter.ctx());
+        painter.rect_filled(rect, 0.0, neutral.bg_lane_selected);
+    }
+    paint_row_line(painter, rect);
+}
+
+/// The 1 px `bg.ground` line between tracks, along the bottom edge of `rect`.
+/// Headers and lanes both end in it, so each track reads as one row.
+pub(crate) fn paint_row_line(painter: &egui::Painter, rect: egui::Rect) {
+    let neutral = crate::ui::neutrals(painter.ctx());
+    let line = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - metrics::HAIRLINE), rect.right_bottom());
+    painter.rect_filled(line, 0.0, neutral.bg_ground);
 }
 
 #[cfg(test)]
@@ -20,16 +33,19 @@ mod tests {
     use crate::ui::test_util::Headless;
 
     #[test]
-    fn lanes_shade_every_other_row_and_the_selected_one() {
+    fn only_the_selected_lane_is_tinted_and_every_lane_ends_in_a_line() {
         let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(300.0, 50.0));
         let mut h = Headless::new(400.0, 200.0);
         let out = h.frame(Vec::new(), |ui| {
-            draw(ui.painter(), rect, 0, false);
-            draw(ui.painter(), rect.translate(egui::vec2(0.0, 60.0)), 1, false);
-            draw(ui.painter(), rect.translate(egui::vec2(0.0, 120.0)), 2, true);
+            draw(ui.painter(), rect, false);
+            draw(ui.painter(), rect.translate(egui::vec2(0.0, 60.0)), true);
         });
-        let fills: Vec<_> = out.rects().into_iter().map(|r| r.fill).collect();
-        assert_eq!(fills.iter().filter(|f| **f == color::BG_TRACK_ALT).count(), 1, "the odd row is shaded");
-        assert_eq!(fills.iter().filter(|f| **f == color::BG_TRACK_SELECTED).count(), 1, "the selected row is highlighted");
+        let rects = out.rects();
+        let tinted: Vec<_> = rects.iter().filter(|r| r.fill == color::BG_LANE_SELECTED).collect();
+        assert_eq!(tinted.len(), 1, "one tint, on the selected lane");
+        assert_eq!(tinted[0].rect, rect.translate(egui::vec2(0.0, 60.0)));
+        let lines = rects.iter().filter(|r| r.fill == color::BG_GROUND && r.rect.height() == metrics::HAIRLINE).count();
+        assert_eq!(lines, 2, "one line per lane");
+        assert!(rects.iter().all(|r| r.stroke.width == 0.0), "no outline");
     }
 }

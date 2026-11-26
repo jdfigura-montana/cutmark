@@ -25,6 +25,7 @@
     --color-bg-ground: #08090C;
     --color-bg-group: #1B1E22;
     --color-bg-hover: #2A2F36;
+    --color-bg-lane-selected: rgba(240,243,248,0.035);
     --color-bg-panel: #141619;
     --color-bg-row-selected: #282B2E;
     --color-bg-selected: #363D47;

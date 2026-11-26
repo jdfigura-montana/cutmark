@@ -201,7 +201,12 @@ pub fn draw(
     // name is drawn below (it pins and truncates), so the label is empty.
     let theme = ui_kit::Theme::get(painter.ctx());
     let look = ui_kit::ClipLook { selected, dimmed: muted, ..ui_kit::ClipLook::new("", ui_kit::ClipKind::Audio) };
-    let content = ui_kit::paint_clip(painter, rect, &look, &theme);
+    // On the darker lanes an unselected clip is `bg.control` with a
+    // `bg.hover` rim; a selected one keeps the accent look.
+    let mut body_theme = theme;
+    body_theme.neutrals.bg_clip = neutral.bg_control;
+    body_theme.neutrals.stroke_clip = neutral.bg_hover;
+    let content = ui_kit::paint_clip(painter, rect, &look, &body_theme);
     if offline {
         let inset = rect.shrink(metrics::SELECTION_BORDER_W);
         painter.rect_filled(inset, radius::CLIP_AUDIO - metrics::SELECTION_BORDER_W, dim(color::SEM_RECORD.gamma_multiply(metrics::OFFLINE_BODY_ALPHA)));
@@ -525,6 +530,17 @@ mod tests {
     }
 
     #[test]
+    fn a_plain_clip_has_a_1px_bg_hover_rim() {
+        let clip = test_clip(0.0, 0, 0);
+        let mut h = crate::ui::test_util::Headless::new(1280.0, 400.0);
+        let out = h.frame(Vec::new(), |ui| {
+            draw(ui.painter(), &clip, "Take", false, None, &live_geom(), live_lane(), 1.0, false, None, false, false);
+        });
+        let rim = out.rects().into_iter().find(|r| r.stroke.color == color::BG_HOVER).expect("the bg.hover rim");
+        assert_eq!(rim.stroke.width, metrics::HAIRLINE);
+    }
+
+    #[test]
     fn a_muted_track_dims_the_clip_and_a_selected_clip_takes_the_accent() {
         let g = live_geom();
         let lane = live_lane();
@@ -540,8 +556,8 @@ mod tests {
             .map(|r| r.fill)
             .collect::<Vec<_>>()
         };
-        assert!(fills(&mut h, false, false).contains(&color::BG_CLIP), "a plain clip is bg.clip");
-        let dimmed = color::BG_CLIP.gamma_multiply(MUTED_OPACITY);
+        assert!(fills(&mut h, false, false).contains(&color::BG_CONTROL), "a plain clip is bg.control");
+        let dimmed = color::BG_CONTROL.gamma_multiply(MUTED_OPACITY);
         assert!(fills(&mut h, false, true).contains(&dimmed), "a muted track dims the clip to 45%");
         assert!(fills(&mut h, true, false).contains(&theme.accent.tint), "a selected clip is the accent tint");
     }
@@ -598,7 +614,7 @@ mod tests {
         let fills: Vec<_> = out.rects().into_iter().map(|r| r.fill).collect();
         assert!(fills.contains(&live_body), "body {live_body:?}");
         assert!(fills.contains(&live_header), "header {live_header:?}");
-        assert!(fills.contains(&color::BG_CLIP), "the normal clip's ui-kit body");
+        assert!(fills.contains(&color::BG_CONTROL), "the normal clip's ui-kit body");
     }
 
     #[test]

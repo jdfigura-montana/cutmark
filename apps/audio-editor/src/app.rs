@@ -1160,6 +1160,12 @@ mod tests {
         assert!(rig.editor().dirty, "nothing was saved");
     }
 
+    /// The painted lanes surface: the largest `bg.stage.inner` rect.
+    fn lanes_surface(out: &Out) -> egui::Rect {
+        let fills = out.rects().into_iter().filter(|r| r.fill == ui_kit::tokens::color::BG_STAGE_INNER);
+        fills.map(|r| r.rect).max_by(|a, b| a.area().total_cmp(&b.area())).expect("the lanes surface")
+    }
+
     /// The painted live clip: the rect with the solid `record_red` border.
     fn live_clip_rect(out: &Out) -> Option<egui::Rect> {
         out.rects().into_iter().find(|r| r.stroke.color == color::SEM_RECORD && r.stroke.width > 0.0).map(|r| r.rect)
@@ -1179,9 +1185,8 @@ mod tests {
         start_take(&mut rig, 24_000);
         let out = rig.frame();
 
-        // The shaded rows of the header column and the lanes: the lanes sit to the right.
-        let lane_left =
-            out.rects().into_iter().filter(|r| r.fill == ui_kit::tokens::color::BG_TRACK_ALT).map(|r| r.rect.left()).fold(f32::NEG_INFINITY, f32::max);
+        // The lanes surface starts at the lanes' left edge.
+        let lane_left = lanes_surface(&out).left();
         let live = live_clip_rect(&out).expect("the live clip is painted");
         assert!((live.left() - (lane_left + 200.0)).abs() < 0.01, "starts at the record start: {} vs {}", live.left(), lane_left + 200.0);
         assert!((live.width() - 240.0).abs() < 0.01, "24,000 frames at 100 spp: {}", live.width());
@@ -1562,16 +1567,9 @@ mod tests {
         }
         for (r, expect_range) in [(&mut idle, true), (&mut rig, false)] {
             let out = r.frame();
-            // Track 2 is empty and has the alternate row shade: the widest of the
-            // shaded rects is its lane (the header column paints the same shade).
-            let lane = out
-                .rects()
-                .into_iter()
-                .filter(|rect| rect.fill == ui_kit::tokens::color::BG_TRACK_ALT)
-                .map(|rect| rect.rect)
-                .max_by(|a, b| a.width().total_cmp(&b.width()))
-                .expect("a lane");
-            let y = lane.center().y;
+            // Track 2 is empty: aim at the middle of its row.
+            let lane = lanes_surface(&out);
+            let y = lane.top() + 1.5 * ui_kit::tokens::size::TRACK_AUDIO_DEFAULT;
             drag(r, egui::pos2(lane.left() + 200.0, y), egui::pos2(lane.left() + 400.0, y));
             let selected = !matches!(r.editor().selection(), crate::editor::selection::Selection::None);
             assert_eq!(selected, expect_range, "range selected: {expect_range}");

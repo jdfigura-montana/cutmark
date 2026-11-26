@@ -79,6 +79,10 @@ pub(crate) mod metrics {
     pub(crate) const HAIRLINE: f32 = 1.0;
     /// Width of the track header column.
     pub(crate) const HEADER_COL_W: f32 = 208.0;
+    /// Width of the `bg.ground` divider between the header column and the lanes.
+    pub(crate) const COLUMN_GUTTER_W: f32 = 3.0;
+    /// Width of the track number column at the left of each header.
+    pub(crate) const NUMBER_GUTTER_W: f32 = 28.0;
     /// Height of the clip header strip (name + gain row).
     pub(crate) const HEADER_STRIP_H: f32 = 18.0;
     /// Width of the insert line.
@@ -135,6 +139,8 @@ pub(crate) mod metrics {
         #[test]
         fn metrics_hold_the_spec_values() {
             assert_eq!(HEADER_STRIP_H, 18.0);
+            assert_eq!(COLUMN_GUTTER_W, 3.0);
+            assert_eq!(NUMBER_GUTTER_W, 28.0);
             assert_eq!(TRIM_EDGE_W, 6.0);
             assert_eq!(SNAP_PX, 8.0);
             assert_eq!(FADE_HANDLE_SZ, 8.0);
@@ -338,7 +344,7 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction, m
             // specific track-header tag wins over this one.
             ui_kit::help::context(ui, crate::help::CONTEXT_TIMELINE);
             let editor = &mut **shared.borrow_mut();
-            let lane_width = ui.available_width() - metrics::HEADER_COL_W;
+            let lane_width = ui.available_width() - metrics::HEADER_COL_W - metrics::COLUMN_GUTTER_W;
             panel_toolbar(ui, editor, lane_width);
             messages.extend(show_frame(ui, editor, view_menu, meters).into_iter().map(Message::media));
         },
@@ -637,11 +643,12 @@ fn show_frame(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction,
     let avail = ui.available_rect_before_wrap();
     let resp = ui.allocate_rect(avail, egui::Sense::click());
 
-    let lane_left = avail.left() + metrics::HEADER_COL_W;
+    let header_right = avail.left() + metrics::HEADER_COL_W;
+    let lane_left = header_right + metrics::COLUMN_GUTTER_W;
     let lane_right = avail.right();
     let lane_width = lane_right - lane_left;
     let ruler_rect = egui::Rect::from_min_max(egui::pos2(lane_left, avail.top()), egui::pos2(lane_right, avail.top() + size::RULER_HEIGHT));
-    let header_rect = egui::Rect::from_min_max(egui::pos2(avail.left(), ruler_rect.bottom()), egui::pos2(lane_left, avail.bottom()));
+    let header_rect = egui::Rect::from_min_max(egui::pos2(avail.left(), ruler_rect.bottom()), egui::pos2(header_right, avail.bottom()));
     // F1 over the track headers opens Tracks; the tour spotlights the column.
     ui_kit::help::context(&ui.new_child(egui::UiBuilder::new().max_rect(header_rect)), crate::help::CONTEXT_TRACKS);
     ui_kit::tour::anchor(ui, crate::help::ANCHOR_TRACKS, header_rect);
@@ -852,23 +859,21 @@ fn draw(
     let painter = ui.painter_at(all);
     let view = editor.view.clone();
 
-    // The track area backdrop goes under everything: the header column strip
-    // and the empty area below the Add track row. The unshaded track rows and
-    // the scrollbar strip let the panel's `bg.panel` show through.
-    let tracks_h: f32 = editor.project.tracks.iter().map(|t| t.height).sum();
-    paint_backdrop(&painter, ruler_rect, header_rect, lane_rect, view.scroll_y, tracks_h);
+    // The track area backdrop goes under everything: the two surfaces, the
+    // header column and the lanes.
+    paint_backdrop(&painter, ruler_rect, header_rect, lane_rect.union(scroll_rect));
 
-    // Track lanes: track rows and separators (ui::timeline::lane), with the
+    // Track lanes: selected tint and separators (ui::timeline::lane), with the
     // clips of each track drawn over its lane. A track is selected while the
     // range selection covers it.
     let selected_tracks = range_tracks(editor);
     let lane_painter = ui.painter_at(lane_rect);
     let mut y = lane_rect.top() - view.scroll_y;
-    for (i, track) in editor.project.tracks.iter().enumerate() {
+    for track in &editor.project.tracks {
         let bottom = y + track.height;
         if bottom >= lane_rect.top() && y <= lane_rect.bottom() {
             let track_rect = egui::Rect::from_min_max(egui::pos2(g.lane_left, y), egui::pos2(lane_rect.right(), bottom));
-            lane::draw(&lane_painter, track_rect, i, selected_tracks.contains(&track.id));
+            lane::draw(&lane_painter, track_rect, selected_tracks.contains(&track.id));
             // Clips (no waveforms yet, ui::timeline::clip_view).
             let gain_active = interaction::gain_line_active(ui.ctx());
             for clip in &track.clips {
@@ -905,6 +910,12 @@ fn draw(
     let ruler_line =
         egui::Rect::from_min_max(egui::pos2(header_rect.left(), ruler_rect.bottom() - metrics::HAIRLINE), egui::pos2(ruler_rect.right(), ruler_rect.bottom()));
     painter.rect_filled(ruler_line, 0.0, neutral.stroke_track_header);
+
+    // The divider between the header column and the lanes, from the top of the
+    // ruler row to the bottom of the track area. After the ruler line, so that
+    // line does not cross it.
+    let gutter = egui::Rect::from_min_max(egui::pos2(header_rect.right(), ruler_rect.top()), egui::pos2(g.lane_left, scroll_rect.bottom()));
+    painter.rect_filled(gutter, 0.0, neutral.bg_ground);
 
     // Range selection: a 3 px accent bar along the ruler bottom across the
     // range (the tint and boundary lines are drawn by ui::timeline::interaction).
@@ -955,21 +966,16 @@ fn draw(
     track_header::show(ui, editor, header_rect, lane_rect, view.scroll_y, &mut meters.tracks);
 }
 
-/// Paints the track area backdrop (spec "Track area"): the header column as
-/// one `bg.track.header` strip from the ruler row's corner cell (labelled
-/// "Tracks") down through the Add track row, with its right-edge divider, and
-/// `bg.track.empty` over the header column and the lanes below the Add track
-/// row. `tracks_h` is the sum of the track heights.
-fn paint_backdrop(painter: &egui::Painter, ruler_rect: egui::Rect, header_rect: egui::Rect, lane_rect: egui::Rect, scroll_y: f32, tracks_h: f32) {
+/// Paints the track area backdrop: the header column as `bg.panel` with the
+/// `bg.group` corner cell (labelled "Tracks") beside the ruler, and the lanes
+/// surface (`bg.stage.inner`) over `lanes`. The track headers paint their own
+/// `bg.group` blocks over the column, so it stays `bg.panel` below the last one.
+fn paint_backdrop(painter: &egui::Painter, ruler_rect: egui::Rect, header_rect: egui::Rect, lanes: egui::Rect) {
     let neutral = crate::ui::neutrals(painter.ctx());
-    let add_bottom = track_header::add_row_rect(header_rect, scroll_y, tracks_h).bottom();
-    if let Some(empty) = empty_area_rect(header_rect, lane_rect, add_bottom) {
-        ui_kit::paint_track_area_empty(painter, empty);
-    }
-    let strip =
-        egui::Rect::from_min_max(egui::pos2(header_rect.left(), ruler_rect.top()), egui::pos2(header_rect.right(), add_bottom.min(header_rect.bottom())));
-    ui_kit::paint_track_header_column(painter, strip);
-    let corner = egui::Rect::from_min_max(strip.left_top(), egui::pos2(header_rect.right(), ruler_rect.bottom()));
+    painter.rect_filled(lanes, 0.0, neutral.bg_stage_inner);
+    painter.rect_filled(header_rect, 0.0, neutral.bg_panel);
+    let corner = egui::Rect::from_min_max(egui::pos2(header_rect.left(), ruler_rect.top()), egui::pos2(header_rect.right(), ruler_rect.bottom()));
+    painter.rect_filled(corner, 0.0, neutral.bg_group);
     painter.text(
         egui::pos2(corner.left() + space::SCALE_8, corner.center().y),
         egui::Align2::LEFT_CENTER,
@@ -977,14 +983,6 @@ fn paint_backdrop(painter: &egui::Painter, ruler_rect: egui::Rect, header_rect: 
         ui_kit::fonts::medium(typography::CAPTION_SIZE),
         neutral.text_tertiary,
     );
-}
-
-/// The `bg.track.empty` rect: from the bottom of the Add track row (`add_bottom`)
-/// to the bottom of the lanes, across the header column and the lanes. `None`
-/// when the Add track row reaches the bottom.
-fn empty_area_rect(header_rect: egui::Rect, lane_rect: egui::Rect, add_bottom: f32) -> Option<egui::Rect> {
-    (add_bottom < lane_rect.bottom())
-        .then(|| egui::Rect::from_min_max(egui::pos2(header_rect.left(), add_bottom), egui::pos2(lane_rect.right(), lane_rect.bottom())))
 }
 
 /// Display name and offline flag of a media item, for clip drawing.
@@ -1201,65 +1199,133 @@ mod tests {
         })
     }
 
-    #[test]
-    fn the_empty_area_starts_exactly_at_the_add_track_rows_bottom() {
-        let out = track_area_frame();
-        let rects = out.rects();
-        let empty = rects.iter().find(|r| r.fill == color::BG_TRACK_EMPTY).expect("the empty area below the Add track row").rect;
-        let strip = rects.iter().find(|r| r.fill == color::BG_TRACK_HEADER && r.rect.width() == metrics::HEADER_COL_W).expect("the header column strip").rect;
-        assert_eq!(strip.bottom(), empty.top(), "the header strip ends where the empty area starts");
-        assert_eq!(strip.left(), empty.left(), "the empty area covers the header column");
-        assert!(empty.right() > strip.right() + 100.0, "and the lanes");
-        // The Add track row's own bottom line ends exactly there too, across header and lanes.
-        let line = rects
+    /// The corner cell and the lanes surface of one painted frame.
+    fn surfaces(rects: &[egui::epaint::RectShape]) -> (egui::Rect, egui::Rect) {
+        let corner = rects
             .iter()
-            .find(|r| r.fill == color::STROKE_TRACK && r.rect.width() > strip.width() + 100.0 && r.rect.bottom() == empty.top())
-            .expect("a stroke.track line under the Add track row");
-        assert_eq!(line.rect.height(), metrics::HAIRLINE);
-        let add = out.text_rect("+ Add track").expect("the Add track label");
-        assert!(add.center().y > empty.top() - track_header::ADD_ROW_H && add.center().y < empty.top(), "the label sits in the row above the empty area");
+            .find(|r| r.fill == color::BG_GROUP && r.rect.size() == egui::vec2(metrics::HEADER_COL_W, size::RULER_HEIGHT))
+            .expect("the corner cell");
+        let lanes = rects.iter().filter(|r| r.fill == color::BG_STAGE_INNER).map(|r| r.rect).max_by(|a, b| a.area().total_cmp(&b.area()));
+        (corner.rect, lanes.expect("the lanes surface"))
     }
 
     #[test]
-    fn the_header_column_is_one_strip_with_a_tracks_label_a_divider_and_a_line_under_the_ruler() {
+    fn the_header_column_and_the_lanes_are_two_surfaces() {
         let out = track_area_frame();
         let rects = out.rects();
-        let strip = rects.iter().find(|r| r.fill == color::BG_TRACK_HEADER && r.rect.width() == metrics::HEADER_COL_W).expect("the header column strip").rect;
-        let divider = rects.iter().find(|r| r.fill == color::STROKE_TRACK_HEADER && r.rect.height() == strip.height()).expect("the divider").rect;
-        assert_eq!((divider.right(), divider.width()), (strip.right(), metrics::HAIRLINE), "the divider is on the strip's right edge");
+        let (corner, lanes) = surfaces(&rects);
+        assert_eq!(lanes.left(), corner.right() + metrics::COLUMN_GUTTER_W, "the lanes start past the divider");
+        assert_eq!(lanes.top(), corner.bottom(), "the corner cell is exactly as tall as the ruler");
+        let column = rects
+            .iter()
+            .find(|r| r.fill == color::BG_PANEL && r.rect.left() == corner.left() && r.rect.width() == metrics::HEADER_COL_W && r.rect.top() == corner.bottom())
+            .expect("the bg.panel header column")
+            .rect;
+        assert_eq!(column.bottom(), lanes.bottom(), "the column reaches the bottom of the track area");
+        let blocks = rects.iter().filter(|r| r.fill == color::BG_GROUP && r.rect.width() == metrics::HEADER_COL_W && r.rect.top() >= corner.bottom()).count();
+        assert_eq!(blocks, 3, "one bg.group block per track");
+    }
+
+    #[test]
+    fn the_corner_cell_holds_the_tracks_label_and_the_add_row_sits_under_the_last_track() {
+        let out = track_area_frame();
+        let rects = out.rects();
+        let (corner, _) = surfaces(&rects);
         let label = out.texts().into_iter().find(|t| t.text == "Tracks").expect("the Tracks label");
         assert_eq!(label.color, color::TEXT_TERTIARY);
-        assert!(label.rect.center().y < strip.top() + size::RULER_HEIGHT && strip.contains_rect(label.rect), "the label is in the ruler row's corner cell");
+        assert!(corner.contains_rect(label.rect), "the label is in the corner cell");
         let under_ruler = rects
             .iter()
-            .find(|r| r.fill == color::STROKE_TRACK_HEADER && r.rect.height() == metrics::HAIRLINE && r.rect.left() == strip.left())
+            .find(|r| r.fill == color::STROKE_TRACK_HEADER && r.rect.height() == metrics::HAIRLINE && r.rect.left() == corner.left())
             .expect("stroke.track.header under the ruler")
             .rect;
-        assert_eq!(under_ruler.bottom(), strip.top() + size::RULER_HEIGHT, "the line is the ruler's bottom edge");
-        assert!(under_ruler.width() > strip.width() + 100.0, "and runs over the lanes too");
+        assert_eq!(under_ruler.bottom(), corner.bottom(), "the line is the ruler's bottom edge");
+        assert!(under_ruler.width() > corner.width() + 100.0, "and runs over the lanes too");
+        let tracks_bottom = corner.bottom() + 3.0 * size::TRACK_AUDIO_DEFAULT;
+        let add = out.text_rect("+ Add track").expect("the Add track label");
+        assert!(add.top() > tracks_bottom && add.bottom() < tracks_bottom + track_header::ADD_ROW_H, "under the last track: {add:?}");
+        assert!(add.right() < corner.right(), "in the header column");
+        let line_below = rects.iter().any(|r| r.fill == color::BG_GROUND && r.rect.height() == metrics::HAIRLINE && r.rect.bottom() > tracks_bottom);
+        assert!(!line_below, "no line under the Add track row");
     }
 
     #[test]
-    fn row_separators_are_painted_above_the_lane_fills() {
+    fn every_track_has_one_row_line_across_header_and_lanes() {
         let out = track_area_frame();
         let rects = out.rects();
-        let lane_wide = |r: &egui::epaint::RectShape| r.rect.width() > metrics::HEADER_COL_W + 100.0;
-        let separators: Vec<usize> = rects.iter().enumerate().filter(|(_, r)| r.fill == color::STROKE_TRACK && lane_wide(r)).map(|(i, _)| i).collect();
-        assert_eq!(separators.len(), 3 + 1, "one line per track and one under the Add track row");
-        let fills: Vec<usize> = rects
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| (r.fill == color::BG_TRACK_ALT || r.fill == color::BG_TRACK_SELECTED) && lane_wide(r))
-            .map(|(i, _)| i)
-            .collect();
-        assert!(!fills.is_empty(), "the second track is shaded");
-        for &line in &separators {
-            for &fill in &fills {
-                // Touching edges (the next row's fill starts where this line ends) are not covering.
-                let overlap = rects[fill].rect.intersect(rects[line].rect);
-                if overlap.width() > 0.0 && overlap.height() > 0.0 {
-                    assert!(fill < line, "the lane fill at paint index {fill} covers the separator at {line}: {:?} vs {:?}", rects[fill], rects[line]);
+        let (corner, lanes) = surfaces(&rects);
+        for track in 1..=3 {
+            let bottom = corner.bottom() + track as f32 * size::TRACK_AUDIO_DEFAULT;
+            let lines: Vec<_> = rects
+                .iter()
+                .filter(|r| r.fill == color::BG_GROUND && r.rect.height() == metrics::HAIRLINE && r.rect.bottom() == bottom)
+                .map(|r| r.rect)
+                .collect();
+            assert!(lines.iter().any(|l| l.left() == corner.left() && l.right() == corner.right()), "the header part of line {track}: {lines:?}");
+            assert!(lines.iter().any(|l| l.left() == lanes.left() && l.right() == lanes.right()), "the lane part of line {track}: {lines:?}");
+        }
+    }
+
+    /// The divider is there at full height however many tracks there are: from
+    /// the top of the ruler row to the bottom of the track area.
+    #[test]
+    fn the_gutter_kittest_spans_the_track_area_with_0_1_and_3_tracks() {
+        use std::cell::Cell;
+
+        /// Every painted rect with its clip rect, in paint order, nested shapes
+        /// flattened.
+        fn painted(output: &egui::FullOutput) -> Vec<(egui::Rect, egui::epaint::RectShape)> {
+            let mut rects = Vec::new();
+            for clipped in &output.shapes {
+                let mut stack = vec![&clipped.shape];
+                while let Some(shape) = stack.pop() {
+                    match shape {
+                        egui::Shape::Vec(inner) => stack.extend(inner.iter().rev()),
+                        egui::Shape::Rect(rect) => rects.push((clipped.clip_rect, rect.clone())),
+                        _ => {}
+                    }
                 }
+            }
+            rects
+        }
+
+        let layouts: [&[&[(u64, u64)]]; 3] = [&[], &[&[(0, 48_000)]], &[&[(0, 48_000)], &[], &[]]];
+        for tracks in layouts {
+            let count = tracks.len();
+            let paths = crate::io::paths::ProjectPaths { root: std::path::PathBuf::from("unused") };
+            let project = crate::model::fixtures::project_with_clips(tracks);
+            let mut editor = Editor::with_project(project, crate::model::project::ViewState::default(), paths);
+            let mut meters = meter::MeterState::default();
+            let first_pass = Cell::new(true);
+            let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1108.0, 700.0)).build_ui(move |ui| {
+                // The first pass installs the ui-kit theme and fonts; egui
+                // applies a font change at the start of the next pass.
+                if first_pass.get() {
+                    first_pass.set(false);
+                    ui_kit::apply(ui.ctx());
+                    return;
+                }
+                show(ui, &mut editor, ViewMenuAction::None, &mut meters);
+            });
+            harness.step();
+            harness.step();
+
+            let painted = painted(harness.output());
+            let rects: Vec<_> = painted.iter().map(|(_, rect)| rect.clone()).collect();
+            let (corner, lanes) = surfaces(&rects);
+            let gutters: Vec<_> = rects.iter().enumerate().filter(|(_, r)| r.fill == color::BG_GROUND && r.rect.width() == metrics::COLUMN_GUTTER_W).collect();
+            assert_eq!(gutters.len(), 1, "one divider with {count} tracks: {gutters:?}");
+            let (painted_at, gutter) = (gutters[0].0, gutters[0].1.rect);
+            assert_eq!((gutter.left(), gutter.right()), (corner.right(), lanes.left()), "between the column and the lanes with {count} tracks");
+            assert_eq!(gutter.top(), corner.top(), "from the top of the ruler row with {count} tracks");
+            assert_eq!(gutter.bottom(), lanes.bottom(), "to the bottom of the track area with {count} tracks");
+            assert!(gutter.height() > 400.0, "far below the last track with {count} tracks: {gutter:?}");
+            // Nothing painted later covers it (row lines are the same color).
+            // The clip rect counts: the playhead head at 0 is cut at the lanes.
+            for (clip, later) in &painted[painted_at + 1..] {
+                let overlap = later.rect.intersect(*clip).intersect(gutter);
+                let covers = later.fill.a() > 0 && later.fill != color::BG_GROUND && overlap.width() > 0.01 && overlap.height() > 0.01;
+                assert!(!covers, "{later:?} covers the divider with {count} tracks");
             }
         }
     }
