@@ -16,6 +16,7 @@
 
 pub mod accent;
 pub mod appearance;
+pub mod brand;
 pub mod chrome;
 pub mod fonts;
 pub mod help;

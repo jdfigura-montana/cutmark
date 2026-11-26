@@ -11,7 +11,7 @@ use egui_kittest::{Harness, kittest::Queryable};
 
 /// The about info the tests show.
 const INFO: ui_kit::AboutInfo =
-    ui_kit::AboutInfo { app_name: "Cutmark Gallery", version: "0.1.0", copyright: "(c) 2026 Cutmark", notices: "Instrument Sans: SIL OFL 1.1." };
+    ui_kit::AboutInfo { app_name: "Cutmark Gallery", brand: None, version: "0.1.0", copyright: "(c) 2026 Cutmark", notices: "Instrument Sans: SIL OFL 1.1." };
 
 /// A harness with the ui-kit font set and an 800 x 600 window, so the named
 /// Instrument Sans families the dialog lays text out in are bound. The first pass only

@@ -1,8 +1,29 @@
-//! Build script: copies the FFmpeg DLLs next to the built binaries so they
-//! can be loaded.
+//! Build script: embeds the Windows icon and version info into the exe and
+//! copies the FFmpeg DLLs next to the built binaries so they can be loaded.
 
-fn main() {
+fn main() -> std::io::Result<()> {
     copy_ffmpeg_dlls();
+
+    // Only for Windows targets; other platforms need no resources.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        embed_resources()?;
+    }
+    Ok(())
+}
+
+/// Embeds the Recorder's icon and version info into the exe.
+fn embed_resources() -> std::io::Result<()> {
+    let icon = "../../crates/ui-kit/assets/brand/icon-recorder.ico";
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed={icon}");
+    let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
+    let mut res = winresource::WindowsResource::new();
+    res.set_icon(icon);
+    res.set("ProductName", "CutMark Recorder");
+    res.set("FileDescription", "CutMark Recorder");
+    res.set("FileVersion", &version);
+    res.set("ProductVersion", &version);
+    res.compile()
 }
 
 /// Copies the FFmpeg DLLs from third_party/ffmpeg/dist/bin into the profile

@@ -202,6 +202,17 @@ impl Out {
             .collect()
     }
 
+    /// The bounds of every painted image (a mesh with its own texture).
+    pub fn images(&self) -> Vec<Rect> {
+        self.shapes()
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => Some(mesh.calc_bounds()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Every painted rectangle.
     pub fn rects(&self) -> Vec<RectShape> {
         self.shapes()

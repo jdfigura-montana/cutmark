@@ -41,9 +41,13 @@ mod webcam_ui;
 /// The main window's title, also the name eframe runs the app under.
 const WINDOW_TITLE: &str = "CutMark Recorder";
 
-/// The main window: its title and size on the suite's window chrome.
+/// The brand art of this app: its mark and icon.
+const BRAND: ui_kit::brand::App = ui_kit::brand::App::Recorder;
+
+/// The main window: its title, size and icon on the suite's window chrome.
 fn viewport() -> egui::ViewportBuilder {
-    ui_kit::chrome::viewport(egui::ViewportBuilder::default().with_title(WINDOW_TITLE).with_inner_size([1280.0, 800.0]))
+    let window = egui::ViewportBuilder::default().with_title(WINDOW_TITLE).with_inner_size([1280.0, 800.0]).with_icon(ui_kit::brand::window_icon(BRAND));
+    ui_kit::chrome::viewport(window)
         // The Recorder needs more width than the suite's minimum for its stage and two panels.
         .with_min_inner_size([config::MIN_WINDOW_WIDTH, ui_kit::chrome::MIN_SIZE.y])
 }

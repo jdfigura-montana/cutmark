@@ -44,6 +44,7 @@ const TOUR: Tour = Tour { app: "gallery", id: "gallery-tour", version: 1, steps:
 /// The About box's content.
 const ABOUT: AboutInfo = AboutInfo {
     app_name: "CutMark Gallery",
+    brand: None,
     version: env!("CARGO_PKG_VERSION"),
     copyright: "Copyright 2026 CutMark. All rights reserved.",
     notices: "Instrument Sans and Martian Mono are licensed under the SIL Open Font License 1.1.\n\

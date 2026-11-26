@@ -144,7 +144,8 @@ const NOTICES: &str = concat!(
 );
 
 /// The About box's content (spec: S1 Help "About box").
-pub const ABOUT: AboutInfo = AboutInfo { app_name: "CutMark Audio", version: env!("CARGO_PKG_VERSION"), copyright: COPYRIGHT, notices: NOTICES };
+pub const ABOUT: AboutInfo =
+    AboutInfo { app_name: "CutMark Audio", brand: Some(ui_kit::brand::App::Audio), version: env!("CARGO_PKG_VERSION"), copyright: COPYRIGHT, notices: NOTICES };
 
 #[cfg(test)]
 mod tests {
@@ -189,6 +190,7 @@ mod tests {
     #[test]
     fn the_about_box_names_the_app_and_lists_the_licenses() {
         assert_eq!(ABOUT.app_name, "CutMark Audio");
+        assert_eq!(ABOUT.brand, Some(ui_kit::brand::App::Audio));
         assert_eq!(ABOUT.version, env!("CARGO_PKG_VERSION"));
         assert!(ABOUT.copyright.contains("2026"), "the copyright line names the year");
         assert!(ABOUT.notices.contains("Open Font License"), "the font licenses are embedded");

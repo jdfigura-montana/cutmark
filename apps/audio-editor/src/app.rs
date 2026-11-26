@@ -14,7 +14,7 @@ use crate::ui::bin_panel::{self, BinPanel};
 use crate::ui::dialogs::confirm::{CloseChoice, CloseConfirmDialog, ConfirmDialog, ExportCloseChoice, ExportCloseDialog, RecordCloseChoice, RecordCloseDialog};
 use crate::ui::dialogs::export::{BANNER_SECONDS, ExportBanner};
 use crate::ui::master_strip;
-use crate::ui::menu::{HelpMenuAction, ProjectMenu, ProjectMenuAction, app_mark};
+use crate::ui::menu::{HelpMenuAction, ProjectMenu, ProjectMenuAction};
 use crate::ui::start_screen::StartScreen;
 use crate::ui::status_bar;
 use crate::ui::timeline::{self, ViewMenuAction};
@@ -32,6 +32,9 @@ pub const APPEARANCE: ui_kit::AppAppearance = ui_kit::AppAppearance::AUDIO;
 /// The short app name shown in the start screen's toolbar title area and its
 /// panel heading.
 pub const APP_SHORT_NAME: &str = "CutMark Audio";
+
+/// The brand art of this app: its mark, wordmark and icon.
+pub const BRAND: ui_kit::brand::App = ui_kit::brand::App::Audio;
 
 /// Height of the 44px main toolbar (the window's title bar).
 const TOP_BAR_H: f32 = size::TOOLBAR_MAIN_HEIGHT;
@@ -385,7 +388,7 @@ impl App {
             ui_kit::main_toolbar(
                 ui,
                 |ui| {
-                    app_mark(ui);
+                    ui_kit::brand::mark(ui, BRAND, ui_kit::brand::TITLE_BAR_MARK);
                     ui.add_space(space::SCALE_8);
                     chosen.set(crate::ui::menu::start_menu_bar(ui));
                 },
@@ -479,7 +482,7 @@ impl App {
             ui_kit::main_toolbar(
                 ui,
                 |ui| {
-                    app_mark(ui);
+                    ui_kit::brand::mark(ui, BRAND, ui_kit::brand::TITLE_BAR_MARK);
                     ui.add_space(space::SCALE_8);
                     chosen.set(crate::ui::menu::menu_bar(ui, &menu_cell, &editor_cell));
                 },

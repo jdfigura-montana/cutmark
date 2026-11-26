@@ -1,3 +1,10 @@
+## Brand M2 mark, wordmark and app icons (2026-11-26)
+- Art comes from `ui_kit::brand` (`crate::app::BRAND`): title bar mark, start screen wordmark, About wordmark (`AboutInfo.brand`), window icon, exe and installer icon (docs/suite/Brand-Mark.md sections 4 and 5).
+- Brand art keeps its own colors; it does not follow the user's accent pick.
+- `image` is no longer a direct dependency. `assets/icon/` and `scripts/make_icon.py` are now unused.
+- gen_notices.py output has drifted from the checked-in THIRD-PARTY-NOTICES.txt (help.rs tests for the LAME entry), so M2 added the new crate lines by hand.
+- Open, JD hand checks: title bar, start screen, About, exe, taskbar and installer icons.
+
 ## Brand N1 name casing (2026-11-26)
 Write "CutMark" in user-facing text. Paths, identifiers and comments may still say "Cutmark". Older entries below use the old casing.
 

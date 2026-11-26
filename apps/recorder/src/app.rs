@@ -47,9 +47,6 @@ const METER_REFRESH: Duration = Duration::from_millis(33);
 /// How often the window looks for the recovery report until it has arrived.
 const RECOVERY_POLL: Duration = Duration::from_millis(250);
 
-/// Side of the app mark square at the left edge of the title bar.
-const APP_MARK: f32 = 14.0;
-
 /// The 1px hairline stroke width.
 const HAIRLINE: f32 = 1.0;
 
@@ -698,7 +695,7 @@ impl RecorderApp {
         ui_kit::main_toolbar(
             ui,
             |ui| {
-                app_mark(ui);
+                ui_kit::brand::mark(ui, crate::BRAND, ui_kit::brand::TITLE_BAR_MARK);
                 let file = ui_kit::Menu::new("File", |ui| {
                     if menu_item(ui, "Open project folder", "").clicked() {
                         open_folder(&project_folder);
@@ -1472,14 +1469,6 @@ impl Chords {
             mark_label: chord("mark_label"),
             mute_mic: chord("mute_mic"),
         }
-    }
-}
-
-/// The app mark at the left edge of the title bar: a small rounded square in the accent color.
-fn app_mark(ui: &mut egui::Ui) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(APP_MARK, APP_MARK), egui::Sense::hover());
-    if ui.is_rect_visible(rect) {
-        ui.painter().rect_filled(rect, ui_kit::tokens::radius::SEGMENT, ui_kit::tokens::accent::ACCENT);
     }
 }
 

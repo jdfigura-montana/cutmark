@@ -1,3 +1,6 @@
+## Brand M2 mark, wordmark and app icons (2026-11-26)
+- DONE: new mark, wordmark and icons wired in. check.ps1 green; release built. JD hand checks pending.
+
 ## Brand N1 name casing (2026-11-26)
 - DONE: user-facing name is "CutMark" (APP_SHORT_NAME, About, Help menu, help/appearance.md, CHANGELOG). Paths and identifiers keep "Cutmark". check.ps1 green; release built. JD hand checks pending.
 

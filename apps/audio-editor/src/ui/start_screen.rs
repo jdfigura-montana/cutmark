@@ -1,6 +1,6 @@
 //! ui::start_screen: the start screen (Design Language rev 3 "Start screen"):
 //! two panels side by side, centered, at most 1120 wide. The left hero panel
-//! holds the app mark, name and version over a decorative waveform band, the
+//! holds the wordmark lockup and version over a decorative waveform band, the
 //! New project and Open project cards and the drop zone; the right panel lists
 //! the recent projects. The window chrome and the title bar above are drawn by
 //! the app (app.rs); the ui-kit status bar sits below.
@@ -17,7 +17,6 @@ use crate::editor::editor::EditorError;
 use crate::editor::{Editor, OpenOutcome, RecentEntry, recent_projects, remove_missing_recent, remove_recent};
 use crate::ui::dialogs;
 use crate::ui::dialogs::new_project::NewProjectDialog;
-use crate::ui::menu;
 use crate::ui::status_bar;
 
 /// Fixed seeds of the two decorative band waveforms (back layer, front layer).
@@ -58,8 +57,10 @@ const START_GAP: f32 = 16.0;
 const START_HEADER_H: f32 = 22.0;
 /// Phosphor icon size in tiles and the drop zone (20).
 const START_ICON_SIZE: f32 = 20.0;
-/// Side of the hero's app mark (44).
-const START_MARK: f32 = 44.0;
+/// Height of the hero's wordmark lockup (40).
+const START_WORDMARK_H: f32 = 40.0;
+/// Height the band leaves clear for the heading, below the hero's padding (44).
+const START_HEADING_H: f32 = 44.0;
 /// Start screen content max width (1120).
 const START_MAX_W: f32 = 1120.0;
 /// Start screen panel height (640).
@@ -76,8 +77,6 @@ const START_ROW_H: f32 = 58.0;
 const START_ROW_RADIUS: f32 = 10.0;
 /// Size of the recent row's project tile (40); the action card tile is 44.
 const START_TILE: f32 = 40.0;
-/// Hero app name font size (26).
-const START_TITLE_SIZE: f32 = 26.0;
 /// Size of the per-row remove button (28).
 const START_X_BTN: f32 = 28.0;
 
@@ -274,7 +273,7 @@ impl StartScreen {
         }
     }
 
-    /// The hero panel: app mark, name and version over the waveform band, the
+    /// The hero panel: the wordmark lockup and version over the waveform band, the
     /// New project and Open project cards and the drop zone.
     fn show_hero(&mut self, ui: &mut egui::Ui, rect: Rect, opened: &mut Option<Editor>) {
         let neutral = crate::ui::neutrals(ui.ctx());
@@ -283,21 +282,16 @@ impl StartScreen {
         let inner = rect.shrink(pad);
 
         // The decorative band sits behind the heading, under the top edge.
-        let mark_side = START_MARK;
-        let band_top = inner.top() + mark_side + pad;
+        let band_top = inner.top() + START_HEADING_H + pad;
         paint_band(ui, Rect::from_min_size(pos2(rect.left(), band_top), vec2(rect.width(), START_BAND_H)));
 
-        // Heading: mark, then the name over the version.
-        let mark = Rect::from_min_size(inner.min, Vec2::splat(mark_side));
-        menu::paint_app_mark(ui, mark, neutral.bg_panel);
-        let name = ui.painter().layout_no_wrap(crate::app::APP_SHORT_NAME.to_owned(), fonts::semibold(START_TITLE_SIZE), neutral.text_primary);
+        // Heading: the wordmark lockup (no wider than the panel), the version under it.
+        let aspect = ui_kit::brand::wordmark_aspect(ui, crate::app::BRAND);
+        let wordmark_h = START_WORDMARK_H.min(inner.width() / aspect);
+        let wordmark = Rect::from_min_size(inner.min, vec2(wordmark_h * aspect, wordmark_h));
+        ui_kit::brand::wordmark(&mut ui.new_child(UiBuilder::new().max_rect(wordmark)), crate::app::BRAND, wordmark_h);
         let version = ui.painter().layout_no_wrap(format!("v{}", env!("CARGO_PKG_VERSION")), fonts::mono(typography::VALUE_SIZE), neutral.text_tertiary);
-        let block_h = name.size().y + version.size().y;
-        let text_x = mark.right() + space::SCALE_12;
-        let text_y = mark.center().y - block_h / 2.0;
-        let version_y = text_y + name.size().y;
-        ui.painter().galley(pos2(text_x, text_y), name, neutral.text_primary);
-        ui.painter().galley(pos2(text_x, version_y), version, neutral.text_tertiary);
+        ui.painter().galley(pos2(inner.left(), wordmark.bottom() + space::SCALE_8), version, neutral.text_tertiary);
 
         // Cards and the drop zone, anchored to the bottom of the panel.
         let drop = Rect::from_min_size(pos2(inner.left(), inner.bottom() - START_DROP_H), vec2(inner.width(), START_DROP_H));
@@ -1013,10 +1007,14 @@ mod tests {
         let out = rig.frame();
         let version = format!("v{}", env!("CARGO_PKG_VERSION"));
         assert!(out.text_rect(&version).is_some(), "the version from Cargo");
-        let name = out.text_rect(crate::app::APP_SHORT_NAME).expect("the app name");
-        let mark_left = name.left() - space::SCALE_12 - START_MARK;
+        let images = out.images();
+        assert_eq!(images.len(), 1, "the wordmark is the start screen's only image: {images:?}");
+        let wordmark = images[0];
         // 1280 wide: content is 1120 wide, starts at x 80; the hero pads 24.
-        assert!((mark_left - 104.0).abs() <= 1.0, "the mark sits in the hero's padding, at {mark_left}");
+        assert!((wordmark.left() - 104.0).abs() <= 1.0, "the wordmark sits in the hero's padding, at {}", wordmark.left());
+        assert!((wordmark.height() - START_WORDMARK_H).abs() <= 1.0, "{wordmark:?}");
+        assert!(wordmark.right() <= 500.0 - space::SCALE_24, "the wordmark stays inside the hero: {wordmark:?}");
+        assert!(out.text_rect(crate::app::APP_SHORT_NAME).is_none(), "the lockup replaces the name as text");
         let title = out.text_rect("Recent projects").expect("the recent title");
         // Hero 80..500, 16 gap, recent from 516, padding 24.
         assert!((title.left() - 540.0).abs() <= 1.0, "the recent panel starts 16 after the 420 hero, title at {}", title.left());

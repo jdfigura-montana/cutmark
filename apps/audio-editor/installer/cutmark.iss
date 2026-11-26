@@ -12,6 +12,10 @@
 #ifndef BinDir
 #define BinDir "..\..\..\target\release\"
 #endif
+; The setup program's icon is the exe's, from the shared brand assets.
+#ifndef BrandDir
+#define BrandDir Root + "..\..\crates\ui-kit\assets\brand\"
+#endif
 ; The font licenses live beside the fonts in the shared ui-kit crate.
 #ifndef FontsDir
 #define FontsDir Root + "..\..\crates\ui-kit\assets\fonts\"
@@ -34,7 +38,7 @@ PrivilegesRequiredOverridesAllowed=dialog
 MinVersion=10.0
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-SetupIconFile={#Root}assets\icon\app.ico
+SetupIconFile={#BrandDir}icon-audio.ico
 UninstallDisplayIcon={app}\{#AppExe}
 ; Close a running copy before updating the exe.
 CloseApplications=yes
