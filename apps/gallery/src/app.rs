@@ -5,6 +5,7 @@
 //! S1 Help "Shortcut sheet", "First-run tour").
 
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
+use ui_kit::brand;
 use ui_kit::help::{self, HelpBook, HelpState};
 use ui_kit::icons::regular;
 use ui_kit::shortcuts::{Shortcut, ShortcutTable};
@@ -21,8 +22,9 @@ const UI_KIT_VERSION: &str = "0.1.0";
 /// The gallery's own appearance file folder and default accent.
 pub const APPEARANCE: ui_kit::AppAppearance = ui_kit::AppAppearance::new("gallery", ui_kit::Preset::Blue);
 
-/// The app mark's side (spec rev 3 "Title bar": 18).
-const APP_MARK_SIZE: f32 = 18.0;
+/// The brand art in the title bar. The gallery has none of its own, so it
+/// borrows the blue one, which matches its default accent.
+const MARK: brand::App = brand::App::Prompter;
 
 /// The pages of the toolbar segmented control.
 const PAGES: &[&str] = &["Core", "Media"];
@@ -314,7 +316,7 @@ impl Gallery {
     }
 }
 
-/// The left zone: the app mark placeholder, then the menu bar with File, View
+/// The left zone: the app mark, then the menu bar with File, View
 /// and Help menus of sample items. The shortcut text comes from the one sample
 /// table, so the menus and the generated page can never drift apart.
 #[allow(clippy::too_many_arguments)]
@@ -328,7 +330,7 @@ fn left_zone(
     open_about: &std::cell::Cell<bool>,
     shortcuts: &ShortcutTable,
 ) {
-    app_mark(ui);
+    brand::mark(ui, MARK, brand::TITLE_BAR_MARK);
     ui.add_space(space::SCALE_8);
     let toast_key = shortcuts.text(ui.ctx(), "file.toast");
     let keyboard_key = shortcuts.text(ui.ctx(), "help.keyboard");
@@ -377,17 +379,6 @@ fn left_zone(
         }),
     ];
     ui_kit::menu_bar(ui, &mut menus);
-}
-
-/// Draws the app mark placeholder: an accent circle with a notch cut from its
-/// top right (spec "Open questions" item 1: placeholder until a real logo).
-fn app_mark(ui: &mut egui::Ui) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(APP_MARK_SIZE, APP_MARK_SIZE), egui::Sense::hover());
-    let c = rect.center();
-    let radius = APP_MARK_SIZE / 2.0;
-    let painter = ui.painter();
-    painter.circle_filled(c, radius, Theme::get(ui.ctx()).accent.accent);
-    painter.rect_filled(egui::Rect::from_min_size(egui::pos2(c.x, c.y - radius), egui::vec2(radius, radius)), 0.0, color::BG_GROUND);
 }
 
 /// The sample dialog's footer: Cancel, then the primary Close at the bottom

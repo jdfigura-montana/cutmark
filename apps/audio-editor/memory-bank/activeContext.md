@@ -1,8 +1,8 @@
 ## Brand M2 mark, wordmark and app icons (2026-11-26)
 - Art comes from `ui_kit::brand` (`crate::app::BRAND`): title bar mark, start screen wordmark, About wordmark (`AboutInfo.brand`), window icon, exe and installer icon (docs/suite/Brand-Mark.md sections 4 and 5).
 - Brand art keeps its own colors; it does not follow the user's accent pick.
-- `image` is no longer a direct dependency. `assets/icon/` and `scripts/make_icon.py` are now unused.
-- gen_notices.py output has drifted from the checked-in THIRD-PARTY-NOTICES.txt (help.rs tests for the LAME entry), so M2 added the new crate lines by hand.
+- `image` is no longer a direct dependency.
+- THIRD-PARTY-NOTICES.txt is gen_notices.py output: never edit it by hand, rerun the script after dependency changes. help.rs expects its LAME entry (LAME ships inside the FFmpeg DLLs).
 - Open, JD hand checks: title bar, start screen, About, exe, taskbar and installer icons.
 
 ## Brand N1 name casing (2026-11-26)
