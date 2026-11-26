@@ -36,7 +36,7 @@ use crate::tools_ui::{self, Tool};
 use crate::tracks_ui::{self, LiveTrackStats, TracksChanged};
 
 /// The Recorder's own appearance file folder and default accent.
-pub const APPEARANCE: ui_kit::AppAppearance = ui_kit::AppAppearance::new("recorder", ui_kit::Preset::Teal);
+pub const APPEARANCE: ui_kit::AppAppearance = ui_kit::AppAppearance::RECORDER;
 use crate::tray::{Tray, TrayHandle, TrayState};
 use crate::webcam::WebcamHost;
 use crate::webcam_ui;

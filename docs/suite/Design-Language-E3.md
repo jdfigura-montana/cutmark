@@ -25,7 +25,7 @@ Four changes give the suite its own character while the work area stays calm:
 
 ## 2. Tinted neutrals
 
-Every neutral (surfaces, strokes, text) leans slightly toward the current accent's hue, so each app has its own temperature: the Recorder feels faintly teal, the audio editor faintly blue, the video editor faintly warm.
+Every neutral (surfaces, strokes, text) leans slightly toward the current accent's hue, so each app has its own temperature: the Recorder feels faintly teal, the audio editor faintly warm, the video editor faintly violet.
 
 - Neutrals are defined as OKLCH lightness and chroma in `tokens.json`, with the hue taken at runtime from the app's accent (`Theme`). A gray accent pick (chroma below 0.02) gives untinted neutrals.
 - Values (L, C), with the Teal results from the board. These are the final numbers, tuned in E3 phase 1: with the Teal preset every token in the table matches the board's hex value exactly.

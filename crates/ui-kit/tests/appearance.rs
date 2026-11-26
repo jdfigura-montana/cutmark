@@ -1,6 +1,7 @@
 //! Tests for the per-app appearance file: the path per app id, fallbacks on
-//! bad input, the save/load round trip, apps not touching each other, the
-//! one-second poll gate and the default theme on a fresh context.
+//! bad input, the save/load round trip, apps not touching each other, each
+//! app's default, the scheme 2 migration, the one-second poll gate and the
+//! default theme on a fresh context.
 //!
 //! The appearance folder is a process-wide env var, so the tests run
 //! serially: every one takes the env lock and points `CUTMARK_APPEARANCE_DIR`
@@ -18,10 +19,10 @@ use ui_kit::{AppAppearance, Preset, Theme, accent, appearance};
 /// One lock for every test: the appearance folder is a process-wide env var.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-/// The audio editor's identity, the app most tests run as.
-const AUDIO: AppAppearance = AppAppearance::new("audio", Preset::Blue);
+/// The audio editor's identity, the app most tests run as: Orange by default.
+const AUDIO: AppAppearance = AppAppearance::AUDIO;
 /// The recorder's identity: Teal by default.
-const RECORDER: AppAppearance = AppAppearance::new("recorder", Preset::Teal);
+const RECORDER: AppAppearance = AppAppearance::RECORDER;
 
 /// A temp folder with the env var pointing at it as the Cutmark folder.
 struct TempAppearance {
@@ -94,11 +95,11 @@ fn the_path_depends_on_the_app_id() {
     assert_ne!(appearance::path(&AUDIO), appearance::path(&RECORDER));
 }
 
-/// b. A missing file loads the app's own default: Blue for audio, Teal for the recorder.
+/// b. A missing file loads the app's own default: Orange for audio, Teal for the recorder.
 #[test]
 fn missing_file_loads_the_apps_default() {
     let _temp = TempAppearance::new("missing");
-    assert_eq!(appearance::load(&AUDIO), Theme::default());
+    assert_eq!(appearance::load(&AUDIO).accent.pick, Preset::Orange.pick());
     assert_eq!(appearance::load(&RECORDER).accent.pick, Preset::Teal.pick());
     assert_ne!(appearance::load(&RECORDER), Theme::default());
 }
@@ -175,16 +176,16 @@ fn poll_picks_up_a_changed_file() {
     let temp = TempAppearance::new("poll");
     let ctx = egui::Context::default();
     ui_kit::apply_for(&ctx, AUDIO);
-    assert_eq!(Theme::get(&ctx), Theme::default(), "apply stores the loaded theme");
+    assert_eq!(Theme::get(&ctx), AUDIO.default_theme(), "apply stores the loaded theme");
 
     let start = Instant::now();
     appearance::poll_at(&ctx, start); // baseline: the file does not exist yet
-    assert_eq!(Theme::get(&ctx), Theme::default());
+    assert_eq!(Theme::get(&ctx), AUDIO.default_theme());
 
     // Another app's file changing does not matter to this app.
-    save_ok(&RECORDER, &Theme::new(accent::derive(preset("Orange")), false));
+    save_ok(&RECORDER, &Theme::new(accent::derive(preset("Violet")), false));
     appearance::poll_at(&ctx, start + Duration::from_secs(2));
-    assert_eq!(Theme::get(&ctx), Theme::default(), "the recorder's file is not watched");
+    assert_eq!(Theme::get(&ctx), AUDIO.default_theme(), "the recorder's file is not watched");
 
     let theme = Theme::new(accent::derive(preset("Teal")), false);
     save_ok(&AUDIO, &theme);
@@ -192,7 +193,7 @@ fn poll_picks_up_a_changed_file() {
 
     // Inside the gate: nothing changes.
     appearance::poll_at(&ctx, start + Duration::from_millis(2500));
-    assert_eq!(Theme::get(&ctx), Theme::default());
+    assert_eq!(Theme::get(&ctx), AUDIO.default_theme());
 
     // Past the gate: the changed file is loaded and stored.
     appearance::poll_at(&ctx, start + Duration::from_secs(4));
@@ -213,6 +214,108 @@ fn bump(path: &Path) {
     }
     // On a one-second-resolution file system the stamp may never move; the
     // poll still detects the change because no file existed at the baseline.
+}
+
+/// The apps whose default changed in scheme 2: identity, old default, new default.
+const MOVED: [(AppAppearance, Preset, Preset); 3] = [
+    (AppAppearance::AUDIO, Preset::Blue, Preset::Orange),
+    (AppAppearance::VIDEO, Preset::Orange, Preset::Violet),
+    (AppAppearance::PROMPTER, Preset::Violet, Preset::Blue),
+];
+
+/// A color as the file stores it.
+fn hex(color: egui::Color32) -> String {
+    format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b())
+}
+
+/// A file as written before scheme 2: no `scheme` field.
+fn unschemed(pick: egui::Color32) -> String {
+    format!(r#"{{"version": 1, "accent_pick": "{}"}}"#, hex(pick))
+}
+
+/// Writes raw text as an app's appearance file.
+fn write_file(temp: &TempAppearance, app: &AppAppearance, text: &str) {
+    fs::create_dir_all(temp.file(app).parent().unwrap()).expect("create app folder");
+    fs::write(temp.file(app), text).expect("write appearance file");
+}
+
+/// The text of an app's appearance file.
+fn read_text(temp: &TempAppearance, app: &AppAppearance) -> String {
+    fs::read_to_string(temp.file(app)).expect("read appearance file")
+}
+
+/// The parsed JSON of an app's appearance file.
+fn read_json(temp: &TempAppearance, app: &AppAppearance) -> serde_json::Value {
+    serde_json::from_str(&read_text(temp, app)).expect("appearance file is JSON")
+}
+
+/// i. Each app's folder name and default accent.
+#[test]
+fn each_app_has_its_default() {
+    let _temp = TempAppearance::new("defaults");
+    let expected = [
+        (AppAppearance::AUDIO, "audio", Preset::Orange),
+        (AppAppearance::RECORDER, "recorder", Preset::Teal),
+        (AppAppearance::VIDEO, "video", Preset::Violet),
+        (AppAppearance::PROMPTER, "prompter", Preset::Blue),
+    ];
+    for (app, id, default) in expected {
+        assert_eq!(app.id, id);
+        assert_eq!(app.default_preset, default, "{id}");
+        assert_eq!(appearance::load(&app).accent.pick, default.pick(), "{id} with no file");
+    }
+}
+
+/// j. An unschemed file with the old default moves once and is written with
+/// scheme 2; picking the old default again afterwards stays.
+#[test]
+fn the_old_default_moves_once() {
+    let temp = TempAppearance::new("migrate");
+    for (app, old, new) in MOVED {
+        write_file(&temp, &app, &unschemed(old.pick()));
+        assert_eq!(appearance::load(&app), app.default_theme(), "{}", app.id);
+        let json = read_json(&temp, &app);
+        assert_eq!(json["scheme"], 2, "{}", app.id);
+        assert_eq!(json["accent_pick"], hex(new.pick()), "{}", app.id);
+
+        let chosen = Theme::new(accent::derive(old.pick()), false);
+        save_ok(&app, &chosen);
+        assert_eq!(read_json(&temp, &app)["scheme"], 2, "{}", app.id);
+        assert_eq!(appearance::load(&app), chosen, "{}: a later pick of the old default is kept", app.id);
+    }
+}
+
+/// k. Any other pick in an unschemed file is kept and the file is left alone;
+/// the next save adds scheme 2.
+#[test]
+fn a_custom_pick_is_never_changed() {
+    let temp = TempAppearance::new("custom");
+    for (app, old, _) in MOVED {
+        let others = accent::presets().into_iter().map(|(_, color)| color).filter(|color| *color != old.pick());
+        for pick in others.chain([egui::Color32::from_rgb(0x7C, 0x5C, 0xFF)]) {
+            let text = unschemed(pick);
+            write_file(&temp, &app, &text);
+            let loaded = appearance::load(&app);
+            assert_eq!(loaded.accent.pick, pick, "{}", app.id);
+            assert_eq!(read_text(&temp, &app), text, "{}: the file is not rewritten", app.id);
+
+            save_ok(&app, &loaded);
+            assert_eq!(read_json(&temp, &app)["scheme"], 2, "{}", app.id);
+            assert_eq!(appearance::load(&app), loaded, "{}", app.id);
+        }
+    }
+}
+
+/// l. In a scheme 2 file the old default is the user's own pick.
+#[test]
+fn a_scheme_2_file_is_not_migrated() {
+    let temp = TempAppearance::new("scheme-2");
+    for (app, old, _) in MOVED {
+        let text = format!(r#"{{"version": 1, "scheme": 2, "accent_pick": "{}"}}"#, hex(old.pick()));
+        write_file(&temp, &app, &text);
+        assert_eq!(appearance::load(&app).accent.pick, old.pick(), "{}", app.id);
+        assert_eq!(read_text(&temp, &app), text, "{}", app.id);
+    }
 }
 
 /// e. A fresh context with no stored theme reads back the default.

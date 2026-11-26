@@ -21,7 +21,7 @@ If the app adjusts your pick so text stays readable, it shows **Adjusted for rea
 
 ## Reset
 
-1. Click **Reset to default** to return to this app's default accent (Blue in Cutmark Audio).
+1. Click **Reset to default** to return to this app's default accent (Orange in Cutmark Audio).
 2. Click **Done** to close the **Appearance** window.
 
 The accent is saved as you change it. Each Cutmark app keeps its own accent, so changing it here does not change the other apps. It recolors buttons, sliders, selections and the preview: it never changes your audio.

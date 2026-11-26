@@ -59,7 +59,7 @@ Cutmark Prompter is the suite's standalone teleprompter: capture-invisible promp
 | Area | Before | Now |
 | --- | --- | --- |
 | Library window | Framed window with a toolbar | Rev 3 title bar: menu bar, centered document title, Start Prompter as the primary button (see Library window) |
-| Accent | Shared suite accent | Prompter's own accent, default Violet, own picker (Design Language accent-per-app amendment) |
+| Accent | Shared suite accent | Prompter's own accent, default Blue, own picker (Design Language accent-per-app amendment) |
 | Glass | Glass switch | Always on, no switch |
 | Help | None | `ui-kit` Help window, shortcut sheet and first-run tour, same as every app |
 | `cutmark-hotkeys` | Built by whichever app gets there first | Already built by the Recorder; the Prompter reuses it |
@@ -90,7 +90,7 @@ Rules:
 2. Only `cutmark-prompter` imports egui and `ui-kit` (S0 dependency rule 2).
 3. Every color, size and radius comes from `ui-kit` tokens. No hard-coded values (the Design Language lint applies).
 
-**UI:** egui with `ui-kit` components and the Glass Deck look, set up the same way as the Recorder: `ui_kit::chrome::viewport` for the root window, `ui_kit::apply_for` with the Prompter's `AppAppearance` (`"prompter"`, `Preset::Violet`), and `ui_kit::chrome::install`. Views are drawn by the app's own text renderer on top of `ui-kit` panels. Scrolling is animated in the frame loop: while a view is moving it requests a repaint every frame; when still, it repaints only on events.
+**UI:** egui with `ui-kit` components and the Glass Deck look, set up the same way as the Recorder: `ui_kit::chrome::viewport` for the root window, `ui_kit::apply_for` with the Prompter's `AppAppearance` (`"prompter"`, `Preset::Blue`), and `ui_kit::chrome::install`. Views are drawn by the app's own text renderer on top of `ui-kit` panels. Scrolling is animated in the frame loop: while a view is moving it requests a repaint every frame; when still, it repaints only on events.
 
 **Key crates**
 
@@ -143,7 +143,7 @@ One Library window where you write and set up, plus up to four prompter views. E
 - Under the editor: a stats bar with word count and estimated read time (see Scripts).
 - Right panel (header "Run"): scroll mode (Manual or Voice Follow), speed, countdown, mic picker with a level meter, the Views list (add, remove, kind, monitor, Primary, per-view font size, mirror and widgets).
 - Status bar (26): session state, mode, Recorder and OBS link dots, API clients.
-- Appearance (View menu): the `ui-kit` accent picker for the Prompter only, "Reset to default" returns to Violet. No glass switch.
+- Appearance (View menu): the `ui-kit` accent picker for the Prompter only, "Reset to default" returns to Blue. No glass switch.
 - Autosave on edit, 500 ms debounce.
 - Excluded from capture too, so an accidental full-screen recording never shows your script.
 
@@ -612,7 +612,7 @@ Capture invisibility and click-through are tested first; if any capture tool see
 - [ ] 12 tabs open, restored after restart; Live badge on the running script
 - [ ] Favorites filter and sort
 - [ ] Library follows rev 3 (menu bar, centered title, no hamburger, Undo and Redo in the panel toolbar), passes the `ui-kit` hard-coded value lint and a screenshot review
-- [ ] Changing the accent in the Prompter changes only the Prompter; Reset to default returns to Violet
+- [ ] Changing the accent in the Prompter changes only the Prompter; Reset to default returns to Blue
 - [ ] Help window, shortcut sheet and tour open from the Help menu; the shortcut sheet matches the hotkey map
 
 **Scrolling and display**
@@ -657,7 +657,7 @@ Thirteen phases, each ending in a test you can run yourself; each phase becomes 
 
 | # | Phase | Delivers | Done when |
 | --- | --- | --- | --- |
-| 1 | View spike | `apps/prompter` (eframe on wgpu, `ui-kit`, Violet accent) with a rev 3 Library shell, `prompter-platform` window calls and Windows 11 check, one transparent Floating view, content protection, click-through, no-activate, topmost re-assert | The Capture and views checklist passes for the Floating view, including per-pixel transparency |
+| 1 | View spike | `apps/prompter` (eframe on wgpu, `ui-kit`, Blue accent) with a rev 3 Library shell, `prompter-platform` window calls and Windows 11 check, one transparent Floating view, content protection, click-through, no-activate, topmost re-assert | The Capture and views checklist passes for the Floating view, including per-pixel transparency |
 | 2 | Scripts | `prompter-core` parsing, cues, word index, normalization; Library panels with list, search, folders, editor, preview, import (.txt, .md), autosave, snapshots | Unit tests pass; a 10,000-word script indexes in under 50 ms |
 | 3 | Editor extras | Rich paste (clipboard HTML through `prompter-platform`), import (.docx, .odt, .html), tabs, favorites, stats bar | Editor and library checklist passes |
 | 4 | Manual prompter | Galley-based token renderer, Manual scroll, speed, nudge, reading line, countdown, states, status strip, progress, sections | A 60-minute script scrolls with no stutter; cues behave |

@@ -27,7 +27,7 @@ use ui_kit::tour;
 /// screen heading and the installer.
 pub const APP_NAME: &str = "CutMark Audio Editor";
 /// The audio editor's own appearance file folder and default accent.
-pub const APPEARANCE: ui_kit::AppAppearance = ui_kit::AppAppearance::new("audio", ui_kit::Preset::Blue);
+pub const APPEARANCE: ui_kit::AppAppearance = ui_kit::AppAppearance::AUDIO;
 
 /// The short app name shown in the start screen's toolbar title area and its
 /// panel heading.
@@ -782,7 +782,7 @@ mod tests {
     #[test]
     fn the_app_has_its_own_appearance_identity() {
         assert_eq!(APPEARANCE.id, "audio");
-        assert_eq!(APPEARANCE.default_preset, ui_kit::Preset::Blue);
+        assert_eq!(APPEARANCE.default_preset, ui_kit::Preset::Orange);
     }
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;

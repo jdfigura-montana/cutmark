@@ -269,7 +269,7 @@ Lives in Settings, Appearance, in every app. One setting for the whole suite.
 4. Hex field (`#RRGGBB`), accepts paste.
 5. Live preview strip: a Play capsule, a switch that is on, a selected clip with a waveform, and a playhead, all in the derived colors.
 6. "Adjusted for readability" note with before and after swatches, shown only when the clamp changed the pick.
-7. "Reset to Blue" text button.
+7. "Reset to default" text button.
 
 **Rules**
 

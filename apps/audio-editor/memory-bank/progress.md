@@ -1,3 +1,6 @@
+## Brand M1 accent defaults (2026-11-26)
+- Default accent is Orange (docs/suite/Brand-Mark.md section 1); help/appearance.md updated. JD hand checks pending.
+
 ## E3 header column separation (2026-11-26)
 DONE: track headers and lanes are separate surfaces (layout and color only). check.ps1 green; release built. JD hand checks pending.
 

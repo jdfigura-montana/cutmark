@@ -144,7 +144,7 @@ pub fn apply(ctx: &egui::Context) {
 /// Usage:
 ///
 /// ```ignore
-/// ui_kit::apply_for(&cc.egui_ctx, AppAppearance::new("audio", Preset::Blue));
+/// ui_kit::apply_for(&cc.egui_ctx, AppAppearance::AUDIO);
 /// ```
 pub fn apply_for(ctx: &egui::Context, app: appearance::AppAppearance) {
     appearance::set_app(ctx, app);

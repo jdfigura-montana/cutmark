@@ -17,11 +17,13 @@ Replaces the "Accent picker" rules on storage and sharing in docs/suite/Design-L
 
 | App | `<app>` folder | Default accent |
 | --- | --- | --- |
-| Audio editor | audio | Blue |
+| Audio editor | audio | Orange |
 | Recorder | recorder | Teal |
-| Video editor | video | Orange |
-| Prompter | prompter | Violet |
+| Video editor | video | Violet |
+| Prompter | prompter | Blue |
 | Gallery | gallery | Blue |
 | TuteTool | tutetool | Blue (its own repo, applied when TuteTool adopts the tokens) |
+
+The audio editor, video editor and Prompter defaults changed on Nov 26, 2026. docs/suite/Brand-Mark.md section 1 has the one-time migration for saved files.
 
 The four presets stay Blue, Violet, Teal, Orange, then Custom.
