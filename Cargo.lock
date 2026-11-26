@@ -5281,6 +5281,7 @@ dependencies = [
 name = "prompter-platform"
 version = "0.1.0"
 dependencies = [
+ "clipboard-win",
  "thiserror 2.0.21",
  "windows 0.62.2",
 ]

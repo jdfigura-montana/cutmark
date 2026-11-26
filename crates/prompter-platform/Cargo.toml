@@ -22,10 +22,17 @@ panic = "deny"
 thiserror.workspace = true
 
 [target."cfg(windows)".dependencies]
+clipboard-win = "5.4.3"
 windows = { workspace = true, features = [
     "Wdk_System_SystemServices",
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
     "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_WindowsProgramming",
     "Win32_UI_WindowsAndMessaging",
 ] }

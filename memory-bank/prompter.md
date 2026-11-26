@@ -8,6 +8,11 @@
 ## Done
 - Phase 1 (V4 on-screen check passed): prompter-platform and apps/prompter: DX12 renderer (PreMultiplied on JD's PC), one Floating view, white backing fix (JD approved), Library shell. Minimum window 900 x 480.
 - Phase 2, pending JD's check: C1 to C3b prompter-core; C4 library, editor, autosave, File and Edit menus; C4b find bar and right-click menus; C5 script renderer (renderer.rs, shared with the views later), Preview chip, File > Snapshots.
+- Phase 3: E1 prompter-platform instance and clipboard (not wired into the app yet).
+
+## Platform (E1)
+- App wiring: poll try_recv with request_repaint_after (a message does not wake egui); log setup_error.
+- No session id in the pipe name: in a user's second session the primary hears nothing. Signaling an elevated copy likely fails (untested).
 
 ## Core
 - Mark "type: text" takes the category and keeps only the text; other labels are kept as written, first word may name the category ("B-roll" or "b_roll").
@@ -32,11 +37,11 @@
 - A laid block's job text is the block's text (markers excluded), for the token to glyph map.
 - Preview follows the cursor's block only; a block taller than the pane shows from its top. Not remembered across launches. About 208 px of text at the default window.
 - Headless Library tests: app/library_tests.rs.
-- Not done: remembered sort and groups, favorites, tabs, stats bar, plain-text paste. No single-instance guard, so two copies could write one store.
+- Not done: remembered sort and groups, favorites, tabs, stats bar, plain-text paste. The single-instance guard exists (E1) but is not wired in, so two copies could write one store.
 - Untimed on long scripts: Find, preview layout, Snapshots word counts (UI thread).
 
 ## Next
-- JD's Phase 2 check, then Phase 3.
+- JD's Phase 2 check; Phase 3 after E1.
 - By hand: preview look and follow, Snapshots dialog, dialogs (Enter, Esc, Import, Export), right-click menus, Paste with empty, text and image clipboards, Ctrl+Shift+F, autosave on switch and exit.
 - By hand: see-through, flash on open, move to another monitor or DPI, lock and sleep, scroll with the Library minimized, OBS capture.
 - Open: Preview has no menu item (spec wants one for every action; the View list has none). Most File, Script, View and Help shortcuts are missing. About notices are hand-written.
