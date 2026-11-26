@@ -45,8 +45,14 @@ pub(crate) mod metrics {
     pub(crate) const CLIP_RADIUS: f32 = 5.0;
     /// Horizontal padding of the clip header text.
     pub(crate) const CLIP_TEXT_PAD: f32 = 4.0;
-    /// Header height below which the header uses the compact layout.
-    pub(crate) const COMPACT_TRACK_H: f32 = 64.0;
+    /// Level where the header meter strip turns from warn to clip.
+    pub(crate) const METER_CLIP_DB: f32 = -3.0;
+    /// Meter floor of the header meter strip, in dBFS.
+    pub(crate) const METER_FLOOR_DB: f32 = -60.0;
+    /// Level where the header meter strip turns from ok to warn.
+    pub(crate) const METER_WARN_DB: f32 = -12.0;
+    /// Height of the meter strip along the bottom of a track header.
+    pub(crate) const METER_STRIP_H: f32 = 4.0;
     /// Small corner radius for filled rects.
     pub(crate) const CORNER_R: f32 = 2.0;
     /// Pointer travel that turns a press into a drag.

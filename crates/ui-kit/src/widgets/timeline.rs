@@ -246,10 +246,11 @@ pub fn paint_snap_line(painter: &Painter, x: f32, rect: Rect, theme: &Theme) {
 }
 
 /// Paints the timeline ruler: tick lines in `stroke.hairline`, labels in
-/// `type.value` `text.tertiary` in the top half, and the marker dots in a
-/// strip in the bottom half, never on top of a label (spec "Ruler",
-/// "Marker"). Ticks are `(x, label)`; `None` labels draw a shorter minor
-/// tick. Markers are `(x, kind)` on the same x scale as the ticks.
+/// `type.value` `text.tertiary` in the top half with top padding so the taller
+/// mono glyphs are never clipped, and the marker dots in a strip in the bottom
+/// half, never on top of a label (spec "Ruler", "Marker"). Ticks are
+/// `(x, label)`; `None` labels draw a shorter minor tick. Markers are
+/// `(x, kind)` on the same x scale as the ticks.
 pub fn paint_ruler(painter: &Painter, rect: Rect, ticks: &[(f32, Option<String>)], markers: &[(f32, MarkerKind)]) {
     let neutrals = Theme::get(painter.ctx()).neutrals;
     let clipped = painter.with_clip_rect(rect);
@@ -262,7 +263,7 @@ pub fn paint_ruler(painter: &Painter, rect: Rect, ticks: &[(f32, Option<String>)
         clipped.line_segment([Pos2::new(*x, tick_top), Pos2::new(*x, rect.bottom())], Stroke::new(crate::HAIRLINE, neutrals.stroke_hairline));
         if let Some(text) = label {
             let galley = clipped.layout_job(fonts::tracked(text.clone(), label_font.clone(), neutrals.text_tertiary, fonts::MONO_LETTER_SPACING_EM));
-            clipped.galley(Pos2::new(x + space::SCALE_4, rect.top() + space::SCALE_2), galley, neutrals.text_tertiary);
+            clipped.galley(Pos2::new(x + space::SCALE_4, rect.top() + space::SCALE_4), galley, neutrals.text_tertiary);
         }
     }
     let dot_y = ruler_marker_center(rect, label_height);
@@ -275,7 +276,7 @@ pub fn paint_ruler(painter: &Painter, rect: Rect, ticks: &[(f32, Option<String>)
 /// below the time labels so a dot never sits on top of one, and kept inside
 /// the ruler.
 fn ruler_marker_center(rect: Rect, label_height: f32) -> f32 {
-    let labels_bottom = rect.top() + space::SCALE_2 + label_height;
+    let labels_bottom = rect.top() + space::SCALE_4 + label_height;
     let half = MARKER_DIAMETER / 2.0;
     ((rect.center().y + rect.bottom()) / 2.0).max(labels_bottom + half + space::SCALE_2).min(rect.bottom() - half - 1.0)
 }
@@ -366,13 +367,13 @@ mod tests {
 
     /// The marker dots sit in the bottom half of the ruler, fully below the
     /// time labels, so a dot never sits on top of a label (spec "Ruler",
-    /// "Marker").
+    /// "Marker"). A ruler tall enough for both keeps the dot below the labels.
     #[test]
     fn ruler_marker_dots_sit_below_the_labels() {
-        let rect = Rect::from_min_size(Pos2::ZERO, vec2(600.0, 26.0));
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(600.0, 30.0));
         let label_height = 15.0;
         let y = ruler_marker_center(rect, label_height);
-        let labels_bottom = rect.top() + space::SCALE_2 + label_height;
+        let labels_bottom = rect.top() + space::SCALE_4 + label_height;
         assert!(y - MARKER_DIAMETER / 2.0 >= labels_bottom, "the dot must start below the labels");
         assert!(y > rect.center().y, "the dot strip is in the bottom half");
         assert!(y + MARKER_DIAMETER / 2.0 <= rect.bottom(), "the dot stays inside the ruler");
