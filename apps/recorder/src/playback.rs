@@ -472,7 +472,7 @@ fn callback_latency_ns(info: &OutputCallbackInfo, frames: usize, rate: u32) -> u
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::OnceLock;
     use std::time::Duration;
@@ -550,7 +550,7 @@ mod tests {
     }
 
     /// The shared test take: a small video-only AV1 MKV, encoded once per process.
-    fn test_take() -> Result<&'static PathBuf, String> {
+    pub(crate) fn test_take() -> Result<&'static PathBuf, String> {
         static TAKE: OnceLock<Result<PathBuf, String>> = OnceLock::new();
         TAKE.get_or_init(|| {
             let path = std::env::temp_dir().join(format!("cutmark_playback_test_{}__wall.mkv", std::process::id()));

@@ -841,7 +841,7 @@ mod tests {
         assert!(check_take_name("com1", &existing).is_err(), "a reserved device name is refused");
     }
 
-    /// The deck's previous and next mark jump at every edge: no marks at all,
+    /// The previous and next mark jump at every edge: no marks at all,
     /// before, on and past each end, with the wrap-around the functions define.
     #[test]
     fn next_and_previous_mark_select_at_the_edges() {

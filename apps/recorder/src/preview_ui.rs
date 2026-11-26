@@ -2,13 +2,8 @@
 
 use capture::{Preview, PreviewFrame};
 use egui::{Align2, Color32, ColorImage, Context, Pos2, Rect, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui, Vec2, pos2, vec2};
-use ui_kit::tokens::{color, space, typography};
-
-/// The dark colour around and behind the picture (`bg.track.empty`).
-const BACKDROP: Color32 = color::BG_TRACK_EMPTY;
-
-/// Space left below the preview for the transport deck R7 adds (spec "Setup mode").
-const DECK_SPACE: f32 = 88.0;
+use ui_kit::Theme;
+use ui_kit::tokens::{color, radius, space, typography};
 
 /// Width of the recording preview's rim (spec "Record mode": 1px).
 const RIM: f32 = 1.0;
@@ -80,9 +75,7 @@ impl PreviewView {
     /// at its top left ("PAUSED" in `sem.meter.warn` while paused); returns
     /// the box rect.
     pub fn show_recording(&mut self, ui: &mut Ui, preview: Option<&Preview>, enabled: bool, paused: bool) -> Rect {
-        let area = allocate_full(ui);
-        let scale = (area.width() / 16.0).min(area.height() / 9.0);
-        let box_rect = Rect::from_center_size(area.center(), Vec2::new(16.0 * scale, 9.0 * scale));
+        let box_rect = allocate_area(ui);
         match (preview, enabled) {
             (Some(preview), true) => self.draw_frame(ui, preview, box_rect),
             (_, true) => draw_message(ui, box_rect, "Starting preview..."),
@@ -160,29 +153,20 @@ fn frame_pixel(rect: Rect, pos: Pos2, size: (u32, u32)) -> Option<(u32, u32)> {
     Some((x.min(size.0 - 1), y.min(size.1 - 1)))
 }
 
-/// Reserves the space under the panel toolbar, leaving [`DECK_SPACE`] at the
-/// bottom for the deck, and paints the dark 16:9 preview box centered in the
-/// rest of that space, horizontally and vertically; returns the box.
+/// Reserves the stage's space under whatever is above, fills it with the
+/// stage's inner color (`bg.stage.inner`) and returns the 16:9 preview box
+/// centered in it, horizontally and vertically.
 fn allocate_area(ui: &mut Ui) -> Rect {
-    let width = ui.available_width().max(1.0);
-    let height = (ui.available_height() - DECK_SPACE).max(1.0);
-    let (space_rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    let size = Vec2::new(ui.available_width().max(1.0), ui.available_height().max(1.0));
+    let (space_rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    ui.painter().rect_filled(space_rect, radius::GROUP, Theme::get(ui.ctx()).neutrals.bg_stage_inner);
     let scale = (space_rect.width() / 16.0).min(space_rect.height() / 9.0);
-    let box_rect = Rect::from_center_size(space_rect.center(), Vec2::new(16.0 * scale, 9.0 * scale));
-    ui.painter().rect_filled(box_rect, 0.0, BACKDROP);
-    box_rect
+    Rect::from_center_size(space_rect.center(), Vec2::new(16.0 * scale, 9.0 * scale))
 }
 
 /// Draws a message in the middle of the area.
 fn draw_message(ui: &Ui, area: Rect, message: &str) {
     ui.painter().text(area.center(), Align2::CENTER_CENTER, message, ui_kit::fonts::medium(typography::HEADLINE_SIZE), color::TEXT_TERTIARY);
-}
-
-/// Reserves the whole remaining space for the recording preview (spec
-/// "Record mode": the preview box grows to fill the center).
-fn allocate_full(ui: &mut Ui) -> Rect {
-    let size = Vec2::new(ui.available_width().max(1.0), ui.available_height().max(1.0));
-    ui.allocate_exact_size(size, Sense::hover()).0
 }
 
 /// The REC pill at the preview box's top left: a `sem.record` tint capsule

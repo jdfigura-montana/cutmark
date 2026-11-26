@@ -9,6 +9,7 @@ use capture::{AudioDevice, CompositeInput, Preview};
 use ui_kit::tokens::{color, size, space, typography};
 
 use crate::api::{ApiServer, token};
+use crate::bar_ui;
 use crate::compositor::{ComposeConfig, CompositorThread};
 use crate::config::{self, CompositeMode, Mode, ModeState, PanelWidths, Settings};
 use crate::engine::bus::{BusSender, Command, CommandKind, MarkKind};
@@ -842,12 +843,12 @@ impl RecorderApp {
     /// left, the Preview in the center and the tool panels column on the right, with the
     /// 8px window padding and gaps.
     fn setup_panels(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
-        egui::CentralPanel::default().frame(window_frame()).show(ui, |ui| {
+        egui::CentralPanel::default().frame(window_frame(ctx)).show(ui, |ui| {
             let [left, center, right] = three_columns(ui.max_rect(), self.settings.panel_widths.get(Mode::Setup));
             let active = state.phase.has_take();
             column(ui, left, |ui| self.sources_panel(ui, state));
             column(ui, right, |ui| self.settings_panel(ui, ctx, state));
-            column(ui, center, |ui| self.preview_panel(ui, state, active));
+            stage_column(ui, center, |ui| self.preview_panel(ui, state, active));
             self.resize_dividers(ui, &left, &center, &right, Mode::Setup);
         });
     }
@@ -999,46 +1000,48 @@ impl RecorderApp {
         self.profile_store.save_when_due(ctx);
     }
 
-    /// The center Preview panel (spec "Setup mode"): the banner strip, the panel toolbar
-    /// (rev 3, 44 tall), today's preview filling the rest of the panel and the transport
-    /// deck over its bottom edge.
+    /// The center Preview stage (spec "Setup mode"): the banner strip, the panel toolbar
+    /// (rev 3, 44 tall) and today's preview filling the rest of the panel, over the take
+    /// controls in the bottom bar.
     fn preview_panel(&mut self, ui: &mut egui::Ui, state: &ControllerState, active: bool) {
-        if self.banner_strip(ui, state) {
+        self.take_stage(ui, state, |app, ui| {
+            if app.banner_strip(ui, state) {
+                ui.add_space(space::SCALE_8);
+            }
+            let mut outcome = ProfileOutcome::default();
+            app.preview_toolbar(ui, active, &mut outcome);
             ui.add_space(space::SCALE_8);
-        }
-        let mut outcome = ProfileOutcome::default();
-        self.preview_toolbar(ui, active, &mut outcome);
-        ui.add_space(space::SCALE_8);
-        self.show_preview(ui);
-        self.on_profile_outcome(&outcome);
-        self.show_deck(ui, ui.max_rect(), state);
+            app.show_preview(ui);
+            app.on_profile_outcome(&outcome);
+        });
     }
 
-    /// The transport deck over the preview panel's bottom edge (spec "Setup mode"
-    /// and "Record mode").
-    fn show_deck(&self, ui: &mut egui::Ui, content_rect: egui::Rect, state: &ControllerState) {
+    /// The Setup and Record stage around `add_content`: the bottom bar and the Record button
+    /// in its notch (docs/suite/Recorder-E3.md, sections 2 and 3).
+    fn take_stage(&mut self, ui: &mut egui::Ui, state: &ControllerState, add_content: impl FnOnce(&mut Self, &mut egui::Ui)) {
         let chords = Chords::of(&self.hotkeys);
-        let d = record_ui::Deck {
+        // Only the idle bar shows the next take, so a running take never reads the takes folder.
+        let (next_take, next_take_path) =
+            if state.phase.has_take() { (None, String::new()) } else { self.profile_section.next_take(&self.profile_store, &self.settings) };
+        let bar = bar_ui::TakeBar {
             phase: state.phase,
             fps: state.fps,
             frames: state.stats.as_ref().map(|stats| stats.frames),
             countdown_secs: self.settings.countdown_secs,
             chords: &chords,
+            next_take: next_take.as_deref(),
+            next_take_path: &next_take_path,
         };
-        record_ui::deck(ui, content_rect, "recorder-deck", d, &self.controller.sender());
+        let bus = self.controller.sender();
+        bar_ui::take_stage(ui, &bar, &bus, |ui| add_content(self, ui));
     }
 
-    /// The preview panel's toolbar: the Profile caption and picker, a separator, the Preview and
-    /// Matte view chips, and the next take on the right with its full path as the tooltip.
+    /// The preview panel's toolbar: the Profile caption and picker, a separator, and the
+    /// Preview and Matte view chips.
     fn preview_toolbar(&mut self, ui: &mut egui::Ui, active: bool, outcome: &mut ProfileOutcome) {
         let key_on = self.webcam.settings(&self.profile_store).is_some_and(|settings| settings.key.enabled);
         let profile = self.profile_store.get(&self.settings.active_profile);
         let clean = profile.is_some_and(|profile| profile.effective_composite_mode() == CompositeMode::Clean);
-        let (take_label, take_path) = self.profile_section.next_take(&self.profile_store, &self.settings);
-        let next_take = match take_label {
-            Some(label) => format!("Next take {label}"),
-            None => "Next take".to_owned(),
-        };
         let row = egui::vec2(ui.available_width(), size::PANEL_TOOLBAR_HEIGHT);
         let inner = ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.add_space(HEADER_PAD);
@@ -1063,13 +1066,6 @@ impl RecorderApp {
                 let mut on = true;
                 ui_kit::chip(ui, &mut on, "Clean");
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(next_take).font(ui_kit::fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY))
-                        .selectable(false),
-                )
-                .on_hover_text(take_path);
-            });
         });
         let rect = inner.response.rect;
         ui.painter().hline(rect.x_range().expand(space::PANEL_PADDING), rect.bottom(), egui::Stroke::new(HAIRLINE, color::STROKE_HAIRLINE));
@@ -1092,27 +1088,30 @@ impl RecorderApp {
             self.review_dirty = false;
             self.rescan_review();
         }
-        egui::CentralPanel::default().frame(window_frame()).show(ui, |ui| {
+        egui::CentralPanel::default().frame(window_frame(ui.ctx())).show(ui, |ui| {
             let [left, center, right] = three_columns(ui.max_rect(), self.settings.panel_widths.get(Mode::Review));
             column(ui, left, |ui| match review_ui::takes_panel(ui, &self.review_days, &mut self.review_selected) {
                 review_ui::TakesAction::OpenFolder => open_folder(&project_folder(&self.settings)),
                 review_ui::TakesAction::Refresh => self.review_dirty = true,
                 review_ui::TakesAction::None => {}
             });
-            column(ui, center, |ui| {
-                if self.banner_strip(ui, state) {
-                    ui.add_space(space::SCALE_8);
-                }
-                let action = review_ui::center(
-                    ui,
-                    &self.review_days,
-                    self.review_selected.as_deref(),
-                    self.review_playback.as_mut(),
-                    self.review_playback_error.as_deref(),
-                    &mut self.review_center,
-                );
-                if let review_ui::CenterAction::AddMark(position) = action {
-                    self.add_review_mark(position);
+            stage_column(ui, center, |ui| {
+                let transport = self.review_playback.as_ref().map(review_ui::ReviewTransport::of);
+                let (action, _) = review_ui::stage(ui, transport, |ui| {
+                    if self.banner_strip(ui, state) {
+                        ui.add_space(space::SCALE_8);
+                    }
+                    review_ui::center(
+                        ui,
+                        &self.review_days,
+                        self.review_selected.as_deref(),
+                        self.review_playback.as_mut(),
+                        self.review_playback_error.as_deref(),
+                        &mut self.review_center,
+                    );
+                });
+                if let Some(action) = action {
+                    self.run_review_bar_action(ui.ctx(), action);
                 }
             });
             let recording = state.phase != Phase::Idle;
@@ -1144,6 +1143,18 @@ impl RecorderApp {
                 self.delete_selected_take();
             }
         }
+    }
+
+    /// Carries out a click on the Review bar or its notch on the selected take's playback.
+    fn run_review_bar_action(&mut self, ctx: &egui::Context, action: review_ui::BarAction) {
+        let take = review::find(&self.review_days, self.review_selected.as_deref());
+        let (Some(playback), Some(take)) = (self.review_playback.as_mut(), take) else { return };
+        let outcome = review_ui::run_bar_action(action, playback, &take.marks, &mut self.review_center);
+        if let review_ui::CenterAction::AddMark(position) = outcome {
+            self.add_review_mark(position);
+        }
+        // The bar was drawn before the click took effect.
+        ctx.request_repaint();
     }
 
     /// The review playback lifecycle: opened on the selected take's main file
@@ -1309,10 +1320,10 @@ impl RecorderApp {
     /// The Record layout (spec "Modes" and "Record mode"): the recording preview in a center
     /// that fills the window and the Live panel on the right; there is no left column.
     fn record_panels(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
-        egui::CentralPanel::default().frame(window_frame()).show(ui, |ui| {
+        egui::CentralPanel::default().frame(window_frame(ctx)).show(ui, |ui| {
             let [center, right] = two_columns(ui.max_rect(), self.settings.panel_widths.get(Mode::Record));
             column(ui, right, |ui| self.live_panel(ui, ctx, state));
-            column(ui, center, |ui| self.record_center(ui, state));
+            stage_column(ui, center, |ui| self.record_center(ui, state));
             self.resize_right_divider(ui, &center, &right, Mode::Record);
         });
     }
@@ -1327,15 +1338,16 @@ impl RecorderApp {
         }
     }
 
-    /// The Record mode's center: the banner strip over the recording preview,
-    /// with the deck over its bottom edge.
+    /// The Record mode's center stage: the banner strip over the recording preview, over
+    /// the take controls in the bottom bar.
     fn record_center(&mut self, ui: &mut egui::Ui, state: &ControllerState) {
-        if self.banner_strip(ui, state) {
-            ui.add_space(space::SCALE_8);
-        }
-        let preview = self.preview.as_ref();
-        self.preview_view.show_recording(ui, preview, self.preview_enabled, state.phase == Phase::Paused);
-        self.show_deck(ui, ui.max_rect(), state);
+        self.take_stage(ui, state, |app, ui| {
+            if app.banner_strip(ui, state) {
+                ui.add_space(space::SCALE_8);
+            }
+            let preview = app.preview.as_ref();
+            app.preview_view.show_recording(ui, preview, app.preview_enabled, state.phase == Phase::Paused);
+        });
     }
 }
 
@@ -1434,7 +1446,7 @@ fn write_synced(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     file.sync_all()
 }
 
-/// The hotkey chords the Capture menu and the deck tooltips show as their shortcuts; empty
+/// The hotkey chords the Capture menu and the bar's tooltips show as their shortcuts; empty
 /// when a chord is not registered.
 pub(crate) struct Chords {
     /// The start or stop recording chord.
@@ -1584,9 +1596,25 @@ fn banner_row(
 }
 
 /// The window-body frame all three modes share: the ground fill with the 8px window gap on
-/// every side (spec "Window layout").
-fn window_frame() -> egui::Frame {
-    egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin::same(space::WINDOW_GAP as i8))
+/// every side (spec "Window layout"). The fill is the theme's tinted ground, the color the
+/// stage cuts its notch in.
+fn window_frame(ctx: &egui::Context) -> egui::Frame {
+    egui::Frame::new().fill(ground(ctx)).inner_margin(egui::Margin::same(space::WINDOW_GAP as i8))
+}
+
+/// The window ground, tinted toward the accent.
+fn ground(ctx: &egui::Context) -> egui::Color32 {
+    ui_kit::Theme::get(ctx).neutrals.bg_ground
+}
+
+/// Where the mode's stage, and so its notch button, is centered in a `window` that wide.
+fn stage_center_x(window: egui::Rect, mode: Mode, widths: PanelWidths) -> f32 {
+    let body = window.shrink(space::WINDOW_GAP);
+    let center = match mode {
+        Mode::Record => two_columns(body, widths)[0],
+        Mode::Setup | Mode::Review => three_columns(body, widths)[1],
+    };
+    center.center().x
 }
 
 /// The three columns inside the window body's content rect: the Sources panel on the left,
@@ -1594,7 +1622,7 @@ fn window_frame() -> egui::Frame {
 /// by the window gap. The widths come from the mode's saved [`PanelWidths`], clamped into
 /// the spec ranges, and when the window cannot keep the center's [`CENTER_MIN_W`] the side
 /// columns give way first (spec "Panels").
-fn three_columns(content: egui::Rect, widths: PanelWidths) -> [egui::Rect; 3] {
+pub(crate) fn three_columns(content: egui::Rect, widths: PanelWidths) -> [egui::Rect; 3] {
     let gap = space::WINDOW_GAP;
     let (left_w, right_w) = fitted_widths(widths.left, widths.right, content.width(), gap);
     let left = egui::Rect::from_min_max(content.left_top(), egui::Pos2::new(content.left() + left_w, content.bottom()));
@@ -1611,7 +1639,7 @@ fn three_columns(content: egui::Rect, widths: PanelWidths) -> [egui::Rect; 3] {
 /// in Record mode (spec "Modes" and "Record mode"). The right width comes from the mode's
 /// saved [`PanelWidths`], clamped into its range and giving way to the center's
 /// [`CENTER_MIN_W`] on a narrow window (spec "Panels").
-fn two_columns(content: egui::Rect, widths: PanelWidths) -> [egui::Rect; 2] {
+pub(crate) fn two_columns(content: egui::Rect, widths: PanelWidths) -> [egui::Rect; 2] {
     let gap = space::WINDOW_GAP;
     let right_w = fitted_right(widths.right, content.width(), gap);
     let right = egui::Rect::from_min_max(egui::Pos2::new((content.right() - right_w).max(content.left()), content.top()), content.right_bottom());
@@ -1671,6 +1699,13 @@ fn column<R>(parent: &mut egui::Ui, rect: egui::Rect, add_contents: impl FnOnce(
         add_contents(ui)
     })
     .inner
+}
+
+/// The center column, which a stage panel fills.
+fn stage_column<R>(parent: &mut egui::Ui, rect: egui::Rect, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let mut ui = parent.new_child(egui::UiBuilder::new().max_rect(rect));
+    ui.set_clip_rect(rect);
+    add_contents(&mut ui)
 }
 
 /// Which column one divider resizes: the side fixes the drag direction, the width range and
@@ -1819,10 +1854,12 @@ impl eframe::App for RecorderApp {
         self.sync_mode(&state, &ctx);
 
         // The 26px status bar (spec "Status bar"): state, disk free, camera note, API clients.
-        egui::Panel::bottom("status-bar").frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
+        // The notch button reaches into the status bar, so its text stays clear of it.
+        let notch_x = stage_center_x(ui.max_rect(), self.modes.mode, self.settings.panel_widths.get(self.modes.mode));
+        egui::Panel::bottom("status-bar").frame(egui::Frame::new().fill(ground(&ctx))).show(ui, |ui| {
             let clients = self.api.as_ref().map(|server| server.client_count());
             let blocked = state.phase == Phase::Idle && self.profile_section.blocked();
-            status_ui::show(ui, &state, clients, blocked);
+            status_ui::show(ui, &state, clients, blocked, notch_x);
         });
 
         // The 44px title bar (spec "Title bar", rev 3); it reports a picked mode through the cell.
@@ -1906,7 +1943,7 @@ mod tests {
         let ctx = egui::Context::default();
         let columns = std::cell::Cell::new((egui::Rect::NOTHING, egui::Rect::NOTHING, egui::Rect::NOTHING));
         let mut output = ctx.run_ui(input, |ui| {
-            egui::CentralPanel::default().frame(window_frame()).show(ui, |ui| {
+            egui::CentralPanel::default().frame(window_frame(ui.ctx())).show(ui, |ui| {
                 let [left, center, right] = three_columns(ui.max_rect(), PanelWidths::default());
                 columns.set((left, center, right));
             });

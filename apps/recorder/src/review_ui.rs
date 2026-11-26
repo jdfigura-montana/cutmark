@@ -1,13 +1,14 @@
 //! The Review mode panels (spec "Review mode"): the takes list on the left,
 //! the take's playback in the center and the take info on the right.
 //!
-//! The center plays the selected take through the app's [`Playback`]: the
-//! current frame letterboxed in a 16:9 box (uploaded to one reused texture),
-//! a scrub bar under the box that seeks by click or drag, and the transport
-//! deck over the box (timecode, previous and next mark, Play, Add mark, total
-//! length). Clicking a mark in the right panel's Marks list seeks to it, and
-//! while the take plays the mark under the playhead is selected. The Add mark
-//! action reports through [`CenterAction`]; the app does the sidecar work.
+//! The center is a stage that plays the selected take through the app's
+//! [`Playback`]: the current frame letterboxed in a 16:9 box (uploaded to one
+//! reused texture) and a scrub bar under the box that seeks by click or drag.
+//! The stage's bottom bar holds the timecode, Add mark, previous and next
+//! mark, Stop and the total length, and Play sits in its notch. Clicking a
+//! mark in the right panel's Marks list seeks to it, and while the take plays
+//! the mark under the playhead is selected. The Add mark action reports
+//! through [`CenterAction`]; the app does the sidecar work.
 //! The Actions group and the delete confirmation dialog report through
 //! [`TakeAction`] and the app does the file work.
 
@@ -20,8 +21,12 @@ use egui::{
 use marks::MarkType;
 use media_io::player::video::RgbaFrame;
 use ui_kit::tokens::{color, radius, size, space, typography};
-use ui_kit::{MarkerKind, PlayKind, Theme, inspector_group, inspector_row, marker_color, paint_marker, paint_playhead};
+use ui_kit::{
+    MarkerKind, PlayKind, PrimaryButton, STAGE_BAR_BUTTON_DIAMETER, StageResponse, Theme, inspector_group, inspector_row, marker_color, paint_marker,
+    paint_playhead,
+};
 
+use crate::bar_ui::{self, BarButton, Companion};
 use crate::config::CompositeMode;
 use crate::playback::Playback;
 use crate::review::{self, Day, Take};
@@ -32,11 +37,6 @@ const HEADER_PAD: f32 = 6.0;
 
 /// The 1px hairline stroke width.
 const HAIRLINE: f32 = 1.0;
-
-/// Height the 16:9 box reserves at its bottom for the transport deck, the
-/// same reserve the Setup preview leaves (spec "Review mode": the deck is
-/// over the preview).
-const DECK_SPACE: f32 = 88.0;
 
 /// Height of the scrub bar's interaction rect: the playhead head is 16 x 20
 /// (the ui_kit playhead style), so the bar is 20 tall and the track inside it
@@ -104,7 +104,10 @@ impl TakePanelState {
     }
 }
 
-/// What the review center did this frame.
+/// The id of the Review stage.
+const STAGE_ID: &str = "recorder-review-stage";
+
+/// What a click on the Review bar asks the app to do beyond the playback.
 #[derive(Debug, PartialEq, Eq)]
 pub enum CenterAction {
     /// Nothing was clicked.
@@ -285,32 +288,25 @@ fn group_caption(ui: &mut Ui, text: &str) {
     ui.add(egui::Label::new(RichText::new(text).font(ui_kit::fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY)).selectable(false));
 }
 
-/// The Review center (spec "Review mode"): the selected take playing back.
-/// The frame is letterboxed in a 16:9 box with the scrub bar under it and the
-/// transport deck over it. `playback` is the app's open playback of the
-/// selected take; with `None` the box shows the take's name until the
+/// The Review center's content (spec "Review mode"): the selected take
+/// playing back. The frame is letterboxed in a 16:9 box on the stage's inner
+/// color, with the scrub bar under it. `playback` is the app's open playback of
+/// the selected take; with `None` the box shows the take's name until the
 /// playback opens, or the reason `open_error` gives. While the take plays the
 /// center asks for a repaint every frame, and for a few settle frames after
-/// each seek so a paused picture arrives; Add mark reports through the return
-/// value and the app does the sidecar work.
-pub fn center(
-    ui: &mut Ui,
-    days: &[Day],
-    selected: Option<&str>,
-    playback: Option<&mut Playback>,
-    open_error: Option<&str>,
-    state: &mut CenterState,
-) -> CenterAction {
+/// each seek so a paused picture arrives. The transport is [`stage`]'s.
+pub fn center(ui: &mut Ui, days: &[Day], selected: Option<&str>, playback: Option<&mut Playback>, open_error: Option<&str>, state: &mut CenterState) {
     let available = ui.available_rect_before_wrap();
-    let Some(take) = review::find(days, selected) else {
-        placeholder_caption(ui, available.center(), "No take selected");
-        return CenterAction::None;
-    };
     // The scrub bar sits under the box, so the box fits the area above it.
     let scrub_top = available.bottom() - SCRUB_HEIGHT - SCRUB_GAP;
-    let picture_area = Rect::from_min_max(available.min, pos2(available.max.x, scrub_top));
+    let picture_area = Rect::from_min_max(available.min, pos2(available.max.x, scrub_top.max(available.top())));
+    let stage_inner = Theme::get(ui.ctx()).neutrals.bg_stage_inner;
+    ui.painter().rect_filled(picture_area, radius::GROUP, stage_inner);
+    let Some(take) = review::find(days, selected) else {
+        placeholder_caption(ui, picture_area.center(), "No take selected");
+        return;
+    };
     let box_rect = fit_16_9(picture_area);
-    ui.painter().rect_filled(box_rect, radius::GROUP, color::BG_GROUND);
     let scrub_rect =
         Rect::from_min_max(pos2(available.left(), box_rect.bottom() + SCRUB_GAP), pos2(available.right(), box_rect.bottom() + SCRUB_GAP + SCRUB_HEIGHT));
     let Some(playback) = playback else {
@@ -319,14 +315,13 @@ pub fn center(
             None => "The take's picture opens here".to_owned(),
         };
         box_caption(ui, box_rect, &take.name, Some(&why));
-        return CenterAction::None;
+        return;
     };
     let frame = playback.current_frame();
     draw_frame(ui, box_rect, frame, state);
     let duration = playback.duration_ms();
     let position = playback.position_ms();
     scrub_bar(ui, scrub_rect, playback, &take.marks, state, position, duration);
-    let action = review_deck(ui, box_rect, playback, &take.marks, state, position, duration);
     // Repaint every frame only while playing; while paused a few settle
     // frames follow each seek so the decoder's picture shows up.
     if playback.is_playing() {
@@ -335,11 +330,113 @@ pub fn center(
         state.settle_frames -= 1;
         ui.ctx().request_repaint_after(SETTLE_DELAY);
     }
-    action
+}
+
+/// What the Review bar shows of the open playback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReviewTransport {
+    /// The playback position in milliseconds.
+    pub position: u64,
+    /// The take's length in milliseconds.
+    pub duration: u64,
+    /// Whether the take is playing.
+    pub playing: bool,
+}
+
+impl ReviewTransport {
+    /// Reads the open playback of the selected take.
+    pub fn of(playback: &Playback) -> Self {
+        Self { position: playback.position_ms(), duration: playback.duration_ms(), playing: playback.is_playing() }
+    }
+}
+
+/// What a click on the Review bar or its notch asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarAction {
+    /// Play, or pause while playing.
+    TogglePlay,
+    /// Seek to the mark before the position.
+    PreviousMark,
+    /// Seek to the mark after the position.
+    NextMark,
+    /// Pause and go back to the start.
+    Stop,
+    /// Add a mark at the position.
+    AddMark,
+}
+
+/// The Review stage: `add_content` above the bottom bar, and Play in the
+/// notch, which shows Pause while the take plays. The bar holds the timecode
+/// and Add mark on the left, and previous mark, next mark, Stop and the take's
+/// total length on the right. `transport` is None when there is no playback
+/// (no take selected, or it could not open); every control is disabled then.
+/// Returns what was clicked, and the stage.
+pub fn stage(ui: &mut Ui, transport: Option<ReviewTransport>, add_content: impl FnOnce(&mut Ui)) -> (Option<BarAction>, StageResponse) {
+    let ready = transport.is_some();
+    let playing = transport.is_some_and(|transport| transport.playing);
+    let mut left = None;
+    let mut right = None;
+    let stage = ui_kit::stage_panel(
+        ui,
+        egui::Id::new(STAGE_ID),
+        PrimaryButton { kind: PlayKind::Play, active: playing, enabled: ready },
+        add_content,
+        |ui| {
+            let (main, fraction) = position_timecode(transport.map_or(0, |transport| transport.position));
+            // Review has no other way to add a mark: no key, and the menu's Add mark needs a take.
+            let companion = Companion { width: STAGE_BAR_BUTTON_DIAMETER, only_route: true };
+            let add = bar_ui::left_side(ui, &main, &fraction, companion, |ui| bar_ui::bar_button(ui, ui_kit::icons::fill::FLAG, "Add mark", ready).clicked());
+            left = (add == Some(true)).then_some(BarAction::AddMark);
+        },
+        |ui| {
+            let button = |icon, tooltip: &str, action| BarButton { icon, tooltip: tooltip.to_owned(), enabled: ready, action };
+            let buttons = [
+                button(ui_kit::icons::fill::CARET_LEFT, "Previous mark ([)", BarAction::PreviousMark),
+                button(ui_kit::icons::fill::CARET_RIGHT, "Next mark (])", BarAction::NextMark),
+                button(ui_kit::icons::fill::STOP, "Stop", BarAction::Stop),
+            ];
+            let length = transport.map(|transport| length_readout(ui, transport.duration));
+            right = bar_ui::right_side(ui, &buttons, length);
+        },
+    );
+    let _ = stage.primary.clone().on_hover_text(if playing { "Pause (Space)" } else { "Play (Space)" });
+    let play = stage.clicked().then_some(BarAction::TogglePlay);
+    (play.or(left).or(right), stage)
+}
+
+/// The take's total length as the bar draws it.
+fn length_readout(ui: &Ui, duration: u64) -> egui::text::LayoutJob {
+    let tint = Theme::get(ui.ctx()).neutrals.text_tertiary;
+    ui_kit::fonts::tracked(review::format_duration(duration), ui_kit::fonts::mono(typography::VALUE_SIZE), tint, ui_kit::fonts::MONO_LETTER_SPACING_EM)
+}
+
+/// Carries out a bar click on the open playback of a take with `marks`. Adding
+/// a mark is reported back, and the app does the sidecar work.
+pub fn run_bar_action(action: BarAction, playback: &mut Playback, marks: &[marks::Mark], state: &mut CenterState) -> CenterAction {
+    let positions: Vec<u64> = marks.iter().map(|mark| mark.t_ms).collect();
+    let position = playback.position_ms();
+    let seek = match action {
+        BarAction::TogglePlay => {
+            playback.toggle();
+            None
+        }
+        BarAction::PreviousMark => review::previous_mark(&positions, position),
+        BarAction::NextMark => review::next_mark(&positions, position),
+        BarAction::Stop => {
+            playback.pause();
+            Some(0)
+        }
+        BarAction::AddMark => return CenterAction::AddMark(position),
+    };
+    if let Some(ms) = seek {
+        playback.seek(ms);
+        state.settle();
+    }
+    CenterAction::None
 }
 
 /// Uploads the frame into the center's one reused texture and draws it
-/// letterboxed into the box above the deck space. A frame that has not
+/// letterboxed into the box. A frame that has not
 /// arrived (or one with a broken shape) leaves the last picture in place.
 fn draw_frame(ui: &mut Ui, box_rect: Rect, frame: Option<RgbaFrame>, state: &mut CenterState) {
     let Some(frame) = frame else { return };
@@ -350,8 +447,7 @@ fn draw_frame(ui: &mut Ui, box_rect: Rect, frame: Option<RgbaFrame>, state: &mut
     let image = ColorImage::from_rgba_unmultiplied([frame.width as usize, frame.height as usize], &frame.data);
     let handle = state.texture.get_or_insert_with(|| ui.ctx().load_texture("review-frame", image.clone(), TextureOptions::LINEAR));
     handle.set(image, TextureOptions::LINEAR);
-    let area = Rect::from_min_max(box_rect.min, pos2(box_rect.max.x, box_rect.max.y - DECK_SPACE));
-    let dest = fit_aspect(area, frame.width, frame.height);
+    let dest = fit_aspect(box_rect, frame.width, frame.height);
     ui.painter().image(handle.id(), dest, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
 }
 
@@ -409,51 +505,6 @@ fn scrub_bar(ui: &mut Ui, scrub_rect: Rect, playback: &mut Playback, marks: &[ma
     }
 }
 
-/// The transport deck over the 16:9 box (spec "Review mode"): the timecode of
-/// the position, the previous mark, the Play or Pause capsule, the next mark,
-/// Add mark and the take's total length.
-fn review_deck(
-    ui: &mut Ui,
-    box_rect: Rect,
-    playback: &mut Playback,
-    marks: &[marks::Mark],
-    state: &mut CenterState,
-    position: u64,
-    duration: u64,
-) -> CenterAction {
-    let mut action = CenterAction::None;
-    let positions: Vec<u64> = marks.iter().map(|mark| mark.t_ms).collect();
-    ui_kit::transport_deck(ui, box_rect, egui::Id::new("review-deck"), state.scrub.dragging, |ui| {
-        let (main, fraction) = position_timecode(position);
-        ui_kit::timecode(ui, &main, &fraction);
-        if ui_kit::deck_button(ui, ui_kit::icons::regular::CARET_LEFT, "Previous mark").clicked()
-            && let Some(t_ms) = review::previous_mark(&positions, position)
-        {
-            playback.seek(t_ms);
-            state.settle();
-        }
-        if ui_kit::play_button(ui, playback.is_playing(), PlayKind::Play).clicked() {
-            playback.toggle();
-        }
-        if ui_kit::deck_button(ui, ui_kit::icons::regular::CARET_RIGHT, "Next mark").clicked()
-            && let Some(t_ms) = review::next_mark(&positions, position)
-        {
-            playback.seek(t_ms);
-            state.settle();
-        }
-        if ui_kit::deck_button(ui, ui_kit::icons::regular::FLAG, "Add mark").clicked() {
-            action = CenterAction::AddMark(position);
-        }
-        ui.add(
-            egui::Label::new(
-                RichText::new(review::format_duration(duration)).font(ui_kit::fonts::mono_semibold(typography::VALUE_SIZE)).color(color::TEXT_TERTIARY),
-            )
-            .selectable(false),
-        );
-    });
-    action
-}
-
 /// A centered caption pair inside the 16:9 box: the take's name, and the
 /// reason the playback is not showing under it.
 fn box_caption(ui: &mut Ui, box_rect: Rect, name: &str, why: Option<&str>) {
@@ -501,7 +552,7 @@ fn scrub_x(track: Rect, t_ms: u64, duration: u64) -> f32 {
     track.left() + fraction * track.width()
 }
 
-/// The deck timecode of `ms`: `HH:MM:SS` and the `.mmm` fraction.
+/// The bar timecode of `ms`: `HH:MM:SS` and the `.mmm` fraction.
 fn position_timecode(ms: u64) -> (String, String) {
     let seconds = ms / 1000;
     (format!("{:02}:{:02}:{:02}", seconds / 3600, seconds / 60 % 60, seconds % 60), format!(".{:03}", ms % 1000))
@@ -771,12 +822,16 @@ pub fn delete_dialog(ctx: &egui::Context, take: Option<&Take>, open: &mut bool) 
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::path::PathBuf;
+    use std::rc::Rc;
 
     use chrono::Local;
+    use egui_kittest::kittest::{NodeT, Queryable};
 
     use super::*;
-    use crate::config;
+    use crate::bar_ui::bar_checks::{self, assert_bar_is_clean, stage_harness, stage_width};
+    use crate::config::{self, Mode};
     use crate::tools_ui::row_checks::{assert_no_overlap, painted, panel_harness};
 
     /// A take with the given name, number of marks and length.
@@ -843,11 +898,115 @@ mod tests {
         assert_eq!(take_number_tail("12"), None);
     }
 
-    /// The deck timecode splits the position into `HH:MM:SS` and the `.mmm` fraction.
+    /// The bar timecode splits the position into `HH:MM:SS` and the `.mmm` fraction.
     #[test]
-    fn the_deck_timecode_splits_time_and_fraction() {
+    fn the_bar_timecode_splits_time_and_fraction() {
         assert_eq!(position_timecode(0), ("00:00:00".to_owned(), ".000".to_owned()));
         assert_eq!(position_timecode(3_698_784), ("01:01:38".to_owned(), ".784".to_owned()));
+    }
+
+    /// A Review stage `width` wide that records its bar clicks.
+    fn review_harness(width: f32, transport: Option<ReviewTransport>) -> (egui_kittest::Harness<'static>, bar_checks::Drawn, Rc<RefCell<Vec<BarAction>>>) {
+        let clicked = Rc::new(RefCell::new(Vec::new()));
+        let record = Rc::clone(&clicked);
+        let (harness, drawn) = stage_harness(width, move |ui| {
+            let (action, stage) = stage(ui, transport, |_| {});
+            record.borrow_mut().extend(action);
+            stage
+        });
+        (harness, drawn, clicked)
+    }
+
+    /// With no take there is no playback, and Play and the whole bar are disabled.
+    #[test]
+    fn review_play_is_disabled_with_no_take() {
+        let (mut harness, _, clicked) = review_harness(700.0, None);
+        for label in ["Play", "Add mark", "Previous mark ([)", "Next mark (])", "Stop"] {
+            assert!(harness.get_by_label(label).accesskit_node().is_disabled(), "{label} is disabled");
+            harness.get_by_label(label).click();
+            harness.run();
+        }
+        assert!(clicked.borrow().is_empty(), "disabled controls report nothing: {:?}", clicked.borrow());
+    }
+
+    /// With a take, the notch and the bar report what was clicked, and the notch reads Pause
+    /// while the take plays.
+    #[test]
+    fn the_review_controls_report_their_clicks() {
+        let transport = ReviewTransport { position: 1_500, duration: 61_000, playing: false };
+        let (mut harness, _, clicked) = review_harness(700.0, Some(transport));
+        for label in ["Play", "Add mark", "Previous mark ([)", "Next mark (])", "Stop"] {
+            harness.get_by_label(label).click();
+            harness.run();
+        }
+        assert_eq!(*clicked.borrow(), [BarAction::TogglePlay, BarAction::AddMark, BarAction::PreviousMark, BarAction::NextMark, BarAction::Stop]);
+        let (harness, _, _) = review_harness(700.0, Some(ReviewTransport { playing: true, ..transport }));
+        assert!(harness.query_by_label("Pause").is_some() && harness.query_by_label("Play").is_none());
+    }
+
+    /// Play in the notch toggles a real playback, and Stop pauses it at the start. Skipped
+    /// where the test clip cannot be encoded.
+    #[test]
+    fn review_play_toggles_the_playback() -> Result<(), Box<dyn std::error::Error>> {
+        let take = match crate::playback::tests::test_take() {
+            Ok(take) => take,
+            Err(reason) => {
+                eprintln!("skipped: {reason}");
+                return Ok(());
+            }
+        };
+        let playback = Rc::new(RefCell::new(Playback::open(take)?));
+        let shown = Rc::clone(&playback);
+        let (mut harness, _) = stage_harness(700.0, move |ui| {
+            let transport = ReviewTransport::of(&shown.borrow());
+            let (action, stage) = stage(ui, Some(transport), |_| {});
+            if let Some(action) = action {
+                run_bar_action(action, &mut shown.borrow_mut(), &[], &mut CenterState::default());
+            }
+            stage
+        });
+        harness.get_by_label("Play").click();
+        harness.run_steps(3);
+        assert!(playback.borrow().is_playing(), "Play starts the take");
+        harness.get_by_label("Pause").click();
+        harness.run_steps(3);
+        assert!(!playback.borrow().is_playing(), "Pause stops the clock");
+        playback.borrow_mut().seek(200);
+        harness.run_steps(3);
+        harness.get_by_label("Stop").click();
+        harness.run_steps(3);
+        assert!(!playback.borrow().is_playing());
+        assert_eq!(playback.borrow().position_ms(), 0, "Stop goes back to the start");
+        Ok(())
+    }
+
+    /// The default window shows the whole Review bar, and a 900 point window still has Add
+    /// mark, which has no other route in Review.
+    #[test]
+    fn the_review_bar_keeps_add_mark_on_a_narrow_window() {
+        let transport = Some(ReviewTransport { position: 0, duration: 61_000, playing: false });
+        let (harness, _, _) = review_harness(stage_width(Mode::Review, 1280.0), transport);
+        for label in ["Play", "00:00:00.000", "Add mark", "Previous mark ([)", "Next mark (])", "Stop", "00:01:01"] {
+            assert!(harness.query_by_label(label).is_some(), "{label} is shown");
+        }
+        let (harness, _, _) = review_harness(stage_width(Mode::Review, 900.0), transport);
+        assert!(harness.query_by_label("Add mark").is_some());
+    }
+
+    /// From the narrowest window up, the Review bar's center column stays empty and nothing in
+    /// the bar is cut off.
+    #[test]
+    fn the_review_bar_center_column_stays_free_at_minimum_width() {
+        let transport = ReviewTransport { position: 3_698_784, duration: 359_999_000, playing: false };
+        let mut widths = vec![stage_width(Mode::Review, ui_kit::chrome::MIN_SIZE.x)];
+        widths.extend((100..=900).step_by(20).map(|width| width as f32));
+        for width in widths {
+            for transport in [None, Some(transport)] {
+                let (harness, drawn, _) = review_harness(width, transport);
+                let stage = drawn.borrow().clone().expect("the stage was drawn");
+                assert_bar_is_clean(&harness, &stage, width);
+            }
+        }
     }
 
     /// The center draws headlessly without a take, and with a take whose
@@ -874,8 +1033,7 @@ mod tests {
         for selected in [None, Some("take01")] {
             let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(900.0, 600.0))), ..Default::default() };
             let mut output = ctx.run_ui(input, |ui| {
-                let action = center(ui, &days, selected, None, Some("the file could not be probed"), &mut state);
-                assert_eq!(action, CenterAction::None);
+                center(ui, &days, selected, None, Some("the file could not be probed"), &mut state);
             });
             output.textures_delta.clear();
         }

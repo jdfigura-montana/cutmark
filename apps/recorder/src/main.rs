@@ -5,6 +5,7 @@
 mod api;
 mod app;
 mod background_ui;
+mod bar_ui;
 mod compositor;
 mod config;
 mod countdown;
