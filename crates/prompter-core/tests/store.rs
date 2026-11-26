@@ -322,6 +322,46 @@ fn restore_works_on_the_oldest_of_a_full_history() {
 }
 
 #[test]
+fn import_html_converts_and_takes_the_heading() {
+    let folder = tempfile::tempdir().unwrap();
+    let mut store = Store::open(folder.path()).unwrap();
+    let html = "<html><head><title>Not this</title></head><body><p>Intro [[pause]]</p>                <h1>The Real <i>Title</i></h1><ul><li><b>one</b></li></ul></body></html>";
+    let (outside, imported) = import_text(&mut store, "page.HTML", html);
+    assert!(!imported.split);
+    assert_eq!(imported.scripts[0].title, "The Real Title");
+    let saved = store.load(&imported.scripts[0].id).unwrap();
+    assert_eq!(
+        saved,
+        "Intro [[pause]]
+
+# The Real *Title*
+
+- **one**
+"
+    );
+    assert_eq!(fs::read_to_string(outside.path().join("page.HTML")).unwrap(), html);
+
+    // Without a heading the title is the file's name.
+    let (_outside, imported) = import_text(&mut store, "My page.html", "<p>words</p>");
+    assert_eq!(imported.scripts[0].title, "My page");
+}
+
+#[test]
+fn import_html_splits_large_input() {
+    let folder = tempfile::tempdir().unwrap();
+    let mut store = Store::open(folder.path()).unwrap();
+    let body = "<p>word word word word word</p>".repeat(6_000);
+    let (_outside, imported) = import_text(&mut store, "long.html", &format!("<h1>Long</h1>{body}<h2>Rest</h2>{body}"));
+    assert!(imported.split);
+    let titles: Vec<_> = imported.scripts.iter().map(|meta| meta.title.as_str()).collect();
+    assert_eq!(titles, ["Long (part 1 of 2)", "Long (part 2 of 2)"]);
+    assert!(store.load(&imported.scripts[1].id).unwrap().starts_with(
+        "## Rest
+"
+    ));
+}
+
+#[test]
 fn import_md_keeps_the_text_and_takes_the_heading() {
     let (_dir, mut store) = temp_store();
     let md = "Intro\n\n## The **Real** Title\n\n- one\n- two\n";

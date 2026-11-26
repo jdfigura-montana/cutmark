@@ -1,16 +1,25 @@
-//! Importing .md and .txt files (docs/suite/prompter.md, "Import"). The source file is only
-//! read.
+//! Importing .md, .txt and .html files (docs/suite/prompter.md, "Import"). The source file is
+//! only read.
 
 use std::ffi::OsStr;
 use std::fs;
+use std::ops::Range;
 use std::path::Path;
 
 use super::{Imported, Result, ScriptMeta, Store, StoreError, io_error, write_atomic};
+use crate::convert::html_to_markdown;
 use crate::limits::{MAX_WORDS, split_at_heading};
 use crate::script;
 
+/// The kind of file being imported.
+enum Source {
+    Markdown,
+    Text,
+    Html,
+}
+
 impl Store {
-    /// Copies a .md or .txt file into a new script, or into several if it is over
+    /// Copies a .md, .txt or .html file into a new script, or into several if it is over
     /// [`MAX_WORDS`]. The file must be UTF-8, or UTF-16 with a byte order mark. The new
     /// script is always UTF-8.
     ///
@@ -18,14 +27,19 @@ impl Store {
     /// a split file share that title and are numbered.
     pub fn import(&mut self, source: &Path) -> Result<Imported> {
         let extension = source.extension().and_then(OsStr::to_str).map(str::to_ascii_lowercase);
-        let plain = match extension.as_deref() {
-            Some("md") => false,
-            Some("txt") => true,
+        let kind = match extension.as_deref() {
+            Some("md") => Source::Markdown,
+            Some("txt") => Source::Text,
+            Some("html") => Source::Html,
             _ => return Err(StoreError::UnsupportedImport(source.to_path_buf())),
         };
         let bytes = fs::read(source).map_err(io_error(source))?;
         let raw = decode(bytes).ok_or(StoreError::ImportEncoding)?;
-        let text = if plain { markdown_from_text(&raw) } else { raw };
+        let text = match kind {
+            Source::Markdown => raw,
+            Source::Text => markdown_from_text(&raw),
+            Source::Html => html_to_markdown(&raw),
+        };
 
         let title = title_of(&text, source);
         let parts = split_at_heading(&text, MAX_WORDS);
@@ -105,12 +119,25 @@ fn markdown_from_text(text: &str) -> String {
 /// Appends a line with a backslash before each character Markdown would read as syntax.
 /// `[[...]]` cues are copied as they are.
 fn push_escaped(markdown: &mut String, line: &str) {
+    let mut done = 0;
+    for at in escape_plan(line).0 {
+        markdown.push_str(&line[done..at]);
+        markdown.push('\\');
+        done = at;
+    }
+    markdown.push_str(&line[done..]);
+}
+
+/// Where a line of plain text needs backslashes, and where its cues are. Both are byte
+/// positions in `line`, in order.
+pub(crate) fn escape_plan(line: &str) -> (Vec<usize>, Vec<Range<usize>>) {
     let marker = list_marker(line);
+    let (mut escapes, mut cues) = (Vec::new(), Vec::new());
     let mut after_cue = false;
     let mut at = 0;
     while let Some(c) = line[at..].chars().next() {
         if let Some(length) = cue_length(&line[at..]) {
-            markdown.push_str(&line[at..at + length]);
+            cues.push(at..at + length);
             at += length;
             after_cue = true;
             continue;
@@ -126,12 +153,12 @@ fn push_escaped(markdown: &mut String, line: &str) {
             _ => marker == Some(at),
         };
         if active {
-            markdown.push('\\');
+            escapes.push(at);
         }
-        markdown.push(c);
         at += c.len_utf8();
         after_cue = false;
     }
+    (escapes, cues)
 }
 
 /// The position of the '.' or ')' that would make the line a numbered list item.

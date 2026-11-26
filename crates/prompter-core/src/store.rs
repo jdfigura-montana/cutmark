@@ -6,6 +6,8 @@
 
 mod import;
 
+pub(crate) use import::escape_plan;
+
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -45,7 +47,7 @@ pub enum StoreError {
     BlankName,
     #[error("that snapshot no longer exists")]
     UnknownSnapshot,
-    #[error("{}: only .md and .txt files can be imported", .0.display())]
+    #[error("{}: only .md, .txt and .html files can be imported", .0.display())]
     UnsupportedImport(PathBuf),
     #[error("This file is not UTF-8 or UTF-16. Save it as UTF-8 and import again.")]
     ImportEncoding,
