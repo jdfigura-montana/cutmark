@@ -11,7 +11,7 @@
 //!
 //! # Font licenses
 //!
-//! Inter and JetBrains Mono are both SIL OFL 1.1. Their license files
+//! Instrument Sans and Martian Mono are both SIL OFL 1.1. Their license files
 //! sit in `assets/fonts` and must ship with any installer that uses ui-kit.
 
 pub mod accent;
@@ -65,8 +65,8 @@ const MENU_ROW_HEIGHT: f32 = 32.0;
 /// [`Theme`] (spec: "Glass Deck"): the token surfaces, the glass popup
 /// shadow, the States-table widget fills, neutrals tinted toward the accent
 /// (spec "Tinted neutrals"), one accent color for selection and
-/// focus, Inter (Proportional) and JetBrains Mono (Monospace) with named
-/// Inter families for the weight steps, the phosphor icon font, and the
+/// focus, Instrument Sans (Proportional) and Martian Mono (Monospace) with
+/// named families for the weight steps, the phosphor icon font, and the
 /// token spacing grid.
 ///
 /// The app's own appearance file feeds the theme; the app is the one stored

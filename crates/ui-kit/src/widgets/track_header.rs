@@ -75,7 +75,8 @@ pub fn track_header(ui: &mut Ui, number: usize, name: &str, selected: bool, togg
     painter.rect_filled(rect, CornerRadius::ZERO, if selected { neutrals.bg_track_header_selected } else { neutrals.bg_track_header });
     paint_row_separator(painter, rect);
     let number_color = if selected { neutrals.text_primary } else { neutrals.text_tertiary };
-    let number_galley = painter.layout_no_wrap(number.to_string(), fonts::mono(typography::VALUE_SIZE), number_color);
+    let number_galley =
+        painter.layout_job(fonts::tracked(number.to_string(), fonts::mono(typography::VALUE_SIZE), number_color, fonts::MONO_LETTER_SPACING_EM));
     let name_galley = painter.layout_no_wrap(name.to_owned(), fonts::semibold(typography::HEADLINE_SIZE), neutrals.text_primary);
     let line_height = name_galley.size().y.max(number_galley.size().y);
     let mut y = rect.top() + pad;
@@ -122,7 +123,7 @@ pub fn track_header(ui: &mut Ui, number: usize, name: &str, selected: bool, togg
 }
 
 /// The y of the first text baseline within a single-row galley, so the track
-/// number (mono) and the name (Inter) can share one baseline (spec
+/// number (mono) and the name (Instrument Sans) can share one baseline (spec
 /// "Track header"). `Glyph::pos` is the baseline position within its row.
 fn galley_baseline(galley: &Galley) -> f32 {
     galley.rows.first().map_or(galley.size().y, |row| row.pos.y + row.glyphs.first().map_or(row.size.y, |glyph| glyph.pos.y))
@@ -132,7 +133,7 @@ fn galley_baseline(galley: &Galley) -> f32 {
 mod tests {
     use super::*;
 
-    /// The number (mono) and name (Inter) galleys give usable baselines, and
+    /// The number (mono) and name (Instrument Sans) galleys give usable baselines, and
     /// shifting the name by the baseline difference puts both on one line.
     #[test]
     fn the_number_and_name_galleys_share_one_baseline() {

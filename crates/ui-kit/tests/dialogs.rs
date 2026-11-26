@@ -11,7 +11,7 @@ use egui::{Id, vec2};
 use egui_kittest::{Harness, kittest::Queryable};
 
 /// A harness with the ui-kit font set and an 800 x 600 window, so the named
-/// Inter families the widgets lay text out in are bound. The first pass only
+/// Instrument Sans families the widgets lay text out in are bound. The first pass only
 /// installs the fonts (egui applies a font change at the start of the next
 /// pass); the widgets are drawn from the second pass on.
 fn new_harness(mut draw: impl FnMut(&mut egui::Ui) + 'static) -> Harness<'static> {

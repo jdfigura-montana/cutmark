@@ -46,7 +46,7 @@ mod tests {
         // must NOT resolve: this proves the probe is not blind.
         let mut bare = ui_kit::fonts::definitions();
         for keys in bare.families.values_mut() {
-            keys.retain(|key| key.starts_with("Inter-") || key.starts_with("JetBrainsMono-") || key == "Ubuntu-Light" || key == "NotoSans-Regular");
+            keys.retain(|key| key.starts_with("InstrumentSans-") || key.starts_with("MartianMono-") || key == "Ubuntu-Light" || key == "NotoSans-Regular");
         }
         let mut bare_fonts = Fonts::new(TextOptions::default(), bare);
         for (name, icon) in [

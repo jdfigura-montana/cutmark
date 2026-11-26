@@ -254,15 +254,14 @@ pub fn paint_ruler(painter: &Painter, rect: Rect, ticks: &[(f32, Option<String>)
     let neutrals = Theme::get(painter.ctx()).neutrals;
     let clipped = painter.with_clip_rect(rect);
     let label_font = fonts::mono(typography::VALUE_SIZE);
-    let label_height = ticks
-        .iter()
-        .find_map(|(_, label)| label.as_ref())
-        .map_or(0.0, |text| clipped.layout_no_wrap(text.clone(), label_font.clone(), neutrals.text_tertiary).size().y);
+    let label_height = ticks.iter().find_map(|(_, label)| label.as_ref()).map_or(0.0, |text| {
+        clipped.layout_job(fonts::tracked(text.clone(), label_font.clone(), neutrals.text_tertiary, fonts::MONO_LETTER_SPACING_EM)).size().y
+    });
     for (x, label) in ticks {
         let tick_top = if label.is_some() { rect.top() } else { rect.center().y };
         clipped.line_segment([Pos2::new(*x, tick_top), Pos2::new(*x, rect.bottom())], Stroke::new(crate::HAIRLINE, neutrals.stroke_hairline));
         if let Some(text) = label {
-            let galley = clipped.layout_no_wrap(text.clone(), label_font.clone(), neutrals.text_tertiary);
+            let galley = clipped.layout_job(fonts::tracked(text.clone(), label_font.clone(), neutrals.text_tertiary, fonts::MONO_LETTER_SPACING_EM));
             clipped.galley(Pos2::new(x + space::SCALE_4, rect.top() + space::SCALE_2), galley, neutrals.text_tertiary);
         }
     }

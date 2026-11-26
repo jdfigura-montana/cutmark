@@ -1,3 +1,6 @@
+## E3-2 fonts (2026-11-25)
+- Font references moved to Instrument Sans and Martian Mono (installer, notices, licenses, README, help.rs, ui/mod.rs test).
+
 ## Accent per app (2026-11-24)
 - `APPEARANCE` const (audio/Blue) in app.rs, `ui_kit::apply_for` in main.rs, appearance help topic updated, new identity test in app.rs tests. Tests 729, fmt + clippy clean; check.ps1 and release build not run.
 

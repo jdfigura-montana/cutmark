@@ -50,8 +50,8 @@ Source: "{#FFmpegDir}dist\bin\*.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#FFmpegDir}BUILDINFO.txt"; DestDir: "{app}\licenses"; DestName: "FFmpeg-BUILDINFO.txt"; Flags: ignoreversion
 Source: "{#FFmpegDir}dist\LICENSE.txt"; DestDir: "{app}\licenses"; DestName: "FFmpeg-LICENSE.txt"; Flags: ignoreversion
 Source: "{#Root}licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs
-Source: "{#FontsDir}OFL-Inter.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
-Source: "{#FontsDir}OFL-JetBrainsMono.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "{#FontsDir}OFL-InstrumentSans.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "{#FontsDir}OFL-MartianMono.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 Source: "{#Root}README.md"; DestDir: "{app}\licenses"; DestName: "README.md"; Flags: ignoreversion
 
 [Tasks]

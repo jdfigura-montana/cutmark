@@ -1,20 +1,18 @@
 # Font sources
 
-Every font file in this folder comes from an official GitHub release zip.
-Do not edit the TTFs; replace them from a release and update the row.
+Every font file in this folder comes from the designers' own repository or
+release. Do not edit the TTFs; replace them from the source and update the row.
 
-| File | Source (official release zip) | Release version | SHA-256 |
+| File | Source (official repository or release) | Version or commit | SHA-256 |
 | --- | --- | --- | --- |
-| Inter-Regular.ttf | https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip (`extras/ttf/Inter-Regular.ttf`) | v4.1 | 40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82 |
-| Inter-Medium.ttf | https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip (`extras/ttf/Inter-Medium.ttf`) | v4.1 | 97ad806f526e41546d46365bb3a393145f75b7b1568913db74549ad8b8dba872 |
-| Inter-SemiBold.ttf | https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip (`extras/ttf/Inter-SemiBold.ttf`) | v4.1 | 78a843fade9d4612a5567302fb595b56976eb5fcebf4fea5a5912d638bafcde3 |
-| JetBrainsMono-Regular.ttf | https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip (`fonts/ttf/JetBrainsMono-Regular.ttf`) | v2.304 | a0bf60ef0f83c5ed4d7a75d45838548b1f6873372dfac88f71804491898d138f |
-| JetBrainsMono-Medium.ttf | https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip (`fonts/ttf/JetBrainsMono-Medium.ttf`) | v2.304 | 31c92d01a8a08528b718a43addf0ad3df0af2ca4b7b3290a452f70f358e14d3d |
-| JetBrainsMono-SemiBold.ttf | https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip (`fonts/ttf/JetBrainsMono-SemiBold.ttf`) | v2.304 | 1b3bfa1ed5665a4ce3f9feb68d2d4e40e70bf8b4b7d9a3edd418f321b4e166a0 |
-| OFL-Inter.txt | https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip (`LICENSE.txt`) | v4.1 | 262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a |
-| OFL-JetBrainsMono.txt | https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip (`OFL.txt`) | v2.304 | 30f0c136e3c88e422d0791acd97238870f9054a9729bc34cf2ff0d4ed8cac4ad |
+| InstrumentSans-Regular.ttf | https://raw.githubusercontent.com/Instrument/instrument-sans/7fa22308a3d0c94ee2b3cd537a1196b65db34a3e/fonts/ttf/InstrumentSans-Regular.ttf | commit 7fa22308a3d0c94ee2b3cd537a1196b65db34a3e | 69fd3f7c467c70c1f73b232812407f688f3d87dd7a801ea7281aa97d29cf53d5 |
+| InstrumentSans-Medium.ttf | https://raw.githubusercontent.com/Instrument/instrument-sans/7fa22308a3d0c94ee2b3cd537a1196b65db34a3e/fonts/ttf/InstrumentSans-Medium.ttf | commit 7fa22308a3d0c94ee2b3cd537a1196b65db34a3e | 56ba599d12b7cf2fff4eebf46d29253231b6f49bc5b6ce7733dfbf3d7940bfae |
+| InstrumentSans-SemiBold.ttf | https://raw.githubusercontent.com/Instrument/instrument-sans/7fa22308a3d0c94ee2b3cd537a1196b65db34a3e/fonts/ttf/InstrumentSans-SemiBold.ttf | commit 7fa22308a3d0c94ee2b3cd537a1196b65db34a3e | 7151cf505f897e17b4e9b956293b5a60046ec39da3923a8feba29ce86fd14e12 |
+| MartianMono-Regular.ttf | https://github.com/evilmartians/mono/releases/download/v1.1.0/martian-mono-1.1.0-ttf.zip (`MartianMono-StdRg.ttf`, renamed) | v1.1.0 | 7ccf33cd01e123d9bf0e0da695440351550c70e572951455a84d22cf55e1d9b4 |
+| MartianMono-Medium.ttf | https://github.com/evilmartians/mono/releases/download/v1.1.0/martian-mono-1.1.0-ttf.zip (`MartianMono-StdMd.ttf`, renamed) | v1.1.0 | d4f2b5f9c2a389d1e559ab90fc3b2a121aa3e43838e8129fed229f5c07dc6236 |
+| OFL-InstrumentSans.txt | https://raw.githubusercontent.com/Instrument/instrument-sans/7fa22308a3d0c94ee2b3cd537a1196b65db34a3e/OFL.txt | commit 7fa22308a3d0c94ee2b3cd537a1196b65db34a3e | 9e27a72ed30eb49a08678f6a5d6ed98ec7ba5368f541637ee0683ec9134ef966 |
+| OFL-MartianMono.txt | https://raw.githubusercontent.com/evilmartians/mono/v1.1.0/OFL.txt | v1.1.0 (commit 8ffa86c2998677256252336f3662d60997e74b05) | ddafd2c3f37ef1d83ef284ca63e159befd3820850c5e9eded14ca52eee92c256 |
 
-Note: the JetBrains Mono Regular/Medium TTFs and the OFL-JetBrainsMono.txt
-license that shipped before S1 phase 6a did not match any official release
-zip (v2.221, v2.225, v2.242 and v2.304 were all checked by SHA-256), so they
-were replaced with the v2.304 files above.
+The Instrument Sans repository has no tagged releases, so its files are pinned
+to a commit. `Std` is Martian Mono's standard width (the default of its width
+axis).

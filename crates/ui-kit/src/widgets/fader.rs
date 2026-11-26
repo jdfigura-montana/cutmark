@@ -54,7 +54,8 @@ fn readout(db: f32) -> String {
 /// ```
 pub fn fader(ui: &mut Ui, db: &mut f32, height: f32) -> Response {
     let neutrals = Theme::get(ui.ctx()).neutrals;
-    let galley = ui.painter().layout_no_wrap(readout(*db), fonts::mono(typography::VALUE_SIZE), neutrals.text_primary);
+    let galley =
+        ui.painter().layout_job(fonts::tracked(readout(*db), fonts::mono(typography::VALUE_SIZE), neutrals.text_primary, fonts::MONO_LETTER_SPACING_EM));
     let width = galley.size().x.max(KNOB_DIAMETER);
     let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click_and_drag());
     response.widget_info(|| WidgetInfo::slider(true, *db as f64, ""));

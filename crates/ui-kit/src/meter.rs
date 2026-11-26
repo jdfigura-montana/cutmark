@@ -116,8 +116,11 @@ pub fn stereo_meter_vertical(ui: &mut Ui, left_dbfs: f32, right_dbfs: f32, clipp
     let neutrals = Theme::get(ui.ctx()).neutrals;
     let bars_width = HEIGHT * 2.0 + STEREO_GAP;
     let scale_gap = if show_scale { SCALE_GAP } else { 0.0 };
-    let label_width =
-        if show_scale { ui.painter().layout_no_wrap("-60".to_owned(), fonts::mono(typography::VALUE_SIZE), neutrals.text_tertiary).size().x } else { 0.0 };
+    let label_width = if show_scale {
+        ui.painter().layout_job(fonts::tracked("-60", fonts::mono(typography::VALUE_SIZE), neutrals.text_tertiary, fonts::MONO_LETTER_SPACING_EM)).size().x
+    } else {
+        0.0
+    };
     let height = height.max(CLIP_HEIGHT + GAP + HEIGHT);
     let (rect, response) = ui.allocate_exact_size(vec2(label_width + scale_gap + bars_width, height), Sense::hover());
     if ui.is_rect_visible(rect) {
@@ -132,12 +135,12 @@ pub fn stereo_meter_vertical(ui: &mut Ui, left_dbfs: f32, right_dbfs: f32, clipp
         painter.rect_filled(light, ROUNDING, if clipped { color::SEM_METER_CLIP } else { neutrals.stroke_hairline });
         if show_scale {
             let font = fonts::mono(typography::VALUE_SIZE);
-            let text_height = painter.layout_no_wrap("-60".to_owned(), font.clone(), neutrals.text_tertiary).size().y;
+            let text_height = painter.layout_job(fonts::tracked("-60", font.clone(), neutrals.text_tertiary, fonts::MONO_LETTER_SPACING_EM)).size().y;
             for (db, (center_y, shown)) in SCALE_LABELS.iter().zip(scale_label_centers(bar_top, rect.bottom(), text_height)) {
                 if !shown {
                     continue;
                 }
-                let galley = painter.layout_no_wrap(format!("{db}"), font.clone(), neutrals.text_tertiary);
+                let galley = painter.layout_job(fonts::tracked(format!("{db}"), font.clone(), neutrals.text_tertiary, fonts::MONO_LETTER_SPACING_EM));
                 let pos = Pos2::new(bars_left - SCALE_GAP - galley.size().x, center_y - galley.size().y / 2.0);
                 painter.galley(pos, galley, neutrals.text_tertiary);
             }

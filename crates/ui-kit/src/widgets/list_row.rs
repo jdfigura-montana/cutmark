@@ -48,7 +48,8 @@ pub fn list_row(ui: &mut Ui, selected: bool, dot: Option<Color32>, label: &str, 
         let label_galley = painter.layout_no_wrap(label.to_owned(), fonts::medium(typography::BODY_SIZE), text_color);
         painter.galley(Pos2::new(x, rect.center().y - label_galley.size().y / 2.0), label_galley, text_color);
         if let Some(trailing) = trailing {
-            let trailing_galley = painter.layout_no_wrap(trailing.to_owned(), fonts::mono(typography::VALUE_SIZE), neutrals.text_tertiary);
+            let trailing_galley =
+                painter.layout_job(fonts::tracked(trailing, fonts::mono(typography::VALUE_SIZE), neutrals.text_tertiary, fonts::MONO_LETTER_SPACING_EM));
             let pos = Pos2::new(rect.right() - inset - trailing_galley.size().x, rect.center().y - trailing_galley.size().y / 2.0);
             painter.galley(pos, trailing_galley, neutrals.text_tertiary);
         }

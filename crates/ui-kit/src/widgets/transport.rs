@@ -201,16 +201,18 @@ pub fn play_button(ui: &mut Ui, playing: bool, kind: PlayKind) -> Response {
 }
 
 /// The large transport timecode (spec "Typography": `type.time.large`, the
-/// JetBrains Mono step): the main readout in `text.primary`, the sub-second
-/// fraction in `text.tertiary`.
+/// Martian Mono step): the main readout in `text.primary`, the sub-second
+/// fraction in `text.tertiary`, both with the timecode letter spacing.
 pub fn timecode(ui: &mut Ui, main: &str, fraction: &str) -> InnerResponse<()> {
     let neutrals = Theme::get(ui.ctx()).neutrals;
     let font = fonts::mono_semibold(typography::TIME_LARGE_SIZE);
+    let spacing = font.size * fonts::TIMECODE_LETTER_SPACING_EM;
+    let part = |text: &str, color| egui::RichText::new(text).font(font.clone()).extra_letter_spacing(spacing).color(color);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::SCALE_2;
-        ui.add(egui::Label::new(egui::RichText::new(main).font(font.clone()).color(neutrals.text_primary)));
+        ui.add(egui::Label::new(part(main, neutrals.text_primary)));
         if !fraction.is_empty() {
-            ui.add(egui::Label::new(egui::RichText::new(fraction).font(font).color(neutrals.text_tertiary)));
+            ui.add(egui::Label::new(part(fraction, neutrals.text_tertiary)));
         }
     })
 }

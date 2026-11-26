@@ -76,7 +76,8 @@ pub fn inspector_row(ui: &mut Ui, label: &str, add_control: impl FnOnce(&mut Ui)
         let inset = space::SCALE_4;
         let label_galley = painter.layout_no_wrap(label.to_owned(), fonts::medium(typography::BODY_SIZE), neutrals.text_secondary);
         let label_pos = Pos2::new(rect.left() + inset, rect.center().y - label_galley.size().y / 2.0);
-        let value_galley = value.map(|value| painter.layout_no_wrap(value.to_owned(), fonts::mono(typography::VALUE_SIZE), neutrals.text_primary));
+        let value_galley = value
+            .map(|value| painter.layout_job(fonts::tracked(value, fonts::mono(typography::VALUE_SIZE), neutrals.text_primary, fonts::MONO_LETTER_SPACING_EM)));
         let value_width = value_galley.as_ref().map_or(0.0, |galley| galley.size().x);
         let control_left = label_pos.x + label_galley.size().x + space::SCALE_8;
         let control_right = (rect.right() - inset - value_width - space::SCALE_8).max(control_left);

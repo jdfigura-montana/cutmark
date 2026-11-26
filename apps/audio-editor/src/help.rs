@@ -132,15 +132,15 @@ const TOUR_STEPS: [TourStep; 5] = [
 /// "First-run tour").
 pub const TOUR: Tour = Tour { app: "audio-editor", id: "intro", version: 1, steps: &TOUR_STEPS };
 
-/// The third-party notices, then the Inter and JetBrains Mono font licenses the
+/// The third-party notices, then the Instrument Sans and Martian Mono font licenses the
 /// app ships (spec: S1 Help "About box"). The two font OFL texts are the ones
 /// ui-kit embeds, since the app draws with those faces.
 const NOTICES: &str = concat!(
     include_str!("../THIRD-PARTY-NOTICES.txt"),
-    "\n\nInter (SIL Open Font License 1.1)\n\n",
-    include_str!("../../../crates/ui-kit/assets/fonts/OFL-Inter.txt"),
-    "\n\nJetBrains Mono (SIL Open Font License 1.1)\n\n",
-    include_str!("../../../crates/ui-kit/assets/fonts/OFL-JetBrainsMono.txt"),
+    "\n\nInstrument Sans (SIL Open Font License 1.1)\n\n",
+    include_str!("../../../crates/ui-kit/assets/fonts/OFL-InstrumentSans.txt"),
+    "\n\nMartian Mono (SIL Open Font License 1.1)\n\n",
+    include_str!("../../../crates/ui-kit/assets/fonts/OFL-MartianMono.txt"),
 );
 
 /// The About box's content (spec: S1 Help "About box").

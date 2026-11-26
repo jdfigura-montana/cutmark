@@ -46,7 +46,7 @@ const ABOUT: AboutInfo = AboutInfo {
     app_name: "Cutmark Gallery",
     version: env!("CARGO_PKG_VERSION"),
     copyright: "Copyright 2026 Cutmark. All rights reserved.",
-    notices: "Inter and JetBrains Mono are licensed under the SIL Open Font License 1.1.\n\
+    notices: "Instrument Sans and Martian Mono are licensed under the SIL Open Font License 1.1.\n\
               Phosphor Icons and the egui-phosphor crate are licensed under MIT or Apache-2.0.\n\
               egui, eframe and epaint are licensed under MIT or Apache-2.0.\n\n\
               The font license files ship with the app.",

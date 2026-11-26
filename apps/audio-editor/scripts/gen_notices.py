@@ -1,6 +1,6 @@
 """Generate THIRD-PARTY-NOTICES.txt in apps/audio-editor.
 
-Lists Inter + JetBrains Mono (OFL) + Phosphor icons (MIT), the FFmpeg shared libraries
+Lists Instrument Sans + Martian Mono (OFL) + Phosphor icons (MIT), the FFmpeg shared libraries
 (LGPL-3.0-or-later) and the license of every crate in the cutmark-audio dependency
 tree for Windows (via cargo tree), read from the extracted crate sources
 in the local cargo registry (no network). Run from the repo root:
@@ -26,13 +26,13 @@ Third-party notices for CutMark Audio Editor
 
 Fonts and icons (embedded in the exe by the ui-kit crate):
 
-- Inter (crates/ui-kit/assets/fonts/Inter-*.ttf)
-  License: SIL Open Font License 1.1 - crates/ui-kit/assets/fonts/OFL-Inter.txt
-  Copyright (c) 2016 The Inter Project Authors
+- Instrument Sans (crates/ui-kit/assets/fonts/InstrumentSans-*.ttf)
+  License: SIL Open Font License 1.1 - crates/ui-kit/assets/fonts/OFL-InstrumentSans.txt
+  Copyright 2022 The Instrument Sans Project Authors
 
-- JetBrains Mono (crates/ui-kit/assets/fonts/JetBrainsMono-*.ttf)
-  License: SIL Open Font License 1.1 - crates/ui-kit/assets/fonts/OFL-JetBrainsMono.txt
-  Copyright 2020 The JetBrains Mono Project Authors
+- Martian Mono (crates/ui-kit/assets/fonts/MartianMono-*.ttf)
+  License: SIL Open Font License 1.1 - crates/ui-kit/assets/fonts/OFL-MartianMono.txt
+  Copyright 2021 The Martian Mono Project Authors
 
 - Phosphor Icons, used through the egui-phosphor crate
   License: MIT - licenses/Phosphor-MIT.txt

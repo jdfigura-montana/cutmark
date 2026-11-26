@@ -11,7 +11,7 @@ use std::rc::Rc;
 use egui::{Rect, Shape};
 use egui_kittest::{Harness, kittest::Queryable};
 
-/// A harness with the ui-kit font set, so the named Inter families and the
+/// A harness with the ui-kit font set, so the named Instrument Sans families and the
 /// phosphor icon fonts the widgets lay text out in are bound. The first pass
 /// only installs the fonts (egui applies a font change at the start of the
 /// next pass); the widgets are drawn from the second pass on.

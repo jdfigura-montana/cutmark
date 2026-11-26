@@ -1,3 +1,6 @@
+## E3-2 fonts (2026-11-25)
+ui-kit now ships Instrument Sans and Martian Mono. Audio editor edits are font references only (help.rs notices, the icon probe test in ui/mod.rs, installer and license files).
+
 ## Accent per app (2026-11-24)
 Audio editor now saves its accent in `%APPDATA%\Cutmarkudioppearance.json` (default Blue): `pub const APPEARANCE` in app.rs, passed to `ui_kit::apply_for` in main.rs. View > Appearance is unchanged except the picker says "Reset to default" and has no Glass effects switch (glass is always on). help/appearance.md rewritten to match. Other apps' accents no longer follow this one. Tests 729 pass (the clip_view accent test noted below passes now). See the root memory-bank for the ui-kit details.
 
@@ -11,7 +14,7 @@ Deck alignment task DONE: ui/timeline/deck.rs rebuilt its contents like the Reco
 
 
 ## Phase 15 (2026-11-22)
-S1 phase 15 DONE: audio editor 1.2.0 release close-out; no code changes except the version. See progress.md for the file list and the two open items (COPYRIGHT placeholder, stale crate list in THIRD-PARTY-NOTICES.txt). Font licenses for the installer come from crates/ui-kit/assets/fonts (FontsDir define in installer/cutmark.iss), the single source for Inter and JetBrains Mono. Next: S1 milestone wrap-up (JD).
+S1 phase 15 DONE: audio editor 1.2.0 release close-out; no code changes except the version. See progress.md for the file list and the two open items (COPYRIGHT placeholder, stale crate list in THIRD-PARTY-NOTICES.txt). Font licenses for the installer come from crates/ui-kit/assets/fonts (FontsDir define in installer/cutmark.iss), the single source for Instrument Sans and Martian Mono. Next: S1 milestone wrap-up (JD).
 
 ## Phase 14f follow-up (2026-11-22)
 S1 phase 14f follow-up DONE (2026-11-22): the four review items JD picked are fixed; nothing else changed.

@@ -562,7 +562,7 @@ fn dialog_panel(ui: &mut egui::Ui, state: &mut CoreState) {
 fn type_panel(ui: &mut egui::Ui) {
     demo_panel(ui, "Type scale", |ui| {
         // type.caption is weight 400: the default proportional family carries
-        // Inter Regular, the named families only carry the heavier weights.
+        // Instrument Sans Regular, the named families only carry the heavier weights.
         let rows = [
             ("type.title", fonts::semibold(typography::TITLE_SIZE), "Interview take 3"),
             ("type.headline", fonts::semibold(typography::HEADLINE_SIZE), "Interview take 3"),
