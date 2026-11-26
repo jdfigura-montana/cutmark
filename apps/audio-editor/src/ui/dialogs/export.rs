@@ -12,7 +12,7 @@ use crate::editor::selection::Selection;
 use crate::io::export::{ExportFormat, ExportKind, mp3_rate};
 use crate::model::project::BitDepth;
 use ui_kit::fonts;
-use ui_kit::tokens::{color, size, space, typography};
+use ui_kit::tokens::{size, space, typography};
 
 /// How long the finished-export banner stays in the status bar.
 pub const BANNER_SECONDS: f64 = 10.0;
@@ -98,6 +98,7 @@ impl ExportDialog {
     /// `ExportSettings` and calls `Editor::start_export`; Cancel, the close
     /// box or Esc dismisses it.
     pub fn show(&mut self, ctx: &egui::Context, editor: &mut Editor) {
+        let neutral = crate::ui::neutrals(ctx);
         if !self.open {
             return;
         }
@@ -184,7 +185,7 @@ impl ExportDialog {
                                                 rate_khz(mp3_rate(shown_editor.project.sample_rate))
                                             ))
                                             .font(fonts::medium(typography::CAPTION_SIZE))
-                                            .color(color::TEXT_TERTIARY),
+                                            .color(neutral.text_tertiary),
                                         );
                                     },
                                     None,
@@ -423,6 +424,7 @@ pub fn show_progress(ctx: &egui::Context, editor: &mut Editor) {
 /// The progress bar: a `bg.control` capsule track, the theme accent fill, and
 /// the percent in the mono value type on the right.
 fn progress_bar(ui: &mut egui::Ui, frac: f32) {
+    let neutral = crate::ui::neutrals(ui.ctx());
     let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), size::SEGMENT_HEIGHT), egui::Sense::hover());
     let percent_w = space::SCALE_24 * 2.0 + space::SCALE_4;
     let bar = egui::Rect::from_center_size(
@@ -431,7 +433,7 @@ fn progress_bar(ui: &mut egui::Ui, frac: f32) {
     );
     let radius = space::SCALE_6 / 2.0;
     let painter = ui.painter();
-    painter.rect_filled(bar, radius, color::BG_CONTROL);
+    painter.rect_filled(bar, radius, neutral.bg_control);
     if frac > 0.0 {
         let fill = egui::Rect::from_min_max(bar.min, egui::pos2(bar.min.x + bar.width() * frac, bar.max.y));
         painter.rect_filled(fill, radius, ui_kit::Theme::get(ui.ctx()).accent.accent);
@@ -441,7 +443,7 @@ fn progress_bar(ui: &mut egui::Ui, frac: f32) {
         egui::Align2::RIGHT_CENTER,
         format!("{}%", (frac * 100.0).round() as i32),
         fonts::mono(typography::VALUE_SIZE),
-        color::TEXT_SECONDARY,
+        neutral.text_secondary,
     );
 }
 

@@ -17,12 +17,12 @@ Record audio from your input device onto an armed track.
 ## Start recording
 
 1. Place the playhead where you want the take to start.
-2. Click **Record** in the transport deck or press <kbd>Ctrl</kbd>+<kbd>R</kbd>.
+2. Click **Record** in the bottom bar of the timeline or press <kbd>Ctrl</kbd>+<kbd>R</kbd>.
 3. The take starts. Other tracks play along so you can hear them.
 
 ## Stop recording
 
-1. Click **Stop** or **Play** in the transport deck, or press <kbd>Space</kbd>. The take is kept and added to the armed track.
+1. Click **Stop** in the bottom bar or the round **Play** button, or press <kbd>Space</kbd>. The take is kept and added to the armed track.
 2. To discard the take, press <kbd>Esc</kbd>.
 
 While a take is recording, only a few actions work. <kbd>Ctrl</kbd>+<kbd>S</kbd> saves, <kbd>Space</kbd> stops and keeps the take, <kbd>Esc</kbd> stops and discards it, and <kbd>M</kbd> adds a marker. Everything else waits until the take ends.

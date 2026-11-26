@@ -12,7 +12,7 @@ use crate::ui::dialogs::project_settings::ProjectSettingsDialog;
 use crate::ui::dialogs::save_as::SaveAsDialog;
 use crate::ui::timeline::ViewMenuAction;
 use ui_kit::fonts;
-use ui_kit::tokens::{color, space, typography};
+use ui_kit::tokens::{space, typography};
 
 /// What the user chose in the Project menu this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,17 +49,19 @@ const SEPARATOR_THICKNESS: f32 = 1.0;
 
 /// A menu separator: 1 px line in the hairline color with 4 px vertical margin.
 fn menu_sep(ui: &mut egui::Ui) {
+    let neutral = crate::ui::neutrals(ui.ctx());
     ui.add_space(space::SCALE_4);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), SEPARATOR_THICKNESS), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 0.0, color::STROKE_HAIRLINE);
+    ui.painter().rect_filled(rect, 0.0, neutral.stroke_hairline);
     ui.add_space(space::SCALE_4);
 }
 
 /// A menu item button with a right-aligned type.value shortcut hint. The hint
 /// is the shortcut table's text for `id`, so menus and the sheet never drift.
 fn item(ctx: &egui::Context, label: impl Into<String>, id: &str) -> egui::Button<'static> {
+    let neutral = crate::ui::neutrals(ctx);
     egui::Button::new(label.into())
-        .right_text(egui::RichText::new(crate::shortcuts::text(ctx, id)).font(fonts::mono(typography::VALUE_SIZE)).color(color::TEXT_TERTIARY))
+        .right_text(egui::RichText::new(crate::shortcuts::text(ctx, id)).font(fonts::mono(typography::VALUE_SIZE)).color(neutral.text_tertiary))
 }
 
 /// The app mark's side (spec rev 3 "Title bar": 18).
@@ -68,8 +70,9 @@ const APP_MARK_SIZE: f32 = 18.0;
 /// Draws the app mark placeholder: an accent circle with a notch cut from its
 /// top right (spec "Open questions" item 1: placeholder until a real logo).
 pub(crate) fn app_mark(ui: &mut egui::Ui) {
+    let neutral = crate::ui::neutrals(ui.ctx());
     let (rect, _) = ui.allocate_exact_size(egui::vec2(APP_MARK_SIZE, APP_MARK_SIZE), egui::Sense::hover());
-    paint_app_mark(ui, rect, color::BG_GROUND);
+    paint_app_mark(ui, rect, neutral.bg_ground);
 }
 
 /// Paints the app mark into `rect` (a square); `notch` is the color of the
@@ -589,6 +592,7 @@ mod tests {
     use crate::io::paths::ProjectPaths;
     use crate::model::project::{BitDepth, Project, ViewState};
     use crate::ui::test_util::{Headless, Out};
+    use ui_kit::tokens::color;
 
     fn editor(name: &str, dirty: bool) -> Editor {
         let mut editor =

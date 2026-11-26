@@ -88,6 +88,7 @@ pub fn show(
     scroll_y: f32,
     meters: &mut HashMap<Uuid, [meter::ChannelBallistics; 2]>,
 ) {
+    let neutral = crate::ui::neutrals(ui.ctx());
     let mut state = ui.ctx().data_mut(|d| d.get_temp_mut_or_default::<State>(egui::Id::new(STATE_KEY)).clone());
     // While a take is recorded the headers ignore input (Arm, M, S, the
     // sliders, rename, reorder and the right-click menu); the meters keep
@@ -156,8 +157,8 @@ pub fn show(
         // layout mirrored) when the height holds the sliders under it, one row
         // of the same parts otherwise.
         let pad = space::SCALE_2;
-        let number_galley = painter.layout_no_wrap((index + 1).to_string(), ui_kit::fonts::mono(typography::VALUE_SIZE), color::TEXT_TERTIARY);
-        let name_galley = painter.layout_no_wrap(ht.name.clone(), ui_kit::fonts::semibold(typography::HEADLINE_SIZE), color::TEXT_PRIMARY);
+        let number_galley = painter.layout_no_wrap((index + 1).to_string(), ui_kit::fonts::mono(typography::VALUE_SIZE), neutral.text_tertiary);
+        let name_galley = painter.layout_no_wrap(ht.name.clone(), ui_kit::fonts::semibold(typography::HEADLINE_SIZE), neutral.text_primary);
         let geo = geometry(rect, number_galley.size().x, name_galley.size().y.max(number_galley.size().y));
         let renaming_here = state.renaming.as_ref().is_some_and(|(rid, _)| *rid == ht.id);
 
@@ -193,12 +194,12 @@ pub fn show(
             paint_header_row(&painter, rect, selected);
             let host = ui.interact(rect, egui::Id::new(("track_host", ht.id)), egui::Sense::click());
             let row_center_y = geo.toggles[0].center().y;
-            let number_color = if selected { color::TEXT_PRIMARY } else { color::TEXT_TERTIARY };
+            let number_color = if selected { neutral.text_primary } else { neutral.text_tertiary };
             let number_pos = egui::pos2(rect.left() + pad, row_center_y - number_galley.size().y / 2.0);
             painter.galley(number_pos, number_galley, number_color);
             if !renaming_here {
                 let name_pos = egui::pos2(geo.name.left(), row_center_y - name_galley.size().y / 2.0);
-                painter.with_clip_rect(geo.name).galley(name_pos, name_galley, color::TEXT_PRIMARY);
+                painter.with_clip_rect(geo.name).galley(name_pos, name_galley, neutral.text_primary);
             }
             let flags = [&mut mute, &mut solo, &mut armed];
             let kinds = [ToggleKind::Normal, ToggleKind::Normal, ToggleKind::RecordArm];
@@ -261,7 +262,7 @@ pub fn show(
                 egui::Align2::CENTER_CENTER,
                 regular::DOTS_SIX_VERTICAL,
                 ui_kit::fonts::icon_regular(typography::BODY_SIZE),
-                color::TEXT_TERTIARY,
+                neutral.text_tertiary,
             );
         }
 
@@ -368,7 +369,7 @@ pub fn show(
     }
     if add_rect.height() > 0.0 {
         let add = ui.interact(add_rect, egui::Id::new("track_add_row"), egui::Sense::click()).on_hover_text("Add a new track (Ctrl+Shift+T)");
-        let text_color = if add.hovered() && !locked { color::TEXT_SECONDARY } else { color::TEXT_TERTIARY };
+        let text_color = if add.hovered() && !locked { neutral.text_secondary } else { neutral.text_tertiary };
         painter.text(
             egui::pos2(add_rect.left() + space::SCALE_8, add_rect.center().y),
             egui::Align2::LEFT_CENTER,
@@ -409,15 +410,17 @@ pub fn add_row_rect(header_rect: egui::Rect, scroll_y: f32, tracks_h: f32) -> eg
 
 /// The 1 px `stroke.track` line along the bottom edge of `rect`.
 fn paint_row_line(painter: &egui::Painter, rect: egui::Rect) {
+    let neutral = crate::ui::neutrals(painter.ctx());
     let line = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - metrics::HAIRLINE), rect.right_bottom());
-    painter.rect_filled(line, 0.0, color::STROKE_TRACK);
+    painter.rect_filled(line, 0.0, neutral.stroke_track);
 }
 
 /// Paints a one-row header's selected fill (`bg.track.header.selected`; the
 /// unselected header is the column strip itself) and its bottom line.
 fn paint_header_row(painter: &egui::Painter, rect: egui::Rect, selected: bool) {
+    let neutral = crate::ui::neutrals(painter.ctx());
     if selected {
-        painter.rect_filled(rect, 0.0, color::BG_TRACK_HEADER_SELECTED);
+        painter.rect_filled(rect, 0.0, neutral.bg_track_header_selected);
     }
     paint_row_line(painter, rect);
 }
@@ -553,10 +556,11 @@ fn geometry(rect: egui::Rect, number_w: f32, line_h: f32) -> Geometry {
 
 /// Paints one toggle square exactly as ui-kit's track header does.
 fn paint_toggle(painter: &egui::Painter, rect: egui::Rect, label: &str, on: bool, kind: ToggleKind) {
+    let neutral = crate::ui::neutrals(painter.ctx());
     let (fill, glyph_color) = match (kind, on) {
         (ToggleKind::RecordArm, true) => (color::SEM_RECORD, egui::Color32::WHITE),
-        (_, true) => (color::BG_SELECTED, color::TEXT_PRIMARY),
-        (_, false) => (color::BG_CONTROL, color::TEXT_TERTIARY),
+        (_, true) => (neutral.bg_selected, neutral.text_primary),
+        (_, false) => (neutral.bg_control, neutral.text_tertiary),
     };
     painter.rect_filled(rect, TOGGLE_ROUNDING, fill);
     let glyph = painter.layout_no_wrap(label.to_owned(), ui_kit::fonts::semibold(typography::CAPTION_SIZE), glyph_color);
@@ -569,19 +573,20 @@ fn paint_toggle(painter: &egui::Painter, rect: egui::Rect, label: &str, on: bool
 /// the right, in a column as wide as the `sample` text. Returns the rect left
 /// for the slider between them.
 fn slider_cell(painter: &egui::Painter, slot: egui::Rect, label: &str, value: Option<(String, &str)>) -> egui::Rect {
+    let neutral = crate::ui::neutrals(painter.ctx());
     let gap = space::SCALE_4;
     let label_font = ui_kit::fonts::medium(typography::MICRO_SIZE);
     // One label column for Vol and Pan, so both sliders start alike.
     let label_w =
-        ["Vol", "Pan"].iter().map(|text| painter.layout_no_wrap((*text).to_owned(), label_font.clone(), color::TEXT_TERTIARY).size().x).fold(0.0, f32::max);
-    let label_galley = painter.layout_no_wrap(label.to_owned(), label_font, color::TEXT_TERTIARY);
-    painter.galley(egui::pos2(slot.left(), slot.center().y - label_galley.size().y / 2.0), label_galley, color::TEXT_TERTIARY);
+        ["Vol", "Pan"].iter().map(|text| painter.layout_no_wrap((*text).to_owned(), label_font.clone(), neutral.text_tertiary).size().x).fold(0.0, f32::max);
+    let label_galley = painter.layout_no_wrap(label.to_owned(), label_font, neutral.text_tertiary);
+    painter.galley(egui::pos2(slot.left(), slot.center().y - label_galley.size().y / 2.0), label_galley, neutral.text_tertiary);
     let mut right = slot.right();
     if let Some((text, sample)) = value {
         let value_font = ui_kit::fonts::mono(typography::VALUE_SIZE);
-        let column_w = painter.layout_no_wrap(sample.to_owned(), value_font.clone(), color::TEXT_TERTIARY).size().x;
-        let galley = painter.layout_no_wrap(text, value_font, color::TEXT_TERTIARY);
-        painter.galley(egui::pos2(slot.right() - galley.size().x, slot.center().y - galley.size().y / 2.0), galley, color::TEXT_TERTIARY);
+        let column_w = painter.layout_no_wrap(sample.to_owned(), value_font.clone(), neutral.text_tertiary).size().x;
+        let galley = painter.layout_no_wrap(text, value_font, neutral.text_tertiary);
+        painter.galley(egui::pos2(slot.right() - galley.size().x, slot.center().y - galley.size().y / 2.0), galley, neutral.text_tertiary);
         right -= column_w + gap;
     }
     egui::Rect::from_min_max(egui::pos2(slot.left() + label_w + gap, slot.top()), egui::pos2(right.max(slot.left() + label_w + gap), slot.bottom()))

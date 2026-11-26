@@ -1,11 +1,11 @@
+## E3-4 audio editor on E3 (2026-11-26)
+- DONE: stage panel with Play in the notch, side panels, status bar with the center gap, themed neutrals, no dot strings, help topics. deck.rs deleted.
+
 ## E3-2 fonts (2026-11-25)
 - Font references moved to Instrument Sans and Martian Mono (installer, notices, licenses, README, help.rs, ui/mod.rs test).
 
 ## Accent per app (2026-11-24)
 - `APPEARANCE` const (audio/Blue) in app.rs, `ui_kit::apply_for` in main.rs, appearance help topic updated, new identity test in app.rs tests. Tests 729, fmt + clippy clean; check.ps1 and release build not run.
-
-## Deck center-line alignment (2026-11-24)
-- Transport deck contents rebuilt on the Recorder's record_ui.rs pattern: one center line (allocate_ui_with_layout row, Align::Center), gaps 12/12/4/12/14 via DECK_GAP/DECK_BUTTON_GAP/DECK_TAIL, total length mono TIME_LARGE_SIZE text.tertiary, deck_contents/DeckData/DeckAction split for testability. New center-line test. Tests 729, fmt + clippy clean. PRE-EXISTING (clean HEAD): clip_view accent test fails; check.ps1 and release build not run per task scope.
 
 ## Task S1 phase 15 (2026-11-22)
 - Close-out: cutmark-audio 1.2.0 (Cargo.toml, Cargo.lock, README version line, installer usage comment). Installer ships OFL-Inter.txt and OFL-JetBrainsMono.txt from crates/ui-kit/assets/fonts (the dead apps/audio-editor/assets/fonts folder, Plex files and Plex license included, is deleted); licenses/ gains Phosphor-MIT.txt; THIRD-PARTY-NOTICES.txt, licenses/THIRD_PARTY.txt, README and gen_notices.py list Inter, JetBrains Mono and Phosphor. New apps/audio-editor/CHANGELOG.md, "After S1" section at the top of docs/audio-editor/ui-inventory.md. Installer dist\CutMark-Setup-1.2.0.exe, 54,947,081 bytes (52.4 MB; it now carries the FFmpeg DLLs), exe File/Product version 1.2.0. check.ps1 green (cutmark-audio tests included).

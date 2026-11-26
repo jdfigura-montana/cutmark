@@ -1,4 +1,4 @@
-//! ui::bin_panel: the Media panel (ui-kit panel, 44 tall header, list rows).
+//! ui::bin_panel: the Media panel (ui-kit side panel, 44 tall header, list rows).
 
 use eframe::egui;
 use ui_kit::icons::regular;
@@ -97,7 +97,7 @@ impl BinPanel {
             self.confirm_remove = None;
         }
 
-        ui_kit::panel(ui, |ui| {
+        ui_kit::side_panel(ui, |ui| {
             // The panel fills the area the app gives it.
             ui.set_min_size(ui.available_size());
             self.header(ui, editor, &mut messages);
@@ -112,13 +112,14 @@ impl BinPanel {
     /// Header row (44 tall): the "Media" title, then the Sort and Import icon
     /// buttons on the right and a hairline along the bottom.
     fn header(&mut self, ui: &mut egui::Ui, editor: &mut Editor, messages: &mut Vec<String>) {
+        let neutral = crate::ui::neutrals(ui.ctx());
         let recording = editor.is_recording();
         let row = egui::vec2(ui.available_width(), size::PANEL_TOOLBAR_HEIGHT);
         let inner = ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = space::SCALE_4;
             ui.add_space(HEADER_PAD);
             ui.add(
-                egui::Label::new(egui::RichText::new("Media").font(ui_kit::fonts::semibold(typography::BODY_SIZE)).color(color::TEXT_PRIMARY))
+                egui::Label::new(egui::RichText::new("Media").font(ui_kit::fonts::semibold(typography::BODY_SIZE)).color(neutral.text_primary))
                     .selectable(false),
             );
             // Added right to left, so on screen the Sort button sits left of
@@ -145,12 +146,13 @@ impl BinPanel {
         });
         // The hairline runs edge to edge of the panel, through its padding.
         let rect = inner.response.rect;
-        ui.painter().hline(rect.x_range().expand(space::PANEL_PADDING), rect.bottom(), egui::Stroke::new(HAIRLINE, color::STROKE_HAIRLINE));
+        ui.painter().hline(rect.x_range().expand(space::PANEL_PADDING), rect.bottom(), egui::Stroke::new(HAIRLINE, neutral.stroke_hairline));
     }
 
     /// The item list with the drop zone under it, or the empty state when
     /// there is nothing to list.
     fn list(&mut self, ui: &mut egui::Ui, editor: &mut Editor, messages: &mut Vec<String>) {
+        let neutral = crate::ui::neutrals(ui.ctx());
         if editor.project.media.is_empty() && !editor.has_pending_jobs() {
             empty_state(ui, editor, messages);
             return;
@@ -164,7 +166,7 @@ impl BinPanel {
             }
             for (label, frac) in editor.pending_jobs() {
                 ui.add_space(space::SCALE_4);
-                ui.label(egui::RichText::new(&label).font(egui::FontId::proportional(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY));
+                ui.label(egui::RichText::new(&label).font(egui::FontId::proportional(typography::CAPTION_SIZE)).color(neutral.text_tertiary));
                 ui.add(egui::ProgressBar::new(frac).show_percentage());
             }
         });
@@ -258,12 +260,13 @@ impl BinPanel {
     /// Paints a row: state fill, icon tile, name (unless it is being
     /// renamed), the duration on the right and the preview progress bar.
     fn paint_row(&self, ui: &egui::Ui, editor: &Editor, item: &MediaItem, rect: egui::Rect, response: &egui::Response, offline: bool) {
+        let neutral = crate::ui::neutrals(ui.ctx());
         let selected = self.selected == Some(item.id);
         let painter = ui.painter();
         let fill = if selected {
-            Some(color::BG_ROW_SELECTED)
+            Some(neutral.bg_row_selected)
         } else if response.hovered() {
-            Some(color::BG_GROUP)
+            Some(neutral.bg_group)
         } else {
             None
         };
@@ -273,15 +276,15 @@ impl BinPanel {
 
         // The 28 icon tile with the waveform glyph.
         let tile = egui::Rect::from_min_size(egui::pos2(rect.left() + space::SCALE_6, rect.center().y - TILE / 2.0), egui::Vec2::splat(TILE));
-        painter.rect_filled(tile, radius::SEGMENT, color::BG_CONTROL);
-        let glyph = painter.layout_no_wrap(regular::WAVEFORM.to_owned(), ui_kit::fonts::icon_regular(TILE_ICON), color::TEXT_SECONDARY);
-        painter.galley(tile.center() - glyph.size() / 2.0, glyph, color::TEXT_SECONDARY);
+        painter.rect_filled(tile, radius::SEGMENT, neutral.bg_control);
+        let glyph = painter.layout_no_wrap(regular::WAVEFORM.to_owned(), ui_kit::fonts::icon_regular(TILE_ICON), neutral.text_secondary);
+        painter.galley(tile.center() - glyph.size() / 2.0, glyph, neutral.text_secondary);
 
         // The duration, right aligned in type.value text.tertiary.
         let duration =
-            painter.layout_no_wrap(duration_text(editor.project.sample_rate, item.length), ui_kit::fonts::mono(typography::VALUE_SIZE), color::TEXT_TERTIARY);
+            painter.layout_no_wrap(duration_text(editor.project.sample_rate, item.length), ui_kit::fonts::mono(typography::VALUE_SIZE), neutral.text_tertiary);
         let duration_left = rect.right() - space::SCALE_8 - duration.size().x;
-        painter.galley(egui::pos2(duration_left, rect.center().y - duration.size().y / 2.0), duration, color::TEXT_TERTIARY);
+        painter.galley(egui::pos2(duration_left, rect.center().y - duration.size().y / 2.0), duration, neutral.text_tertiary);
 
         // The name, cut with an ellipsis before the duration.
         if self.renaming != Some(item.id) {
@@ -295,9 +298,9 @@ impl BinPanel {
             let name_color = if offline {
                 color::SEM_RECORD
             } else if selected {
-                color::TEXT_PRIMARY
+                neutral.text_primary
             } else {
-                color::TEXT_SECONDARY
+                neutral.text_secondary
             };
             let mut job = egui::text::LayoutJob::single_section(name, egui::TextFormat::simple(ui_kit::fonts::medium(typography::BODY_SIZE), name_color));
             job.wrap = egui::text::TextWrapping {
@@ -416,15 +419,16 @@ fn show_glass<R>(popup: egui::Popup<'_>, response: &egui::Response, add_contents
 /// The empty bin: the drop hint centered in `type.caption` `text.tertiary`
 /// with the Import action as a normal button under it.
 fn empty_state(ui: &mut egui::Ui, editor: &mut Editor, messages: &mut Vec<String>) {
+    let neutral = crate::ui::neutrals(ui.ctx());
     let area = ui.available_rect_before_wrap();
     ui.allocate_rect(area, egui::Sense::hover());
-    let hint = ui.painter().layout_no_wrap(DROP_HINT.to_owned(), egui::FontId::proportional(typography::CAPTION_SIZE), color::TEXT_TERTIARY);
-    let label = ui.painter().layout_no_wrap("Import".to_owned(), ui_kit::fonts::medium(typography::BODY_SIZE), color::TEXT_PRIMARY);
+    let hint = ui.painter().layout_no_wrap(DROP_HINT.to_owned(), egui::FontId::proportional(typography::CAPTION_SIZE), neutral.text_tertiary);
+    let label = ui.painter().layout_no_wrap("Import".to_owned(), ui_kit::fonts::medium(typography::BODY_SIZE), neutral.text_primary);
     let button_size = egui::vec2(label.size().x + 2.0 * space::SCALE_16, size::PANEL_BUTTON_HEIGHT);
     let total = hint.size().y + space::SCALE_12 + button_size.y;
     let top = area.center().y - total / 2.0;
     let hint_height = hint.size().y;
-    ui.painter().galley(egui::pos2(area.center().x - hint.size().x / 2.0, top), hint, color::TEXT_TERTIARY);
+    ui.painter().galley(egui::pos2(area.center().x - hint.size().x / 2.0, top), hint, neutral.text_tertiary);
     let button_rect = egui::Rect::from_center_size(egui::pos2(area.center().x, top + hint_height + space::SCALE_12 + button_size.y / 2.0), button_size);
     let enabled = !editor.is_recording();
     if ui.put(button_rect, egui::Button::new("Import")).clicked() && enabled {
@@ -434,12 +438,13 @@ fn empty_state(ui: &mut egui::Ui, editor: &mut Editor, messages: &mut Vec<String
 
 /// The dashed drop zone anchored to the bottom of the panel, 44 tall.
 fn drop_zone(ui: &egui::Ui) {
+    let neutral = crate::ui::neutrals(ui.ctx());
     let outer = ui.max_rect();
     let rect = egui::Rect::from_min_max(egui::pos2(outer.left(), outer.bottom() - DROP_H), outer.right_bottom());
     let outline = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom(), rect.left_top()];
-    let stroke = egui::Stroke::new(HAIRLINE, color::STROKE_SEPARATOR_STRONG);
+    let stroke = egui::Stroke::new(HAIRLINE, neutral.stroke_separator_strong);
     ui.painter().extend(egui::Shape::dashed_line(&outline, stroke, DASH, DASH_GAP));
-    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, DROP_HINT, egui::FontId::proportional(typography::CAPTION_SIZE), color::TEXT_TERTIARY);
+    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, DROP_HINT, egui::FontId::proportional(typography::CAPTION_SIZE), neutral.text_tertiary);
 }
 
 /// Opens the import file picker (WAV and MP3) and starts one import job per file.
@@ -489,16 +494,11 @@ fn duration_text(rate: u32, length: u64) -> String {
     format!("{min}:{sec:02}.{ms:03}")
 }
 
-/// The meta line: time, rate, channels and format separated by middle dots
-/// (`\u{B7}`), e.g. `0:06.200 48k St MP3` with dots between.
+/// The meta line: time, rate, channels and format, two spaces apart, e.g.
+/// `0:06.200  48k  St  MP3`.
 fn meta_line(editor: &Editor, item: &MediaItem) -> String {
     let channels = if item.channels <= 1 { "Mo" } else { "St" };
-    format!(
-        "{} \u{B7} {}k \u{B7} {channels} \u{B7} {}",
-        duration_text(editor.project.sample_rate, item.length),
-        item.original_rate / 1000,
-        media_format(&item.file_name)
-    )
+    format!("{}  {}k  {channels}  {}", duration_text(editor.project.sample_rate, item.length), item.original_rate / 1000, media_format(&item.file_name))
 }
 
 /// The original container format, taken from the file extension.
@@ -580,13 +580,11 @@ mod tests {
     }
 
     #[test]
-    fn meta_line_separates_with_real_middle_dots() {
+    fn meta_line_separates_the_values_with_spaces() {
         let editor = test_editor();
         let line = meta_line(&editor, &item("tone"));
-        assert_eq!(line, "0:01.000 \u{B7} 44k \u{B7} Mo \u{B7} WAV");
-        // UTF-8 for U+00B7 is C2 B7; the double-encoded mojibake starts C3 82.
-        assert!(line.contains('\u{B7}'));
-        assert!(!line.contains('\u{C2}'), "no double-encoded middle dot");
+        assert_eq!(line, "0:01.000  44k  Mo  WAV");
+        assert!(line.is_ascii(), "no dot or other separator glyph");
     }
 
     #[test]

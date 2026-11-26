@@ -20,7 +20,7 @@ use crate::ui::status_bar;
 use crate::ui::timeline::{self, ViewMenuAction};
 use crate::ui::widgets::meter::MeterState;
 use ui_kit::help::{HelpBook, HelpState, KEYBOARD_PAGE_ID, handle_f1, help_window, open as help_open};
-use ui_kit::tokens::{color, size, space};
+use ui_kit::tokens::{size, space};
 use ui_kit::tour;
 
 /// The user-visible application name, used for the window title, the start
@@ -36,7 +36,7 @@ pub const APP_SHORT_NAME: &str = "Cutmark Audio";
 /// Height of the 44px main toolbar (the window's title bar).
 const TOP_BAR_H: f32 = size::TOOLBAR_MAIN_HEIGHT;
 /// Height of the bottom status bar panel.
-const STATUS_BAR_H: f32 = size::STATUS_BAR_HEIGHT;
+const STATUS_BAR_H: f32 = ui_kit::STATUS_BAR_GAP_HEIGHT;
 
 /// Wraps plain panel messages (import, relink, bin and timeline edits) as
 /// "Media" messages for the messages dialog.
@@ -379,8 +379,9 @@ impl App {
     /// Export while no project is open), and it is still the window's drag
     /// area and the caption buttons' home. Returns the File menu action.
     fn show_start_bar(ui: &mut egui::Ui) -> ProjectMenuAction {
+        let neutral = crate::ui::neutrals(ui.ctx());
         let chosen = std::cell::Cell::new(ProjectMenuAction::None);
-        egui::Panel::top("start_bar").exact_size(TOP_BAR_H).frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
+        egui::Panel::top("start_bar").exact_size(TOP_BAR_H).frame(egui::Frame::new().fill(neutral.bg_ground)).show(ui, |ui| {
             ui_kit::main_toolbar(
                 ui,
                 |ui| {
@@ -410,6 +411,7 @@ impl App {
         banner: &mut Option<ExportBanner>,
         close_pending: bool,
     ) -> EditorActions {
+        let neutral = crate::ui::neutrals(ui.ctx());
         // Pump background jobs and keep repainting while any are running.
         editor.poll_jobs();
         // Retire old mix plans, keep the audio status fresh and mirror the
@@ -473,7 +475,7 @@ impl App {
         let menu_cell = std::cell::RefCell::new(&mut *menu);
         let editor_cell = std::cell::RefCell::new(&mut *editor);
         let chosen = std::cell::Cell::new((ProjectMenuAction::None, ViewMenuAction::None, HelpMenuAction::None));
-        egui::Panel::top("app_bar").exact_size(TOP_BAR_H).frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
+        egui::Panel::top("app_bar").exact_size(TOP_BAR_H).frame(egui::Frame::new().fill(neutral.bg_ground)).show(ui, |ui| {
             ui_kit::main_toolbar(
                 ui,
                 |ui| {
@@ -483,7 +485,7 @@ impl App {
                 },
                 |ui| {
                     let editor = editor_cell.borrow();
-                    let caption = status_bar::format_caption(editor.project.sample_rate, editor.project.export_bit_depth, editor.project.tracks.len());
+                    let caption = status_bar::format_caption(editor.project.sample_rate, editor.project.export_bit_depth);
                     ui_kit::title_block(ui, &ui_kit::Title::Document { name: &editor.project.name, unsaved: editor.dirty, caption: Some(&caption) });
                 },
                 |ui| {
@@ -505,13 +507,13 @@ impl App {
             msgs.extend(media_messages(bin_panel::pick_and_import(editor)));
             action = ProjectMenuAction::None;
         }
-        // Bottom: status bar.
-        egui::Panel::bottom("status_bar")
+        // Bottom: the status bar's strip. Its items are drawn after the
+        // timeline, whose center they leave free.
+        let status_area = egui::Panel::bottom("status_bar")
             .exact_size(STATUS_BAR_H)
-            .frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin { left: 8, ..Default::default() }))
-            .show(ui, |ui| {
-                status_bar::show(ui, editor, banner.as_ref());
-            });
+            .frame(egui::Frame::new().fill(neutral.bg_ground).inner_margin(egui::Margin { left: 8, ..Default::default() }))
+            .show(ui, |ui| ui.max_rect())
+            .inner;
 
         // Right: Master panel on the ground, fixed width, with the window gap
         // on its right, top and bottom.
@@ -519,7 +521,7 @@ impl App {
         egui::Panel::right("master_strip")
             .resizable(false)
             .exact_size(136.0)
-            .frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin { left: 0, top: gap, bottom: gap, right: gap }))
+            .frame(egui::Frame::new().fill(neutral.bg_ground).inner_margin(egui::Margin { left: 0, top: gap, bottom: gap, right: gap }))
             .show(ui, |ui| {
                 ui.take_available_space();
                 master_strip::show(ui, editor, meters);
@@ -532,7 +534,7 @@ impl App {
             .resizable(true)
             .default_size(236.0)
             .size_range(200.0..=400.0)
-            .frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin { left: gap, top: gap, bottom: gap, right: 0 }))
+            .frame(egui::Frame::new().fill(neutral.bg_ground).inner_margin(egui::Margin { left: gap, top: gap, bottom: gap, right: 0 }))
             .show(ui, |ui| {
                 ui.take_available_space();
                 msgs.extend(media_messages(bin.show(ui, editor)));
@@ -540,12 +542,16 @@ impl App {
 
         // Center: the timeline panel on the ground, 8px window padding all
         // round, filling the remainder.
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin::same(space::WINDOW_GAP as i8))).show(
-            ui,
-            |ui| {
+        let stage_center_x = egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(neutral.bg_ground).inner_margin(egui::Margin::same(space::WINDOW_GAP as i8)))
+            .show(ui, |ui| {
+                let center_x = ui.max_rect().center().x;
                 msgs.extend(timeline::show(ui, editor, view_action, meters));
-            },
-        );
+                center_x
+            })
+            .inner;
+        let mut status_ui = ui.new_child(egui::UiBuilder::new().id_salt("status_bar_items").max_rect(status_area));
+        status_bar::show(&mut status_ui, editor, banner.as_ref(), stage_center_x);
 
         // Files dropped anywhere on the window go to the importer.
         let dropped: Vec<PathBuf> = ui.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
@@ -770,6 +776,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui_kit::tokens::color;
 
     /// The app saves its accent in its own folder and resets to its own default.
     #[test]
@@ -1221,26 +1228,20 @@ mod tests {
 
         start_take(&mut rig, 24_000);
         let out = rig.frame();
-        // Deck: the record position 1.5 s (fraction in its own run); status
-        // bar: elapsed 0.5 s.
-        assert!(out.text_rect("00:00:01").is_some() && out.text_rect(".500").is_some(), "deck timecode");
+        // Bottom bar: the record position 1.5 s; status bar: elapsed 0.5 s.
+        assert!(out.text_rect("00:00:01.500").is_some(), "the bar timecode");
         let rec = out.texts().into_iter().find(|t| t.text.starts_with("Rec ")).expect("the Rec readout");
         assert_eq!(rec.text, "Rec 00:00:00.500", "the elapsed time");
         assert_eq!(rec.color, ui_kit::tokens::color::TEXT_TERTIARY, "the component's caption color");
         assert!(out.text_rect("Playhead 00:00:01.000").is_none(), "Rec replaces Playhead");
     }
 
-    /// The transport deck's glyphs (it floats near the window bottom), left to
-    /// right.
+    /// The transport glyphs near the window bottom (the bottom bar and the
+    /// Play button), left to right.
     fn toolbar_glyphs(out: &Out, glyph: &str) -> Vec<crate::ui::test_util::TextItem> {
         let mut found: Vec<_> = out.texts().into_iter().filter(|t| t.text == glyph && t.rect.center().y > 600.0).collect();
         found.sort_by(|a, b| a.rect.center().x.total_cmp(&b.rect.center().x));
         found
-    }
-
-    /// The Record capsule: the 56 x 44 `sem.record` pill of the deck.
-    fn record_capsule(out: &Out) -> Option<egui::epaint::RectShape> {
-        out.rects().into_iter().find(|r| r.fill == color::SEM_RECORD && r.rect.size() == egui::vec2(56.0, 44.0) && r.rect.center().y > 600.0)
     }
 
     #[test]
@@ -1251,10 +1252,9 @@ mod tests {
         }
         let out = rig.frame();
         let glyphs = toolbar_glyphs(&out, egui_phosphor::fill::RECORD);
-        assert_eq!(glyphs.len(), 1, "one Record button in the deck");
-        assert_eq!(glyphs[0].color, egui::Color32::WHITE, "white glyph on the red capsule");
-        assert!(record_capsule(&out).is_some(), "the capsule is always sem.record");
-        // After Stop in the deck, before the end button.
+        assert_eq!(glyphs.len(), 1, "one Record button in the bar");
+        assert_eq!(glyphs[0].color, color::SEM_RECORD, "the glyph keeps the record color");
+        // After Stop in the bar, before the end button.
         let stop = toolbar_glyphs(&out, egui_phosphor::fill::STOP);
         let end = toolbar_glyphs(&out, egui_phosphor::fill::SKIP_FORWARD);
         assert_eq!(stop.len(), 1, "only the Stop button shows Stop when idle");
@@ -1268,9 +1268,12 @@ mod tests {
         assert!(rig.editor().take_is_live(), "the button started the take");
         crate::ui::test_util::feed_take(rig.editor_mut(), 4_800, 0.5, 4_800);
         let out = rig.frame();
-        assert!(toolbar_glyphs(&out, egui_phosphor::fill::RECORD).is_empty(), "the capsule shows Stop while recording");
-        // The Stop button and the capsule both show Stop; Play stays Play.
-        assert_eq!(toolbar_glyphs(&out, egui_phosphor::fill::STOP).len(), 2);
+        assert!(toolbar_glyphs(&out, egui_phosphor::fill::RECORD).is_empty(), "the Record button shows Stop while recording");
+        // The Stop button and the Record button both show Stop, the latter in
+        // the record color; Play stays Play.
+        let stops = toolbar_glyphs(&out, egui_phosphor::fill::STOP);
+        assert_eq!(stops.len(), 2);
+        assert_eq!(stops[1].color, color::SEM_RECORD);
         assert_eq!(toolbar_glyphs(&out, egui_phosphor::fill::PLAY).len(), 1);
 
         // Click again: the take ends and is kept.
@@ -1285,7 +1288,7 @@ mod tests {
 
     #[test]
     fn the_play_stop_and_record_buttons_keep_the_take_while_recording() {
-        // Slots: Play, the Stop button, the Record capsule (showing Stop).
+        // Slots: Play, the Stop button, the Record button (showing Stop).
         for slot in [0, 1, 2] {
             let mut rig = recording_rig();
             start_take(&mut rig, 4_800);
@@ -1303,14 +1306,14 @@ mod tests {
     }
 
     #[test]
-    fn the_deck_jumps_and_plays_and_leaves_the_lanes_beneath_alone() {
+    fn the_bar_jumps_to_both_ends_and_selects_nothing() {
         let mut rig = recording_rig();
         for _ in 0..3 {
             let _ = rig.frame();
         }
         rig.editor_mut().view.playhead = 48_000;
         let out = rig.frame();
-        // Back to start is the first deck glyph, forward the last.
+        // Back to start is left of the notch, forward right of it.
         let back = toolbar_glyphs(&out, egui_phosphor::fill::SKIP_BACK)[0].rect.center();
         let forward = toolbar_glyphs(&out, egui_phosphor::fill::SKIP_FORWARD)[0].rect.center();
         let app = &mut rig.app;
@@ -1319,7 +1322,182 @@ mod tests {
         let app = &mut rig.app;
         let _ = rig.h.click(forward, |ui| app.run(ui));
         assert_eq!(rig.editor().view.playhead, 480_000, "forward to the end");
-        assert_eq!(rig.editor().selection(), &crate::editor::selection::Selection::None, "a press on the deck selects nothing under it");
+        assert_eq!(rig.editor().selection(), &crate::editor::selection::Selection::None, "a press on the bar selects nothing");
+    }
+
+    use crate::audio::player::Command;
+
+    /// A recording rig with a stream-less audio engine, so transport commands
+    /// can be read back. Returns the rig and the command queue.
+    fn rig_with_engine() -> (Rig, crossbeam_channel::Receiver<Command>) {
+        let mut rig = recording_rig();
+        let (engine, commands) = crate::audio::engine::Engine::test_double(48_000);
+        rig.editor_mut().audio = Some(engine);
+        for _ in 0..3 {
+            let _ = rig.frame();
+        }
+        let _ = commands.try_iter().count();
+        (rig, commands)
+    }
+
+    /// Publishes a transport state and position the way the audio callback
+    /// would, then draws the frame that reads them.
+    fn audio_reports(rig: &mut Rig, state: u8, playhead: u64) -> Out {
+        use std::sync::atomic::Ordering;
+        let shared = rig.editor().audio.as_ref().expect("the engine").shared();
+        shared.playhead.store(playhead, Ordering::Relaxed);
+        shared.state.store(state, Ordering::Relaxed);
+        let _ = rig.frame();
+        rig.frame()
+    }
+
+    /// `Shared::state` codes.
+    const STOPPED: u8 = 0;
+    /// Playing.
+    const PLAYING: u8 = 1;
+    /// Paused.
+    const PAUSED: u8 = 2;
+
+    /// Clicks the one bottom transport glyph `glyph`.
+    fn click_transport(rig: &mut Rig, glyph: &str) {
+        let out = rig.frame();
+        let found = toolbar_glyphs(&out, glyph);
+        assert_eq!(found.len(), 1, "one {glyph:?} button");
+        let at = found[0].rect.center();
+        let app = &mut rig.app;
+        let _ = rig.h.click(at, |ui| app.run(ui));
+    }
+
+    /// The Play button's 68 px circle.
+    fn play_circle(out: &Out) -> egui::epaint::CircleShape {
+        out.circles().into_iter().find(|c| c.radius == 34.0).expect("the Play button in the notch")
+    }
+
+    #[test]
+    fn play_in_the_notch_toggles_playback() {
+        let (mut rig, commands) = rig_with_engine();
+        let sent = || commands.try_iter().collect::<Vec<_>>();
+        rig.editor_mut().view.playhead = 24_000;
+        let out = rig.frame();
+        let glyph = toolbar_glyphs(&out, egui_phosphor::fill::PLAY);
+        assert_eq!(glyph.len(), 1, "stopped shows Play");
+        let circle = play_circle(&out);
+        assert!((glyph[0].rect.center() - circle.center).length() < 1.5, "the glyph is on the button");
+        assert_eq!(circle.fill, ui_kit::Theme::get(&rig.h.ctx).accent.accent, "accent fill");
+
+        click_transport(&mut rig, egui_phosphor::fill::PLAY);
+        assert_eq!(sent(), [Command::Play { from: 24_000 }], "stopped: play from the playhead");
+
+        let out = audio_reports(&mut rig, PLAYING, 30_000);
+        assert!(toolbar_glyphs(&out, egui_phosphor::fill::PLAY).is_empty(), "playing shows Pause");
+        let _ = sent();
+        click_transport(&mut rig, egui_phosphor::fill::PAUSE);
+        assert_eq!(sent(), [Command::Pause], "playing: pause");
+
+        let out = audio_reports(&mut rig, PAUSED, 31_000);
+        assert_eq!(toolbar_glyphs(&out, egui_phosphor::fill::PLAY).len(), 1, "paused shows Play");
+        let _ = sent();
+        click_transport(&mut rig, egui_phosphor::fill::PLAY);
+        assert_eq!(sent(), [Command::Play { from: 30_000 }], "paused: play on from the playhead");
+    }
+
+    #[test]
+    fn every_transport_action_works_from_the_bar_and_its_shortcut() {
+        let (mut rig, commands) = rig_with_engine();
+        let sent = || commands.try_iter().collect::<Vec<_>>();
+
+        // Back to start and go to end: the bar buttons, then Home and End.
+        for by_key in [false, true] {
+            rig.editor_mut().view.playhead = 48_000;
+            if by_key {
+                tap(&mut rig, egui::Key::End);
+            } else {
+                click_transport(&mut rig, egui_phosphor::fill::SKIP_FORWARD);
+            }
+            assert_eq!(sent(), [Command::Seek(480_000)], "go to end, key: {by_key}");
+            if by_key {
+                tap(&mut rig, egui::Key::Home);
+            } else {
+                click_transport(&mut rig, egui_phosphor::fill::SKIP_BACK);
+            }
+            assert_eq!(sent(), [Command::Seek(0)], "back to start, key: {by_key}");
+        }
+
+        // Play: Space (the button is covered by the test above).
+        tap(&mut rig, egui::Key::Space);
+        assert_eq!(sent(), [Command::Play { from: 0 }], "Space plays");
+        // While playing, P pauses; paused, P resumes.
+        let _ = audio_reports(&mut rig, PLAYING, 1_000);
+        let _ = sent();
+        tap(&mut rig, egui::Key::P);
+        assert_eq!(sent(), [Command::Pause], "P pauses");
+        let _ = audio_reports(&mut rig, PAUSED, 2_000);
+        let _ = sent();
+        tap(&mut rig, egui::Key::P);
+        assert_eq!(sent(), [Command::Play { from: 2_000 }], "P resumes");
+
+        // Stop: the bar button, and Space while playing.
+        let _ = audio_reports(&mut rig, PLAYING, 3_000);
+        let _ = sent();
+        click_transport(&mut rig, egui_phosphor::fill::STOP);
+        assert_eq!(sent(), [Command::Stop], "the Stop button");
+        tap(&mut rig, egui::Key::Space);
+        assert_eq!(sent(), [Command::Stop], "Space stops");
+        let _ = audio_reports(&mut rig, STOPPED, 0);
+        let _ = sent();
+
+        // Record: the bar button starts a take, then Ctrl+R does.
+        for by_key in [false, true] {
+            if by_key {
+                tap_with(&mut rig, egui::Key::R, egui::Modifiers::CTRL);
+            } else {
+                click_transport(&mut rig, egui_phosphor::fill::RECORD);
+            }
+            assert!(rig.editor().take_is_live(), "a take started, key: {by_key}");
+            crate::ui::test_util::feed_take(rig.editor_mut(), 4_800, 0.5, 4_800);
+            tap(&mut rig, egui::Key::Space);
+            assert!(!rig.editor().take_is_live(), "Space kept the take");
+            frames_until(&mut rig, "the take to be placed", |r| !r.editor().is_recording());
+        }
+    }
+
+    #[test]
+    fn the_status_bar_leaves_the_play_button_clear() {
+        let mut rig = rig_with_audio();
+        // A range selection and a finished export make the longest status line.
+        rig.editor_mut().select_all();
+        rig.app.export_banner = Some(ExportBanner { name: "episode_12_final_mix.wav".to_string(), path: PathBuf::from("episode_12_final_mix.wav"), at: 0.0 });
+        for _ in 0..3 {
+            let _ = rig.frame();
+        }
+        let out = rig.frame();
+        let center = play_circle(&out).center.x;
+        assert!((center - 640.0).abs() > 20.0, "the Media and Master panels differ, so the stage is off the window center: {center}");
+        let items: Vec<egui::Rect> = out.texts().into_iter().filter(|t| t.rect.center().y > 770.0).map(|t| t.rect).collect();
+        assert!(items.len() >= 5, "the status items are drawn: {}", items.len());
+        let half = ui_kit::STATUS_BAR_CENTER_GAP / 2.0;
+        for rect in &items {
+            assert!(rect.right() <= center - half + 0.5 || rect.left() >= center + half - 0.5, "{rect:?} reaches into the gap around {center}");
+        }
+        assert!(items.iter().any(|r| r.left() >= center + half - 0.5), "items continue after the gap");
+    }
+
+    #[test]
+    fn a_picked_accent_tints_the_whole_editor_and_the_notch() {
+        let mut rig = Rig::new();
+        let _ = rig.frame();
+        let teal = ui_kit::Theme::new(ui_kit::accent::derive(ui_kit::tokens::accent::PRESET_TEAL), false);
+        ui_kit::Theme::set(&rig.h.ctx, teal);
+        ui_kit::refresh(&rig.h.ctx);
+        let _ = rig.frame();
+        let out = rig.frame();
+        let fills: Vec<egui::Color32> = out.rects().into_iter().map(|r| r.fill).collect();
+        for (name, fill) in [("ground", teal.neutrals.bg_ground), ("side panels", teal.neutrals.bg_side), ("stage", teal.neutrals.bg_panel)] {
+            assert!(fills.contains(&fill), "the {name} follow the accent");
+        }
+        for (name, fixed) in [("ground", color::BG_GROUND), ("panel", color::BG_PANEL)] {
+            assert!(!fills.contains(&fixed), "no untinted {name} is left");
+        }
     }
 
     #[test]
@@ -1562,6 +1740,17 @@ mod tests {
         assert!(out.text_rect("Ripple on").is_some());
     }
 
+    #[test]
+    fn the_editor_shows_no_dot_joined_strings() {
+        let mut rig = rig_with_audio();
+        rig.editor_mut().select_all();
+        let _ = rig.frame();
+        let out = rig.frame();
+        for text in out.texts() {
+            assert!(!text.text.contains('\u{b7}'), "{:?} joins facts with a dot", text.text);
+        }
+    }
+
     /// The title bar's height: nothing of the panel toolbar sits inside it.
     const TITLE_BAR_H: f32 = size::TOOLBAR_MAIN_HEIGHT;
 
@@ -1570,9 +1759,8 @@ mod tests {
         let mut rig = Rig::new();
         let _ = rig.frame();
         let out = rig.frame();
-        let caption = status_bar::format_caption(48_000, BitDepth::Int24, rig.editor().project.tracks.len());
-        assert!(caption.starts_with("48 kHz \u{b7} 24-bit \u{b7} "), "the caption reads rate, depth, tracks: {caption}");
-        assert!(caption.ends_with(" tracks"), "{caption}");
+        let caption = status_bar::format_caption(48_000, BitDepth::Int24);
+        assert_eq!(caption, "48 kHz 24-bit", "the caption is one fact, the project format");
         let name = out.text_rect("Test 2").expect("the project name");
         let caption = out.text_rect(&caption).expect("the format caption");
         let dot = out.circles().into_iter().find(|c| c.fill == ui_kit::tokens::color::TEXT_SECONDARY && c.radius == 3.0).expect("the unsaved dot");
@@ -1822,16 +2010,22 @@ mod tests {
     #[test]
     fn f1_over_the_transport_opens_the_transport_topic() {
         let mut rig = Rig::new();
-        // Let the panels lay the transport deck out, then point at it.
+        // Let the panels settle, then point at the bar timecode and at the
+        // Play button.
         for _ in 0..3 {
             let _ = rig.frame();
         }
-        let deck = crate::ui::timeline::deck::rect(&rig.h.ctx).expect("the deck was drawn");
-        let events = vec![egui::Event::PointerMoved(deck.center()), key_event(egui::Key::F1)];
-        let app = &mut rig.app;
-        let _ = rig.h.frame(events, |ui| app.run(ui));
-        assert!(rig.app.help.open, "F1 opened the help window");
-        assert_eq!(rig.app.help.current.as_deref(), Some("playback-and-transport"), "F1 over the deck opened the transport topic");
+        let out = rig.frame();
+        let timecode = out.text_rect("00:00:00.000").expect("the bar timecode").center();
+        let play = play_circle(&out).center;
+        for (what, at) in [("the bar", timecode), ("the Play button", play)] {
+            rig.app.help = HelpState::default();
+            let events = vec![egui::Event::PointerMoved(at), key_event(egui::Key::F1)];
+            let app = &mut rig.app;
+            let _ = rig.h.frame(events, |ui| app.run(ui));
+            assert!(rig.app.help.open, "F1 opened the help window");
+            assert_eq!(rig.app.help.current.as_deref(), Some("playback-and-transport"), "F1 over {what} opened the transport topic");
+        }
     }
 
     #[test]

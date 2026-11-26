@@ -7,13 +7,15 @@ use crate::editor::selection::Selection;
 use crate::ui::dialogs::export::ExportBanner;
 use crate::util::time::samples_to_timecode;
 
-/// The status bar, 26 tall: sentence-case items in the ui-kit status bar
-/// component. The playhead time on the left (while a take is recorded, "Rec"
+/// The status bar under the timeline, 30 tall: sentence-case items, 20 apart,
+/// in the ui-kit status bar that keeps its center empty. `gap_center_x` is the
+/// center of the stage panel, so the empty part sits under the Play button even
+/// though the side panels differ in width. The playhead time on the left (while a take is recorded, "Rec"
 /// and the elapsed recording time instead), then the selection readout, a
 /// finished-export note, "Ripple on" / "Snap on" while those are on, and the
 /// sample rate and bit depth. A finished export keeps its Reveal link,
 /// right-aligned.
-pub fn show(ui: &mut egui::Ui, editor: &Editor, export: Option<&ExportBanner>) {
+pub fn show(ui: &mut egui::Ui, editor: &Editor, export: Option<&ExportBanner>, gap_center_x: f32) {
     let rate = editor.project.sample_rate;
     let time = |samples: u64| samples_to_timecode(samples, rate);
     let mut items: Vec<String> = Vec::new();
@@ -36,11 +38,18 @@ pub fn show(ui: &mut egui::Ui, editor: &Editor, export: Option<&ExportBanner>) {
     items.push(format!("{} kHz", rate / 1000));
     items.push(bit_depth(editor.project.export_bit_depth).to_string());
     let items: Vec<&str> = items.iter().map(String::as_str).collect();
-    let bar = ui_kit::status_bar(ui, &items);
+    // The component centers its gap in the width it is given: make that twice
+    // the distance from the bar's left edge to the wanted center, and clip to
+    // the real bar.
+    let area = ui.available_rect_before_wrap();
+    let centered = egui::Rect::from_min_size(area.min, egui::vec2(2.0 * (gap_center_x - area.left()).max(0.0), area.height()));
+    let mut bar_ui = ui.new_child(egui::UiBuilder::new().max_rect(centered));
+    bar_ui.set_clip_rect(area.intersect(ui.clip_rect()));
+    let bar = ui_kit::status_bar_with_gap(&mut bar_ui, &items);
     // The finished export's Reveal link, right-aligned in the bar (the
     // component's items all read from the left, so the right end is free).
     if let Some(export) = export {
-        let rect = bar.rect;
+        let rect = egui::Rect::from_x_y_ranges(area.x_range(), bar.rect.y_range());
         let pad = ui_kit::tokens::space::SCALE_4;
         let max_rect = egui::Rect::from_min_max(egui::pos2(rect.right() - 200.0, rect.top()), egui::pos2(rect.right() - pad, rect.bottom()));
         let mut link = ui.new_child(egui::UiBuilder::new().max_rect(max_rect).layout(egui::Layout::right_to_left(egui::Align::Center)));
@@ -59,17 +68,17 @@ fn bit_depth(depth: crate::model::project::BitDepth) -> &'static str {
     }
 }
 
-/// The title bar caption: the project format as the status bar spells it plus
-/// the track count, "48 kHz · 24-bit · 4 tracks".
-pub fn format_caption(rate: u32, depth: crate::model::project::BitDepth, tracks: usize) -> String {
-    let noun = if tracks == 1 { "track" } else { "tracks" };
-    format!("{} kHz \u{b7} {} \u{b7} {tracks} {noun}", rate / 1000, bit_depth(depth))
+/// The title bar caption, one fact: the project format as the status bar
+/// spells it, "48 kHz 24-bit".
+pub fn format_caption(rate: u32, depth: crate::model::project::BitDepth) -> String {
+    format!("{} kHz {}", rate / 1000, bit_depth(depth))
 }
 
 /// Start-screen status bar through the ui-kit component: the default output
 /// device on the left ("Output <device>", omitted when none is known) and
 /// "No project open" right-aligned.
 pub fn show_start(ui: &mut egui::Ui, device: Option<&str>) {
+    let neutral = crate::ui::neutrals(ui.ctx());
     let mut items: Vec<String> = Vec::new();
     if let Some(device) = device {
         items.push(format!("Output {device}"));
@@ -82,9 +91,5 @@ pub fn show_start(ui: &mut egui::Ui, device: Option<&str>) {
     let pad = ui_kit::tokens::space::SCALE_4;
     let max_rect = egui::Rect::from_min_max(egui::pos2(rect.right() - 200.0, rect.top()), egui::pos2(rect.right() - pad, rect.bottom()));
     let mut right = ui.new_child(egui::UiBuilder::new().max_rect(max_rect).layout(egui::Layout::right_to_left(egui::Align::Center)));
-    right.label(
-        egui::RichText::new("No project open")
-            .font(ui_kit::fonts::medium(ui_kit::tokens::typography::CAPTION_SIZE))
-            .color(ui_kit::tokens::color::TEXT_TERTIARY),
-    );
+    right.label(egui::RichText::new("No project open").font(ui_kit::fonts::medium(ui_kit::tokens::typography::CAPTION_SIZE)).color(neutral.text_tertiary));
 }

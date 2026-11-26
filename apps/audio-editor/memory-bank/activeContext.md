@@ -1,17 +1,17 @@
+## E3-4 audio editor on E3 (2026-11-26)
+- The timeline is `ui_kit::stage_panel` (ui/timeline/mod.rs): Play in the notch, `bar_left` (timecode_large, back to start), `bar_right` (Stop, Record, go to end, total length). `TransportAction` + `run_transport` are the one route to the editor. deck.rs and ruler::is_scrubbing are deleted. The content and bar closures share the editor through a RefCell.
+- `ui_kit::bar_button` has no glyph color: `record_button` draws it with an empty glyph and paints the red glyph on top.
+- Neutrals come from `crate::ui::neutrals(ctx)`. The `color::BG_*`, `TEXT_*` and `STROKE_*` constants are only the Blue values; use them in tests only. `SEM_*` stays a constant.
+- Status bar: the notch is centered on the stage, not the window. app.rs reserves the bottom strip, draws the timeline, then draws `status_bar::show(.., gap_center_x)` into the strip. The start screen keeps the plain `ui_kit::status_bar` (no notch there).
+- Tests drive real transport commands with `Engine::test_double` (cfg(test), no stream; the test writes `Shared`). Play from paused starts at `view.playhead`, which follows the audio only while playing.
+- The Play button is a Foreground area (like the old deck), so it draws above the help window (egui Window, Order::Middle) where they overlap.
+- Open: export.rs shows an em dash in the MP3 rate note (root rule 10), not touched in E3-4.
+
 ## E3-2 fonts (2026-11-25)
 ui-kit now ships Instrument Sans and Martian Mono. Audio editor edits are font references only (help.rs notices, the icon probe test in ui/mod.rs, installer and license files).
 
 ## Accent per app (2026-11-24)
 Audio editor now saves its accent in `%APPDATA%\Cutmarkudioppearance.json` (default Blue): `pub const APPEARANCE` in app.rs, passed to `ui_kit::apply_for` in main.rs. View > Appearance is unchanged except the picker says "Reset to default" and has no Glass effects switch (glass is always on). help/appearance.md rewritten to match. Other apps' accents no longer follow this one. Tests 729 pass (the clip_view accent test noted below passes now). See the root memory-bank for the ui-kit details.
-
-## Deck center-line alignment (2026-11-24)
-Deck alignment task DONE: ui/timeline/deck.rs rebuilt its contents like the Recorder's record_ui.rs deck (pattern copied, no ui-kit change).
-- deck_contents(ui, &DeckData, &mut dyn FnMut(DeckAction)): one allocate_ui_with_layout row of TRANSPORT_BUTTON height, Layout::left_to_right(Align::Center), item_spacing.x = 0, manual gaps (DECK_GAP 12 left of the timecode / before the first button / before the total length, DECK_BUTTON_GAP 4 between buttons, DECK_TAIL 14 after the length; the 6 px deck padding stays ui-kit's frame margin). DeckData/DeckAction snapshot the editor state so the layout draws without an Editor; show() routes the clicks (same actions as before).
-- Total length is now fonts::mono(typography::TIME_LARGE_SIZE) in text.tertiary (was mono VALUE_SIZE); same size + centered row = the timecode's baseline. Assumption: regular mono, not semibold, for the tertiary readout.
-- Play/Record were already ui_kit::play_button (TRANSPORT_BUTTON high, centered glyphs) = the Recorder capsule's height; no change.
-- New test the_deck_items_sit_on_one_center_line (headless, 2 frames, idle + recording, 1 px tolerance).
-- Tests 729 (728 pass). PRE-EXISTING FAILURE on clean HEAD ec00180, not this task's layer: clip_view::tests::a_muted_track_dims_the_clip_and_a_selected_clip_takes_the_accent ("a selected clip is the accent tint"). fmt and clippy -p cutmark-audio --all-targets -D warnings clean. check.ps1 and the release build were NOT run (task limited commands to cargo test -p cutmark-audio -q).
-
 
 ## Phase 15 (2026-11-22)
 S1 phase 15 DONE: audio editor 1.2.0 release close-out; no code changes except the version. See progress.md for the file list and the two open items (COPYRIGHT placeholder, stale crate list in THIRD-PARTY-NOTICES.txt). Font licenses for the installer come from crates/ui-kit/assets/fonts (FontsDir define in installer/cutmark.iss), the single source for Instrument Sans and Martian Mono. Next: S1 milestone wrap-up (JD).
@@ -47,13 +47,13 @@ S1 phase 14e-1 and 14e-2 DONE (2026-11-22): all 17 topics now have bodies writte
 S1 phase 14d DONE (2026-11-22): the Help menu, F1 context help, the 5-step first-run tour, the About box and 17 topic stubs.
 - `src/help.rs` is a new top-level module (data only). One `SOURCES` array of `include_str!` topics from `apps/audio-editor/help/*.md`, plus the generated `keyboard-shortcuts` page (front matter only; its body is drawn by `ui_kit::shortcuts::shortcut_sheet` through the help window's `extra` callback). `try_book()` returns the errors (a test forbids any); `book()` falls back to an empty book, so a broken book never panics at runtime.
 - Topic stubs are one line ("Draft coming.") with the spec front matter. `context:` is empty where no F1 area matches. Section display order needs distinct per-section minimums (10/100/200/.../800): the kit sorts sections by the smallest topic order in each, then by name.
-- F1 tags are consts in `crate::help` (`CONTEXT_*`). `CONTEXT_TAGS` (cfg(test)) lists them for the coverage test and is built from the same consts the code uses. Areas: timeline (whole panel), timeline.tracks (header column), timeline.transport (deck), media, master, start, and dialog.* for New Project, Save As, Project Settings, Audio Settings, Export, Gain and Normalize.
-- The deck and the header column need `ui.new_child(UiBuilder::new().max_rect(rect))` before `ui_kit::help::context`, because the kit takes the rect from the ui and the deck draws in a Foreground Area whose own ui is screen-sized.
+- F1 tags are consts in `crate::help` (`CONTEXT_*`). `CONTEXT_TAGS` (cfg(test)) lists them for the coverage test and is built from the same consts the code uses. Areas: timeline (lanes and ruler), timeline.tracks (header column), timeline.transport (bottom bar and Play button), media, master, start, and dialog.* for New Project, Save As, Project Settings, Audio Settings, Export, Gain and Normalize.
+- The header column and the transport area need `ui.new_child(UiBuilder::new().max_rect(rect))` before `ui_kit::help::context`, because the kit takes the rect from the ui.
 - The Appearance dialog has no F1 tag: ui-kit draws it, so there is no seam to register one.
 - `ui/menu.rs`: new `HelpMenuAction` (None/Topics/Shortcuts/Tour/About); `menu_bar` returns a 3-tuple now. Items: Help topics (F1), Keyboard shortcuts (Ctrl+/), Show the tour, separator, About Cutmark Audio. The menu.rs `MENUS` test table gained the Help row.
 - `app.rs`: App gained help state, book, tour, about_open, tour_checked. `show_help(ui, editing)` runs at the end of `run`, after the screen drew, so the F1 areas and tour anchors are registered: `handle_f1`, Ctrl+/ opens the keyboard page, the help window draws, About draws, then `show_tour` (marks seen on Finished and on Skipped). The tour starts on the first editing frame when `help_store::is_seen("audio-editor", "intro", 1)` is false; Help > Show the tour starts it again.
 - `show_editor` returns `EditorActions { project, help }` instead of a bare ProjectMenuAction.
-- Tour anchors: media-panel (bin_panel), track-headers and timeline-toolbar (timeline/mod.rs), transport (deck.rs), menu-bar (the whole 44px title bar in app.rs). deck.rs gained a `#[cfg(test)] rect(ctx)` hook (stored while drawing) so the F1 test can point at the deck.
+- Tour anchors: media-panel (bin_panel), track-headers, timeline-toolbar and transport (timeline/mod.rs), menu-bar (the whole 44px title bar in app.rs).
 - TEST GOTCHA: every test App/Rig must set `tour_checked: true` (Rig::new, recording_rig, the paging rig, shortcut_harness) or the first-run tour covers the panels and eats clicks. The two tour tests set it back to false after Rig::new.
 - About: `ABOUT` = "Cutmark Audio", CARGO_PKG_VERSION, `COPYRIGHT` = "Copyright \u{a9} 2026 [COPYRIGHT HOLDER]" (JD replaces the holder), notices = THIRD-PARTY-NOTICES.txt plus the Inter and JetBrains Mono OFL texts from `crates/ui-kit/assets/fonts` (cross-crate include_str) joined with `concat!`.
 - Tests 727 (was 719): 4 in help.rs (book, tag coverage, tour shape, About) and 4 in app.rs (F1 over the deck opens the transport topic, the tour on a fresh CUTMARK_HELP_DIR, the tour not shown once seen, About from the menu). check.ps1 green; release exe fresh (09:34).
@@ -117,9 +117,7 @@ S1 R3 DONE (2026-11-21): track area structure (spec Design-Language-rev3 "Track 
 - Tests 679 (was 675): empty area starts at the Add row bottom, header strip/label/divider/ruler line, separators above lane fills, selected header fill at 40 and 96 px.
 
 ## Current state (older)
-S1 phase 11c DONE (2026-11-21): the transport deck. toolbar.rs and the "toolbar" panel are GONE (app.rs TOOLBAR_H, ui/mod.rs entry, THEME play_green/on_record_glyph/record_btn_d/record_btn_glyph deleted).
-- ui/timeline/deck.rs: ui_kit::transport_deck (id "transport_deck") over the timeline panel content rect (ui.max_rect() at the start of the ui_kit::panel closure), drawn by timeline::show after show_frame; timeline::show now returns Vec<Message> (Media messages from show_frame plus the Record error). Contents: ui_kit::timecode (main + .mmm fraction), back to start, play_button Play (shows Pause while Playing and then toggle_pause; otherwise toggle_play, which also ends a take), Stop, play_button Record (red capsule, shows Stop while the take is live; same start/stop/saving logic as the old record_button), forward to end, total length (mono VALUE text.tertiary). Back and forward are disabled while recording. There is NO Loop (the app has no loop playback). The separate Pause button is gone (Play shows Pause; P still works); the end button was kept as a deck_button after Record. Shortcuts untouched (app.rs).
-- scrubbing = ruler::is_scrubbing(ctx) (ScrubState.active). deck::covers(ctx, pos) = layer_id_at is the deck area; show_frame skips the lane/ruler/clip pointer handlers on a frame where the primary press lands on the deck (they are pointer-position based and would otherwise start a selection under the buttons).
+S1 phase 11c DONE (2026-11-21): toolbar.rs and the "toolbar" panel are gone (the transport deck it added was replaced in E3-4). There is no Loop.
 - Zoom readout is a percent of Fit (zoom_readout(spp, fit_spp), Fit = zoom_to_fit spp = 100%). Panel toolbar right side, left to right: waveform icon (regular::WAVEFORM), 90 px SliderKind::Zoom on log2 of wave_scale (1x..16x, tooltip "Waveform height", double-click resets to 1x), zoom slider, readout, Fit. Alt+wheel unchanged.
 - track_header.rs: "+ Add track" row (ADD_ROW_H 32, text.tertiary, tooltip with Ctrl+Shift+T, ignored while recording) under the last header; mod.rs max_scroll_y counts it.
 

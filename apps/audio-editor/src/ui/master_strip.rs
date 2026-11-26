@@ -1,8 +1,8 @@
-//! ui::master_strip: the Master panel (ui-kit panel, 44 tall header, the
+//! ui::master_strip: the Master panel (ui-kit side panel, 44 tall header, the
 //! stereo meter with its scale beside the fader, and the peak readout).
 
 use eframe::egui::{self, Align, Layout, Sense};
-use ui_kit::tokens::{color, size, space, typography};
+use ui_kit::tokens::{size, space, typography};
 
 use crate::editor::Editor;
 use crate::editor::action::Action;
@@ -26,7 +26,7 @@ const MIN_STRIP_H: f32 = 80.0;
 pub fn show(ui: &mut egui::Ui, editor: &mut Editor, meters: &mut MeterState) {
     // F1 over the panel opens Master and levels.
     ui_kit::help::context(ui, crate::help::CONTEXT_MASTER);
-    ui_kit::panel(ui, |ui| {
+    ui_kit::side_panel(ui, |ui| {
         // The panel fills the area the app gives it.
         ui.set_min_size(ui.available_size());
         header(ui);
@@ -37,16 +37,17 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, meters: &mut MeterState) {
 
 /// Header row (44 tall): the "Master" title and a hairline along the bottom.
 fn header(ui: &mut egui::Ui) {
+    let neutral = crate::ui::neutrals(ui.ctx());
     let row = egui::vec2(ui.available_width(), size::PANEL_TOOLBAR_HEIGHT);
     let inner = ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Center), |ui| {
         ui.add_space(HEADER_PAD);
         ui.add(
-            egui::Label::new(egui::RichText::new("Master").font(ui_kit::fonts::semibold(typography::BODY_SIZE)).color(color::TEXT_PRIMARY)).selectable(false),
+            egui::Label::new(egui::RichText::new("Master").font(ui_kit::fonts::semibold(typography::BODY_SIZE)).color(neutral.text_primary)).selectable(false),
         );
     });
     // The hairline runs edge to edge of the panel, through its padding.
     let rect = inner.response.rect;
-    ui.painter().hline(rect.x_range().expand(space::PANEL_PADDING), rect.bottom(), egui::Stroke::new(HAIRLINE, color::STROKE_HAIRLINE));
+    ui.painter().hline(rect.x_range().expand(space::PANEL_PADDING), rect.bottom(), egui::Stroke::new(HAIRLINE, neutral.stroke_hairline));
 }
 
 /// The meter and fader row, then the peak readout group under it.
@@ -129,6 +130,7 @@ mod tests {
     use crate::model::project::{BitDepth, Project, ViewState};
     use crate::ui::test_util::{Headless, Out};
     use eframe::egui::{Event, Modifiers, PointerButton, Pos2};
+    use ui_kit::tokens::color;
 
     /// Width the tests give the panel (the app's right panel inner width).
     const PANEL_W: f32 = 128.0;

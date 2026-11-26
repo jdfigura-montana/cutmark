@@ -52,15 +52,17 @@ pub fn dialog(ctx: &egui::Context, id: &str, title: &str, width: f32, open: &mut
 
 /// The one-line description under the dialog title, wrapped to the card.
 pub fn description(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).font(fonts::medium(typography::BODY_SIZE)).color(color::TEXT_SECONDARY));
+    let neutral = crate::ui::neutrals(ui.ctx());
+    ui.label(RichText::new(text).font(fonts::medium(typography::BODY_SIZE)).color(neutral.text_secondary));
     ui.add_space(space::SCALE_12);
 }
 
 /// A description led by a warning icon in `sem.meter.warn`.
 pub fn warning_description(ui: &mut Ui, text: &str) {
+    let neutral = crate::ui::neutrals(ui.ctx());
     let mut job = egui::text::LayoutJob::default();
     job.append(ui_kit::icons::fill::WARNING, 0.0, egui::TextFormat::simple(fonts::icon_fill(typography::HEADLINE_SIZE), color::SEM_METER_WARN));
-    job.append(text, space::SCALE_8, egui::TextFormat::simple(fonts::medium(typography::BODY_SIZE), color::TEXT_SECONDARY));
+    job.append(text, space::SCALE_8, egui::TextFormat::simple(fonts::medium(typography::BODY_SIZE), neutral.text_secondary));
     ui.label(job);
     ui.add_space(space::SCALE_12);
 }

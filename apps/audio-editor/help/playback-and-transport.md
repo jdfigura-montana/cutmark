@@ -3,7 +3,7 @@ id: playback-and-transport
 title: Playback and the transport
 section: Playback
 order: 400
-keywords: play, pause, stop, transport, deck, playhead, scrub, jump, home, end, play selection, space
+keywords: play, pause, stop, transport, play button, bottom bar, timecode, playhead, scrub, jump, home, end, play selection, space
 context: timeline.transport
 ---
 
@@ -11,13 +11,13 @@ Play, pause, stop, scrub and jump around the project.
 
 ## Play and pause
 
-1. Press <kbd>Space</kbd> or click **Play** in the transport deck to play from the playhead.
+1. Press <kbd>Space</kbd> or click the round **Play** button under the timeline to play from the playhead.
 2. Press <kbd>Space</kbd> again to stop, or press <kbd>P</kbd> to pause in place.
 3. Press <kbd>P</kbd> again to resume. <kbd>Space</kbd> stops playback and returns the playhead to where playback started.
 
 ## Stop
 
-1. Click **Stop** while playing. Playback stops and the playhead returns to where playback started.
+1. Click **Stop** in the bottom bar while playing. Playback stops and the playhead returns to where playback started.
 
 ## Play a range
 
@@ -38,11 +38,16 @@ Play, pause, stop, scrub and jump around the project.
 2. The playhead follows the pointer and the audio scrubs with it.
 3. Release to stop at that position.
 
-## The transport deck
+## The Play button and the bottom bar
 
-The deck floats at the bottom center of the timeline. The timecode is on the left and the project length on the right. Its buttons are **Go to start (Home)**, **Play (Space)** or **Pause (P)**, **Stop**, **Record (Ctrl+R)** and **Go to end (End)**. Drag the bar sideways to move it.
+The round **Play** button sits in the notch at the bottom edge of the timeline. It shows **Pause** while the project plays. Its tooltip reads **Play (Space)** or **Pause (P)**.
 
-While a take records, **Play**, **Stop** and **Record** end the take and keep it. **Go to start** and **Go to end** are disabled then. The view follows the playhead during playback.
+The bottom bar of the timeline holds the rest:
+
+- On the left, the timecode and **Go to start (Home)**.
+- On the right, **Stop**, **Record (Ctrl+R)**, **Go to end (End)** and the project length.
+
+While a take records, **Record** shows a stop symbol, and **Play**, **Stop** and **Record** end the take and keep it. **Go to start** and **Go to end** are disabled then. The view follows the playhead during playback.
 
 > Tip: Click a lane to move the playhead there without scrubbing. A ruler click scrubs the audio.
 

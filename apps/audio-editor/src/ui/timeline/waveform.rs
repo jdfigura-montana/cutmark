@@ -118,7 +118,7 @@ pub fn draw(painter: &egui::Painter, clip: &Clip, loaded: &Loaded, g: &Geom, bod
     // be clipped away anyway).
     let x_left = g.sample_to_x(clip.start).max(body.left()).max(g.lane_left);
     let x_right = g.sample_to_x(clip.end()).min(body.right()).min(g.lane_left + g.lane_width);
-    let mut shapes = guides(body, channels, x_left, x_right, color, scale);
+    let mut shapes = guides(body, channels, x_left, x_right, color, crate::ui::neutrals(painter.ctx()).bg_ground, scale);
 
     let wave_color = dim(color);
     if g.spp < 1.0 {
@@ -133,10 +133,10 @@ pub fn draw(painter: &egui::Painter, clip: &Clip, loaded: &Loaded, g: &Geom, bod
 /// The lane guides under a waveform: a faint center line per lane in the wave
 /// color at alpha 20% and, for two lanes, a 1 px ground-colored 35% divider between L
 /// and R. `scale` is the track's opacity factor (0.45 when muted).
-fn guides(body: egui::Rect, channels: usize, x_left: f32, x_right: f32, color: egui::Color32, scale: f32) -> Vec<egui::Shape> {
+fn guides(body: egui::Rect, channels: usize, x_left: f32, x_right: f32, color: egui::Color32, ground: egui::Color32, scale: f32) -> Vec<egui::Shape> {
     let lane_h = body.height() / channels as f32;
     let center = color.gamma_multiply(metrics::GUIDE_CENTER_ALPHA * scale);
-    let divider = ui_kit::tokens::color::BG_GROUND.gamma_multiply(metrics::GUIDE_DIVIDER_ALPHA * scale);
+    let divider = ground.gamma_multiply(metrics::GUIDE_DIVIDER_ALPHA * scale);
     let mut shapes: Vec<egui::Shape> = Vec::new();
     // Faint center line per lane.
     for lane in 0..channels {
@@ -194,7 +194,7 @@ pub fn draw_live(painter: &egui::Painter, status: &RecordStatus<'_>, g: &Geom, b
     // Only the visible columns: the take may start far off screen.
     let x_left = g.sample_to_x(status.start).max(body.left()).max(g.lane_left);
     let x_right = g.sample_to_x(end).min(body.right()).min(g.lane_left + g.lane_width);
-    let mut shapes = guides(body, channels, x_left, x_right, color, 1.0);
+    let mut shapes = guides(body, channels, x_left, x_right, color, crate::ui::neutrals(painter.ctx()).bg_ground, 1.0);
     let first_col = (x_left - g.lane_left) as i64;
     let last_col = (x_right - g.lane_left).ceil() as i64;
     for col in first_col..=last_col {

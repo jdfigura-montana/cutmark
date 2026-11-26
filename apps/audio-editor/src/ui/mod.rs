@@ -11,6 +11,13 @@ pub mod test_util;
 pub mod timeline;
 pub mod widgets;
 
+/// The surfaces, strokes and text colors tinted toward the current accent
+/// (Design Language E3, "Tinted neutrals"). The fixed `color` tokens hold only
+/// the default accent's values, so the ui reads neutrals through this.
+pub(crate) fn neutrals(ctx: &eframe::egui::Context) -> ui_kit::Neutrals {
+    ui_kit::Theme::get(ctx).neutrals
+}
+
 #[cfg(test)]
 mod tests {
     use eframe::egui;

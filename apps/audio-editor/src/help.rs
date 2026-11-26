@@ -61,7 +61,7 @@ pub fn book() -> HelpBook {
 pub const CONTEXT_TIMELINE: &str = "timeline";
 /// The F1 context tag for the timeline's track header column.
 pub const CONTEXT_TRACKS: &str = "timeline.tracks";
-/// The F1 context tag for the transport deck.
+/// The F1 context tag for the transport: the bottom bar and the Play button.
 pub const CONTEXT_TRANSPORT: &str = "timeline.transport";
 /// The F1 context tag for the media panel.
 pub const CONTEXT_MEDIA: &str = "media";
@@ -108,7 +108,7 @@ pub const CONTEXT_TAGS: &[&str] = &[
 pub const ANCHOR_MEDIA: &str = "media-panel";
 /// The tour anchor id for the track header column.
 pub const ANCHOR_TRACKS: &str = "track-headers";
-/// The tour anchor id for the transport deck.
+/// The tour anchor id for the bottom bar and the Play button.
 pub const ANCHOR_TRANSPORT: &str = "transport";
 /// The tour anchor id for the timeline panel toolbar.
 pub const ANCHOR_TIMELINE_TOOLBAR: &str = "timeline-toolbar";
@@ -119,7 +119,7 @@ pub const ANCHOR_MENU_BAR: &str = "menu-bar";
 const TOUR_STEPS: [TourStep; 5] = [
     TourStep { target: ANCHOR_MEDIA, title: "Media panel", body: "Import audio files here, then drag them onto a track." },
     TourStep { target: ANCHOR_TRACKS, title: "Tracks", body: "Each track has Mute, Solo and Record arm. Arm a track, then press Record to record onto it." },
-    TourStep { target: ANCHOR_TRANSPORT, title: "Transport", body: "Play, stop and record from here. Drag the bar sideways if it covers something." },
+    TourStep { target: ANCHOR_TRANSPORT, title: "Transport", body: "Play with the round button. Stop and Record are in the bar under the timeline." },
     TourStep {
         target: ANCHOR_TIMELINE_TOOLBAR,
         title: "Timeline toolbar",
