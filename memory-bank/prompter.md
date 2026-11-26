@@ -8,7 +8,7 @@
 ## Done
 - Phase 1 (V4 passed): prompter-platform and apps/prompter: DX12 (PreMultiplied on JD's PC), one Floating view, white backing fix (JD approved), Library shell. Minimum window 900 x 480.
 - Phase 2, pending JD's check: C1 to C3b prompter-core; C4, C4b library, editor, autosave, menus, find; C5 renderer.rs (shared with the views later), Preview chip, Snapshots.
-- Phase 3: E1 platform instance and clipboard; E2 core HTML converter and .html import; E3 .docx, .odt, .htm import. None wired into the app.
+- Phase 3: E1 platform instance, clipboard; E2, E3 core .html, .htm, .docx, .odt import; E4 store favorites, tabs, sort, folders. None wired in.
 
 ## Platform (E1)
 - App wiring: poll try_recv with request_repaint_after (a message does not wake egui); log setup_error.
@@ -21,12 +21,11 @@
 - Brackets in code never open or close a cue; a cue outside code may hold code. A cue ends at the last `]]` of a run, so `[[pause]]]` is plain text. Cues in a heading do not split it. List depth starts at 0.
 - Open: a second paragraph in a loose list item (no cue) is a ListItem with continues false, so it draws its own marker. An empty item inside an ordered list uses no number ("1. a", "2.", "3. c" shows 1, 2).
 - Bump FORMAT_VERSION when parsing or normalizing changes (the index cache).
-- Store: one per folder. A bad library.json is an error and is never overwritten; a failed library write leaves memory unchanged.
-- `edited` changes on save and restore only. duplicate adds " copy", drops favorite, last_position and unknown fields (else kept). No typed views, tabs or overrides yet.
+- Store: one per folder. A bad library.json (also a mistyped field) is an error, never overwritten; a failed write leaves memory unchanged. Open drops bad tab and collapsed entries.
+- `edited` changes on save and restore only. duplicate adds " copy", drops favorite, last_position and unknown fields (else kept). No typed views or overrides yet.
 - Import: UTF-8, or UTF-16 with a BOM. .txt cues are copied as they are (Markdown inside applies). Imports have no folder; split parts are "Title (part 1 of 2)".
 - Tokens: a word may cross spans, so char_range can end past its first span. source_line_of gives the block's first line. No spoken characters, no token.
-- Forms: the aligner must split multi-word forms. Contractions expand inside one token only, so normalize heard words the same way. No readings yet for "1990s", a minus sign, or other currencies.
-- C5 added Store::snapshot_text (JD approved the change outside apps/prompter).
+- Forms: the aligner must split multi-word forms. Contractions expand inside one token only, so normalize heard words the same way.
 - convert: htmd only parses HTML; one writer serves HTML, .docx, .odt. Unwritable styles shrink or drop. More paragraphs in an item become hard breaks.
 - Not read: .docx styles.xml (bold, italic or lists set only by a style), .odt paragraph-style bold or italic, automatic numbers of .docx and .odt headings. Table paragraphs are kept.
 
@@ -39,12 +38,13 @@
 - A laid block's job text is the block's text (markers excluded), for the token to glyph map.
 - Preview follows the cursor's block only; a block taller than the pane shows from its top. Not remembered across launches. About 208 px of text at the default window.
 - Headless tests: app/library_tests.rs.
-- Not done: remembered sort and groups, favorites, tabs, stats bar, plain-text paste. The single-instance guard exists (E1) but is not wired in, so two copies could write one store.
+- Not done: stats bar, plain-text paste, E4 wiring (scripts_panel.rs has its own Sort and sorts folders by name; use store::sort_scripts). The E1 guard is not wired in, so two copies could write one store.
+- Open: Unfiled is not a folder, so its collapsed state cannot be saved.
 - Untimed on long scripts (UI thread): Find, preview, Snapshots counts.
 
 ## Next
-- JD's Phase 2 check; Phase 3 after E3.
-- App: Import dialog may need .html, .htm, .docx, .odt (not checked).
+- JD's Phase 2 check; Phase 3 after E4.
+- App: Import dialog may need the E2, E3 types (not checked).
 - By hand: import real Word, Google Docs, LibreOffice files.
 - By hand: preview look and follow, Snapshots dialog, dialogs (Enter, Esc, Import, Export), right-click menus, Paste with empty, text and image clipboards, Ctrl+Shift+F, autosave on switch and exit.
 - By hand: see-through, flash on open, move to another monitor or DPI, lock and sleep, scroll with the Library minimized, OBS capture.
@@ -59,7 +59,7 @@
 - egui-winit 0.36.2 ignores StartDrag without focus, so the view moves itself with OuterPosition.
 - egui-winit sends Ctrl+Alt+C as Event::Copy; app.rs puts the C key back, or menu_bar reads the Alt release as a tap and focuses File.
 - The root viewport must be transparent or egui-wgpu uses alpha Auto for every viewport. clear_color keeps the Library opaque.
-- To screenshot, use a temporary build with capture exclusion off.
+- Screenshots need a temporary build with capture exclusion off.
 - Shown alpha mode copies egui-wgpu's rule; recheck on upgrade.
 - "Primary monitor" size is the Library's monitor. os::OsError is not PlatformError.
 - Untested: the Windows 11 dialog on older Windows; the Linux stubs are not compiled.

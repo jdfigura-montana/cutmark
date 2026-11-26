@@ -8,6 +8,8 @@ mod import;
 
 pub(crate) use import::{decode, escape_plan};
 
+use std::cmp::Reverse;
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -26,6 +28,9 @@ pub const LIBRARY_VERSION: u32 = 1;
 
 /// How many snapshots are kept for each script.
 pub const MAX_SNAPSHOTS: usize = 10;
+
+/// How many tabs can be open at once.
+pub const MAX_OPEN_TABS: usize = 12;
 
 /// The timestamp in a history file's name. UTC, and in name order from oldest to newest.
 const STAMP: &str = "%Y%m%dT%H%M%S%.3fZ";
@@ -48,6 +53,12 @@ pub enum StoreError {
     BlankName,
     #[error("that snapshot no longer exists")]
     UnknownSnapshot,
+    #[error("no more than {MAX_OPEN_TABS} tabs can be open")]
+    TooManyTabs,
+    #[error("the script {0} cannot have two tabs")]
+    RepeatedTab(String),
+    #[error("the script {0} has no open tab")]
+    TabNotOpen(String),
     #[error("{}: only .md, .txt, .html, .htm, .docx and .odt files can be imported", .0.display())]
     UnsupportedImport(PathBuf),
     #[error("This file is not UTF-8 or UTF-16. Save it as UTF-8 and import again.")]
@@ -63,9 +74,21 @@ pub type Result<T, E = StoreError> = std::result::Result<T, E>;
 pub struct Library {
     pub version: u32,
     pub scripts: Vec<ScriptMeta>,
-    /// Folder names. Folders do not nest.
+    /// Folder names, in the order the user gave them. Folders do not nest.
     #[serde(default)]
     pub folders: Vec<String>,
+    /// The ids of the scripts open in tabs, in tab order. At most [`MAX_OPEN_TABS`].
+    #[serde(default)]
+    pub open_tabs: Vec<String>,
+    /// One of `open_tabs`.
+    #[serde(default)]
+    pub active_tab: Option<String>,
+    /// How script lists are sorted.
+    #[serde(default)]
+    pub sort: Sort,
+    /// The names of the folders shown closed.
+    #[serde(default)]
+    pub collapsed_folders: Vec<String>,
     /// Fields this version does not know, written back as they were read.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -73,7 +96,49 @@ pub struct Library {
 
 impl Default for Library {
     fn default() -> Self {
-        Self { version: LIBRARY_VERSION, scripts: Vec::new(), folders: Vec::new(), extra: Map::new() }
+        Self {
+            version: LIBRARY_VERSION,
+            scripts: Vec::new(),
+            folders: Vec::new(),
+            open_tabs: Vec::new(),
+            active_tab: None,
+            sort: Sort::default(),
+            collapsed_folders: Vec::new(),
+            extra: Map::new(),
+        }
+    }
+}
+
+impl Library {
+    /// Drops tab and collapsed folder entries that do not fit the rest of the library, such as
+    /// ones edited by hand.
+    fn tidy(&mut self) {
+        let mut seen = HashSet::new();
+        self.open_tabs.retain(|tab| self.scripts.iter().any(|script| script.id == *tab) && seen.insert(tab.clone()));
+        self.open_tabs.truncate(MAX_OPEN_TABS);
+        self.active_tab = self.active_tab.take().filter(|active| self.open_tabs.contains(active));
+        let mut seen = HashSet::new();
+        self.collapsed_folders.retain(|folder| self.folders.contains(folder) && seen.insert(folder.clone()));
+    }
+}
+
+/// The order of a script list.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Sort {
+    /// By title, ignoring case.
+    #[default]
+    Name,
+    /// The most recently edited first.
+    Edited,
+}
+
+/// Sorts a script list. Favorites come first in either order. Scripts that tie keep the order
+/// they were given in.
+pub fn sort_scripts(scripts: &mut [&ScriptMeta], sort: Sort) {
+    match sort {
+        Sort::Name => scripts.sort_by_cached_key(|script| (!script.favorite, script.title.to_lowercase())),
+        Sort::Edited => scripts.sort_by_key(|script| (!script.favorite, Reverse(script.edited))),
     }
 }
 
@@ -88,7 +153,7 @@ pub struct ScriptMeta {
     pub created: DateTime<Utc>,
     /// When the text last changed. Renaming and moving do not change it.
     pub edited: DateTime<Utc>,
-    /// Unused until Phase 3.
+    /// Favorites sort first.
     #[serde(default)]
     pub favorite: bool,
     #[serde(default)]
@@ -149,6 +214,7 @@ impl Store {
         match fs::read(&path) {
             Ok(bytes) => {
                 store.library = serde_json::from_slice(&bytes).map_err(|source| StoreError::Library { path, source })?;
+                store.library.tidy();
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(io_error(&path)(error)),
@@ -194,6 +260,50 @@ impl Store {
         self.change(|library| library.scripts[at].folder = folder)
     }
 
+    /// Marks a script as a favorite, or takes the mark off.
+    pub fn set_favorite(&mut self, id: &str, favorite: bool) -> Result<()> {
+        let at = self.position(id)?;
+        self.change(|library| library.scripts[at].favorite = favorite)
+    }
+
+    /// Replaces the open tabs and says which one is active. Each tab is a listed script's id,
+    /// with no repeats, and `active` must be one of them.
+    pub fn set_tabs(&mut self, open: &[String], active: Option<&str>) -> Result<()> {
+        if open.len() > MAX_OPEN_TABS {
+            return Err(StoreError::TooManyTabs);
+        }
+        for (at, id) in open.iter().enumerate() {
+            self.position(id)?;
+            if open[..at].contains(id) {
+                return Err(StoreError::RepeatedTab(id.clone()));
+            }
+        }
+        if let Some(active) = active.filter(|active| !open.iter().any(|id| id == active)) {
+            return Err(StoreError::TabNotOpen(active.to_owned()));
+        }
+        self.change(|library| {
+            library.open_tabs = open.to_vec();
+            library.active_tab = active.map(str::to_owned);
+        })
+    }
+
+    pub fn set_sort(&mut self, sort: Sort) -> Result<()> {
+        self.change(|library| library.sort = sort)
+    }
+
+    /// Shows a folder closed or open.
+    pub fn set_folder_collapsed(&mut self, folder: &str, collapsed: bool) -> Result<()> {
+        if !self.has_folder(folder) {
+            return Err(StoreError::UnknownFolder(folder.to_owned()));
+        }
+        self.change(|library| {
+            library.collapsed_folders.retain(|other| other != folder);
+            if collapsed {
+                library.collapsed_folders.push(folder.to_owned());
+            }
+        })
+    }
+
     /// Copies a script's text, in the same folder. The copy starts with no favorite mark, last
     /// position or unknown fields.
     pub fn duplicate(&mut self, id: &str) -> Result<ScriptMeta> {
@@ -203,9 +313,9 @@ impl Store {
         self.add(meta, &text)
     }
 
-    /// Takes a script out of the library. Its file moves to
-    /// `scripts/.history/{id}/deleted-<timestamp>.md` and nothing is erased. An entry whose
-    /// file is already gone is removed too.
+    /// Takes a script out of the library and closes its tab. If that tab was active, no tab
+    /// is. Its file moves to `scripts/.history/{id}/deleted-<timestamp>.md` and nothing is
+    /// erased. An entry whose file is already gone is removed too.
     pub fn delete(&mut self, id: &str) -> Result<()> {
         let at = self.position(id)?;
         let history = self.history_dir(id);
@@ -225,6 +335,10 @@ impl Store {
         };
         let removed = self.change(|library| {
             library.scripts.remove(at);
+            library.open_tabs.retain(|tab| tab != id);
+            if library.active_tab.as_deref() == Some(id) {
+                library.active_tab = None;
+            }
         });
         if removed.is_err() && moved {
             // The script is still listed, so put its file back. If that fails too, the text
@@ -242,6 +356,18 @@ impl Store {
         self.change(|library| library.folders.push(folder.to_owned()))
     }
 
+    /// Moves a folder so that it is at `to_index` in the folder list. An index past the end
+    /// puts it last.
+    pub fn move_folder(&mut self, folder: &str, to_index: usize) -> Result<()> {
+        let Some(from) = self.library.folders.iter().position(|other| other == folder) else {
+            return Err(StoreError::UnknownFolder(folder.to_owned()));
+        };
+        self.change(|library| {
+            let moved = library.folders.remove(from);
+            library.folders.insert(to_index.min(library.folders.len()), moved);
+        })
+    }
+
     /// Renames a folder. Its scripts move with it.
     pub fn rename_folder(&mut self, from: &str, to: &str) -> Result<()> {
         let to = name(to)?;
@@ -255,7 +381,7 @@ impl Store {
             return Err(StoreError::FolderExists(to.to_owned()));
         }
         self.change(|library| {
-            let folders = library.folders.iter_mut();
+            let folders = library.folders.iter_mut().chain(&mut library.collapsed_folders);
             let used = library.scripts.iter_mut().filter_map(|script| script.folder.as_mut());
             for folder in folders.chain(used).filter(|folder| *folder == from) {
                 to.clone_into(folder);
@@ -271,7 +397,10 @@ impl Store {
         if self.library.scripts.iter().any(|script| script.folder.as_deref() == Some(folder)) {
             return Err(StoreError::FolderNotEmpty(folder.to_owned()));
         }
-        self.change(|library| library.folders.retain(|other| other != folder))
+        self.change(|library| {
+            library.folders.retain(|other| other != folder);
+            library.collapsed_folders.retain(|other| other != folder);
+        })
     }
 
     /// Saves a copy of the script's current text, then drops all but the newest
@@ -312,7 +441,7 @@ impl Store {
                 snapshots.push(SnapshotMeta { taken });
             }
         }
-        snapshots.sort_by_key(|snapshot| std::cmp::Reverse(snapshot.taken));
+        snapshots.sort_by_key(|snapshot| Reverse(snapshot.taken));
         Ok(snapshots)
     }
 

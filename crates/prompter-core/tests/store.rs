@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use prompter_core::index::{FORMAT_VERSION, WordIndex};
 use prompter_core::limits::MAX_WORDS;
 use prompter_core::script::{self, BlockKind, Cue};
-use prompter_core::store::{LIBRARY_VERSION, Library, MAX_SNAPSHOTS, Store, StoreError};
+use prompter_core::store::{LIBRARY_VERSION, Library, MAX_OPEN_TABS, MAX_SNAPSHOTS, ScriptMeta, Sort, Store, StoreError, sort_scripts};
 use tempfile::TempDir;
 
 fn temp_store() -> (TempDir, Store) {
@@ -84,7 +84,7 @@ fn unknown_fields_survive_a_round_trip() {
     let id = "0192f0c1-2b3a-7c4d-8e5f-0123456789ab";
     let json = serde_json::json!({
         "version": 1,
-        "open_tabs": [id],
+        "window": { "x": 40 },
         "scripts": [{
             "id": id,
             "title": "Old",
@@ -98,7 +98,7 @@ fn unknown_fields_survive_a_round_trip() {
     store.rename(id, "New").unwrap();
 
     let written: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(written["open_tabs"], json["open_tabs"]);
+    assert_eq!(written["window"], json["window"]);
     assert_eq!(written["scripts"][0]["overrides"], json["scripts"][0]["overrides"]);
     assert_eq!(written["scripts"][0]["title"], "New");
     assert_eq!(written["scripts"][0]["favorite"], false);
@@ -182,6 +182,216 @@ fn folders() {
     store.delete_folder("Series").unwrap();
     assert!(store.library().folders.is_empty());
     assert!(matches!(store.delete_folder("Ads"), Err(StoreError::UnknownFolder(_))));
+}
+
+/// Each script's id and `edited` time, in library order.
+fn edited_times(store: &Store) -> Vec<(String, String)> {
+    store.library().scripts.iter().map(|script| (script.id.clone(), script.edited.to_rfc3339())).collect()
+}
+
+fn written_library(base: &Path) -> serde_json::Value {
+    serde_json::from_slice(&fs::read(base.join("library.json")).unwrap()).unwrap()
+}
+
+#[test]
+fn set_favorite_is_saved_and_leaves_edited_alone() {
+    let (dir, mut store) = temp_store();
+    let id = add(&mut store, "A", "text");
+    let edited = edited_times(&store);
+    for favorite in [true, true, false, true] {
+        store.set_favorite(&id, favorite).unwrap();
+        assert_eq!(store.library().scripts[0].favorite, favorite);
+        assert_eq!(Store::open(dir.path()).unwrap().library(), store.library());
+    }
+    assert_eq!(edited_times(&store), edited);
+    assert!(matches!(store.set_favorite("nope", true), Err(StoreError::UnknownScript(_))));
+}
+
+#[test]
+fn sort_scripts_puts_favorites_first() {
+    let (_dir, mut store) = temp_store();
+    let template = store.new("x", None).unwrap();
+    // A later `second` means edited more recently.
+    let script = |title: &str, second: u64, favorite: bool| {
+        let edited = template.edited + std::time::Duration::from_secs(second);
+        ScriptMeta { title: title.to_owned(), edited, favorite, ..template.clone() }
+    };
+    let scripts = [script("delta", 4, false), script("Charlie", 1, true), script("alpha", 2, false), script("Bravo", 3, true)];
+    let sorted = |sort| {
+        let mut list: Vec<&ScriptMeta> = scripts.iter().collect();
+        sort_scripts(&mut list, sort);
+        list.iter().map(|script| script.title.as_str()).collect::<Vec<_>>()
+    };
+    assert_eq!(sorted(Sort::Name), ["Bravo", "Charlie", "alpha", "delta"]);
+    assert_eq!(sorted(Sort::Edited), ["Bravo", "Charlie", "delta", "alpha"]);
+}
+
+#[test]
+fn sort_scripts_keeps_the_given_order_for_ties() {
+    let (_dir, mut store) = temp_store();
+    let first = store.new("Same", None).unwrap();
+    let second = ScriptMeta { id: "second".to_owned(), title: "same".to_owned(), ..first.clone() };
+    for sort in [Sort::Name, Sort::Edited] {
+        for given in [[&first, &second], [&second, &first]] {
+            let mut list = given;
+            sort_scripts(&mut list, sort);
+            assert_eq!(list, given);
+        }
+    }
+}
+
+#[test]
+fn move_folder_sets_the_saved_order() {
+    let (dir, mut store) = temp_store();
+    for folder in ["A", "B", "C", "D"] {
+        store.create_folder(folder).unwrap();
+    }
+    for (folder, to, order) in [
+        ("D", 0, ["D", "A", "B", "C"]),
+        ("D", 2, ["A", "B", "D", "C"]),
+        ("A", 3, ["B", "D", "C", "A"]),
+        // Where it already is.
+        ("C", 2, ["B", "D", "C", "A"]),
+        // Past the end means last.
+        ("B", 99, ["D", "C", "A", "B"]),
+    ] {
+        store.move_folder(folder, to).unwrap();
+        assert_eq!(store.library().folders, order, "{folder} to {to}");
+        assert_eq!(written_library(dir.path())["folders"], serde_json::json!(order));
+    }
+    assert_eq!(Store::open(dir.path()).unwrap().library().folders, ["D", "C", "A", "B"]);
+    assert!(matches!(store.move_folder("Missing", 0), Err(StoreError::UnknownFolder(_))));
+}
+
+#[test]
+fn tabs_sort_and_collapsed_folders_are_saved() {
+    let (dir, mut store) = temp_store();
+    store.create_folder("Shows").unwrap();
+    store.create_folder("Ads").unwrap();
+    let first = add(&mut store, "A", "text");
+    let second = add(&mut store, "B", "text");
+    let edited = edited_times(&store);
+
+    store.set_tabs(&[second.clone(), first.clone()], Some(&first)).unwrap();
+    store.set_sort(Sort::Edited).unwrap();
+    store.set_folder_collapsed("Ads", true).unwrap();
+    store.set_folder_collapsed("Shows", true).unwrap();
+    // Closing a closed folder does not list it twice.
+    store.set_folder_collapsed("Shows", true).unwrap();
+
+    let written = written_library(dir.path());
+    assert_eq!(written["open_tabs"], serde_json::json!([second, first]));
+    assert_eq!(written["active_tab"], serde_json::json!(first));
+    assert_eq!(written["sort"], "edited");
+    assert_eq!(written["collapsed_folders"], serde_json::json!(["Ads", "Shows"]));
+    assert_eq!(Store::open(dir.path()).unwrap().library(), store.library());
+
+    store.set_folder_collapsed("Ads", false).unwrap();
+    store.set_folder_collapsed("Ads", false).unwrap();
+    assert_eq!(store.library().collapsed_folders, ["Shows"]);
+    store.set_sort(Sort::Name).unwrap();
+    assert_eq!(written_library(dir.path())["sort"], "name");
+    store.set_tabs(&[], None).unwrap();
+    assert!(store.library().open_tabs.is_empty());
+    assert_eq!(store.library().active_tab, None);
+
+    assert!(matches!(store.set_folder_collapsed("Missing", true), Err(StoreError::UnknownFolder(_))));
+    assert_eq!(edited_times(&store), edited);
+}
+
+#[test]
+fn set_tabs_refuses_bad_tabs_and_changes_nothing() {
+    let (_dir, mut store) = temp_store();
+    let ids: Vec<String> = (0..=MAX_OPEN_TABS).map(|n| store.new(&format!("{n}"), None).unwrap().id).collect();
+    assert_eq!(MAX_OPEN_TABS, 12);
+    store.set_tabs(&ids[..MAX_OPEN_TABS], None).unwrap();
+    let before = store.library().clone();
+
+    assert!(matches!(store.set_tabs(&ids, None), Err(StoreError::TooManyTabs)));
+    assert!(matches!(store.set_tabs(&["nope".to_owned()], None), Err(StoreError::UnknownScript(_))));
+    assert!(matches!(store.set_tabs(&[ids[0].clone(), ids[0].clone()], None), Err(StoreError::RepeatedTab(_))));
+    assert!(matches!(store.set_tabs(&ids[..2], Some(&ids[2])), Err(StoreError::TabNotOpen(_))));
+    assert_eq!(*store.library(), before);
+}
+
+#[test]
+fn a_library_without_the_view_fields_gets_the_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("library.json"), r#"{"version":1,"scripts":[]}"#).unwrap();
+    assert_eq!(*Store::open(dir.path()).unwrap().library(), Library::default());
+    assert_eq!(Library::default().sort, Sort::Name);
+}
+
+#[test]
+fn open_drops_view_entries_that_do_not_fit() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.json");
+    let ids: Vec<String> = (0..14).map(|n| format!("0192f0c1-2b3a-7c4d-8e5f-0123456789{n:02}")).collect();
+    let scripts: Vec<_> =
+        ids.iter().map(|id| serde_json::json!({ "id": id, "title": "t", "created": "2026-01-02T03:04:05Z", "edited": "2026-01-02T03:04:05Z" })).collect();
+    // An unlisted id and a repeat, then more than fit.
+    let mut tabs = vec!["gone".to_owned(), ids[0].clone()];
+    tabs.extend_from_slice(&ids);
+    let json = serde_json::json!({
+        "version": 1,
+        "scripts": scripts,
+        "folders": ["Ads"],
+        "open_tabs": tabs,
+        // Past the cap, so its tab is dropped.
+        "active_tab": ids[13],
+        "collapsed_folders": ["Gone", "Ads", "Ads"]
+    })
+    .to_string();
+    fs::write(&path, &json).unwrap();
+
+    let store = Store::open(dir.path()).unwrap();
+    assert_eq!(store.library().open_tabs, ids[..MAX_OPEN_TABS]);
+    assert_eq!(store.library().active_tab, None);
+    assert_eq!(store.library().collapsed_folders, ["Ads"]);
+    assert_eq!(fs::read_to_string(&path).unwrap(), json, "opening does not write");
+}
+
+#[test]
+fn delete_closes_the_tab() {
+    let (dir, mut store) = temp_store();
+    let ids = ["A", "B", "C"].map(|title| add(&mut store, title, "text"));
+    store.set_tabs(&ids, Some(&ids[1])).unwrap();
+    let edited = edited_times(&store);
+
+    // A tab that is not active.
+    store.delete(&ids[0]).unwrap();
+    assert_eq!(store.library().open_tabs, ids[1..]);
+    assert_eq!(store.library().active_tab.as_ref(), Some(&ids[1]));
+
+    // The active tab.
+    store.delete(&ids[1]).unwrap();
+    assert_eq!(store.library().open_tabs, ids[2..]);
+    assert_eq!(store.library().active_tab, None);
+    assert_eq!(Store::open(dir.path()).unwrap().library(), store.library());
+    assert_eq!(edited_times(&store), edited[2..]);
+}
+
+#[test]
+fn folder_changes_update_collapsed_folders() {
+    let (dir, mut store) = temp_store();
+    for folder in ["Shows", "Ads", "Drafts"] {
+        store.create_folder(folder).unwrap();
+    }
+    store.set_folder_collapsed("Shows", true).unwrap();
+    store.set_folder_collapsed("Ads", true).unwrap();
+
+    store.rename_folder("Shows", "Series").unwrap();
+    assert_eq!(store.library().collapsed_folders, ["Series", "Ads"]);
+    // An open folder stays open.
+    store.rename_folder("Drafts", "Notes").unwrap();
+    assert_eq!(store.library().collapsed_folders, ["Series", "Ads"]);
+
+    store.delete_folder("Series").unwrap();
+    assert_eq!(store.library().collapsed_folders, ["Ads"]);
+    assert_eq!(written_library(dir.path())["collapsed_folders"], serde_json::json!(["Ads"]));
+    // A new folder with the old name starts open.
+    store.create_folder("Series").unwrap();
+    assert_eq!(store.library().collapsed_folders, ["Ads"]);
 }
 
 #[test]
