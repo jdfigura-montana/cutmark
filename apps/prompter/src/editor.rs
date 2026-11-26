@@ -6,7 +6,7 @@ use std::ops::Range;
 
 use egui::text::{CCursor, CCursorRange, CharIndex};
 use egui::text_edit::TextEditState;
-use ui_kit::tokens::{color, space};
+use ui_kit::tokens::{color, radius, space};
 
 use crate::clipboard::{self, Clipboard};
 use crate::find;
@@ -16,6 +16,12 @@ use crate::styled::{self, ParseCache, Reveal};
 /// How strongly the accent color backs a find match, and the current one.
 const MATCH_TINT: f32 = 0.3;
 const CURRENT_TINT: f32 = 0.7;
+
+/// The room between the field's box and what scrolls in it.
+const FIELD_PAD: f32 = space::SCALE_4;
+/// The box's outline: a hairline, or heavier and in the accent color while typing goes there.
+pub const FIELD_STROKE: f32 = 1.0;
+pub const FOCUS_STROKE: f32 = 2.0;
 
 /// The editor's id for one opening of a script. Its cursor and undo history are kept under it.
 pub fn id(serial: u64) -> egui::Id {
@@ -241,16 +247,32 @@ impl Editor {
         self.look.show_markdown = show;
     }
 
-    /// The editor, filling the space left.
+    /// The editor in its box, filling the space left. The first time an opening is shown, the
+    /// caret goes to the top and the editor takes the keyboard: with its syntax hidden and no
+    /// caret, a script looks like a page that cannot be typed in.
     pub fn show(&mut self, ui: &mut egui::Ui, serial: u64, text: &mut String, highlight: Option<Highlight<'_>>) -> Shown {
         if self.serial != serial {
             (self.serial, self.seen, self.status) = (serial, None, Status::default());
             (self.look.revealed, self.look.click) = (None, None);
         }
-        self.shown.insert(serial);
         let id = id(serial);
+        if self.shown.insert(serial) {
+            select(ui.ctx(), id, CCursorRange::one(CCursor::new(CharIndex(0))));
+            ui.memory_mut(|memory| memory.request_focus(id));
+        }
+        let boxed = ui.available_rect_before_wrap();
+        ui.painter().rect_filled(boxed, radius::SEGMENT, color::BG_CONTROL);
         let look = &mut self.look;
-        let shown = egui::ScrollArea::vertical().id_salt(id).auto_shrink(false).show(ui, |ui| field(ui, id, text, highlight, look)).inner;
+        let inside = egui::UiBuilder::new().max_rect(boxed.shrink(FIELD_PAD));
+        let shown = ui
+            .scope_builder(inside, |ui| egui::ScrollArea::vertical().id_salt(id).auto_shrink(false).show(ui, |ui| field(ui, id, text, highlight, look)).inner)
+            .inner;
+        let outline = if ui.memory(|memory| memory.has_focus(id)) {
+            egui::Stroke::new(FOCUS_STROKE, ui_kit::Theme::get(ui.ctx()).accent.accent)
+        } else {
+            egui::Stroke::new(FIELD_STROKE, color::STROKE_HAIRLINE)
+        };
+        ui.painter().rect_stroke(boxed, radius::SEGMENT, outline, egui::StrokeKind::Inside);
 
         if shown.changed {
             self.edited.insert(serial);
@@ -337,8 +359,8 @@ fn field(ui: &mut egui::Ui, id: egui::Id, text: &mut String, highlight: Option<H
         .id(id)
         .font(font)
         .text_color(color::TEXT_PRIMARY)
-        .frame(egui::Frame::NONE)
-        .margin(margin)
+        // The margin goes in the frame: egui ignores TextEdit::margin once a frame is given.
+        .frame(egui::Frame::NONE.inner_margin(margin))
         .desired_width(f32::INFINITY)
         .desired_rows(rows)
         .layouter(&mut layouter)
@@ -425,7 +447,8 @@ mod tests {
     /// One frame of the editor, with the command given first as the Library does.
     fn frame(ctx: &egui::Context, time: f64, text: &mut String, item: Option<Item>, events: Vec<egui::Event>) -> egui::FullOutput {
         let input = egui::RawInput { time: Some(time), events, ..Default::default() };
-        let mut editor = Editor::default();
+        // A new editor each frame, for an opening already shown: a first showing moves the caret.
+        let mut editor = Editor { shown: HashSet::from([1]), ..Editor::default() };
         let mut output = ctx.run_ui(input, |ui| {
             if let Some(item) = item {
                 command(ui, id(1), item, &Copied);

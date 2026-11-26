@@ -68,6 +68,8 @@ const ABOUT: ui_kit::widgets::AboutInfo = ui_kit::widgets::AboutInfo {
 
 /// The root window's state.
 pub struct PrompterApp {
+    /// The developer switch [`view::SHOW_IN_CAPTURE_VAR`]: nothing is kept out of captures.
+    show_in_capture: bool,
     /// False when the Windows 11 check failed: only the dialog is shown, then the app exits.
     supported: bool,
     alpha: AlphaInUse,
@@ -127,11 +129,16 @@ impl PrompterApp {
             }),
             None => Err(String::new()),
         };
-        Self { instance: Some(instance), prefs, ..Self::with_library(os_check.is_ok(), alpha, workspace) }
+        let show_in_capture = view::show_in_capture(std::env::var_os(view::SHOW_IN_CAPTURE_VAR).as_deref());
+        if show_in_capture {
+            log::warn!("developer switch {} is on: no window is excluded from capture", view::SHOW_IN_CAPTURE_VAR);
+        }
+        Self { show_in_capture, instance: Some(instance), prefs, ..Self::with_library(os_check.is_ok(), alpha, workspace) }
     }
 
     fn with_library(supported: bool, alpha: AlphaInUse, workspace: Result<Workspace, String>) -> Self {
         Self {
+            show_in_capture: false,
             supported,
             alpha,
             view: None,
@@ -185,7 +192,9 @@ impl PrompterApp {
         }
         self.root_find_frames -= 1;
         if let Some(window) = NativeWindow::find_own_window(ROOT_TITLE) {
-            log_failure("exclude_from_capture on the Library", window.exclude_from_capture());
+            if !self.show_in_capture {
+                log_failure("exclude_from_capture on the Library", window.exclude_from_capture());
+            }
             log::info!("Library excluded from capture: {}", window.status().excluded);
             self.root_window = Some(window);
             self.root_find_frames = 0;
@@ -213,7 +222,7 @@ impl PrompterApp {
             Item::Exit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Item::ShowView if self.view.is_none() => {
                 self.last_view_number += 1;
-                self.view = Some(FloatingView::new(self.last_view_number, self.monitor.map(view::default_position)));
+                self.view = Some(FloatingView::new(self.last_view_number, self.monitor.map(view::default_position), self.show_in_capture));
             }
             Item::HideView => self.view = None,
             Item::ClickThrough => self.click_through = !self.click_through,
@@ -506,7 +515,7 @@ impl PrompterApp {
         });
         self.menu_clipboard.watch(ui.ctx(), self.clipboard.as_ref(), edit_menu_open.get() || self.editor_menu_open);
 
-        let capture = capture_label(self.view.as_ref().map(|view| view.status()));
+        let capture = capture_label(self.show_in_capture, self.view.as_ref().map(|view| view.status()));
         let mut items = vec!["Ready"];
         items.extend(capture);
         ui.scope_builder(egui::UiBuilder::new().max_rect(status.shrink2(egui::vec2(space::SCALE_8, 0.0))), |ui| {
@@ -985,8 +994,12 @@ pub(crate) fn empty_state(ui: &mut egui::Ui, caption: &str) {
 }
 
 /// The status bar's capture text, or `None` with no view open. `Some(None)` is an open view whose
-/// window has not been found, so nothing excludes it yet.
-fn capture_label(view: Option<Option<ViewStatus>>) -> Option<&'static str> {
+/// window has not been found, so nothing excludes it yet. With the developer switch, `dev`, the
+/// text shows with or without a view.
+fn capture_label(dev: bool, view: Option<Option<ViewStatus>>) -> Option<&'static str> {
+    if dev {
+        return Some("Visible to capture (dev)");
+    }
     view.map(|status| if status.is_some_and(|status| status.excluded) { "Hidden from capture" } else { "Visible to capture" })
 }
 
@@ -1110,10 +1123,13 @@ mod tests {
     #[test]
     fn the_status_bar_says_whether_the_view_is_hidden_from_capture() {
         let hidden = ViewStatus { excluded: true, ..Default::default() };
-        assert_eq!(capture_label(None), None);
-        assert_eq!(capture_label(Some(None)), Some("Visible to capture"));
-        assert_eq!(capture_label(Some(Some(ViewStatus::default()))), Some("Visible to capture"));
-        assert_eq!(capture_label(Some(Some(hidden))), Some("Hidden from capture"));
+        assert_eq!(capture_label(false, None), None);
+        assert_eq!(capture_label(false, Some(None)), Some("Visible to capture"));
+        assert_eq!(capture_label(false, Some(Some(ViewStatus::default()))), Some("Visible to capture"));
+        assert_eq!(capture_label(false, Some(Some(hidden))), Some("Hidden from capture"));
+        for view in [None, Some(Some(hidden))] {
+            assert_eq!(capture_label(true, view), Some("Visible to capture (dev)"));
+        }
     }
 
     /// The commands the root window gets for a message from another copy.

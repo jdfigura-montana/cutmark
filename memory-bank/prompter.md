@@ -8,7 +8,7 @@
 ## Done
 - Phase 1 (V4 passed): DX12 (PreMultiplied on JD's PC), one Floating view, white backing fix (JD approved), Library shell. Minimum 900 x 480.
 - Phase 2, pending JD's check: C1 to C3b core; C4 to C5 app (views will share renderer.rs).
-- Phase 3: E1 to E4 core and platform; E5 wired E1 to E3, file drop; E6 tabs, favorites, folders; E7 drags, multi-select, tab menu items; E8 styled editor.
+- Phase 3: E1 to E4 core and platform; E5 wired E1 to E3, file drop; E6 tabs, favorites, folders; E7 drags, multi-select, tab menu items; E8 styled editor; E8b editor look.
 
 ## Platform (E1)
 - ViewWindow::cursor_position (E5, JD approved): winit gives no pointer position during a file drag.
@@ -28,27 +28,30 @@
 - Not read: .docx styles.xml (bold, italic or lists set only by a style), .odt paragraph-style bold or italic, automatic numbers of .docx and .odt headings. Table paragraphs are kept.
 
 ## App
+- Dev switch (screenshots): CUTMARK_PROMPTER_SHOW_IN_CAPTURE=1 skips capture exclusion. Off by default.
+- E8b: "no editor" meant it looked read-only. JD chose a box, plus caret at top and focus on a tab's first showing only.
+- TextEdit::margin is ignored once .frame() is set: put the margin in the frame.
 - E8: markup.rs uses pulldown-cmark (JD approved); keep its options and cue rules in step with script.rs. Show Markdown is in editor.txt.
-- Typing at 10,301 words (release, headless): 2.0 ms median, 2.9 p95; old editor 0.7. Test typing_time (ignored).
+- Typing, 10,301 words (release, headless): 2.0 ms median, 2.9 p95. Test typing_time (ignored).
 - Open: wrapped list rows have no hanging indent (egui has none).
 - Data folder: BaseDirs config_dir + Cutmark\prompter (not ProjectDirs).
-- Edit menu picks run a frame late (a click takes focus) as injected events.
+- Edit menu picks run a frame late, as injected events.
 - Autosave runs in App::logic. A failed save retries every 500 ms with one toast. A failed save on close cancels the close once.
 - egui-winit sends Ctrl+V as Event::Paste, no key press; with no clipboard text, only V's release. editor::PasteKeys pastes on it.
-- Tabs: serial keys each tab's egui state. LRU order is not stored: restored tabs count left to right, active last.
+- Tabs: serial keys egui state. LRU order is not stored: restored tabs count left to right, active last.
 - Copies go through app.rs write_copies; tests fake it.
 - Esc clears egui focus before the frame, so find.rs notes focus after each frame.
 - Preview follows the cursor's block only (a tall block shows from its top). Not remembered across launches. About 208 px of text at default size.
-- UI tests: app/library_tests.rs. Panel: Unfiled first (even empty, if folders exist), then store order. A drag starts at 4 px (egui clicks to 6). Shift+F10 opens a row's menu. No folder moves while filtering; no edge scroll.
+- Panel: Unfiled first (even empty, if folders exist), then store order. A drag starts at 4 px (egui clicks to 6). Shift+F10 opens a row's menu. No folder moves while filtering; no edge scroll.
 - Not done: stats bar.
 - Open: Unfiled's collapsed state is not saved. Live tabs can still close (see Notes).
-- Untimed on long scripts: Find, preview, Snapshots, rich paste.
+- Untimed on long scripts: Find, preview, Snapshots, paste.
 
 ## Next
-- E8 by hand: look, click, double-click, IME.
+- E8 by hand: click, double-click, IME.
 - JD's Phase 2 check; E5 check: second launch focuses the first window; paste from Google Docs, Word, a browser.
 - By hand: E7 drags, cursors, wheel, Shift+F10; Explorer drop (also scaled); Word, Google Docs, LibreOffice imports; E6 tabs, stars, tab keys, HTML-only Ctrl+V, relaunch; preview, Snapshots, dialogs, menus, empty and image Paste, Ctrl+Shift+F, autosave on switch and exit; see-through, flash on open (not ruled out), other monitor or DPI, lock and sleep, minimized scroll, OBS capture.
-- Open: no Preview menu item; most shortcuts outside Edit missing; About notices hand-written.
+- Open: no Preview menu item; most shortcuts outside Edit missing; About notices by hand.
 ## White layer
 - The view's GDI surface is opaque white after a show, under the DirectComposition visual (painter unknown), only over the area present at show.
 - PatBlt BLACKNESS on the window DC fixes it (class brush is 0), not on a hidden window. An outside hide and show needs a new clear; the once-a-second read-back catches it.
@@ -60,7 +63,6 @@
 - egui-winit 0.36.2 ignores StartDrag without focus, so the view moves itself with OuterPosition.
 - egui-winit sends Ctrl+Alt+C as Event::Copy (see app.rs).
 - The root viewport must be transparent or egui-wgpu uses alpha Auto for every viewport. clear_color keeps the Library opaque.
-- Screenshots need a temporary build with capture exclusion off.
 - Shown alpha mode copies egui-wgpu's rule; recheck on upgrade.
 - "Primary monitor" size is the Library's monitor. os::OsError is not PlatformError.
 - Untested: Windows 11 dialog on older Windows; Linux stubs.

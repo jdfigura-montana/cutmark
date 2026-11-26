@@ -317,7 +317,8 @@ impl Library {
     fn drop_mark(&self) -> Option<Rect> {
         fn search(shape: &egui::Shape) -> Option<Rect> {
             match shape {
-                egui::Shape::Rect(painted) if painted.stroke.width == DROP_STROKE => Some(painted.rect),
+                // With a fill: the editor's focus outline is as heavy, and has none.
+                egui::Shape::Rect(painted) if painted.stroke.width == DROP_STROKE && painted.fill != egui::Color32::TRANSPARENT => Some(painted.rect),
                 egui::Shape::Vec(shapes) => shapes.iter().find_map(search),
                 _ => None,
             }
@@ -1425,7 +1426,7 @@ const TWO_LINES: &str = "**first** line\n\n**second** line";
 #[test]
 fn syntax_shows_on_the_line_the_cursor_moves_to() {
     let mut library = Library::with_script(TWO_LINES);
-    assert!(is_hidden(&library, 0) && is_hidden(&library, 16), "no line shows its syntax before there is a cursor");
+    assert!(!is_hidden(&library, 0) && is_hidden(&library, 16), "the cursor starts on the first line");
     let at = character_at(&library, 4);
     library.click(at, PointerButton::Primary);
     assert!(!is_hidden(&library, 0) && is_hidden(&library, 16));
@@ -1560,7 +1561,8 @@ fn show_markdown_in_the_view_menu_shows_every_marker_and_is_remembered() {
     library.pick("View", Item::ShowMarkdown);
     library.restart();
     assert!(!library.app.menu_state().show_markdown);
-    assert!(is_hidden(&library, 0) && is_hidden(&library, 16));
+    // The first line has the caret, as at any launch.
+    assert!(!is_hidden(&library, 0) && is_hidden(&library, 16));
 }
 
 /// About 10,000 words with each Markdown and cue form the editor styles.
@@ -1619,4 +1621,70 @@ fn typing_time_on_10_000_words() {
     let idle = timed(&mut |_| Vec::new());
     println!("{words} words, {} bytes\ntyping: {typing}\nidle:   {idle}", text.len());
     assert!(library.script().len() > text.len());
+}
+
+/// The outline of the editor's box as last painted, and whether the box is filled as a field.
+fn editor_box(library: &Library) -> (bool, Option<egui::Stroke>) {
+    // The box is the large rectangle in the middle column.
+    let at = egui::pos2(520.0, 420.0);
+    let boxes = || {
+        library.shapes.iter().filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Rect(shape) if shape.rect.contains(at) && shape.rect.width() < 520.0 => Some(shape),
+            _ => None,
+        })
+    };
+    let filled = boxes().any(|shape| shape.fill == ui_kit::tokens::color::BG_CONTROL);
+    (filled, boxes().find(|shape| shape.fill == egui::Color32::TRANSPARENT && !shape.stroke.is_empty()).map(|shape| shape.stroke))
+}
+
+/// The text the editor painted last, with the color of its first character.
+fn painted_start(library: &Library) -> Option<egui::Color32> {
+    library.shapes.iter().find_map(|clipped| match &clipped.shape {
+        egui::Shape::Text(shape) if shape.galley.job.text.starts_with("# Title") => Some(shape.galley.job.sections[0].format.color),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_script_at_launch_looks_like_a_field_being_typed_in() {
+    let mut library = Library::with_script(
+        "# Title
+
+words",
+    );
+    // As at the next launch: the tab comes back from the disk, and nothing is clicked.
+    library.app.workspace.as_mut().unwrap().flush().unwrap();
+    library.ctx = egui::Context::default();
+    ui_kit::apply(&library.ctx);
+    library.app = PrompterApp::with_library(true, AlphaInUse::default(), Ok(Workspace::new(Store::open(&library.folder).unwrap())));
+    library.settle();
+
+    let id = library.editor_id();
+    assert_eq!(library.focused(), Some(id));
+    let caret = egui::text_edit::TextEditState::load(&library.ctx, id).unwrap().cursor.char_range().unwrap();
+    assert_eq!((caret.primary.index.0, caret.is_empty()), (0, true));
+    // The caret's line shows its Markdown, dimmed.
+    assert_eq!(painted_start(&library), Some(ui_kit::tokens::color::TEXT_TERTIARY));
+    let accent = ui_kit::Theme::get(&library.ctx).accent.accent;
+    assert_eq!(editor_box(&library), (true, Some(egui::Stroke::new(editor::FOCUS_STROKE, accent))));
+
+    // Without the keyboard it is still a box, with a hairline.
+    library.ctx.memory_mut(|memory| memory.surrender_focus(id));
+    library.settle();
+    let hairline = egui::Stroke::new(editor::FIELD_STROKE, ui_kit::tokens::color::STROKE_HAIRLINE);
+    assert_eq!(editor_box(&library), (true, Some(hairline)));
+}
+
+#[test]
+fn a_quote_bar_is_drawn_inside_the_editors_box() {
+    let library = Library::with_script("> quoted");
+    let filled = |fill: egui::Color32, wanted: fn(Rect) -> bool| {
+        library.shapes.iter().find_map(|clipped| match &clipped.shape {
+            egui::Shape::Rect(shape) if shape.fill == fill && wanted(shape.rect) => Some(shape.rect),
+            _ => None,
+        })
+    };
+    let boxed = filled(ui_kit::tokens::color::BG_CONTROL, |rect| rect.height() > 300.0 && rect.width() < 520.0).unwrap();
+    let bar = filled(ui_kit::tokens::color::TEXT_TERTIARY, |rect| rect.width() == 2.0).unwrap();
+    assert!(boxed.contains_rect(bar), "the bar at {bar:?} is outside the box {boxed:?}");
 }

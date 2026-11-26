@@ -1,6 +1,7 @@
 //! The Floating view (spec "Floating view"): one transparent immediate viewport that scrolls
 //! sample text. A spike: the script, the widgets and the saved geometry come later.
 
+use std::ffi::OsStr;
 use std::time::{Duration, Instant};
 
 use egui::{Align2, Color32, Pos2, Rect, Sense, Vec2, ViewportBuilder, ViewportCommand, ViewportId};
@@ -24,6 +25,15 @@ const RECHECK_FRAMES: u8 = 5;
 /// unlock, so this is what catches a repaint from those, or from anything else.
 const HEALTH_CHECK: Duration = Duration::from_secs(1);
 
+/// The developer switch: set to 1, no window is kept out of screen captures, so that the app
+/// can be screenshotted. Never on by default.
+pub const SHOW_IN_CAPTURE_VAR: &str = "CUTMARK_PROMPTER_SHOW_IN_CAPTURE";
+
+/// True if `value`, that of [`SHOW_IN_CAPTURE_VAR`], turns the developer switch on.
+pub fn show_in_capture(value: Option<&OsStr>) -> bool {
+    value.is_some_and(|value| value == "1")
+}
+
 /// What a view's window sits on. A change means Windows may have repainted it.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct Placement {
@@ -45,6 +55,8 @@ pub struct FloatingView {
     /// Where in the drag bar the pointer took hold, in view coordinates.
     grab: Option<Pos2>,
     shown_at: Instant,
+    /// The developer switch: the window is not excluded from capture.
+    show_in_capture: bool,
 }
 
 /// Where a new view goes: centered across the primary monitor and on the middle of its top third,
@@ -55,7 +67,7 @@ pub fn default_position(monitor: Vec2) -> Pos2 {
 
 impl FloatingView {
     /// `number` must differ from that of every other open view: the window is found by its title.
-    pub fn new(number: u32, position: Option<Pos2>) -> Self {
+    pub fn new(number: u32, position: Option<Pos2>, show_in_capture: bool) -> Self {
         let now = Instant::now();
         Self {
             number,
@@ -68,6 +80,7 @@ impl FloatingView {
             checked_at: now,
             grab: None,
             shown_at: now,
+            show_in_capture,
         }
     }
 
@@ -114,7 +127,7 @@ impl FloatingView {
                 self.recheck = RECHECK_FRAMES;
             }
             if check_due(self.recheck, self.checked_at.elapsed()) {
-                self.status = repair(window);
+                self.status = repair(window, self.show_in_capture);
                 self.checked_at = Instant::now();
                 if self.recheck > 0 {
                     self.recheck -= 1;
@@ -130,7 +143,9 @@ impl FloatingView {
             // First, as this frame has not been presented yet. Every show makes a new window, so
             // this runs on every show.
             log_failure("clear_backing", window.clear_backing());
-            log_failure("exclude_from_capture", window.exclude_from_capture());
+            if !self.show_in_capture {
+                log_failure("exclude_from_capture", window.exclude_from_capture());
+            }
             log_failure("set_no_activate", window.set_no_activate());
             log_failure("reassert_topmost", window.reassert_topmost());
             self.window = Some(window);
@@ -226,16 +241,17 @@ fn check_due(recheck: u8, since_last: Duration) -> bool {
 /// Reads the flags back and re-applies any that dropped. winit rewrites the whole extended style
 /// when one of its window flags changes, which removes the no-activate and tool-window styles;
 /// Windows fills the backing white when it shows a window.
-fn repair(window: NativeWindow) -> ViewStatus {
+fn repair(window: NativeWindow, show_in_capture: bool) -> ViewStatus {
     let status = window.status();
-    if status.excluded && status.no_activate && status.backing_is_clear {
+    let exclude = !status.excluded && !show_in_capture;
+    if !exclude && status.no_activate && status.backing_is_clear {
         return status;
     }
     log::info!("view flags dropped, re-applying: {status:?}");
     if !status.no_activate {
         log_failure("set_no_activate", window.set_no_activate());
     }
-    if !status.excluded {
+    if exclude {
         log_failure("exclude_from_capture", window.exclude_from_capture());
     }
     if !status.backing_is_clear {
@@ -254,6 +270,14 @@ pub fn log_failure(call: &str, result: prompter_platform::Result<()>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_1_turns_the_capture_switch_on() {
+        assert!(show_in_capture(Some(OsStr::new("1"))));
+        for value in [None, Some(""), Some("0"), Some("true")] {
+            assert!(!show_in_capture(value.map(OsStr::new)), "{value:?}");
+        }
+    }
 
     #[test]
     fn a_settling_view_is_read_every_frame_then_once_a_second() {
