@@ -71,6 +71,8 @@ struct Library {
     size: egui::Vec2,
     /// What the last frame painted.
     shapes: Vec<egui::epaint::ClippedShape>,
+    /// The cursor the last frame asked for.
+    cursor: egui::CursorIcon,
     folder: PathBuf,
 }
 
@@ -98,7 +100,8 @@ impl Library {
         app.clipboard = Box::new(clipboard.clone());
         let frame = eframe::Frame::_new_kittest();
         let size = egui::vec2(1100.0, 720.0);
-        let mut library = Self { ctx, app, frame, time: 0.0, clipboard, hovered: Vec::new(), dropped: Vec::new(), size, shapes: Vec::new(), folder };
+        let (hovered, dropped, shapes, cursor) = (Vec::new(), Vec::new(), Vec::new(), egui::CursorIcon::Default);
+        let mut library = Self { ctx, app, frame, time: 0.0, clipboard, hovered, dropped, size, shapes, cursor, folder };
         library.settle();
         library
     }
@@ -117,7 +120,86 @@ impl Library {
         output.textures_delta.clear();
         let left_to_egui = output.platform_output.commands.iter().any(|command| matches!(command, egui::OutputCommand::CopyText(_)));
         assert!(!left_to_egui, "a copy did not go through the app's clipboard");
+        self.cursor = output.platform_output.cursor_icon;
         self.shapes = output.shapes;
+    }
+
+    /// A Library with scripts "Test", the open one, "Alpha" and "Beta", all unfiled, and the
+    /// empty folders "Ads" and "Clips".
+    fn with_folders() -> Self {
+        let mut library = Self::with_script("words");
+        library.add_script("Alpha", "a");
+        library.add_script("Beta", "b");
+        let workspace = library.app.workspace.as_mut().unwrap();
+        workspace.create_folder("Ads").unwrap();
+        workspace.create_folder("Clips").unwrap();
+        library.app.script_action(&library.ctx.clone(), Action::Open(library.id_of("Test")));
+        library.settle();
+        library
+    }
+
+    /// Puts the primary button down at `at`, and keeps it down.
+    fn hold(&mut self, at: Pos2) {
+        self.step(vec![Event::PointerMoved(at)]);
+        self.step(vec![Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE }]);
+    }
+
+    fn move_to(&mut self, at: Pos2) {
+        self.step(vec![Event::PointerMoved(at)]);
+        self.step(Vec::new());
+    }
+
+    fn let_go(&mut self, at: Pos2) {
+        self.step(vec![Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE }]);
+        self.settle();
+    }
+
+    fn drag_row(&mut self, from: &str, to: &str) {
+        let (from, to) = (self.row(from).center(), self.row(to).center());
+        self.hold(from);
+        self.move_to(to);
+        self.let_go(to);
+    }
+
+    /// A click with Ctrl or Shift held.
+    fn click_holding(&mut self, at: Pos2, modifiers: Modifiers) {
+        let event = |pressed| Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers };
+        self.step(vec![Event::ModifiersChanged(modifiers), Event::PointerMoved(at)]);
+        self.step(vec![event(true)]);
+        self.step(vec![event(false)]);
+        self.step(vec![Event::ModifiersChanged(Modifiers::NONE)]);
+        self.settle();
+    }
+
+    fn folder_of(&self, title: &str) -> Option<String> {
+        self.filed().into_iter().find(|(other, _)| other == title).unwrap().1
+    }
+
+    fn folders(&self) -> Vec<String> {
+        self.workspace().store().library().folders.clone()
+    }
+
+    /// Where the last frame drew the line showing where a dragged folder would go.
+    fn insertion_line(&self) -> Option<f32> {
+        let accent = ui_kit::Theme::get(&self.ctx).accent.accent;
+        self.shapes.iter().find_map(|clipped| match &clipped.shape {
+            egui::Shape::LineSegment { points, stroke } if stroke.width == 2.0 && stroke.color == accent => Some(points[0].y),
+            _ => None,
+        })
+    }
+
+    /// Moves the keyboard with Tab to the widget around `at`.
+    fn tab_to(&mut self, at: Pos2) {
+        self.ctx.memory_mut(|memory| memory.stop_text_input());
+        for _ in 0..80 {
+            self.key(Modifiers::NONE, Key::Tab);
+            let focused = self.focused().and_then(|id| self.ctx.read_response(id));
+            // The row or header, not a row's star or anything larger around it.
+            if focused.is_some_and(|response| response.rect.contains(at) && response.rect.width() > 24.0 && response.rect.height() < 40.0) {
+                return;
+            }
+        }
+        panic!("Tab never reached {at:?}");
     }
 
     /// Ctrl+V or Ctrl+Shift+V as the window reports it: for the press, no key, only a paste
@@ -1029,4 +1111,275 @@ fn the_release_of_v_pastes_only_for_a_press_that_sent_nothing() {
     library.key(CTRL, Key::F);
     library.press_paste(CTRL);
     assert_eq!(library.script(), "**html**v**only****only**");
+}
+
+#[test]
+fn a_dragged_script_row_moves_to_the_folder_header_or_unfiled_it_is_dropped_on() {
+    let mut library = Library::with_folders();
+    let [from, ads] = ["Alpha", "Ads"].map(|text| library.row(text).center());
+    library.hold(from);
+
+    // Over the editor there is nowhere to drop.
+    library.move_to(egui::pos2(500.0, 300.0));
+    assert_eq!(library.cursor, egui::CursorIcon::NotAllowed);
+    assert_eq!(library.drop_mark(), None);
+    // Nor on a script's row, or on the header of the folder it is in.
+    for text in ["Beta", "Unfiled"] {
+        library.move_to(library.row(text).center());
+        assert_eq!((library.cursor, library.drop_mark()), (egui::CursorIcon::NotAllowed, None), "{text}");
+    }
+
+    // The header lights up across the panel, and the ghost follows beside the pointer.
+    let on_ads = egui::pos2(200.0, ads.y);
+    library.move_to(on_ads);
+    assert_eq!(library.cursor, egui::CursorIcon::Grabbing);
+    let mark = library.drop_mark().unwrap();
+    assert!(mark.contains(ads) && mark.contains(on_ads) && mark.height() < 40.0, "{mark:?}");
+    let beside = Rect::from_min_size(on_ads, egui::vec2(60.0, 40.0));
+    assert!(library.find_text_in("Alpha", beside).is_some(), "no ghost");
+    assert_eq!(library.folder_of("Alpha"), None, "moved before the drop");
+
+    library.let_go(on_ads);
+    assert_eq!(library.folder_of("Alpha").as_deref(), Some("Ads"));
+    assert_eq!((library.cursor, library.drop_mark()), (egui::CursorIcon::Default, None));
+    assert_eq!(library.active_title(), "Test", "a drag opened its script");
+
+    library.drag_row("Alpha", "Unfiled");
+    assert_eq!(library.folder_of("Alpha"), None);
+}
+
+#[test]
+fn a_press_that_moves_less_than_four_px_is_a_click() {
+    let mut library = Library::with_folders();
+    let at = library.row("Alpha").center();
+    library.hold(at);
+    library.move_to(at + egui::vec2(3.0, 0.0));
+    assert_eq!(library.cursor, egui::CursorIcon::Default);
+    library.let_go(at + egui::vec2(3.0, 0.0));
+    assert_eq!(library.active_title(), "Alpha");
+
+    // A long press is still one. egui alone would drop it.
+    let at = library.row("Beta").center();
+    library.hold(at);
+    for _ in 0..12 {
+        library.step(Vec::new());
+    }
+    library.let_go(at);
+    assert_eq!(library.active_title(), "Beta");
+
+    // From 4 px it is a drag, though egui would still call 5 px a click.
+    let at = library.row("Test").center();
+    library.hold(at);
+    library.move_to(at + egui::vec2(5.0, 0.0));
+    assert_eq!(library.cursor, egui::CursorIcon::NotAllowed);
+    library.let_go(at + egui::vec2(5.0, 0.0));
+    assert_eq!(library.active_title(), "Beta");
+
+    // The same on a folder header, which a click closes.
+    let at = library.row("Ads").center();
+    library.hold(at);
+    library.move_to(at + egui::vec2(5.0, 0.0));
+    library.let_go(at + egui::vec2(5.0, 0.0));
+    assert!(library.workspace().store().library().collapsed_folders.is_empty());
+    library.hold(at);
+    library.move_to(at + egui::vec2(3.0, 0.0));
+    library.let_go(at + egui::vec2(3.0, 0.0));
+    assert_eq!(library.workspace().store().library().collapsed_folders, ["Ads"]);
+}
+
+#[test]
+fn esc_cancels_a_drag_and_does_nothing_else() {
+    let mut library = Library::with_folders();
+    library.key(CTRL, Key::F);
+    let [from, ads] = ["Alpha", "Ads"].map(|text| library.row(text).center());
+    library.hold(from);
+    library.move_to(ads);
+    assert!(library.drop_mark().is_some());
+    library.key(Modifiers::NONE, Key::Escape);
+    assert_eq!((library.cursor, library.drop_mark()), (egui::CursorIcon::Default, None));
+    assert!(library.app.find.is_open(), "Esc went past the drag");
+    // With the button still down, moving does not start again.
+    library.move_to(ads + egui::vec2(20.0, 0.0));
+    assert_eq!(library.drop_mark(), None);
+    library.let_go(ads);
+    assert_eq!(library.folder_of("Alpha"), None);
+    assert!(library.workspace().store().library().collapsed_folders.is_empty());
+
+    // Back on the pressed row, the release is no click.
+    library.hold(from);
+    library.move_to(ads);
+    library.key(Modifiers::NONE, Key::Escape);
+    library.move_to(from);
+    library.let_go(from);
+    assert_eq!(library.active_title(), "Test");
+
+    // The next drag works.
+    library.drag_row("Alpha", "Ads");
+    assert_eq!(library.folder_of("Alpha").as_deref(), Some("Ads"));
+}
+
+#[test]
+fn a_drag_ends_without_a_drop_when_the_window_loses_focus_or_a_dialog_opens() {
+    let mut library = Library::with_folders();
+    let [from, ads] = ["Alpha", "Ads"].map(|text| library.row(text).center());
+    library.hold(from);
+    library.move_to(ads);
+    library.step(vec![Event::WindowFocused(false)]);
+    library.step(vec![Event::WindowFocused(true)]);
+    library.let_go(ads);
+    assert_eq!(library.folder_of("Alpha"), None);
+
+    library.hold(from);
+    library.move_to(ads);
+    library.app.about_open = true;
+    library.settle();
+    assert_eq!((library.cursor, library.drop_mark()), (egui::CursorIcon::Default, None));
+    library.let_go(ads);
+    assert_eq!(library.folder_of("Alpha"), None);
+}
+
+#[test]
+fn selected_scripts_drag_together() {
+    let mut library = Library::with_folders();
+    let row = |library: &Library, title: &str| library.row(title).center();
+    library.click_holding(row(&library, "Beta"), CTRL);
+    assert_eq!(library.active_title(), "Test", "Ctrl+click opened a script");
+
+    // "Test" is open, so it is selected with "Beta".
+    library.hold(row(&library, "Beta"));
+    library.move_to(row(&library, "Ads"));
+    assert!(library.find_text("2 scripts").is_some());
+    library.let_go(row(&library, "Ads"));
+    let ads = Some("Ads".to_owned());
+    assert_eq!(library.filed(), [("Alpha".to_owned(), None), ("Beta".to_owned(), ads.clone()), ("Test".to_owned(), ads.clone())]);
+
+    // Listed now: Alpha under Unfiled, then Beta and Test under Ads. A Ctrl+click on Alpha
+    // anchors there, and a Shift+click on Beta takes the range.
+    library.click_holding(row(&library, "Alpha"), CTRL);
+    library.click_holding(row(&library, "Beta"), Modifiers::SHIFT);
+    assert_eq!(library.active_title(), "Test", "Shift+click opened a script");
+    library.drag_row("Alpha", "Clips");
+    let clips = Some("Clips".to_owned());
+    assert_eq!(library.filed(), [("Alpha".to_owned(), clips.clone()), ("Beta".to_owned(), clips.clone()), ("Test".to_owned(), ads)]);
+
+    // A row outside the selection drags alone.
+    library.drag_row("Test", "Unfiled");
+    assert_eq!(library.folder_of("Test"), None);
+    assert_eq!(library.folder_of("Beta"), clips);
+
+    // A plain click goes back to one.
+    library.click_holding(row(&library, "Alpha"), CTRL);
+    library.click(row(&library, "Beta"), PointerButton::Primary);
+    assert_eq!(library.active_title(), "Beta");
+    library.drag_row("Beta", "Ads");
+    assert_eq!((library.folder_of("Beta").as_deref(), library.folder_of("Alpha")), (Some("Ads"), clips));
+}
+
+#[test]
+fn the_row_menu_moves_the_whole_selection_or_the_one_row_outside_it() {
+    let mut library = Library::with_folders();
+    library.click_holding(library.row("Beta").center(), CTRL);
+    library.click(library.row("Test").center(), PointerButton::Secondary);
+    library.click_text("Move 2 scripts to folder");
+    // The submenu's "Ads" is painted over the folder's header.
+    library.click_text("Ads");
+    assert_eq!((library.folder_of("Test").as_deref(), library.folder_of("Beta").as_deref()), (Some("Ads"), Some("Ads")));
+    assert_eq!(library.folder_of("Alpha"), None);
+
+    library.click(library.row("Alpha").center(), PointerButton::Secondary);
+    assert!(library.find_text("Move to folder").is_some());
+}
+
+#[test]
+fn a_dragged_folder_header_reorders_the_folders() {
+    let mut library = Library::with_folders();
+    library.app.workspace.as_mut().unwrap().create_folder("Bits").unwrap();
+    library.settle();
+    // The panel keeps the library's order, with Unfiled first.
+    let tops = ["Unfiled", "Ads", "Clips", "Bits"].map(|name| library.row(name).top());
+    assert!(tops.is_sorted(), "{tops:?}");
+
+    let [bits, ads, unfiled] = ["Bits", "Ads", "Unfiled"].map(|name| library.row(name));
+    library.hold(bits.center());
+    // Unfiled stays first.
+    library.move_to(unfiled.center());
+    assert_eq!((library.cursor, library.insertion_line()), (egui::CursorIcon::NotAllowed, None));
+    let target = ads.center() - egui::vec2(0.0, 3.0);
+    library.move_to(target);
+    assert_eq!(library.cursor, egui::CursorIcon::Grabbing);
+    let line = library.insertion_line().unwrap();
+    assert!(line > unfiled.bottom() && line < ads.top(), "{line} {unfiled:?} {ads:?}");
+    assert_eq!(library.drop_mark(), None);
+    library.let_go(target);
+    assert_eq!(library.folders(), ["Bits", "Ads", "Clips"]);
+    assert_eq!(library.insertion_line(), None);
+
+    // Below the last one.
+    let from = library.row("Bits").center();
+    library.hold(from);
+    library.move_to(egui::pos2(100.0, 600.0));
+    library.let_go(egui::pos2(100.0, 600.0));
+    assert_eq!(library.folders(), ["Ads", "Clips", "Bits"]);
+    assert!(library.workspace().store().library().collapsed_folders.is_empty());
+
+    // The favorites filter hides folders, so their order is left alone.
+    library.click(library.star("Alpha"), PointerButton::Primary);
+    library.drag_row("Alpha", "Ads");
+    library.click(library.star("Beta"), PointerButton::Primary);
+    library.drag_row("Beta", "Clips");
+    library.click_text("Favorites");
+    library.drag_row("Clips", "Ads");
+    assert_eq!(library.folders(), ["Ads", "Clips", "Bits"]);
+}
+
+#[test]
+fn the_keys_alone_move_a_script_through_its_row_menu() {
+    let mut library = Library::with_folders();
+    library.tab_to(library.row("Alpha").center());
+    library.key(Modifiers::SHIFT, Key::F10);
+    assert!(library.find_text("Move to folder").is_some(), "Shift+F10 opened no menu");
+    // Past the favorite, Rename and Duplicate items, then into the submenu.
+    for _ in 0..3 {
+        library.key(Modifiers::NONE, Key::ArrowDown);
+    }
+    library.key(Modifiers::NONE, Key::Enter);
+    // Unfiled is off, so the first folder has the keyboard. Down is the second.
+    library.key(Modifiers::NONE, Key::ArrowDown);
+    library.key(Modifiers::NONE, Key::Enter);
+    assert_eq!(library.folder_of("Alpha").as_deref(), Some("Clips"));
+    assert!(library.find_text("Move to folder").is_none(), "the menu is still open");
+}
+
+#[test]
+fn the_keys_alone_reorder_folders_through_the_header_menu() {
+    let mut library = Library::with_folders();
+    library.tab_to(library.row("Ads").center());
+    library.key(Modifiers::SHIFT, Key::F10);
+    assert!(library.find_text("Move down").is_some(), "Shift+F10 opened no menu");
+    // From Rename past Move up, which is off for the first folder.
+    library.key(Modifiers::NONE, Key::ArrowDown);
+    library.key(Modifiers::NONE, Key::Enter);
+    assert_eq!(library.folders(), ["Clips", "Ads"]);
+
+    // The pointer's menu has them too.
+    library.click(library.row("Ads").center(), PointerButton::Secondary);
+    library.click_text("Move up");
+    assert_eq!(library.folders(), ["Ads", "Clips"]);
+}
+
+#[test]
+fn the_tab_menu_items_do_what_the_tab_keys_do() {
+    let mut library = Library::with_script("words");
+    library.add_script("Two", "two");
+    library.add_script("Three", "three");
+    library.pick("View", Item::NextTab);
+    assert_eq!(library.active_title(), "Test");
+    library.pick("View", Item::PreviousTab);
+    assert_eq!(library.active_title(), "Three");
+    library.pick("File", Item::CloseTab);
+    assert_eq!(library.tab_titles(), ["Test", "Two"]);
+    assert_eq!(library.active_title(), "Two");
+    library.pick("File", Item::CloseTab);
+    assert!(!library.app.menu_state().several_tabs);
+    assert!(!Item::NextTab.enabled(library.app.menu_state()));
 }

@@ -302,6 +302,10 @@ impl Workspace {
         self.store.delete_folder(folder)
     }
 
+    pub fn move_folder(&mut self, folder: &str, to_index: usize) -> Result<()> {
+        self.store.move_folder(folder, to_index)
+    }
+
     pub fn set_favorite(&mut self, id: &str, favorite: bool) -> Result<()> {
         self.store.set_favorite(id, favorite)
     }

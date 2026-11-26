@@ -166,6 +166,7 @@ impl PrompterApp {
             view_open: self.view.is_some(),
             library_open: workspace.is_some(),
             script_open,
+            several_tabs: workspace.is_some_and(|workspace| workspace.tabs().len() > 1),
             editor: if script_open { self.editor.status() } else { Default::default() },
             clipboard_has_text: self.menu_clipboard.has_text(),
             clipboard_has_html: self.menu_clipboard.has_html(),
@@ -201,6 +202,9 @@ impl PrompterApp {
                 self.queued = Some(item);
                 ctx.request_repaint();
             }
+            Item::CloseTab => self.change_tabs(ctx, TabChange::CloseActive),
+            Item::NextTab => self.change_tabs(ctx, TabChange::Cycle { forward: true }),
+            Item::PreviousTab => self.change_tabs(ctx, TabChange::Cycle { forward: false }),
             Item::Exit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Item::ShowView if self.view.is_none() => {
                 self.last_view_number += 1;
@@ -256,7 +260,9 @@ impl PrompterApp {
         let result = match action {
             Action::Open(id) => workspace.open(&id),
             Action::Duplicate(id) => workspace.duplicate(&id),
-            Action::Move(id, folder) => workspace.move_to_folder(&id, folder.as_deref()),
+            // One at a time. A failure stops there, with the ones before it moved.
+            Action::Move(ids, folder) => ids.iter().try_for_each(|id| workspace.move_to_folder(id, folder.as_deref())),
+            Action::MoveFolder(folder, to_index) => workspace.move_folder(&folder, to_index),
             Action::SetFavorite(id, favorite) => workspace.set_favorite(&id, favorite),
             Action::SetSort(sort) => workspace.set_sort(sort),
             Action::SetCollapsed(folder, collapsed) => workspace.set_folder_collapsed(&folder, collapsed),
@@ -454,6 +460,9 @@ impl PrompterApp {
         }
         let command = self.queued.take();
         let modal = self.dialog.is_some() || self.appearance_open || self.about_open;
+        if modal {
+            self.scripts.cancel_drag();
+        }
         // Before the editor, which would take Tab and Ctrl+W for itself.
         if let Some(change) = (!modal).then(|| tab_shortcut(ui)).flatten() {
             self.change_tabs(ui.ctx(), change);
@@ -497,6 +506,9 @@ impl PrompterApp {
         self.file_drag(ui, scripts, modal);
         if ui_kit::widgets::show_toasts(ui.ctx()).is_some() {
             ui.ctx().request_repaint_after(TOAST_TICK);
+        }
+        if let Some(cursor) = self.scripts.drag_cursor() {
+            ui.ctx().set_cursor_icon(cursor);
         }
         self.held = ui.input(|i| i.modifiers);
     }
@@ -665,7 +677,7 @@ fn handle_instance_message(ctx: &egui::Context, message: &str) {
 }
 
 /// Marks what dragged files would be dropped on.
-fn mark_drop_target(ui: &egui::Ui, target: egui::Rect) {
+pub(crate) fn mark_drop_target(ui: &egui::Ui, target: egui::Rect) {
     let accent = ui_kit::Theme::get(ui.ctx()).accent.accent;
     let outline = egui::Stroke::new(DROP_STROKE, accent);
     ui.painter().rect(target, radius::SEGMENT, accent.gamma_multiply(DROP_TINT), outline, egui::StrokeKind::Inside);

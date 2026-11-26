@@ -12,6 +12,7 @@ pub enum Item {
     Duplicate,
     Delete,
     Snapshots,
+    CloseTab,
     Settings,
     Exit,
     Undo,
@@ -32,6 +33,8 @@ pub enum Item {
     HideView,
     ClickThrough,
     Outline,
+    NextTab,
+    PreviousTab,
     Appearance,
     Help,
     KeyboardShortcuts,
@@ -46,6 +49,8 @@ pub struct MenuState {
     /// False if the script library could not be opened.
     pub library_open: bool,
     pub script_open: bool,
+    /// More than one tab is open.
+    pub several_tabs: bool,
     /// All false with no script open.
     pub editor: editor::Status,
     pub clipboard_has_text: bool,
@@ -56,11 +61,16 @@ pub struct MenuState {
 pub const MENUS: [(&str, &[&[Item]]); 5] = [
     (
         "File",
-        &[&[Item::NewScript, Item::NewFolder, Item::Import, Item::Export, Item::Duplicate, Item::Delete, Item::Snapshots], &[Item::Settings], &[Item::Exit]],
+        &[
+            &[Item::NewScript, Item::NewFolder, Item::Import, Item::Export, Item::Duplicate, Item::Delete, Item::Snapshots],
+            &[Item::CloseTab],
+            &[Item::Settings],
+            &[Item::Exit],
+        ],
     ),
     ("Edit", &[&[Item::Undo, Item::Redo], &[Item::Cut, Item::Copy, Item::Paste, Item::PastePlain], &[Item::SelectAll, Item::FindInScript, Item::SearchAll]]),
     ("Script", &[&[Item::StartOrPause, Item::ResetToTop, Item::JumpToSection, Item::ToggleMode]]),
-    ("View", &[&[Item::Views, Item::ShowView, Item::HideView, Item::ClickThrough], &[Item::Outline], &[Item::Appearance]]),
+    ("View", &[&[Item::Views, Item::ShowView, Item::HideView, Item::ClickThrough], &[Item::Outline], &[Item::NextTab, Item::PreviousTab], &[Item::Appearance]]),
     ("Help", &[&[Item::Help, Item::KeyboardShortcuts, Item::Tour], &[Item::About]]),
 ];
 
@@ -81,6 +91,9 @@ impl Item {
             Self::Duplicate => "Duplicate",
             Self::Delete => "Delete",
             Self::Snapshots => "Snapshots",
+            Self::CloseTab => "Close tab",
+            Self::NextTab => "Next tab",
+            Self::PreviousTab => "Previous tab",
             Self::Settings => "Settings",
             Self::Exit => "Exit",
             Self::Undo => "Undo",
@@ -124,6 +137,9 @@ impl Item {
             Self::FindInScript => "Ctrl+F",
             Self::SearchAll => "Ctrl+Shift+F",
             Self::ClickThrough => "Ctrl+Alt+C",
+            Self::CloseTab => "Ctrl+W",
+            Self::NextTab => "Ctrl+Tab",
+            Self::PreviousTab => "Ctrl+Shift+Tab",
             _ => "",
         }
     }
@@ -135,7 +151,8 @@ impl Item {
             Self::ShowView => !state.view_open,
             Self::HideView => state.view_open,
             Self::NewScript | Self::NewFolder | Self::Import | Self::SearchAll => state.library_open,
-            Self::Export | Self::Duplicate | Self::Delete | Self::Snapshots | Self::FindInScript => state.script_open,
+            Self::Export | Self::Duplicate | Self::Delete | Self::Snapshots | Self::CloseTab | Self::FindInScript => state.script_open,
+            Self::NextTab | Self::PreviousTab => state.several_tabs,
             Self::Undo => state.editor.can_undo,
             Self::Redo => state.editor.can_redo,
             Self::Cut | Self::Copy => state.editor.has_selection,
@@ -175,9 +192,21 @@ mod tests {
     #[test]
     fn an_open_script_with_nothing_to_edit_enables_its_file_items_and_find() {
         use Item::*;
-        let expected =
-            [NewScript, NewFolder, Import, Export, Duplicate, Delete, Snapshots, Exit, FindInScript, SearchAll, ShowView, ClickThrough, Appearance, About];
+        let mut expected = vec![NewScript, NewFolder, Import, Export, Duplicate, Delete, Snapshots, CloseTab, Exit];
+        expected.extend([FindInScript, SearchAll, ShowView, ClickThrough, Appearance, About]);
         assert_eq!(enabled(false, true), expected);
+    }
+
+    #[test]
+    fn next_and_previous_tab_need_a_second_tab() {
+        use Item::*;
+        let one = MenuState { library_open: true, script_open: true, ..Default::default() };
+        let two = MenuState { several_tabs: true, ..one };
+        for item in [NextTab, PreviousTab] {
+            assert!(!item.enabled(one) && item.enabled(two), "{item:?}");
+        }
+        assert!(CloseTab.enabled(one));
+        assert_eq!([CloseTab, NextTab, PreviousTab].map(Item::chord), ["Ctrl+W", "Ctrl+Tab", "Ctrl+Shift+Tab"]);
     }
 
     #[test]
@@ -222,7 +251,7 @@ mod tests {
     #[test]
     fn every_item_from_the_spec_is_listed_once() {
         let counts: Vec<(&str, usize)> = MENUS.iter().map(|(title, groups)| (*title, groups.iter().map(|group| group.len()).sum())).collect();
-        assert_eq!(counts, [("File", 9), ("Edit", 9), ("Script", 4), ("View", 6), ("Help", 4)]);
+        assert_eq!(counts, [("File", 10), ("Edit", 9), ("Script", 4), ("View", 8), ("Help", 4)]);
         let items = all();
         for (index, item) in items.iter().enumerate() {
             assert!(!items[..index].contains(item), "{item:?} is listed twice");
