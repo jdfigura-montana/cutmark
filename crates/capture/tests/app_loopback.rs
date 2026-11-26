@@ -52,6 +52,7 @@ fn captures_ten_seconds_from_the_named_app() -> Result<(), Box<dyn Error>> {
     let span_s = first_stamp.map_or(0.0, |first| (last_end - first) as f64 / 10_000_000.0);
     println!("packets {packets}, audio {:.3} s over a {span_s:.3} s QPC span, peak {peak:.4}", frames as f64 / 48_000.0);
     println!("discontinuities {discontinuities}, stamps going backwards {backwards}, overflows {}, lost {}", capture.overflows(), capture.lost());
+    println!("instance pids {:?}, estimated timestamps {}", capture.instance_pids(), capture.estimated_timestamps());
     capture.stop();
     assert!(packets > 0, "no packet arrived");
     assert!(peak > 0.0, "only silence arrived; was the app playing?");

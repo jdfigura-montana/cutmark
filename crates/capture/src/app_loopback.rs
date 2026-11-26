@@ -56,8 +56,9 @@ pub struct AppLoopback {
     packets: Arc<AtomicU64>,
     overflows: Arc<AtomicU64>,
     lost: Arc<AtomicBool>,
+    estimated_timestamps: Arc<AtomicU64>,
     excluded_instances: usize,
-    total_instances: usize,
+    instance_pids: Vec<u32>,
 }
 
 /// Everything the capture thread shares with the AppLoopback handle.
@@ -82,6 +83,8 @@ struct ThreadState {
     overflows: Arc<AtomicU64>,
     /// Set when the capture ended by itself.
     lost: Arc<AtomicBool>,
+    /// Packets whose timestamp had to be estimated.
+    estimated_timestamps: Arc<AtomicU64>,
 }
 
 impl ThreadState {
@@ -102,11 +105,11 @@ impl AppLoopback {
     pub fn start(target: AppTarget, mode: LoopbackMode) -> Result<Self, CaptureError> {
         let mut table = process_table()?;
         fill_creation_times(&mut table, target.exe());
-        let mut pids: Vec<u32> = top_level_processes(&table, target.exe()).iter().map(|process| process.pid).collect();
-        let total_instances = pids.len();
-        if total_instances == 0 {
+        let instance_pids: Vec<u32> = top_level_processes(&table, target.exe()).iter().map(|process| process.pid).collect();
+        if instance_pids.is_empty() {
             return Err(CaptureError::Missing("no running process matches the app"));
         }
+        let mut pids = instance_pids.clone();
         let excluded_instances = match mode {
             LoopbackMode::Include => 0,
             LoopbackMode::Exclude => {
@@ -120,6 +123,7 @@ impl AppLoopback {
         let packets = Arc::new(AtomicU64::new(0));
         let overflows = Arc::new(AtomicU64::new(0));
         let lost = Arc::new(AtomicBool::new(false));
+        let estimated_timestamps = Arc::new(AtomicU64::new(0));
         let (sender, receiver) = mpsc::sync_channel(CHANNEL_CAPACITY);
         let (ready_sender, ready_receiver) = mpsc::channel();
         let state = ThreadState {
@@ -133,10 +137,11 @@ impl AppLoopback {
             packets: Arc::clone(&packets),
             overflows: Arc::clone(&overflows),
             lost: Arc::clone(&lost),
+            estimated_timestamps: Arc::clone(&estimated_timestamps),
         };
         let spawned = thread::Builder::new().name(format!("audio-app-{}", state.exe)).spawn(move || capture_thread(&state));
         // From here on, dropping the handle joins the thread and closes the event.
-        let mut capture = Self { stop_flag, event, thread: None, receiver, packets, overflows, lost, excluded_instances, total_instances };
+        let mut capture = Self { stop_flag, event, thread: None, receiver, packets, overflows, lost, estimated_timestamps, excluded_instances, instance_pids };
         capture.thread = Some(spawned.map_err(|_| CaptureError::Missing("failed to spawn the app audio capture thread"))?);
         ready_receiver.recv().map_err(|_| CaptureError::Missing("the app audio capture thread exited before setup finished"))??;
         Ok(capture)
@@ -171,7 +176,21 @@ impl AppLoopback {
     /// How many instances (top-level processes) of the app ran when the capture
     /// started. In Exclude mode, more than `excluded_instances` means the others are heard.
     pub fn total_instances(&self) -> usize {
-        self.total_instances
+        self.instance_pids.len()
+    }
+
+    /// The process IDs of the app's instances (top-level processes) when the
+    /// capture started, oldest first. `Include` hears all of them; `Exclude`
+    /// leaves out only the first. When the app's current instances differ from
+    /// these, a new capture is needed to follow them.
+    pub fn instance_pids(&self) -> &[u32] {
+        &self.instance_pids
+    }
+
+    /// How many packets so far had no believable WASAPI timestamp and got an
+    /// estimated one.
+    pub fn estimated_timestamps(&self) -> u64 {
+        self.estimated_timestamps.load(Ordering::Relaxed)
     }
 
     /// Stops the capture and joins its thread; Drop does the same.
@@ -304,7 +323,11 @@ fn drain_stream(capture: &IAudioCaptureClient, index: usize, mut mixer: Option<&
             Err(BufferError::DeviceLost) => return Err(CaptureError::Missing("the process loopback stream was invalidated")),
             Err(BufferError::Failed(err)) => return Err(err),
         };
-        packet.qpc_100ns = checked_stamp(packet.qpc_100ns, packet.frames, qpc_now_100ns());
+        let (stamp, estimated) = checked_stamp(packet.qpc_100ns, packet.frames, qpc_now_100ns());
+        packet.qpc_100ns = stamp;
+        if estimated {
+            state.estimated_timestamps.fetch_add(1, Ordering::Relaxed);
+        }
         match mixer.as_deref_mut() {
             Some(mixer) => mixer.push(index, &packet),
             None => state.deliver(packet),
@@ -315,12 +338,12 @@ fn drain_stream(capture: &IAudioCaptureClient, index: usize, mut mixer: Option<&
 
 /// The packet's WASAPI timestamp, or, when that is nowhere near now (process
 /// loopback is not documented to fill it in), the time its first frame would
-/// have if the packet had just ended.
-fn checked_stamp(qpc_100ns: i64, frames: u32, now_100ns: i64) -> i64 {
+/// have if the packet had just ended. The flag is true for such an estimate.
+fn checked_stamp(qpc_100ns: i64, frames: u32, now_100ns: i64) -> (i64, bool) {
     if qpc_100ns.abs_diff(now_100ns) <= MAX_STAMP_ERROR_100NS as u64 {
-        qpc_100ns
+        (qpc_100ns, false)
     } else {
-        now_100ns - i64::from(frames) * 10_000_000 / i64::from(APP_SAMPLE_RATE)
+        (now_100ns - i64::from(frames) * 10_000_000 / i64::from(APP_SAMPLE_RATE), true)
     }
 }
 
@@ -489,8 +512,8 @@ mod tests {
     #[test]
     fn a_timestamp_far_from_now_is_replaced_by_the_packets_own_age() {
         let now = 900_000_000_000;
-        assert_eq!(checked_stamp(now - 200_000, 480, now), now - 200_000, "a believable stamp is kept");
-        assert_eq!(checked_stamp(0, 480, now), now - 100_000, "480 frames are 10 ms");
+        assert_eq!(checked_stamp(now - 200_000, 480, now), (now - 200_000, false), "a believable stamp is kept");
+        assert_eq!(checked_stamp(0, 480, now), (now - 100_000, true), "480 frames are 10 ms");
     }
 
     /// The hand written COM object answers for its interfaces and counts references.

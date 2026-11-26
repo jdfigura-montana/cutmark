@@ -99,9 +99,21 @@ pub(crate) fn process_table() -> Result<Vec<ProcessEntry>, CaptureError> {
     Ok(table)
 }
 
-/// Fills in the creation time of the processes of `exe`.
+/// Fills in the creation time of the processes of `exe` and of their ancestors.
 pub(crate) fn fill_creation_times(table: &mut [ProcessEntry], exe: &str) {
-    for process in table.iter_mut().filter(|process| process.exe == exe) {
+    let parent_of: BTreeMap<u32, u32> = table.iter().map(|process| (process.pid, process.parent_pid)).collect();
+    let mut wanted = BTreeSet::new();
+    for process in table.iter().filter(|process| process.exe == exe) {
+        let mut pid = process.pid;
+        // Stops at an ID that is already listed, which also ends a cycle.
+        while wanted.insert(pid) {
+            let Some(&parent) = parent_of.get(&pid) else {
+                break;
+            };
+            pid = parent;
+        }
+    }
+    for process in table.iter_mut().filter(|process| wanted.contains(&process.pid)) {
         process.created = ProcessHandle::open(process.pid, PROCESS_QUERY_LIMITED_INFORMATION).and_then(|handle| handle.created());
     }
 }

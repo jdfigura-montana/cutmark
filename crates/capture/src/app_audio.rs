@@ -8,7 +8,7 @@
 // Only the Windows half and the tests call the logic in this file.
 #![cfg_attr(not(windows), allow(dead_code))]
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// The sample rate of every per-app capture, in Hz.
 pub(crate) const APP_SAMPLE_RATE: u32 = 48_000;
@@ -103,17 +103,37 @@ pub(crate) struct ProcessEntry {
     pub created: Option<u64>,
 }
 
-/// The top-level processes of `exe`, oldest first: those whose parent is not a
-/// process of the same executable. A "parent" created after its child only
-/// reuses the real parent's ID. Processes of unknown age sort last.
+/// The top-level processes of `exe`, oldest first: those with no ancestor that
+/// runs the same executable. Processes of unknown age sort last.
 pub(crate) fn top_level_processes<'a>(table: &'a [ProcessEntry], exe: &str) -> Vec<&'a ProcessEntry> {
-    let same_exe: Vec<&ProcessEntry> = table.iter().filter(|process| process.exe == exe).collect();
-    let is_parent = |parent: &ProcessEntry, child: &ProcessEntry| {
-        parent.pid == child.parent_pid && parent.pid != child.pid && !matches!((parent.created, child.created), (Some(p), Some(c)) if p > c)
-    };
-    let mut top: Vec<&ProcessEntry> = same_exe.iter().copied().filter(|child| !same_exe.iter().any(|parent| is_parent(parent, child))).collect();
+    let by_pid: BTreeMap<u32, &ProcessEntry> = table.iter().map(|process| (process.pid, process)).collect();
+    let mut top: Vec<&ProcessEntry> = table.iter().filter(|process| process.exe == exe && !has_same_exe_ancestor(&by_pid, process)).collect();
     top.sort_by_key(|process| (process.created.unwrap_or(u64::MAX), process.pid));
     top
+}
+
+/// Walks the parent chain of `process`, looking for its own executable. The
+/// chain ends at a parent that is gone, or at a "parent" created after one of
+/// its descendants, which only reuses the real parent's ID. A chain that leads
+/// back to `process` is not a real family, so it counts as no ancestor.
+fn has_same_exe_ancestor(by_pid: &BTreeMap<u32, &ProcessEntry>, process: &ProcessEntry) -> bool {
+    let mut seen = BTreeSet::from([process.pid]);
+    // The age of the nearest descendant that has a known one.
+    let mut descendant_created = process.created;
+    let mut parent_pid = process.parent_pid;
+    let mut found = false;
+    while let Some(parent) = by_pid.get(&parent_pid) {
+        if parent.pid == process.pid {
+            return false;
+        }
+        if !seen.insert(parent.pid) || matches!((parent.created, descendant_created), (Some(p), Some(d)) if p > d) {
+            break;
+        }
+        found |= parent.exe == process.exe;
+        descendant_created = parent.created.or(descendant_created);
+        parent_pid = parent.parent_pid;
+    }
+    found
 }
 
 /// Mixes the packets of several 48 kHz stereo streams into one stream, placing
@@ -202,7 +222,8 @@ impl Mixer {
         if frames <= 0 {
             return None;
         }
-        let samples: Vec<f32> = self.buffer.drain(..frames as usize * channels).collect();
+        // The sum of several streams can leave the float range.
+        let samples: Vec<f32> = self.buffer.drain(..frames as usize * channels).map(|sample| sample.clamp(-1.0, 1.0)).collect();
         let qpc_100ns = origin + (i128::from(self.base) * UNITS_PER_SECOND / i128::from(APP_SAMPLE_RATE)) as i64;
         self.base += frames;
         self.emitted_to = Some(self.base);
@@ -274,6 +295,16 @@ mod unsupported {
             match self.never {}
         }
 
+        /// The instances that were running.
+        pub fn instance_pids(&self) -> &[u32] {
+            match self.never {}
+        }
+
+        /// How many timestamps were estimated.
+        pub fn estimated_timestamps(&self) -> u64 {
+            match self.never {}
+        }
+
         /// Stops the capture.
         pub fn stop(self) {}
     }
@@ -340,6 +371,55 @@ mod tests {
         assert_eq!(top_pids(&table, "app.exe"), [30, 31, 2]);
     }
 
+    #[test]
+    fn a_launcher_that_restarts_the_app_counts_as_one_top_level_process() {
+        let table = [
+            process(4, 0, "explorer.exe", 1),
+            // The app, a launcher it started, the app again, and that one's child.
+            process(10, 4, "app.exe", 10),
+            process(11, 10, "launcher.exe", 11),
+            process(12, 11, "app.exe", 12),
+            process(13, 12, "app.exe", 13),
+        ];
+        assert_eq!(top_pids(&table, "app.exe"), [10]);
+    }
+
+    #[test]
+    fn a_reused_id_further_up_the_chain_ends_the_walk() {
+        let mut table = vec![
+            // 51 was reused by a process younger than 52, so 50 is no ancestor of 52.
+            process(50, 4, "app.exe", 10),
+            process(51, 50, "other.exe", 90),
+            process(52, 51, "app.exe", 20),
+        ];
+        assert_eq!(top_pids(&table, "app.exe"), [50, 52]);
+        // A link of unknown age does not hide that its parent is too young.
+        table[0].created = Some(30);
+        table[1].created = None;
+        assert_eq!(top_pids(&table, "app.exe"), [52, 50]);
+    }
+
+    #[test]
+    fn cycles_in_the_parent_links_end_the_walk() {
+        let mut table = vec![
+            // Two processes that name each other, and a child of one of them.
+            process(60, 61, "app.exe", 10),
+            process(61, 60, "app.exe", 10),
+            process(62, 60, "app.exe", 11),
+            // A cycle above the process that does not lead back to it.
+            process(70, 71, "app.exe", 20),
+            process(71, 72, "other.exe", 20),
+            process(72, 71, "other.exe", 20),
+            // A process that names itself.
+            process(80, 80, "app.exe", 30),
+        ];
+        assert_eq!(top_pids(&table, "app.exe"), [60, 61, 70, 80]);
+        for row in &mut table {
+            row.created = None;
+        }
+        assert_eq!(top_pids(&table, "app.exe"), [60, 61, 70, 80]);
+    }
+
     /// 10 ms of one stereo value in 100 nanosecond units and in frames.
     const TEN_MS: i64 = 100_000;
     const FRAMES: usize = 480;
@@ -382,6 +462,18 @@ mod tests {
         let rest = mixer.pop(START + 2 * TEN_MS);
         assert_eq!(rest.map(|rest| (rest.qpc_100ns, rest.frames, rest.samples[0])), Some((START + TEN_MS, 240, 0.75)));
         Ok(())
+    }
+
+    #[test]
+    fn two_full_scale_streams_are_clamped() {
+        let mut mixer = Mixer::new(2);
+        for stream in 0..2 {
+            mixer.push(stream, &packet(START, 1.0));
+            mixer.push(stream, &packet(START + TEN_MS, -1.0));
+        }
+        let mixed = mixer.flush();
+        assert_eq!(mixed.as_ref().map(blocks), Some(vec![1.0, -1.0]));
+        assert!(mixed.is_some_and(|mixed| mixed.samples.iter().all(|sample| sample.abs() == 1.0)));
     }
 
     #[test]
