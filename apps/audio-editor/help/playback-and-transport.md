@@ -47,6 +47,8 @@ The bottom bar of the timeline holds the rest:
 - On the left, the timecode and **Go to start (Home)**.
 - On the right, **Stop**, **Record (Ctrl+R)**, **Go to end (End)** and the project length.
 
+When the timeline is too narrow for all of it, the bar leaves out the project length first, then **Go to end**, and then shows a smaller timecode. **Go to end** stays on the **End** key and in the **View** menu.
+
 While a take records, **Record** shows a stop symbol, and **Play**, **Stop** and **Record** end the take and keep it. **Go to start** and **Go to end** are disabled then. The view follows the playhead during playback.
 
 > Tip: Click a lane to move the playhead there without scrubbing. A ruler click scrubs the audio.

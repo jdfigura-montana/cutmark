@@ -1825,6 +1825,11 @@ mod tests {
     /// project in a real folder. The app stays behind an `Rc` so the test can
     /// read the editor after a key press; keep the returned folder alive.
     fn shortcut_harness() -> (egui_kittest::Harness<'static>, Rc<RefCell<App>>, tempfile::TempDir) {
+        shortcut_harness_at(egui::vec2(1280.0, 800.0))
+    }
+
+    /// [`shortcut_harness`] in a window of `size`.
+    fn shortcut_harness_at(size: egui::Vec2) -> (egui_kittest::Harness<'static>, Rc<RefCell<App>>, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = create_layout(dir.path(), "Test 2").expect("layout");
         let mut editor = Editor::with_project(Project::new("Test 2".to_string(), 48_000, BitDepth::Int24), ViewState::default(), paths);
@@ -1832,7 +1837,7 @@ mod tests {
         let app = Rc::new(RefCell::new(App { screen: Screen::Editing(Box::new(editor)), tour_checked: true, ..App::default() }));
         let draw = Rc::clone(&app);
         let first_pass = Rc::new(Cell::new(true));
-        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1280.0, 800.0)).build_ui(move |ui| {
+        let mut harness = egui_kittest::Harness::builder().with_size(size).build_ui(move |ui| {
             // The first pass installs the ui-kit theme and fonts; egui applies
             // a font change at the start of the next pass.
             if first_pass.get() {
@@ -1845,6 +1850,62 @@ mod tests {
         harness.step();
         harness.step();
         (harness, app, dir)
+    }
+
+    /// In the smallest window with the Media panel dragged to its widest, the
+    /// bottom bar leaves out what does not fit and no control leaves it.
+    #[test]
+    fn the_narrowest_bottom_bar_keeps_every_control_inside_it() {
+        use egui_kittest::kittest::Queryable as _;
+        let (mut harness, app, _dir) = shortcut_harness_at(egui::vec2(1100.0, 700.0));
+        // A clip gives the bar a real total length to leave out.
+        with_editor_mut(&app, |editor| {
+            editor.project = crate::model::fixtures::project_with_clips(&[&[(0, 144_000)]]).into();
+        });
+        harness.step();
+        harness.step();
+        let panel = |harness: &egui_kittest::Harness<'_>, id: &str| {
+            egui::containers::panel::PanelState::load(&harness.ctx, egui::Id::new(id)).expect("the panel").outer_rect
+        };
+        let media = panel(&harness, "media_bin");
+        let edge = egui::pos2(media.right(), media.center().y);
+        harness.hover_at(edge);
+        harness.step();
+        harness.drag_at(edge);
+        harness.step();
+        harness.hover_at(egui::pos2(900.0, edge.y));
+        harness.step();
+        harness.drop_at(egui::pos2(900.0, edge.y));
+        for _ in 0..4 {
+            harness.step();
+        }
+        let media = panel(&harness, "media_bin");
+        assert!((media.width() - 400.0).abs() < 1.0, "the Media panel is at its widest: {media:?}");
+
+        // The stage sits one window gap inside what the side panels leave; its
+        // bar is its bottom 64, with the 112 wide notch column in the middle.
+        let gap = space::WINDOW_GAP;
+        let (left, right) = (media.right() + gap, panel(&harness, "master_strip").left() - gap);
+        let play = harness.get_by_label("Play").rect();
+        assert!((play.center().x - (left + right) / 2.0).abs() < 1.0, "the stage is where the test expects it: {play:?}");
+        let bottom = play.center().y + 8.0;
+        let bar = egui::Rect::from_min_max(egui::pos2(left, bottom - 64.0), egui::pos2(right, bottom));
+        let notch = egui::Rect::from_center_size(bar.center(), egui::vec2(112.0, 64.0));
+
+        let control = |label: &str| harness.get_by_label(label).rect();
+        let left_side = [control("00:00:00.000"), control("Go to start (Home)")];
+        let right_side = [control("Stop"), control("Record (Ctrl+R)")];
+        for rect in left_side {
+            assert!(bar.contains_rect(rect) && rect.right() <= notch.left(), "{rect:?} leaves the left side of {bar:?}");
+        }
+        for rect in right_side {
+            assert!(bar.contains_rect(rect) && rect.left() >= notch.right(), "{rect:?} leaves the right side of {bar:?}");
+        }
+        assert!(left_side[0].right() < left_side[1].left(), "the timecode and back to start do not overlap");
+        assert!(right_side[0].right() < right_side[1].left(), "Stop and Record do not overlap");
+        assert!(left_side[0].height() < 18.0, "the timecode is the small one: {:?}", left_side[0]);
+        assert!(harness.query_by_label("Go to end (End)").is_none(), "go to end is left out");
+        assert!(harness.query_by_label("00:00:03.000").is_none(), "the total length is left out");
     }
 
     /// Presses `key` with `modifiers` in the harness: one frame per queued

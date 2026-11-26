@@ -150,7 +150,7 @@ pub fn menu_bar(
             menu.borrow_mut().process_menu(ui, editor, recording);
         }),
         ui_kit::Menu::new("View", |ui| {
-            let chosen = menu.borrow_mut().view_menu(ui, &editor.borrow());
+            let chosen = menu.borrow_mut().view_menu(ui, &mut editor.borrow_mut());
             if chosen != ViewMenuAction::None {
                 view_action.set(chosen);
             }
@@ -466,8 +466,10 @@ impl ProjectMenu {
         }
     }
 
-    /// The View menu's items; returns the zoom command the user chose.
-    fn view_menu(&mut self, menu: &mut egui::Ui, editor: &Editor) -> ViewMenuAction {
+    /// The View menu's items; returns the zoom command the user chose. Go to
+    /// End acts on the editor here. It stands in for the bottom bar button a
+    /// narrow bar leaves out, and like it is disabled while a take is recorded.
+    fn view_menu(&mut self, menu: &mut egui::Ui, editor: &mut Editor) -> ViewMenuAction {
         let ctx = menu.ctx().clone();
         let mut view_action = ViewMenuAction::None;
         if menu.add(item(&ctx, "Zoom In", "zoom_in")).clicked() {
@@ -486,6 +488,11 @@ impl ProjectMenu {
         }
         if menu.add(item(&ctx, "Zoom to Fit", "zoom_to_fit")).clicked() {
             view_action = ViewMenuAction::ZoomToFit;
+            menu.close();
+        }
+        menu_sep(menu);
+        if menu.add_enabled(!editor.is_recording(), item(&ctx, "Go to End", "jump_to_end")).clicked() {
+            editor.jump_end();
             menu.close();
         }
         menu_sep(menu);
@@ -691,7 +698,17 @@ mod tests {
             "Process",
             &[("Gain...", "Ctrl+G"), ("Normalize...", "Ctrl+Shift+N"), ("Fade In", "Ctrl+Shift+I"), ("Fade Out", "Ctrl+Shift+O"), ("Silence", "Ctrl+L")],
         ),
-        ("View", &[("Zoom In", "Plus"), ("Zoom Out", "Minus"), ("Zoom to Selection", "Ctrl+Backslash"), ("Zoom to Fit", "Backslash"), ("Appearance...", "")]),
+        (
+            "View",
+            &[
+                ("Zoom In", "Plus"),
+                ("Zoom Out", "Minus"),
+                ("Zoom to Selection", "Ctrl+Backslash"),
+                ("Zoom to Fit", "Backslash"),
+                ("Go to End", "End"),
+                ("Appearance...", ""),
+            ],
+        ),
         ("Help", &[("Help topics", "F1"), ("Keyboard shortcuts", "Ctrl+Slash"), ("Show the tour", ""), ("About Cutmark Audio", "")]),
     ];
 
@@ -792,6 +809,18 @@ mod tests {
         let done = out.text_rect("Done").expect("Done").center();
         let _ = rig.click(&mut h, done);
         assert!(!rig.menu.appearance_open, "Done closed the dialog");
+    }
+
+    #[test]
+    fn view_go_to_end_moves_the_playhead_to_the_end_but_not_while_recording() {
+        for recording in [false, true] {
+            let (mut editor, _dir) = take_editor(recording);
+            let before = editor.view.playhead;
+            assert_ne!(before, editor.project_length(), "the playhead starts away from the end");
+            let _ = choose(&mut editor, "View", "Go to End");
+            let expected = if recording { before } else { editor.project_length() };
+            assert_eq!(editor.view.playhead, expected, "recording: {recording}");
+        }
     }
 
     // ---- While a take is recorded ----

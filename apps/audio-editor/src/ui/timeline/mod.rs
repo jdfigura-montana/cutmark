@@ -409,21 +409,86 @@ fn split_timecode(timecode: &str) -> (&str, &str) {
     timecode.split_at(timecode.find('.').unwrap_or(timecode.len()))
 }
 
-/// The bottom bar's left side: the timecode (the record position while a take
-/// is recorded) and back to start, which is disabled then.
-fn bar_left(ui: &mut egui::Ui, editor: &Editor) -> Option<TransportAction> {
-    ui.spacing_mut().item_spacing.x = space::SCALE_12;
+/// What the bottom bar shows, from everything to its narrowest form. Each
+/// step also gives up what the steps before it did. Back to start, Stop and
+/// Record are in every step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum BarFit {
+    /// Everything.
+    Full,
+    /// No total length.
+    NoLength,
+    /// No total length and no go to end (the End key and the View menu stay).
+    NoJumpEnd,
+    /// Both gone and the timecode at the `type.value` size.
+    SmallTimecode,
+}
+
+/// The first step at which both sides of the bar fit in `column`, the width of
+/// each (they are equal). `timecode` is the width of the large timecode and
+/// `length` the width of the total length.
+fn bar_fit(column: f32, timecode: f32, length: f32) -> BarFit {
+    let button = ui_kit::STAGE_BAR_BUTTON_DIAMETER;
+    let left = timecode + space::SCALE_12 + button;
+    let two_buttons = 2.0 * button + space::SCALE_8;
+    let three_buttons = two_buttons + space::SCALE_8 + button;
+    let with_length = three_buttons + space::SCALE_8 + space::SCALE_4 + length;
+    // No step before the last makes the left side narrower.
+    if left > column {
+        BarFit::SmallTimecode
+    } else if with_length <= column {
+        BarFit::Full
+    } else if three_buttons <= column {
+        BarFit::NoLength
+    } else if two_buttons <= column {
+        BarFit::NoJumpEnd
+    } else {
+        BarFit::SmallTimecode
+    }
+}
+
+/// The bar's timecode text: the playhead, or the record position while a take
+/// is recorded.
+fn position_text(editor: &Editor) -> String {
     let position = editor.record_playhead().unwrap_or(editor.view.playhead);
-    let timecode = samples_to_timecode(position, editor.project.sample_rate);
+    samples_to_timecode(position, editor.project.sample_rate)
+}
+
+/// The total length as the bar draws it.
+fn length_job(ui: &egui::Ui, editor: &Editor) -> egui::text::LayoutJob {
+    let length = samples_to_timecode(editor.project_length(), editor.project.sample_rate);
+    let tint = crate::ui::neutrals(ui.ctx()).text_tertiary;
+    ui_kit::fonts::tracked(length, ui_kit::fonts::mono(typography::VALUE_SIZE), tint, ui_kit::fonts::MONO_LETTER_SPACING_EM)
+}
+
+/// [`bar_fit`] for this frame's texts. `ui` is either side of the bar before
+/// anything is drawn in it, so both sides get the same answer.
+fn current_bar_fit(ui: &egui::Ui, editor: &Editor) -> BarFit {
+    let timecode = position_text(editor);
     let (main, fraction) = split_timecode(&timecode);
-    ui_kit::timecode_large(ui, main, fraction);
+    let timecode_width = ui_kit::timecode_width(ui, main, fraction, ui_kit::TimecodeSize::Large);
+    let length_width = ui.painter().layout_job(length_job(ui, editor)).size().x;
+    bar_fit(ui.available_width(), timecode_width, length_width)
+}
+
+/// The bottom bar's left side: the timecode (the record position while a take
+/// is recorded) and back to start, which is disabled then. The narrowest bar
+/// draws the timecode smaller ([`BarFit`]).
+fn bar_left(ui: &mut egui::Ui, editor: &Editor) -> Option<TransportAction> {
+    let size = if current_bar_fit(ui, editor) == BarFit::SmallTimecode { ui_kit::TimecodeSize::Value } else { ui_kit::TimecodeSize::Large };
+    ui.spacing_mut().item_spacing.x = space::SCALE_12;
+    let timecode = position_text(editor);
+    let (main, fraction) = split_timecode(&timecode);
+    ui_kit::timecode_sized(ui, main, fraction, size);
     let back = ui.add_enabled_ui(!editor.is_recording(), |ui| ui_kit::bar_button(ui, fill::SKIP_BACK, "Go to start (Home)")).inner;
     back.clicked().then_some(TransportAction::JumpStart)
 }
 
 /// The bottom bar's right side: Stop, Record, forward to the end (disabled
-/// while a take is recorded) and the project's total length.
+/// while a take is recorded) and the project's total length. A narrow bar
+/// leaves out the length first, then go to end ([`BarFit`]).
 fn bar_right(ui: &mut egui::Ui, editor: &Editor) -> Option<TransportAction> {
+    let fit = current_bar_fit(ui, editor);
     ui.spacing_mut().item_spacing.x = space::SCALE_8;
     let mut action = None;
     if ui_kit::bar_button(ui, fill::STOP, "Stop").clicked() {
@@ -432,15 +497,17 @@ fn bar_right(ui: &mut egui::Ui, editor: &Editor) -> Option<TransportAction> {
     if record_button(ui, editor.take_is_live()).clicked() {
         action = Some(TransportAction::Record);
     }
-    let forward = ui.add_enabled_ui(!editor.is_recording(), |ui| ui_kit::bar_button(ui, fill::SKIP_FORWARD, "Go to end (End)")).inner;
-    if forward.clicked() {
-        action = Some(TransportAction::JumpEnd);
+    if fit < BarFit::NoJumpEnd {
+        let forward = ui.add_enabled_ui(!editor.is_recording(), |ui| ui_kit::bar_button(ui, fill::SKIP_FORWARD, "Go to end (End)")).inner;
+        if forward.clicked() {
+            action = Some(TransportAction::JumpEnd);
+        }
     }
-    ui.add_space(space::SCALE_4);
-    let length = samples_to_timecode(editor.project_length(), editor.project.sample_rate);
-    let tint = crate::ui::neutrals(ui.ctx()).text_tertiary;
-    let job = ui_kit::fonts::tracked(length, ui_kit::fonts::mono(typography::VALUE_SIZE), tint, ui_kit::fonts::MONO_LETTER_SPACING_EM);
-    ui.add(egui::Label::new(job).extend());
+    if fit == BarFit::Full {
+        ui.add_space(space::SCALE_4);
+        let job = length_job(ui, editor);
+        ui.add(egui::Label::new(job).extend());
+    }
     action
 }
 
@@ -1252,6 +1319,28 @@ mod tests {
             assert!(back.right() < *notch.start() && stop.left() > *notch.end(), "the center column is empty: {back:?} {stop:?}");
             assert!(length.right() <= 704.0 - 8.0, "the length fits its side: {length:?}");
         }
+    }
+
+    /// A narrow bar gives up the total length, then go to end, then the large
+    /// timecode, whichever side is the one that no longer fits.
+    #[test]
+    fn a_narrow_bar_gives_up_the_length_then_go_to_end_then_the_large_timecode() {
+        // Three buttons take 136 and with a length of 100 take 248; a
+        // timecode of 100 and back to start take 152.
+        let fit = |column| bar_fit(column, 100.0, 100.0);
+        assert_eq!(fit(248.0), BarFit::Full);
+        assert_eq!(fit(247.0), BarFit::NoLength);
+        assert_eq!(fit(152.0), BarFit::NoLength);
+        assert_eq!(fit(151.0), BarFit::SmallTimecode, "the left side no longer fits");
+        // A short timecode leaves the right side to decide.
+        let fit = |column| bar_fit(column, 40.0, 100.0);
+        assert_eq!(fit(136.0), BarFit::NoLength);
+        assert_eq!(fit(135.0), BarFit::NoJumpEnd);
+        assert_eq!(fit(92.0), BarFit::NoJumpEnd);
+        assert_eq!(fit(87.0), BarFit::SmallTimecode);
+        // A wide timecode shrinks only after both right side items are gone,
+        // even where the right side alone would fit them.
+        assert_eq!(bar_fit(260.0, 220.0, 100.0), BarFit::SmallTimecode);
     }
 
     #[test]

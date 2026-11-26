@@ -155,6 +155,101 @@ fn the_bar_center_column_stays_free() {
     }
 }
 
+/// What the layer order tests read back.
+#[derive(Default)]
+struct Layers {
+    stage_clicks: Cell<u32>,
+    window_clicks: Cell<u32>,
+    window_open: Cell<bool>,
+    primary: Cell<Option<Rect>>,
+}
+
+impl Layers {
+    fn primary_rect(&self) -> Rect {
+        self.primary.get().expect("the stage was drawn")
+    }
+}
+
+/// The strip painted under the stage after it, on the same layer, like the
+/// app's status bar.
+const STRIP_FILL: egui::Color32 = egui::Color32::from_rgb(1, 2, 3);
+/// The fill of the one button inside the test window.
+const WINDOW_FILL: egui::Color32 = egui::Color32::from_rgb(4, 5, 6);
+
+/// A stage with a strip drawn under it afterwards and, when `window_open`, an
+/// [`egui::Window`] whose single button covers the primary button.
+fn layered_harness() -> (Harness<'static>, Rc<Layers>) {
+    let seen = Rc::new(Layers::default());
+    let watch = seen.clone();
+    let mut harness = new_harness(move |ui| {
+        let area = Rect::from_min_size(ui.max_rect().min, vec2(ui.available_width(), STAGE_HEIGHT));
+        let mut parent = ui.new_child(egui::UiBuilder::new().max_rect(area));
+        let primary = PrimaryButton { kind: PlayKind::Play, active: false, enabled: true };
+        let stage = ui_kit::stage_panel(&mut parent, Id::new("test-stage"), primary, |_| {}, |_| {}, |_| {});
+        if stage.clicked() {
+            watch.stage_clicks.set(watch.stage_clicks.get() + 1);
+        }
+        watch.primary.set(Some(stage.primary.rect));
+        let strip = Rect::from_min_size(area.left_bottom(), vec2(area.width(), 40.0));
+        ui.painter().rect_filled(strip, 0.0, STRIP_FILL);
+        let _ = ui.interact(strip, Id::new("strip"), egui::Sense::click());
+        if watch.window_open.get() {
+            egui::Window::new("Cover").title_bar(false).resizable(false).fixed_pos(stage.primary.rect.min - vec2(40.0, 40.0)).show(ui.ctx(), |ui| {
+                if ui.add(egui::Button::new("Window button").fill(WINDOW_FILL).min_size(vec2(160.0, 160.0))).clicked() {
+                    watch.window_clicks.set(watch.window_clicks.get() + 1);
+                }
+            });
+        }
+    });
+    harness.run();
+    (harness, seen)
+}
+
+/// The position in paint order of the first shape that matches.
+fn paint_index(harness: &Harness<'_>, what: &str, matches: impl Fn(&egui::Shape) -> bool) -> usize {
+    harness.output().shapes.iter().position(|clipped| matches(&clipped.shape)).expect(what)
+}
+
+/// The paint position of the primary button's circle.
+fn primary_paint_index(harness: &Harness<'_>) -> usize {
+    paint_index(harness, "the primary button", |shape| matches!(shape, egui::Shape::Circle(circle) if circle.radius == 34.0))
+}
+
+/// The paint position of the rect filled with `fill`.
+fn fill_paint_index(harness: &Harness<'_>, fill: egui::Color32) -> usize {
+    paint_index(harness, "the filled rect", |shape| matches!(shape, egui::Shape::Rect(rect) if rect.fill == fill))
+}
+
+#[test]
+fn the_primary_button_stays_above_the_panels_drawn_after_it() {
+    let (mut harness, seen) = layered_harness();
+    assert!(primary_paint_index(&harness) > fill_paint_index(&harness, STRIP_FILL), "the strip covers the button");
+    // A click on the panels does not raise them over the button.
+    click_at(&mut harness, Pos2::new(20.0, seen.primary_rect().bottom()));
+    assert!(primary_paint_index(&harness) > fill_paint_index(&harness, STRIP_FILL), "the strip covers the button after a click");
+    // The overhang lies over the strip and still takes the click.
+    let button = seen.primary_rect();
+    click_at(&mut harness, Pos2::new(button.center().x, button.bottom() - 4.0));
+    assert_eq!(seen.stage_clicks.get(), 1);
+}
+
+#[test]
+fn a_window_over_the_primary_button_covers_it_and_gets_the_click() {
+    let (mut harness, seen) = layered_harness();
+    let center = seen.primary_rect().center();
+    seen.window_open.set(true);
+    harness.run();
+    harness.run();
+    assert!(fill_paint_index(&harness, WINDOW_FILL) > primary_paint_index(&harness), "the button draws over the window");
+    click_at(&mut harness, center);
+    assert_eq!((seen.window_clicks.get(), seen.stage_clicks.get()), (1, 0));
+    // Closing the window gives the button its clicks back.
+    seen.window_open.set(false);
+    harness.run();
+    click_at(&mut harness, center);
+    assert_eq!((seen.window_clicks.get(), seen.stage_clicks.get()), (1, 1));
+}
+
 /// The rects of every painted text, with the clip applied.
 fn text_rects(harness: &Harness<'_>) -> Vec<Rect> {
     fn walk(shape: &egui::Shape, clip: Rect, into: &mut Vec<Rect>) {

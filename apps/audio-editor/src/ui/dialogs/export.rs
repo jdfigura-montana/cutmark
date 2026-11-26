@@ -180,12 +180,9 @@ impl ExportDialog {
                                     |ui| {
                                         super::choice(ui, "export_kbps", &[(128, "128"), (192, "192"), (256, "256"), (320, "320")], &mut self.kbps);
                                         ui.label(
-                                            egui::RichText::new(format!(
-                                                "kbps \u{2014} exports at {} kHz",
-                                                rate_khz(mp3_rate(shown_editor.project.sample_rate))
-                                            ))
-                                            .font(fonts::medium(typography::CAPTION_SIZE))
-                                            .color(neutral.text_tertiary),
+                                            egui::RichText::new(format!("kbps, exports at {} kHz", rate_khz(mp3_rate(shown_editor.project.sample_rate))))
+                                                .font(fonts::medium(typography::CAPTION_SIZE))
+                                                .color(neutral.text_tertiary),
                                         );
                                     },
                                     None,

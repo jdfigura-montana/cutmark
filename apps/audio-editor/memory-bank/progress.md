@@ -1,5 +1,6 @@
 ## E3-4 audio editor on E3 (2026-11-26)
 - DONE: stage panel with Play in the notch, side panels, status bar with the center gap, themed neutrals, no dot strings, help topics. deck.rs deleted.
+- DONE (follow-up): notch button layer order, narrow bottom bar, View > Go to End, MP3 rate note punctuation.
 
 ## E3-2 fonts (2026-11-25)
 - Font references moved to Instrument Sans and Martian Mono (installer, notices, licenses, README, help.rs, ui/mod.rs test).

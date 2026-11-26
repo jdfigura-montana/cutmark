@@ -4,8 +4,8 @@
 - Neutrals come from `crate::ui::neutrals(ctx)`. The `color::BG_*`, `TEXT_*` and `STROKE_*` constants are only the Blue values; use them in tests only. `SEM_*` stays a constant.
 - Status bar: the notch is centered on the stage, not the window. app.rs reserves the bottom strip, draws the timeline, then draws `status_bar::show(.., gap_center_x)` into the strip. The start screen keeps the plain `ui_kit::status_bar` (no notch there).
 - Tests drive real transport commands with `Engine::test_double` (cfg(test), no stream; the test writes `Shared`). Play from paused starts at `view.playhead`, which follows the audio only while playing.
-- The Play button is a Foreground area (like the old deck), so it draws above the help window (egui Window, Order::Middle) where they overlap.
-- Open: export.rs shows an em dash in the MP3 rate note (root rule 10), not touched in E3-4.
+- E3-4 follow-up: the Play button's area is a sublayer of the stage's layer (`set_sublayer`, every pass), so it draws above the panels and below windows, popups, dialogs and tooltips.
+- Narrow bar: `bar_fit` in ui/timeline/mod.rs is one ladder for both sides (length, go to end, small timecode), so go to end also goes when only the timecode is too wide. View > Go to End was added for that case. `ui_kit::timecode` is the old deck one; the bar uses `timecode_sized`.
 
 ## E3-2 fonts (2026-11-25)
 ui-kit now ships Instrument Sans and Martian Mono. Audio editor edits are font references only (help.rs notices, the icon probe test in ui/mod.rs, installer and license files).

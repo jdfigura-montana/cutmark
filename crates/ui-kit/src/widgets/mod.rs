@@ -54,7 +54,10 @@ pub use scroll_thumb::scroll_thumb;
 pub use search_field::search_field;
 pub use segmented::{segmented, segmented_filled};
 pub use slider::{SliderKind, slider};
-pub use stage::{PrimaryButton, STAGE_PRIMARY_OVERHANG, StageResponse, bar_button, stage_panel, timecode_large};
+pub use stage::{
+    PrimaryButton, STAGE_BAR_BUTTON_DIAMETER, STAGE_PRIMARY_OVERHANG, StageResponse, TimecodeSize, bar_button, stage_panel, timecode_large, timecode_sized,
+    timecode_width,
+};
 pub use status_bar::{STATUS_BAR_CENTER_GAP, STATUS_BAR_GAP_HEIGHT, status_bar, status_bar_with_gap};
 pub use switch::switch;
 pub use text_field::text_field;

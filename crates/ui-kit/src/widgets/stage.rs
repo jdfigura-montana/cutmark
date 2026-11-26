@@ -2,15 +2,16 @@
 //! app's main content panel, ending in a bottom bar with a round notch cut out
 //! of its bottom edge, and the primary transport button sitting in the notch.
 
+use egui::text::LayoutJob;
 use egui::{
-    Color32, CornerRadius, Id, Order, Pos2, Rect, Response, Sense, Shadow, Shape, Stroke, StrokeKind, TextFormat, Ui, UiBuilder, WidgetInfo, WidgetType, pos2,
-    vec2,
+    Color32, CornerRadius, Id, LayerId, Pos2, Rect, Response, Sense, Shadow, Shape, Stroke, StrokeKind, TextFormat, Ui, UiBuilder, WidgetInfo, WidgetType,
+    pos2, vec2,
 };
 
 use crate::HAIRLINE;
 use crate::Theme;
 use crate::fonts;
-use crate::tokens::{color, radius, space};
+use crate::tokens::{color, radius, space, typography};
 use crate::widgets::{PlayKind, capsule_radius, focus};
 
 /// Height of the stage's bottom bar.
@@ -47,8 +48,9 @@ const RECORD_SQUARE_SIDE: f32 = 22.0;
 /// Corner radius of the recording square.
 const RECORD_SQUARE_RADIUS: u8 = 6;
 
-/// Diameter of a bottom bar button.
-const BAR_BUTTON_DIAMETER: f32 = 40.0;
+/// Diameter of a bottom bar button, for callers that work out what fits in a
+/// bar side.
+pub const STAGE_BAR_BUTTON_DIAMETER: f32 = 40.0;
 /// Glyph size inside a bottom bar button.
 const BAR_ICON_SIZE: f32 = 18.0;
 /// Size of the bottom bar timecode (spec "Type": 22px Medium).
@@ -97,8 +99,10 @@ impl StageResponse {
 ///
 /// A round notch is cut out of the bottom edge by painting it in `bg.ground`,
 /// so the stage must sit on the window ground. The primary button sits in the
-/// notch on a foreground layer and reaches [`STAGE_PRIMARY_OVERHANG`] below
-/// the panel. `id` must be unique per stage.
+/// notch on its own layer and reaches [`STAGE_PRIMARY_OVERHANG`] below the
+/// panel: it draws above everything on the stage's layer and below every
+/// window, popup, menu, dialog and tooltip over it. `id` must be unique per
+/// stage.
 ///
 /// Usage:
 ///
@@ -195,8 +199,10 @@ fn notch_arc(center: Pos2, arc_radius: f32, depth: f32) -> Vec<Pos2> {
         .collect()
 }
 
-/// The primary button in a foreground [`egui::Area`], so it can reach below
-/// the panel over whatever is drawn there.
+/// The primary button in its own [`egui::Area`], so it can reach below the
+/// panel over whatever is drawn there. The area is a sublayer of the stage's
+/// layer: egui keeps it directly above that layer, so the panels never cover
+/// it and anything on a higher layer does.
 fn primary_in_notch(ui: &Ui, id: Id, button: PrimaryButton, center: Pos2, panel: Rect) -> Response {
     let rect = Rect::from_center_size(center, vec2(PRIMARY_DIAMETER, PRIMARY_DIAMETER));
     // The layer does not inherit the parent's clip. It gets the parent's,
@@ -209,8 +215,12 @@ fn primary_in_notch(ui: &Ui, id: Id, button: PrimaryButton, center: Pos2, panel:
     let enabled = button.enabled && ui.is_enabled();
     let opacity = ui.opacity() * if button.enabled { 1.0 } else { DISABLED_OPACITY };
     let visible = ui.is_visible();
+    // egui has no order between the panels and the windows, and forgets
+    // sublayers after each pass, so this is registered every time.
+    let parent = ui.layer_id();
+    ui.ctx().set_sublayer(parent, LayerId::new(parent.order, id));
     egui::Area::new(id)
-        .order(Order::Foreground)
+        .order(parent.order)
         .fixed_pos(rect.min)
         .constrain(false)
         .fade_in(false)
@@ -281,16 +291,45 @@ fn paint_primary(ui: &mut Ui, button: PrimaryButton, enabled: bool) -> Response 
     response
 }
 
+/// The two sizes of the bottom bar timecode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimecodeSize {
+    /// 22, the normal bar timecode.
+    Large,
+    /// `type.value`, for a bar side too narrow for [`TimecodeSize::Large`].
+    Value,
+}
+
 /// The bottom bar timecode: Martian Mono 22 Medium with -0.03em letter
 /// spacing, `main` in `text.primary` and `frames` (with its separator, for
 /// example `":12"`) in `text.disabled`.
 pub fn timecode_large(ui: &mut Ui, main: &str, frames: &str) -> Response {
+    timecode_sized(ui, main, frames, TimecodeSize::Large)
+}
+
+/// [`timecode_large`] at either [`TimecodeSize`].
+pub fn timecode_sized(ui: &mut Ui, main: &str, frames: &str, size: TimecodeSize) -> Response {
+    let job = timecode_job(ui, main, frames, size);
+    ui.add(egui::Label::new(job).extend())
+}
+
+/// How wide [`timecode_sized`] draws, so a bar can pick a size before drawing it.
+pub fn timecode_width(ui: &Ui, main: &str, frames: &str, size: TimecodeSize) -> f32 {
+    ui.painter().layout_job(timecode_job(ui, main, frames, size)).size().x
+}
+
+/// The two-color timecode text.
+fn timecode_job(ui: &Ui, main: &str, frames: &str, size: TimecodeSize) -> LayoutJob {
     let neutrals = Theme::get(ui.ctx()).neutrals;
-    let font = fonts::mono_semibold(TIMECODE_SIZE);
+    let points = match size {
+        TimecodeSize::Large => TIMECODE_SIZE,
+        TimecodeSize::Value => typography::VALUE_SIZE,
+    };
+    let font = fonts::mono_semibold(points);
     let mut job = fonts::tracked(main, font.clone(), neutrals.text_primary, fonts::TIMECODE_LETTER_SPACING_EM);
     let format = TextFormat { extra_letter_spacing: font.size * fonts::TIMECODE_LETTER_SPACING_EM, ..TextFormat::simple(font, neutrals.text_disabled) };
     job.append(frames, 0.0, format);
-    ui.add(egui::Label::new(job).extend())
+    job
 }
 
 /// A secondary bottom bar button: a 40 px circle in `bg.control`, `bg.hover`
@@ -298,20 +337,20 @@ pub fn timecode_large(ui: &mut Ui, main: &str, frames: &str) -> Response {
 /// hovered). The tooltip doubles as the accessible label.
 pub fn bar_button(ui: &mut Ui, icon: &str, tooltip: &str) -> Response {
     let neutrals = Theme::get(ui.ctx()).neutrals;
-    let (rect, response) = ui.allocate_exact_size(vec2(BAR_BUTTON_DIAMETER, BAR_BUTTON_DIAMETER), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(vec2(STAGE_BAR_BUTTON_DIAMETER, STAGE_BAR_BUTTON_DIAMETER), Sense::click());
     let response = response.on_hover_text(tooltip);
     let enabled = ui.is_enabled();
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, tooltip));
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered();
         let fill = if hovered { neutrals.bg_hover } else { neutrals.bg_control };
-        ui.painter().circle_filled(rect.center(), BAR_BUTTON_DIAMETER / 2.0, fill);
+        ui.painter().circle_filled(rect.center(), STAGE_BAR_BUTTON_DIAMETER / 2.0, fill);
         let text = if hovered { neutrals.text_primary } else { neutrals.text_secondary };
         let galley = ui.painter().layout_no_wrap(icon.to_owned(), fonts::icon_fill(BAR_ICON_SIZE), text);
         ui.painter().galley(rect.center() - galley.size() / 2.0, galley, Color32::PLACEHOLDER);
     }
     if response.has_focus() {
-        focus::focus_ring(ui, rect, capsule_radius(BAR_BUTTON_DIAMETER));
+        focus::focus_ring(ui, rect, capsule_radius(STAGE_BAR_BUTTON_DIAMETER));
     }
     response
 }
