@@ -1,3 +1,6 @@
+## Brand N1 name casing (2026-11-26)
+- DONE: user-facing name is "CutMark" (APP_SHORT_NAME, About, Help menu, help/appearance.md, CHANGELOG). Paths and identifiers keep "Cutmark". check.ps1 green; release built. JD hand checks pending.
+
 ## Brand M1 accent defaults (2026-11-26)
 - Default accent is Orange (docs/suite/Brand-Mark.md section 1); help/appearance.md updated. JD hand checks pending.
 

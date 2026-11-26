@@ -1,10 +1,10 @@
-# Cutmark Prompter v1 Spec
+# CutMark Prompter v1 Spec
 
 Nov 15, 2026 · @JD · Revises the Oct 27 version · Updated Nov 19 (UI stack moved to egui) and Nov 25, 2026 (design language rev 3, accent per app, Help, existing crates)
 
 ## Overview
 
-Cutmark Prompter is the suite's standalone teleprompter: capture-invisible prompter views (docked strip, floating window, full screen) that scroll by hand or follow your voice, mirror for glass rigs, and drive or follow the Cutmark Recorder and OBS. The feature benchmark is the Virtual Prompter in Elgato Studio 2.0; this spec matches that feature set and keeps the suite integration on top.
+CutMark Prompter is the suite's standalone teleprompter: capture-invisible prompter views (docked strip, floating window, full screen) that scroll by hand or follow your voice, mirror for glass rigs, and drive or follow the CutMark Recorder and OBS. The feature benchmark is the Virtual Prompter in Elgato Studio 2.0; this spec matches that feature set and keeps the suite integration on top.
 
 **Goals**
 
@@ -15,7 +15,7 @@ Cutmark Prompter is the suite's standalone teleprompter: capture-invisible promp
 - Readability controls: font, size, colors, spacing, margins and a dyslexia-friendly preset.
 - Widgets: session timer, progress, outline.
 - Mirror modes for beam-splitter glass rigs.
-- One countdown and one transport with the Cutmark Recorder; follows OBS recording state when the Recorder is not in use.
+- One countdown and one transport with the CutMark Recorder; follows OBS recording state when the Recorder is not in use.
 - Script-aware marks: every Recorder mark carries the script line being read, and the video editor can show the script against the timeline.
 - Every action reachable by hotkey and by the local API (Stream Deck).
 - Fully useful on its own with Zoom, Teams, OBS or any recorder.
@@ -82,7 +82,7 @@ Rust in the `cutmark` workspace, with egui on wgpu through eframe and `ui-kit` f
 | `prompter-platform` | Every OS call behind traits: view window tweaks (capture exclusion, topmost, no-activate), clipboard HTML, single-instance signal, mic capture backend, credential store, OS version check, default fonts. Windows backend only in v1 | none |
 | `prompter-voice` | Resampling, VAD, `SpeechEngine` trait, sherpa-onnx engine, model manager; gets mic audio from `prompter-platform` | `prompter-core`, `prompter-platform` |
 | `cutmark-prompter` (`apps/prompter`) | eframe app: Library window and view viewports, text renderer, local API server, Recorder and OBS clients | all above, `ui-kit`, `cutmark-hotkeys` |
-| `cutmark-hotkeys` | Suite hotkey map shared by every Cutmark app, with per-OS default chords. Already in the workspace (built by the Recorder) | none |
+| `cutmark-hotkeys` | Suite hotkey map shared by every CutMark app, with per-OS default chords. Already in the workspace (built by the Recorder) | none |
 
 Rules:
 
@@ -113,7 +113,7 @@ Rules:
 
 **View window setup (eframe viewports)**
 
-- `ViewportBuilder`: `with_transparent(true)`, `with_decorations(false)`, `with_window_level(AlwaysOnTop)`, `with_taskbar(false)`, `with_active(false)`, and a unique title per view (for example "Cutmark Prompter View 1").
+- `ViewportBuilder`: `with_transparent(true)`, `with_decorations(false)`, `with_window_level(AlwaysOnTop)`, `with_taskbar(false)`, `with_active(false)`, and a unique title per view (for example "CutMark Prompter View 1").
 - Click-through: `ViewportCommand::MousePassthrough(true)`, toggled for all views at once.
 - Window handle: use the handle eframe or winit exposes for the viewport where the pinned versions offer one; otherwise `prompter-platform` finds the HWND by the view's unique title on the app's own process.
 - Capture exclusion: `prompter-platform` calls `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` on each window right after creation, so the window is absent from the captured frame rather than blacked out. The Library and the debug HUD get the same call.
@@ -136,7 +136,7 @@ One Library window where you write and set up, plus up to four prompter views. E
 **Library window** (Design Language rev 3)
 
 - `ui-kit` window chrome, default 1100 x 720, size and position remembered.
-- Title bar (44): app mark, then the menu bar File, Edit, Script, View, Help. Center: the active script's name in `type.body` 600, the unsaved dot, and a caption with word count and read time (for example "1,240 words · 8 min"); with no script open, "Cutmark Prompter" in `text.secondary`. Right: Start Prompter as the primary button, a separator, caption buttons. No hamburger button, no Undo or Redo in the title bar.
+- Title bar (44): app mark, then the menu bar File, Edit, Script, View, Help. Center: the active script's name in `type.body` 600, the unsaved dot, and a caption with word count and read time (for example "1,240 words · 8 min"); with no script open, "CutMark Prompter" in `text.secondary`. Right: Start Prompter as the primary button, a separator, caption buttons. No hamburger button, no Undo or Redo in the title bar.
 - Menus: File (New, Import, Export, Duplicate, Delete, Settings, Exit), Edit (Undo, Redo, Cut, Copy, Paste, Paste as plain text, Find), Script (Start or Pause, Reset to top, Jump to section, Toggle mode), View (views, click-through, show or hide views, Outline, Appearance), Help (Help, Keyboard shortcuts, Take the tour, About). Every item shows its shortcut.
 - Left panel (header "Scripts"): script list with search, sort by name or last edited, folders, and a Favorites filter. A star on each script marks a favorite; favorites sort first.
 - Center panel: tab bar of open scripts (up to 12, restored on next launch), a panel toolbar with Undo and Redo at the left, then the Markdown editor (monospace) with a live preview toggle. The preview is the same renderer the views use.
@@ -448,11 +448,11 @@ Any value can still be changed by hand after the preset is on. Script text color
 
 ## Suite integration
 
-The Prompter links to one recorder at a time (Cutmark Recorder or OBS), and the Recorder owns the clock: the Prompter reports what you are reading, and the Recorder timestamps it into the take folder next to the marks.
+The Prompter links to one recorder at a time (CutMark Recorder or OBS), and the Recorder owns the clock: the Prompter reports what you are reading, and the Recorder timestamps it into the take folder next to the marks.
 
-**Transport link setting:** Off, Cutmark Recorder (default when the Recorder is installed), or OBS.
+**Transport link setting:** Off, CutMark Recorder (default when the Recorder is installed), or OBS.
 
-**Cutmark Recorder link** (Recorder local API, `ws://127.0.0.1:4466`, token from Recorder settings)
+**CutMark Recorder link** (Recorder local API, `ws://127.0.0.1:4466`, token from Recorder settings)
 
 | Prompter does | Recorder does |
 | --- | --- |
@@ -477,7 +477,7 @@ Options (default off): Stop recording when the Prompter reaches the end; Stop th
 - `RecordStateChanged` keeps state in step: Started, Paused, Resumed, Stopped. Starting or stopping from OBS itself also drives the Prompter.
 - OBS has no marks, so the Prompter keeps its own log (flubs, mark cues, script positions, timed from the Started event) and writes `<recording name>_prompter_marks.md` and `_script.csv` next to the recording when `RecordStateChanged` reports Stopped with its output path. Same formats as the Recorder, so the editor imports them the same way.
 
-**Stream Deck.** The suite's one Stream Deck plugin (Cutmark Remote Control v1 Spec) drives the Prompter through the local API below. The Prompter's actions get added to that spec before Phase 5.
+**Stream Deck.** The suite's one Stream Deck plugin (CutMark Remote Control v1 Spec) drives the Prompter through the local API below. The Prompter's actions get added to that spec before Phase 5.
 
 **Video editor (cross-spec, to add to the Video Editor UI spec)**
 
@@ -494,7 +494,7 @@ Options (default off): Stop recording when the Prompter reaches the end; Stop th
 
 ## Hotkeys
 
-Every Cutmark app reads one shared hotkey map, and each chord has exactly one owner, so the Prompter can never steal a Recorder chord again.
+Every CutMark app reads one shared hotkey map, and each chord has exactly one owner, so the Prompter can never steal a Recorder chord again.
 
 **Suite hotkey map** (`cutmark-hotkeys` crate, already in the workspace)
 
@@ -530,7 +530,7 @@ The Prompter exposes the same kind of local WebSocket API as the Recorder; every
 
 - **Bind:** 127.0.0.1 only, port 4467 (Recorder is 4466), configurable.
 - **Auth:** token shown in settings, sent in the first message. Can be disabled entirely.
-- **Clients:** the Cutmark Stream Deck plugin, scripts, other Cutmark apps.
+- **Clients:** the CutMark Stream Deck plugin, scripts, other CutMark apps.
 
 **Commands:** `start`, `pause`, `resume`, `stop`, `reset`, `nudge` (lines, signed), `setSpeed`, `setMode` (manual, voice), `jumpToSection` (index or heading text), `loadScript` (id), `openView` (kind, monitor), `closeView` (view id), `showViews` (all or one view id, on or off), `setMirror` (view id, mode), `setWidget` (view id, widget, on or off), `setClickThrough`, `flub`, `getStatus`.
 
@@ -585,7 +585,7 @@ Capture invisibility and click-through are tested first; if any capture tool see
 
 - [ ] Floating view is truly transparent (per-pixel alpha) on wgpu DX12, with no black or opaque background
 - [ ] OBS Display Capture and Window Capture: Docked, Floating, Full screen, Library and HUD absent
-- [ ] Cutmark Recorder full-monitor capture: all Prompter windows absent
+- [ ] CutMark Recorder full-monitor capture: all Prompter windows absent
 - [ ] Zoom and Teams full-screen share: absent
 - [ ] Windows Game Bar and Snipping Tool recording: absent
 - [ ] Click-through on: click, type and drag in another app through every view
@@ -686,7 +686,7 @@ macOS ships later, but v1 is built so a macOS backend is an addition, not a rewr
 **The known macOS blocker**
 
 - Since macOS 15, windows marked as hidden from capture are still captured by ScreenCaptureKit (Zoom, QuickTime, system screenshots, current OBS), and Apple offers no public fix ([details](https://www.producthunt.com/p/jobpath/how-apps-hide-windows-from-screen-capture-and-what-broke-in-macos-15)).
-- Plan for macOS: a Cutmark Recorder for Mac excludes Prompter windows through its own ScreenCaptureKit content filter; with OBS or Zoom, the Prompter shows a one-time tip to capture a window or app instead of the whole display, or to use a Full screen view on another monitor.
+- Plan for macOS: a CutMark Recorder for Mac excludes Prompter windows through its own ScreenCaptureKit content filter; with OBS or Zoom, the Prompter shows a one-time tip to capture a window or app instead of the whole display, or to use a Full screen view on another monitor.
 
 **macOS phases (later)**
 
@@ -715,7 +715,7 @@ Needs: an Apple Developer account and an Apple Silicon Mac for manual testing. s
 - [ ] Speech model license: confirm the model picked in Phase 8 allows commercial redistribution inside the installer.
 - [ ] OpenDyslexic license: confirm it allows bundling in a commercial installer.
 - [ ] Code signing certificate for the suite's installers (unsigned installers trigger SmartScreen warnings). Suite-wide decision.
-- [ ] Add the Prompter's actions to the Cutmark Remote Control spec (before Phase 5).
+- [ ] Add the Prompter's actions to the CutMark Remote Control spec (before Phase 5).
 - [ ] Add the Script stream, Script column and Script lane to the Video Editor UI spec, or keep them as a later editor phase?
 - [ ] Flub default Ctrl+F9: good, or another chord?
 - [ ] Second Voice Follow language, if any, for the first commercial release.

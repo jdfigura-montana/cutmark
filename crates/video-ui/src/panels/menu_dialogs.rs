@@ -215,7 +215,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             let (filter, ext, name) = if id == "file.exportAle" {
                 (tl!("Avid Log Exchange"), "ale", format!("{}.ale", app.session.project.name))
             } else {
-                (tl!("Cutmark Video Project"), "fcproj", tlf!("{name} Selection.fcproj", name = app.session.project.name))
+                (tl!("CutMark Video Project"), "fcproj", tlf!("{name} Selection.fcproj", name = app.session.project.name))
             };
             let mut p = params.clone();
             if !p.is_object() {

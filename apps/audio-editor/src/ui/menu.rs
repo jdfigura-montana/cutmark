@@ -172,7 +172,7 @@ pub fn menu_bar(
                 ui.close();
             }
             menu_sep(ui);
-            if ui.button("About Cutmark Audio").clicked() {
+            if ui.button("About CutMark Audio").clicked() {
                 help_action.set(HelpMenuAction::About);
                 ui.close();
             }
@@ -709,7 +709,7 @@ mod tests {
                 ("Appearance...", ""),
             ],
         ),
-        ("Help", &[("Help topics", "F1"), ("Keyboard shortcuts", "Ctrl+Slash"), ("Show the tour", ""), ("About Cutmark Audio", "")]),
+        ("Help", &[("Help topics", "F1"), ("Keyboard shortcuts", "Ctrl+Slash"), ("Show the tour", ""), ("About CutMark Audio", "")]),
     ];
 
     #[test]

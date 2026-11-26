@@ -31,7 +31,7 @@ pub const APPEARANCE: ui_kit::AppAppearance = ui_kit::AppAppearance::AUDIO;
 
 /// The short app name shown in the start screen's toolbar title area and its
 /// panel heading.
-pub const APP_SHORT_NAME: &str = "Cutmark Audio";
+pub const APP_SHORT_NAME: &str = "CutMark Audio";
 
 /// Height of the 44px main toolbar (the window's title bar).
 const TOP_BAR_H: f32 = size::TOOLBAR_MAIN_HEIGHT;
@@ -2126,9 +2126,9 @@ mod tests {
         let _ = rig.frame();
         // Help > About Cutmark Audio.
         let _ = rig.click("Help");
-        let out = rig.click("About Cutmark Audio");
+        let out = rig.click("About CutMark Audio");
         assert!(rig.app.about_open, "the Help menu opened the About box");
-        assert!(out.text_rect("About Cutmark Audio").is_some(), "the About dialog is drawn");
+        assert!(out.text_rect("About CutMark Audio").is_some(), "the About dialog is drawn");
         // The dialog's footer settles a frame after the modal appears.
         let app = &mut rig.app;
         let out = rig.h.settle(|ui| app.run(ui));

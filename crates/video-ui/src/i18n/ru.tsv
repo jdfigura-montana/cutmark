@@ -4,7 +4,7 @@
 # using Russian video-editing vocabulary (Premiere-style). No proprietary localization resources were used.
 # Core menu coverage; other interface strings fall back to English.
 
-	About Cutmark Video	О Cutmark Video
+	About CutMark Video	О CutMark Video
 	Add Audio Submix Track	Добавить дорожку подмикширования звука
 	Add Caption at Playhead	Добавить субтитр в позиции курсора воспроизведения
 	Add Chapter Marker…	Добавить маркер главы…
@@ -30,7 +30,7 @@
 	Apply Default Transitions to Selection	Применить переходы по умолчанию к выделению
 	Apply Video Transition	Применить видеопереход
 	Arrange	Упорядочить
-	Cutmark Website	Веб-сайт Cutmark
+	CutMark Website	Веб-сайт CutMark
 	Assembly	Сборка
 	Attach Proxies…	Прикрепить прокси…
 	Audio	Аудио
@@ -126,8 +126,8 @@
 	File	Файл
 	File…	Файл…
 	Fill frame	Заполнить кадр
-	Cutmark Video Help…	Справка Cutmark Video…
-	Cutmark Video on GitHub	Cutmark Video на GitHub
+	CutMark Video Help…	Справка CutMark Video…
+	CutMark Video on GitHub	CutMark Video на GitHub
 	Find Next	Найти далее
 	Find…	Найти…
 	Fit	По размеру
@@ -296,7 +296,7 @@
 	Select Previous Graphic	Выбрать предыдущий графический элемент
 	Select Previous Layer	Выбрать предыдущий слой
 	Selection Follows Playhead	Выделение следует за курсором воспроизведения
-	Selection as Cutmark Video Project…	Выделение как проект Cutmark Video…
+	Selection as CutMark Video Project…	Выделение как проект CutMark Video…
 	Selection…	Выделение…
 	Send Backward	Переместить назад
 	Send to Back	Переместить на задний план

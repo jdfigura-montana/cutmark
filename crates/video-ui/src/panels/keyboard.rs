@@ -131,8 +131,8 @@ pub const COMMANDS: &[UiCommand] = &[
     uic!("mixer.showHideTracks", "Show/Hide Tracks…", [], None),
     uic!("mixer.meterInputOnly", "Meter Input(s) Only", [], None),
     uic!("graphics.beginTextEditing", "Begin Text Editing for a Graphic Layer", [], Some("Cmd+Alt+'")),
-    uic!("help.filmcraftHelp", "Cutmark Video Help…", ["Help"], Some("F1")),
-    uic!("app.quit", "Quit Cutmark Video", [], Some("Cmd+Q")),
+    uic!("help.filmcraftHelp", "CutMark Video Help…", ["Help"], Some("F1")),
+    uic!("app.quit", "Quit CutMark Video", [], Some("Cmd+Q")),
 ];
 
 /// Cutmark Video's documentation (Help ▸ Cutmark Video Help…, F1).

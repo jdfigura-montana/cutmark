@@ -1,6 +1,6 @@
 [package]
 name = "cutmark-recorder"
-description = "Cutmark Recorder: screen, webcam and audio recorder for the Cutmark suite."
+description = "CutMark Recorder: screen, webcam and audio recorder for the CutMark suite."
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true

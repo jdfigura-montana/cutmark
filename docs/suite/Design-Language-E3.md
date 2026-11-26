@@ -1,4 +1,4 @@
-# Cutmark Design Language: E3 amendment (character pass)
+# CutMark Design Language: E3 amendment (character pass)
 
 Nov 25, 2026 · @JD · approved from the board "E3 · Recorder, Setup (proposal)" on the Cutmark Look canvas.
 

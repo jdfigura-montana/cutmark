@@ -425,7 +425,7 @@ impl SessionFile {
             })
             .collect();
         let doc = serde_json::json!({
-            "app": "Cutmark Recorder",
+            "app": "CutMark Recorder",
             "version": env!("CARGO_PKG_VERSION"),
             "take": cfg.base_name,
             "started_at": chrono::Local::now().to_rfc3339(),
@@ -846,7 +846,7 @@ fn file_name(path: &Path) -> String {
 }
 
 /// The encoder tag every take's container carries.
-pub(super) const ENCODER_TAG: &str = concat!("Cutmark Recorder ", env!("CARGO_PKG_VERSION"));
+pub(super) const ENCODER_TAG: &str = concat!("CutMark Recorder ", env!("CARGO_PKG_VERSION"));
 
 /// The take name a container carries as its title: the file name without its extension.
 pub(super) fn take_title(file: &Path) -> String {

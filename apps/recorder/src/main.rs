@@ -38,6 +38,16 @@ mod tray;
 mod webcam;
 mod webcam_ui;
 
+/// The main window's title, also the name eframe runs the app under.
+const WINDOW_TITLE: &str = "CutMark Recorder";
+
+/// The main window: its title and size on the suite's window chrome.
+fn viewport() -> egui::ViewportBuilder {
+    ui_kit::chrome::viewport(egui::ViewportBuilder::default().with_title(WINDOW_TITLE).with_inner_size([1280.0, 800.0]))
+        // The Recorder needs more width than the suite's minimum for its stage and two panels.
+        .with_min_inner_size([config::MIN_WINDOW_WIDTH, ui_kit::chrome::MIN_SIZE.y])
+}
+
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
@@ -45,13 +55,11 @@ fn main() -> anyhow::Result<()> {
         renderer: eframe::Renderer::Wgpu,
         // The suite's undecorated window chrome: the native caption goes, resize borders and
         // Aero Snap stay, and the title bar is drawn by ui_kit::main_toolbar in the app.
-        viewport: ui_kit::chrome::viewport(egui::ViewportBuilder::default().with_title("Cutmark Recorder").with_inner_size([1280.0, 800.0]))
-            // The Recorder needs more width than the suite's minimum for its stage and two panels.
-            .with_min_inner_size([config::MIN_WINDOW_WIDTH, ui_kit::chrome::MIN_SIZE.y]),
+        viewport: viewport(),
         ..Default::default()
     };
     eframe::run_native(
-        "Cutmark Recorder",
+        WINDOW_TITLE,
         options,
         Box::new(|cc| {
             ui_kit::apply_for(&cc.egui_ctx, app::APPEARANCE);
@@ -60,4 +68,14 @@ fn main() -> anyhow::Result<()> {
         }),
     )
     .map_err(|err| anyhow::anyhow!("{err}"))
+}
+
+#[cfg(test)]
+mod tests {
+    /// The product name's casing: a capital C and a capital M.
+    #[test]
+    fn the_main_window_title_starts_with_cutmark() {
+        let title = super::viewport().title;
+        assert!(title.as_deref().is_some_and(|title| title.starts_with("CutMark")), "{title:?}");
+    }
 }

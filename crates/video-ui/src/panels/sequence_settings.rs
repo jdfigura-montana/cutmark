@@ -35,8 +35,8 @@ use crate::FilmcraftApp;
 use crate::i18n::t;
 use crate::state::SequenceSettingsDraft;
 
-const NOT_YET: &str = "Not supported in Cutmark Video yet";
-const LINEAR: &str = "Cutmark Video always composites in linear light";
+const NOT_YET: &str = "Not supported in CutMark Video yet";
+const LINEAR: &str = "CutMark Video always composites in linear light";
 
 /// The Timebase list (frames per second as num/den), Premiere's common rates.
 const TIMEBASES: [(i64, i64); 15] = [

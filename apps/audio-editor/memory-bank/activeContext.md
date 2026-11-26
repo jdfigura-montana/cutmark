@@ -1,3 +1,6 @@
+## Brand N1 name casing (2026-11-26)
+Write "CutMark" in user-facing text. Paths, identifiers and comments may still say "Cutmark". Older entries below use the old casing.
+
 ## E3 header column separation (2026-11-26)
 - Track area surfaces: header blocks and the "Tracks" corner cell `bg.group`, header column below the last track `bg.panel`, lanes and scrollbar strip `bg.stage.inner`. A 3 px `bg.ground` gutter (`metrics::COLUMN_GUTTER_W`, outside the 208 px `HEADER_COL_W`) runs the whole track area; lanes start after it. 1 px `bg.ground` row lines (`lane::paint_row_line`) cross header and lanes. No line under the Add track row, no alternate row shade.
 - Each header has a 28 px `bg.panel` number column (`NUMBER_GUTTER_W`); name, sliders and meter start 8 px right of it (`content_left`).

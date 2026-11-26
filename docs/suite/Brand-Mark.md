@@ -1,4 +1,4 @@
-# Cutmark mark and app colors
+# CutMark mark and app colors
 
 Nov 26, 2026. Decided by JD from the "Cutmark marks" boards on the Cutmark Look canvas. Supersedes the app-to-accent mapping in the accent-per-app amendment, and the "app mark keeps the notch motif" line in Design-Language-E3.md.
 

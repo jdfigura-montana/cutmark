@@ -1,6 +1,6 @@
 [package]
 name = "cutmark-video"
-description = "Cutmark Video desktop app"
+description = "CutMark Video desktop app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

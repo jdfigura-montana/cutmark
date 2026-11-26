@@ -1,4 +1,4 @@
-# Cutmark Design Language: accent per app (amendment)
+# CutMark Design Language: accent per app (amendment)
 
 Nov 24, 2026 · @JD · approved
 

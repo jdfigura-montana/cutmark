@@ -2,7 +2,7 @@
 
 Nov 24, 2026 · @JD · draft 1
 
-Exported from the Claude Project "Creator Suite" ("Recorder Phase 10 Per-app Audio Spec"). The Project copy is the source. Built from item 1 of the Cutmark Suite Additions Plan.
+Exported from the Claude Project "Creator Suite" ("Recorder Phase 10 Per-app Audio Spec"). The Project copy is the source. Built from item 1 of the CutMark Suite Additions Plan.
 
 ## Overview
 

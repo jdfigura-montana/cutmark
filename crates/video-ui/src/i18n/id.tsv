@@ -21,7 +21,7 @@
 # thumbnail = gambar mini, voice-over = sulih suara, default = bawaan, preferences (also the native
 # macOS Settings menu) = Preferensi, settings = pengaturan.
 
-	About Cutmark Video	Tentang Cutmark Video
+	About CutMark Video	Tentang CutMark Video
 	Add Audio Submix Track	Tambah Trek Submix Audio
 	Add Caption at Playhead	Tambah Takarir di Kepala Putar
 	Add Chapter Marker…	Tambah Penanda Bab…
@@ -47,7 +47,7 @@
 	Apply Default Transitions to Selection	Terapkan Transisi Bawaan ke Pilihan
 	Apply Video Transition	Terapkan Transisi Video
 	Arrange	Susun
-	Cutmark Website	Situs Web Cutmark
+	CutMark Website	Situs Web CutMark
 	Assembly	Perakitan
 	Attach Proxies…	Lampirkan Proksi…
 	Audio Channels…	Kanal Audio…
@@ -140,8 +140,8 @@
 	File	Berkas
 	File…	Berkas…
 	Fill frame	Isi bingkai
-	Cutmark Video Help…	Bantuan Cutmark Video…
-	Cutmark Video on GitHub	Cutmark Video di GitHub
+	CutMark Video Help…	Bantuan CutMark Video…
+	CutMark Video on GitHub	CutMark Video di GitHub
 	Find Next	Cari Berikutnya
 	Find…	Cari…
 	Fit	Pas
@@ -313,7 +313,7 @@
 	Select Previous Graphic	Pilih Grafis Sebelumnya
 	Select Previous Layer	Pilih Lapisan Sebelumnya
 	Selection Follows Playhead	Pilihan Mengikuti Kepala Putar
-	Selection as Cutmark Video Project…	Pilihan sebagai Proyek Cutmark Video…
+	Selection as CutMark Video Project…	Pilihan sebagai Proyek CutMark Video…
 	Selection…	Pilihan…
 	Send Backward	Kirim Mundur
 	Send to Back	Kirim ke Belakang
@@ -422,7 +422,7 @@
 	Delete Caption Track	Hapus Trek Takarir
 	Delete Empty Caption Tracks	Hapus Trek Takarir Kosong
 	Version {version}	Versi {version}
-	A clean-room, pure-Rust non-linear video editor. Part of the Cutmark family.	Editor video non-linear clean-room berbahasa Rust murni. Bagian dari keluarga Cutmark.
+	A clean-room, pure-Rust non-linear video editor. Part of the CutMark family.	Editor video non-linear clean-room berbahasa Rust murni. Bagian dari keluarga CutMark.
 	Source code on GitHub	Kode sumber di GitHub
 	Report an issue	Laporkan masalah
 	MIT OR Apache-2.0. Fonts: Inter, Noto Serif and JetBrains Mono (SIL OFL 1.1).	MIT OR Apache-2.0. Font: Inter, Noto Serif dan JetBrains Mono (SIL OFL 1.1).
@@ -442,8 +442,8 @@
 	No background jobs.	Tidak ada tugas latar belakang.
 	Recover Unsaved Changes	Pulihkan Perubahan yang Belum Disimpan
 	Untitled	Tanpa Judul
-	Cutmark Video was closed while “{name}” had unsaved changes.	Cutmark Video ditutup saat “{name}” masih memiliki perubahan yang belum disimpan.
-	Cutmark Video quit unexpectedly while “{name}” had unsaved changes.	Cutmark Video keluar secara tak terduga saat “{name}” masih memiliki perubahan yang belum disimpan.
+	CutMark Video was closed while “{name}” had unsaved changes.	CutMark Video ditutup saat “{name}” masih memiliki perubahan yang belum disimpan.
+	CutMark Video quit unexpectedly while “{name}” had unsaved changes.	CutMark Video keluar secara tak terduga saat “{name}” masih memiliki perubahan yang belum disimpan.
 	Recover unsaved changes from {when}?	Pulihkan perubahan yang belum disimpan dari {when}?
 	The project had not been saved yet.	Proyek ini belum pernah disimpan.
 	{n} sessions have unsaved changes:	{n} sesi memiliki perubahan yang belum disimpan:
@@ -967,7 +967,7 @@
 	Font family	Keluarga font
 	Label Colors	Warna Label
 	Decoded frames held for the monitors and thumbnails: {used} of {budget}.	Bingkai terdekode yang disimpan untuk monitor dan gambar mini: {used} dari {budget}.
-	Cutmark Video keeps the rest of the RAM free for other applications.	Cutmark Video membiarkan sisa RAM bebas untuk aplikasi lain.
+	CutMark Video keeps the rest of the RAM free for other applications.	CutMark Video membiarkan sisa RAM bebas untuk aplikasi lain.
 	not available in this session	tidak tersedia di sesi ini
 	Currently: {loc} — {files} file(s), {size}	Saat ini: {loc} — {files} berkas, {size}
 	 ({ch} output channels)	 ({ch} kanal output)
@@ -1078,7 +1078,7 @@
 	Video Frame	Bingkai Video
 	Pin To	Sematkan ke
 	Pinned Edges	Tepi Tersemat
-	Cutmark Video Graphics Template	Templat Grafis Cutmark Video
+	CutMark Video Graphics Template	Templat Grafis CutMark Video
 	{n} Font	Font {n}
 	{n} Size	Ukuran {n}
 	{n} Color	Warna {n}
@@ -1088,7 +1088,7 @@
 	Export As Motion Graphics Template	Ekspor sebagai Templat Grafis Gerak
 	Category:	Kategori:
 	Editable properties:	Properti yang dapat diedit:
-	Saved as a Cutmark Video graphics template (.fcgt) in your templates folder.	Disimpan sebagai templat grafis Cutmark Video (.fcgt) di folder templat Anda.
+	Saved as a CutMark Video graphics template (.fcgt) in your templates folder.	Disimpan sebagai templat grafis CutMark Video (.fcgt) di folder templat Anda.
 	Exported graphics template to {path}	Templat grafis diekspor ke {path}
 	Replace Fonts in Projects	Ganti Font di Proyek
 	Fonts used in the project:	Font yang dipakai di proyek:
@@ -1459,7 +1459,7 @@
 	Center of Sphere	Pusat Bola
 	Cents	Sen
 	Change to Color	Ubah ke Warna
-	Changes are copied in the background a moment after each edit. If Cutmark Video quits unexpectedly, they are offered the next time it starts.	Perubahan disalin di latar belakang sesaat setelah setiap edit. Jika Cutmark Video keluar secara tak terduga, perubahan itu ditawarkan saat Cutmark Video dimulai berikutnya.
+	Changes are copied in the background a moment after each edit. If CutMark Video quits unexpectedly, they are offered the next time it starts.	Perubahan disalin di latar belakang sesaat setelah setiap edit. Jika CutMark Video keluar secara tak terduga, perubahan itu ditawarkan saat CutMark Video dimulai berikutnya.
 	Channel	Kanal
 	Channel Blur	Buram Kanal
 	Channel Mix	Campuran Kanal
@@ -1832,7 +1832,7 @@
 	Hard Limiter	Limiter Keras
 	Hard Mix	Campuran Keras
 	Hardware decoding	Dekode perangkat keras
-	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and Cutmark Video's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Dekode perangkat keras: Otomatis menggunakan dekoder video sistem (VideoToolbox di macOS, Media Foundation di Windows, VA-API atau NVDEC untuk H.264 dan HEVC di Linux) untuk stream yang didukungnya, dan dekoder Cutmark Video sendiri untuk yang lainnya atau jika perangkat keras gagal. Media yang sudah terbuka tetap memakai dekodernya sampai dibuka ulang.
+	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and CutMark Video's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Dekode perangkat keras: Otomatis menggunakan dekoder video sistem (VideoToolbox di macOS, Media Foundation di Windows, VA-API atau NVDEC untuk H.264 dan HEVC di Linux) untuk stream yang didukungnya, dan dekoder CutMark Video sendiri untuk yang lainnya atau jika perangkat keras gagal. Media yang sudah terbuka tetap memakai dekodernya sampai dibuka ulang.
 	Head Size	Ukuran Kepala
 	Heart	Hati
 	Height	Tinggi
@@ -2107,7 +2107,7 @@
 	Night	Malam
 	No Motion	Tanpa Gerak
 	No Scroll	Tanpa Gulir
-	No plugins are installed. Changes will take effect the next time you start Cutmark Video.	Tidak ada plugin yang terpasang. Perubahan akan berlaku saat Anda memulai Cutmark Video berikutnya.
+	No plugins are installed. Changes will take effect the next time you start CutMark Video.	Tidak ada plugin yang terpasang. Perubahan akan berlaku saat Anda memulai CutMark Video berikutnya.
 	Noise	Derau
 	Noise & Grain	Derau & Butiran
 	Noise (Legacy)	Derau (Lama)
@@ -2538,7 +2538,7 @@
 	Template Properties	Properti Templat
 	Text Animator	Animator Teks
 	Text Color	Warna Teks
-	The media cache holds render previews of unsaved projects and other files Cutmark Video can recreate. Deleting them is always safe; Cutmark Video rebuilds them as needed.	Cache media menyimpan pratinjau render dari proyek yang belum disimpan dan berkas lain yang dapat dibuat ulang oleh Cutmark Video. Menghapusnya selalu aman; Cutmark Video membangunnya kembali bila diperlukan.
+	The media cache holds render previews of unsaved projects and other files CutMark Video can recreate. Deleting them is always safe; CutMark Video rebuilds them as needed.	Cache media menyimpan pratinjau render dari proyek yang belum disimpan dan berkas lain yang dapat dibuat ulang oleh CutMark Video. Menghapusnya selalu aman; CutMark Video membangunnya kembali bila diperlukan.
 	Thickness	Ketebalan
 	Tile Gradient	Gradien Ubin
 	Tilt	Miringkan
@@ -2748,7 +2748,7 @@
 	System Compatibility Report	Laporan Kompatibilitas Sistem
 	no GPU adapter: the CPU compositor is used	tidak ada adaptor GPU: kompositor CPU digunakan
 	Avid Log Exchange	Avid Log Exchange
-	Cutmark Video Project	Proyek Cutmark Video
+	CutMark Video Project	Proyek CutMark Video
 	{name} Selection.fcproj	{name} Pilihan.fcproj
 	{name} (Simplified)	{name} (Disederhanakan)
 	Find in:	Cari di:
@@ -2888,7 +2888,7 @@
 	Start Queue	Mulai Antrean
 	Stop	Berhenti
 	Clear Finished	Hapus yang Selesai
-	Not supported by Cutmark Video's encoders yet	Belum didukung oleh enkoder Cutmark Video
+	Not supported by CutMark Video's encoders yet	Belum didukung oleh enkoder CutMark Video
 	Sequence name	Nama sekuens
 	Folder	Folder
 	Preset	Preset
@@ -2978,7 +2978,7 @@
 	Drag a clip to slide it between its neighbours.	Seret klip untuk menggesernya di antara klip tetangganya.
 	Drag to scroll the timeline.	Seret untuk menggulir linimasa.
 	Click to zoom in; Opt-click to zoom out.	Klik untuk memperbesar; Opt-klik untuk memperkecil.
-	Cutmark Video hit an error	Cutmark Video mengalami galat
+	CutMark Video hit an error	CutMark Video mengalami galat
 	Details: {path}	Detail: {path}
 	Opened {url}	Membuka {url}
 	(empty)	(kosong)
@@ -3232,7 +3232,7 @@
 	QuickTime, ProRes 4444 (4:4:4) with alpha channel, 24-bit 48 kHz PCM	QuickTime, ProRes 4444 (4:4:4) dengan kanal alfa, PCM 24-bit 48 kHz
 	QuickTime, ProRes 4444 XQ (4:4:4), 24-bit 48 kHz PCM	QuickTime, ProRes 4444 XQ (4:4:4), PCM 24-bit 48 kHz
 	QuickTime, ProRes 422, 24-bit 48 kHz PCM	QuickTime, ProRes 422, PCM 24-bit 48 kHz
-	Quit Cutmark Video	Keluar dari Cutmark Video
+	Quit CutMark Video	Keluar dari CutMark Video
 	Rate Stretch Tool	Alat Regang Laju
 	Razor Tool	Alat Silet
 	Rectangle Tool	Alat Persegi Panjang
@@ -3532,8 +3532,8 @@
 	Composite in Linear Color	Komposit dalam Warna Linier
 	Auto Tone Map Media (HDR and log into SDR)	Pemetaan Nada Otomatis Media (HDR dan log ke SDR)
 	Configure…	Konfigurasi…
-	Not supported in Cutmark Video yet	Belum didukung di Cutmark Video
-	Cutmark Video always composites in linear light	Cutmark Video selalu mengomposit dalam cahaya linier
+	Not supported in CutMark Video yet	Belum didukung di CutMark Video
+	CutMark Video always composites in linear light	CutMark Video selalu mengomposit dalam cahaya linier
 	Loop marked range	Ulangi rentang yang ditandai
 	Play Source	Putar Sumber
 	Source Play/Stop	Putar/Berhenti Sumber

@@ -34,7 +34,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut open = true;
     match d {
         Dialog::About => {
-            egui::Window::new(tl!("About Cutmark Video"))
+            egui::Window::new(tl!("About CutMark Video"))
                 .id(egui::Id::new("About Cutmark Video"))
                 .open(&mut open)
                 .collapsible(false)
@@ -453,7 +453,7 @@ fn about_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     use crate::links;
     let t = app.tokens;
     ui.set_width(380.0);
-    ui.heading("Cutmark Video");
+    ui.heading("CutMark Video");
     ui.label(tlf!("Version {version}", version = env!("CARGO_PKG_VERSION")));
     ui.label(tl!("A clean-room, pure-Rust non-linear video editor."));
     ui.add_space(10.0);
@@ -484,7 +484,7 @@ fn about_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             links::open(app, ui.ctx(), url);
         }
     };
-    link(ui, "github", Icon::Code, tl!("Cutmark Video on GitHub"), links::GITHUB, true);
+    link(ui, "github", Icon::Code, tl!("CutMark Video on GitHub"), links::GITHUB, true);
     ui.add_space(6.0);
     link(ui, "reportIssue", Icon::Code, tl!("Report an issue"), links::ISSUES, false);
     ui.add_space(10.0);

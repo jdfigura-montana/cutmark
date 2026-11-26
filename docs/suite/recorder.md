@@ -1,4 +1,4 @@
-# Cutmark Recorder: v1.2 Spec
+# CutMark Recorder: v1.2 Spec
 
 Oct 26, 2026 · @JD
 
@@ -14,7 +14,7 @@ Oct 26, 2026 · @JD
 8. One file per take. No rollover.
 9. The build follows the S0 workspace rules (CLAUDE.md, strict lints in new crates, `scripts\check.ps1`, static CRT, Inno Setup installer).
 
-**Changes from v1** (to match the Cutmark Creator Suite overview):
+**Changes from v1** (to match the CutMark Creator Suite overview):
 
 1. Hardware encoding on AMD, Nvidia and Intel, with SVT-AV1 as the software fallback.
 2. Vendor-neutral rate control and profiles.
@@ -25,7 +25,7 @@ Oct 26, 2026 · @JD
 
 ## Overview
 
-The Cutmark Creator Suite's Windows desktop recorder: record only, no streaming, no scenes, no plugins. It records the screen with hardware AV1 on AMD, Nvidia or Intel, a chroma-keyed webcam, multiple audio tracks, and marks that drive editing.
+The CutMark Creator Suite's Windows desktop recorder: record only, no streaming, no scenes, no plugins. It records the screen with hardware AV1 on AMD, Nvidia or Intel, a chroma-keyed webcam, multiple audio tracks, and marks that drive editing.
 
 **Goals**
 
@@ -45,7 +45,7 @@ The Cutmark Creator Suite's Windows desktop recorder: record only, no streaming,
 
 ## Platform and tech stack
 
-Rust on Windows 11, inside the Cutmark workspace. Capture and encoding live in shared crates so TuteTool can reuse them; the app never touches them except through its engine module.
+Rust on Windows 11, inside the CutMark workspace. Capture and encoding live in shared crates so TuteTool can reuse them; the app never touches them except through its engine module.
 
 - **Target:** Windows 11 with any D3D11 GPU. Developed on an RX 7700 XT; tested on Nvidia and Intel per the suite test rig.
 - **Code layout:**
@@ -400,6 +400,6 @@ Nine phases, each ending in a test you can run yourself; each phase becomes one 
 
 ## Open questions
 
-- [ ] App name inside the suite ("Cutmark Recorder" for now).
+- [ ] App name inside the suite ("CutMark Recorder" for now).
 - [ ] Confirm LUXEA Pro 8 plays the mixdown stream first and reads MKV chapters.
 - [ ] Confirm the D3D11-to-QSV frame path on real Intel hardware during phase 4.

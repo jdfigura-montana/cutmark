@@ -40,7 +40,7 @@ pub enum LoadError {
     #[error("The marks file has no valid schema version.")]
     InvalidSchemaVersion,
     /// The file was made by a newer schema than this reader understands.
-    #[error("This marks file was made by a newer Cutmark ({}). Update to open it.", writer_label(.writer_version))]
+    #[error("This marks file was made by a newer CutMark ({}). Update to open it.", writer_label(.writer_version))]
     NewerVersion {
         /// The schema version found in the file.
         found: u64,

@@ -26,9 +26,9 @@ const IDLE_RGB: egui::Color32 = color::TEXT_TERTIARY;
 /// Tray icon colour while recording (`sem.record`).
 const RECORDING_RGB: egui::Color32 = color::SEM_RECORD;
 /// Tooltip text while idle.
-const TOOLTIP_IDLE: &str = "Cutmark Recorder";
+const TOOLTIP_IDLE: &str = "CutMark Recorder";
 /// Tooltip text while recording.
-const TOOLTIP_RECORDING: &str = "Cutmark Recorder - recording";
+const TOOLTIP_RECORDING: &str = "CutMark Recorder - recording";
 /// Tooltip text while paused.
 const TOOLTIP_PAUSED: &str = "Paused";
 

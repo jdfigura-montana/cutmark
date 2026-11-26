@@ -36,7 +36,7 @@ status bar. "State" is the field a change writes; `settings.*` is Settings (sett
 
 | # | On screen | Widget | Drawn by | State edited |
 | --- | --- | --- | --- | --- |
-| 1 | "Cutmark Recorder" heading, "Active profile: X" | heading, label | app.rs::ui | - |
+| 1 | "CutMark Recorder" heading, "Active profile: X" | heading, label | app.rs::ui | - |
 | 2 | Warning banners (capture exclusion failed, recording error, audio notice, engine banners, hotkey problems, preview problem, webcam warning, API problem) | colored labels | app.rs::ui | - |
 | 3 | "Recovered marks for N take(s)" | label + "Details"/"Hide details" + "Dismiss" small buttons | app.rs::recovery_banner | RecoveryReport, recovery_details (not saved) |
 | 4 | "Preview" | checkbox | app.rs::ui | preview_enabled (not saved) |

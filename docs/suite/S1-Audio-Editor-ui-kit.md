@@ -6,7 +6,7 @@ Exported from the Claude Project "Creator Suite". The Project copy is the source
 
 ## Overview
 
-S1 gives the suite its look and proves it on the first app. It grows the existing `ui-kit` crate (made during Recorder phases 1 and 3) into the full "Cutmark Design Language v1 Spec" (milestones G1 to G4 there), moves the audio editor from glow to wgpu, and restyles the audio editor with `ui-kit` (G5). It is done when the restyled audio editor has been used by JD for one week, every carried-over test passes, the Recorder still builds and passes its tests, and `s1` is tagged.
+S1 gives the suite its look and proves it on the first app. It grows the existing `ui-kit` crate (made during Recorder phases 1 and 3) into the full "CutMark Design Language v1 Spec" (milestones G1 to G4 there), moves the audio editor from glow to wgpu, and restyles the audio editor with `ui-kit` (G5). It is done when the restyled audio editor has been used by JD for one week, every carried-over test passes, the Recorder still builds and passes its tests, and `s1` is tagged.
 
 **What S1 delivers**
 
@@ -34,7 +34,7 @@ S1 gives the suite its look and proves it on the first app. It grows the existin
 
 | Input | Where |
 | --- | --- |
-| Look, tokens, components, window chrome, accent picker | Cutmark Design Language v1 Spec (added to docs/suite before Phase 3) |
+| Look, tokens, components, window chrome, accent picker | CutMark Design Language v1 Spec (added to docs/suite before Phase 3) |
 | Visual reference | Design canvas "Cutmark Look", board "E · Audio editor, blue" |
 | Audio editor architecture and layer rules | docs/audio-editor/spec.md |
 | Workspace rules, crate map, CI, checks | docs/suite/S0-Workspace.md |
@@ -65,7 +65,7 @@ The thresholds already in `meter.rs` become the tokens `sem.meter.ok` (below -12
 4. **Stale renderer notes:** S0-Workspace and the `scripts/check.ps1` comment describe `cutmark-audio` as an eframe glow app. It is on wgpu (`main.rs` sets `Renderer::Wgpu`). The `check.ps1` comment is fixed in Phase 3.
 5. **CI:** if the Linux job does not already cover `ui-kit`, it adds `fmt`, `clippy` and `test` for it (non-Windows code). About one extra minute per run. Approving this spec approves that change.
 
-### To the Cutmark Design Language v1 Spec
+### To the CutMark Design Language v1 Spec
 
 1. **Icons:** the suite's icon set is Phosphor (already in `ui-kit` through `egui-phosphor`, MIT). Line icons use the Regular weight; Play, Stop, Record and frame step use Fill. This replaces "line icons on a 16 or 18px grid, 1.6px stroke, drawn in `ui-kit`".
 
