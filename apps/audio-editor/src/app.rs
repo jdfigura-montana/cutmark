@@ -1852,8 +1852,9 @@ mod tests {
         (harness, app, dir)
     }
 
-    /// In the smallest window with the Media panel dragged to its widest, the
-    /// bottom bar leaves out what does not fit and no control leaves it.
+    /// In the smallest window with the Media panel dragged to its widest, each
+    /// side of the bottom bar gives up only what it has no room for, and no
+    /// control leaves the bar.
     #[test]
     fn the_narrowest_bottom_bar_keeps_every_control_inside_it() {
         use egui_kittest::kittest::Queryable as _;
@@ -1894,7 +1895,7 @@ mod tests {
 
         let control = |label: &str| harness.get_by_label(label).rect();
         let left_side = [control("00:00:00.000"), control("Go to start (Home)")];
-        let right_side = [control("Stop"), control("Record (Ctrl+R)")];
+        let right_side = [control("Stop"), control("Record (Ctrl+R)"), control("Go to end (End)")];
         for rect in left_side {
             assert!(bar.contains_rect(rect) && rect.right() <= notch.left(), "{rect:?} leaves the left side of {bar:?}");
         }
@@ -1902,9 +1903,10 @@ mod tests {
             assert!(bar.contains_rect(rect) && rect.left() >= notch.right(), "{rect:?} leaves the right side of {bar:?}");
         }
         assert!(left_side[0].right() < left_side[1].left(), "the timecode and back to start do not overlap");
-        assert!(right_side[0].right() < right_side[1].left(), "Stop and Record do not overlap");
+        for pair in right_side.windows(2) {
+            assert!(pair[0].right() < pair[1].left(), "the right side buttons do not overlap: {pair:?}");
+        }
         assert!(left_side[0].height() < 18.0, "the timecode is the small one: {:?}", left_side[0]);
-        assert!(harness.query_by_label("Go to end (End)").is_none(), "go to end is left out");
         assert!(harness.query_by_label("00:00:03.000").is_none(), "the total length is left out");
     }
 
