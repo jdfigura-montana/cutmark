@@ -12,6 +12,7 @@ use ui_kit::{SliderKind, inspector_group, inspector_row, switch};
 
 use crate::config::{AudioCodecChoice, AudioSettings, MAX_OFFSET_MS, MAX_TRACKS, TrackSettings};
 use crate::engine::session::TrackSnapshot;
+use crate::tools_ui::slider_row;
 
 /// The tooltip of every control that is locked while recording.
 const LOCKED_TIP: &str = "Changes apply to the next take";
@@ -218,27 +219,22 @@ fn track_group(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, chan
         None,
     );
     device_row(ui, track, input, changed);
-    let gain_text = format!("{:.1} dB", track.gain_db);
-    inspector_row(
-        ui,
-        "Gain",
-        |ui| {
-            ui.spacing_mut().slider_width = SLIDER_WIDTH;
-            let mut gain = track.gain_db;
-            if ui_kit::slider(ui, &mut gain, GAIN_MIN_DB..=GAIN_MAX_DB, SliderKind::Accent).changed() {
-                track.gain_db = gain.clamp(GAIN_MIN_DB, GAIN_MAX_DB);
-                changed.settings = true;
-                changed.live = true;
-            }
-            let mute = switch(ui, &mut track.muted);
-            if mute.changed() {
-                changed.discrete();
-                changed.live = true;
-            }
-        },
-        Some(&gain_text),
-    );
-    let offset_text = format!("{} ms", track.offset_ms);
+    // The unit is in the label: "-30.0 dB" is wider than the value column.
+    let gain_text = format!("{:.1}", track.gain_db);
+    slider_row(ui, "Gain (dB)", &gain_text, |slider_ui, switch_ui| {
+        let mut gain = track.gain_db;
+        if ui_kit::slider(slider_ui, &mut gain, GAIN_MIN_DB..=GAIN_MAX_DB, SliderKind::Accent).changed() {
+            track.gain_db = gain.clamp(GAIN_MIN_DB, GAIN_MAX_DB);
+            changed.settings = true;
+            changed.live = true;
+        }
+        let mute = switch(switch_ui, &mut track.muted);
+        if mute.changed() {
+            changed.discrete();
+            changed.live = true;
+        }
+    });
+    // No row value: the slider has its own value box, which can be typed into.
     inspector_row(
         ui,
         "Offset",
@@ -250,7 +246,7 @@ fn track_group(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, chan
                 track.offset_ms = track.offset_ms.clamp(-MAX_OFFSET_MS, MAX_OFFSET_MS);
             }
         },
-        Some(&offset_text),
+        None,
     );
     inspector_row(
         ui,
@@ -420,11 +416,38 @@ fn new_track(count: usize, devices: &[AudioDevice]) -> TrackSettings {
 
 #[cfg(test)]
 mod tests {
+    use ui_kit::tokens::size;
+
     use super::*;
+    use crate::config;
+    use crate::tools_ui::row_checks::{assert_no_overlap, controls, painted, panel_harness};
 
     /// A snapshot with the given peak and clip state.
     fn snapshot(peak_dbfs: f32, clipped: bool) -> TrackSnapshot {
         TrackSnapshot { name: "Mic".to_owned(), peak_dbfs, clipped, packets: 0, overflows: 0, device_lost: false }
+    }
+
+    /// A real track group paints no text over another at the narrowest right panel, and its Gain
+    /// row keeps label, slider, mute switch and value apart, at both ends of the gain and offset
+    /// ranges.
+    #[test]
+    fn track_rows_do_not_overlap_at_the_narrowest_panel() {
+        for (gain_db, shown, offset_ms) in [(GAIN_MIN_DB, "-30.0", -MAX_OFFSET_MS), (GAIN_MAX_DB, "12.0", MAX_OFFSET_MS)] {
+            let mut track = TrackSettings { name: "Mic".to_owned(), gain_db, offset_ms, ..TrackSettings::default() };
+            let harness = panel_harness(config::RIGHT_PANEL_MIN, move |ui| {
+                let input = RowInput { index: 0, devices: &[], recording: false, level: IDLE_LEVEL };
+                inspector_group(ui, |ui| track_group(ui, &mut track, input, &mut TracksChanged::default(), &mut false));
+            });
+            let texts = painted(&harness);
+            let label = texts.iter().find(|painted| painted.text == "Gain (dB)").unwrap().rect;
+            let row = label.center().y - size::INSPECTOR_ROW_HEIGHT / 2.0..=label.center().y + size::INSPECTOR_ROW_HEIGHT / 2.0;
+            let in_row: Vec<_> = texts.iter().filter(|painted| row.contains(&painted.rect.center().y)).collect();
+            assert_eq!(in_row.len(), 2, "the label and the value");
+            assert!(in_row.iter().any(|painted| painted.text == shown), "the value {shown} is shown whole");
+            let controls: Vec<_> = controls(&harness).into_iter().filter(|rect| row.contains(&rect.center().y)).collect();
+            assert_eq!(controls.len(), 2, "the slider and the mute switch");
+            assert_no_overlap(&texts.iter().collect::<Vec<_>>(), &controls, config::RIGHT_PANEL_MIN);
+        }
     }
 
     #[test]

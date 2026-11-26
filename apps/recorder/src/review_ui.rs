@@ -13,7 +13,10 @@
 
 use std::time::Duration;
 
-use egui::{Align, Button, Color32, ColorImage, CornerRadius, Layout, Pos2, Rect, RichText, Sense, TextureHandle, TextureOptions, Ui, pos2, vec2};
+use egui::{
+    Align, Button, Color32, ColorImage, CornerRadius, Layout, Pos2, Rect, Response, RichText, Sense, TextureHandle, TextureOptions, Ui, WidgetInfo, WidgetType,
+    pos2, vec2,
+};
 use marks::MarkType;
 use media_io::player::video::RgbaFrame;
 use ui_kit::tokens::{color, radius, size, space, typography};
@@ -156,9 +159,8 @@ pub fn takes_panel(ui: &mut Ui, days: &[Day], selected: &mut Option<String>) -> 
         for day in days {
             group_caption(ui, &day.date.format("%Y-%m-%d").to_string());
             for take in &day.takes {
-                let trailing = take_row_trailing(take);
                 let is_selected = selected.as_deref() == Some(take.name.as_str());
-                if ui_kit::list_row(ui, is_selected, None, &take.name, Some(&trailing)).clicked() {
+                if take_row(ui, is_selected, take).clicked() {
                     picked = Some(take.name.clone());
                 }
             }
@@ -195,14 +197,87 @@ fn takes_header(ui: &mut Ui) -> TakesAction {
     action
 }
 
-/// The trailing caption of a take row: the start time, the mark count and the
-/// duration when the sidecar knows it.
-fn take_row_trailing(take: &Take) -> String {
-    let mut trailing = format!("{} \u{b7} {} marks", take.start.format("%H:%M"), take.marks.len());
-    if let Some(duration) = take.duration_ms {
-        trailing.push_str(&format!(" \u{b7} {}", review::format_duration(duration)));
+/// One take row, two lines in the list row: the name on top, cut short with an ellipsis when it
+/// does not fit, and under it the take's details at full width against the right edge. The two do
+/// not fit side by side at the narrowest panel width. A cut name shows in full on hover.
+fn take_row(ui: &mut Ui, selected: bool, take: &Take) -> Response {
+    // The ui_kit list row gives the fill, the click and the focus ring; the two lines are painted over it.
+    let response = ui_kit::list_row(ui, selected, None, "", None);
+    response.widget_info(|| WidgetInfo::selected(WidgetType::SelectableLabel, true, selected, &take.name));
+    if !ui.is_rect_visible(response.rect) {
+        return response;
     }
-    trailing
+    let neutrals = Theme::get(ui.ctx()).neutrals;
+    let painter = ui.painter();
+    let inner = response.rect.shrink2(vec2(space::SCALE_4, 0.0));
+    let name_color = if selected { neutrals.text_primary } else { neutrals.text_secondary };
+    let body = ui_kit::fonts::medium(typography::BODY_SIZE);
+    let width_of = |text: &str| painter.layout_no_wrap(text.to_owned(), body.clone(), name_color).size().x;
+    let shown = fit_name(&take.name, inner.width(), width_of);
+    let cut = shown != take.name;
+    let name = painter.layout_no_wrap(shown, body.clone(), name_color);
+    let details: Vec<_> = take_row_details(take)
+        .iter()
+        .map(|text| {
+            let font = ui_kit::fonts::mono(typography::VALUE_SIZE);
+            painter.layout_job(ui_kit::fonts::tracked(text, font, neutrals.text_tertiary, ui_kit::fonts::MONO_LETTER_SPACING_EM))
+        })
+        .collect();
+    let details_height = details.iter().map(|galley| galley.size().y).fold(0.0, f32::max);
+    let top = response.rect.center().y - (name.size().y + details_height) / 2.0;
+    let details_top = top + name.size().y;
+    painter.galley(pos2(inner.left(), top), name, name_color);
+    let mut right = inner.right();
+    for galley in details.into_iter().rev() {
+        let left = right - galley.size().x;
+        painter.galley(pos2(left, details_top), galley, neutrals.text_tertiary);
+        right = left - space::SCALE_8;
+    }
+    if cut { response.on_hover_text(&take.name) } else { response }
+}
+
+/// The details of a take row: the start time, the mark count and the duration when the sidecar
+/// knows it.
+fn take_row_details(take: &Take) -> Vec<String> {
+    let mut details = vec![take.start.format("%H:%M").to_string(), format!("{} marks", take.marks.len())];
+    if let Some(duration) = take.duration_ms {
+        details.push(review::format_duration(duration));
+    }
+    details
+}
+
+/// `name` cut to at most `max` points as `width_of` measures it. A name that ends in a take number
+/// loses its middle, so the number stays readable; any other name loses its end. The end is also
+/// what goes when there is no room for the take number.
+fn fit_name(name: &str, max: f32, width_of: impl Fn(&str) -> f32) -> String {
+    if width_of(name) <= max {
+        return name.to_owned();
+    }
+    let tail = take_number_tail(name).unwrap_or("");
+    let head = &name[..name.len() - tail.len()];
+    // The longest start of `text` that fits with the ellipsis and `end` after it.
+    let longest =
+        |text: &str, end: &str| text.char_indices().rev().map(|(at, _)| format!("{}\u{2026}{end}", &text[..at])).find(|candidate| width_of(candidate) <= max);
+    let middle = if tail.is_empty() { None } else { longest(head, tail) };
+    middle.or_else(|| longest(name, "")).unwrap_or_else(|| "\u{2026}".to_owned())
+}
+
+/// The take number `name` ends in, "take" and its digits with the separator before them
+/// ("_take01", " Take 3"); None when the name does not end that way.
+fn take_number_tail(name: &str) -> Option<&str> {
+    const SEPARATORS: [char; 3] = ['_', '-', ' '];
+    let stem = name.trim_end_matches(|ch: char| ch.is_ascii_digit());
+    if stem.len() == name.len() {
+        return None;
+    }
+    let stem = stem.strip_suffix(SEPARATORS).unwrap_or(stem);
+    let word_at = stem.len().checked_sub("take".len())?;
+    if !stem.get(word_at..)?.eq_ignore_ascii_case("take") {
+        return None;
+    }
+    let before = &stem[..word_at];
+    let start = before.strip_suffix(SEPARATORS).map_or(word_at, str::len);
+    Some(&name[start..])
 }
 
 /// A group caption ("2026-11-21", "File", "Marks") in the caption style.
@@ -701,6 +776,72 @@ mod tests {
     use chrono::Local;
 
     use super::*;
+    use crate::config;
+    use crate::tools_ui::row_checks::{assert_no_overlap, painted, panel_harness};
+
+    /// A take with the given name, number of marks and length.
+    fn row_take(name: &str, marks: usize, duration_ms: Option<u64>) -> Take {
+        let mark: marks::Mark = serde_json::from_value(serde_json::json!({
+            "id": "0196f3a2-9d44-7e02-8c15-6a0b3e7d2f90", "type": "note", "media": 0, "t_ms": 0,
+            "source": "hotkey", "created_at": "2026-11-20T12:00:00.000Z"
+        }))
+        .unwrap();
+        Take {
+            name: name.to_owned(),
+            start: Local::now(),
+            duration_ms,
+            total_size: 0,
+            files: Vec::new(),
+            video: PathBuf::new(),
+            iso: None,
+            marks: vec![mark; marks],
+            composite: CompositeMode::Baked,
+        }
+    }
+
+    /// At the narrowest left panel the takes rows paint no text over another, show the time, the
+    /// mark count and the length whole, and cut only a name that does not fit.
+    #[test]
+    fn take_rows_do_not_overlap_at_the_narrowest_panel() {
+        let days = vec![Day {
+            date: Local::now().date_naive(),
+            takes: vec![
+                row_take("2026-11-20_10-00-00_take01", 12, Some(3_698_784)),
+                row_take("Interview with the whole product team, second try take 12", 123, Some(359_999_000)),
+                row_take("A renamed take with a long name and no number at the end", 0, None),
+            ],
+        }];
+        let harness = panel_harness(config::LEFT_PANEL_MIN, move |ui| {
+            takes_panel(ui, &days, &mut None);
+        });
+        let texts = painted(&harness);
+        let all: Vec<_> = texts.iter().collect();
+        assert_no_overlap(&all, &[], config::LEFT_PANEL_MIN);
+        let shown = |wanted: &str| texts.iter().any(|painted| painted.text == wanted);
+        for whole in ["2026-11-20_10-00-00_take01", "12 marks", "123 marks", "0 marks", "01:01:38", "99:59:59"] {
+            assert!(shown(whole), "{whole} is shown whole");
+        }
+        assert!(texts.iter().any(|painted| painted.text.starts_with("Interview") && painted.text.ends_with("\u{2026} take 12")));
+        assert!(texts.iter().any(|painted| painted.text.starts_with("A renamed") && painted.text.ends_with('\u{2026}')));
+    }
+
+    /// A long name loses its middle when it ends in a take number and its end otherwise. Widths
+    /// here are one point per character.
+    #[test]
+    fn long_take_names_are_cut_with_an_ellipsis() {
+        let fit = |name: &str, max: f32| fit_name(name, max, |text| text.chars().count() as f32);
+        assert_eq!(fit("short_take01", 20.0), "short_take01");
+        assert_eq!(fit("2026-11-20_10-00-00_take01", 16.0), "2026-11-\u{2026}_take01");
+        assert_eq!(fit("Interview Take 3", 12.0), "Inte\u{2026} Take 3");
+        assert_eq!(fit("intro_take02b_final", 10.0), "intro_tak\u{2026}");
+        assert_eq!(fit("chapter 2026", 8.0), "chapter\u{2026}");
+        assert_eq!(fit("interview_take01", 6.0), "inter\u{2026}", "no room for the take number");
+        assert_eq!(fit("\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}", 3.0), "\u{e9}\u{e9}\u{2026}");
+        assert_eq!(take_number_tail("take7"), Some("take7"));
+        assert_eq!(take_number_tail("mistake-take_7"), Some("-take_7"));
+        assert_eq!(take_number_tail("take"), None);
+        assert_eq!(take_number_tail("12"), None);
+    }
 
     /// The deck timecode splits the position into `HH:MM:SS` and the `.mmm` fraction.
     #[test]
