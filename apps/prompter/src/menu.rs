@@ -49,6 +49,7 @@ pub struct MenuState {
     /// All false with no script open.
     pub editor: editor::Status,
     pub clipboard_has_text: bool,
+    pub clipboard_has_html: bool,
 }
 
 /// The menus in bar order. Each is a list of groups, drawn with a separator between them.
@@ -138,7 +139,8 @@ impl Item {
             Self::Undo => state.editor.can_undo,
             Self::Redo => state.editor.can_redo,
             Self::Cut | Self::Copy => state.editor.has_selection,
-            Self::Paste | Self::PastePlain => state.script_open && state.clipboard_has_text,
+            Self::Paste => state.script_open && (state.clipboard_has_text || state.clipboard_has_html),
+            Self::PastePlain => state.script_open && state.clipboard_has_text,
             Self::SelectAll => state.editor.has_text,
             _ => false,
         }
@@ -192,6 +194,8 @@ mod tests {
         assert_eq!(added(editor(editor::Status { has_selection: true, ..Default::default() })), [Cut, Copy]);
         assert_eq!(added(editor(editor::Status { has_text: true, ..Default::default() })), [SelectAll]);
         assert_eq!(added(MenuState { clipboard_has_text: true, ..base }), [Paste, PastePlain]);
+        // Plain text cannot come from HTML alone.
+        assert_eq!(added(MenuState { clipboard_has_html: true, ..base }), [Paste]);
     }
 
     #[test]

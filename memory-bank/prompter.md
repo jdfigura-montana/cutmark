@@ -6,13 +6,13 @@
 - Spec: docs/suite/prompter.md
 
 ## Done
-- Phase 1 (V4 passed): prompter-platform and apps/prompter: DX12 (PreMultiplied on JD's PC), one Floating view, white backing fix (JD approved), Library shell. Minimum window 900 x 480.
-- Phase 2, pending JD's check: C1 to C3b prompter-core; C4, C4b library, editor, autosave, menus, find; C5 renderer.rs (shared with the views later), Preview chip, Snapshots.
-- Phase 3: E1 platform instance, clipboard; E2, E3 core .html, .htm, .docx, .odt import; E4 store favorites, tabs, sort, folders. None wired in.
+- Phase 1 (V4 passed): platform and app: DX12 (PreMultiplied on JD's PC), one Floating view, white backing fix (JD approved), Library shell. Minimum 900 x 480.
+- Phase 2, pending JD's check: C1 to C3b core; C4, C4b library, editor, autosave, menus, find; C5 renderer.rs (to share with views), Preview, Snapshots.
+- Phase 3: E1 instance, clipboard; E2, E3 .html, .docx, .odt import; E4 store favorites, tabs, sort, folders (not wired in); E5 app wiring of E1 to E3, file drop.
 
 ## Platform (E1)
-- App wiring: poll try_recv with request_repaint_after (a message does not wake egui); log setup_error.
-- No session id in the pipe name: in a user's second session the primary hears nothing. Signaling an elevated copy likely fails (untested).
+- ViewWindow::cursor_position (E5, JD approved): winit gives no pointer position during a file drag.
+- No session id in the pipe name: a user's second session is not heard. Signaling an elevated copy likely fails (untested).
 
 ## Core
 - Mark "type: text" takes the category and keeps only the text; other labels are kept as written, first word may name the category ("B-roll" or "b_roll").
@@ -33,22 +33,23 @@
 - Data folder: BaseDirs config_dir + Cutmark\prompter (ProjectDirs would add a subfolder).
 - Edit menu picks run a frame late (click takes focus) and inject events.
 - Autosave runs in App::logic. A failed save retries every 500 ms with one toast. A failed save on close cancels the close once.
-- editor.rs restores the selection egui drops on focus loss or right-click. egui cannot read the clipboard (clipboard.rs).
+- editor.rs restores the selection egui drops on focus loss or right-click.
+- egui-winit sends Ctrl+V and Ctrl+Shift+V as Event::Paste, none without clipboard text (HTML alone pastes only from a menu). editor.rs swaps in the content between two undo points.
+- Copies go through app.rs write_copies. Tests use a fake Clipboard.
 - Esc clears egui focus before the frame, so find.rs notes focus after each frame.
 - A laid block's job text is the block's text (markers excluded), for the token to glyph map.
-- Preview follows the cursor's block only; a block taller than the pane shows from its top. Not remembered across launches. About 208 px of text at the default window.
+- Preview follows the cursor's block only (a tall block shows from its top). Not remembered across launches. About 208 px of text at default size.
 - Headless tests: app/library_tests.rs.
-- Not done: stats bar, plain-text paste, E4 wiring (scripts_panel.rs has its own Sort and sorts folders by name; use store::sort_scripts). The E1 guard is not wired in, so two copies could write one store.
+- Not done: stats bar, E4 wiring (scripts_panel.rs has its own Sort and sorts folders by name; use store::sort_scripts).
 - Open: Unfiled is not a folder, so its collapsed state cannot be saved.
-- Untimed on long scripts (UI thread): Find, preview, Snapshots counts.
+- Untimed on long scripts (UI thread): Find, preview, Snapshots counts, rich paste.
 
 ## Next
-- JD's Phase 2 check; Phase 3 after E4.
-- App: Import dialog may need the E2, E3 types (not checked).
-- By hand: import real Word, Google Docs, LibreOffice files.
-- By hand: preview look and follow, Snapshots dialog, dialogs (Enter, Esc, Import, Export), right-click menus, Paste with empty, text and image clipboards, Ctrl+Shift+F, autosave on switch and exit.
-- By hand: see-through, flash on open, move to another monitor or DPI, lock and sleep, scroll with the Library minimized, OBS capture.
-- Open: Preview has no menu item (spec wants one per action). Most File, Script, View and Help shortcuts are missing. About notices are hand-written.
+- JD's Phase 2 check; E5 check: second launch focuses the first window; paste from Google Docs, Word, a browser.
+- By hand: Explorer drag (also on a scaled monitor), real Word, Google Docs, LibreOffice imports.
+- By hand: preview, Snapshots, dialogs, right-click menus, Paste with empty and image clipboards, Ctrl+Shift+F, autosave on switch and exit.
+- By hand: see-through, flash on open, other monitor or DPI, lock and sleep, scroll while minimized, OBS capture.
+- Open: no Preview menu item (spec wants one per action); most File, Script, View, Help shortcuts missing; About notices hand-written.
 ## White layer
 - The view's GDI redirection surface is opaque white after a show, under the DirectComposition visual (painter unknown), only over the area present at show.
 - PatBlt BLACKNESS on the window DC fixes it (class brush is 0), but not on a hidden window. An outside hide and show needs a new clear; the once-a-second read-back catches it. A one-frame flash on open is not ruled out.
@@ -62,6 +63,6 @@
 - Screenshots need a temporary build with capture exclusion off.
 - Shown alpha mode copies egui-wgpu's rule; recheck on upgrade.
 - "Primary monitor" size is the Library's monitor. os::OsError is not PlatformError.
-- Untested: the Windows 11 dialog on older Windows; the Linux stubs are not compiled.
+- Untested: Windows 11 dialog on older Windows. Linux stubs never compiled.
 - No cargo remove here: it deleted FilmCraft profile overrides from the root Cargo.toml.
 - cargo add takes the newest release and can move the shared lockfile. Check the Cargo.lock diff.

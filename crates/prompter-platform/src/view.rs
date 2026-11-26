@@ -46,6 +46,11 @@ pub trait ViewWindow {
     /// An opaque id for the monitor the window is mostly on, for noticing that it moved.
     fn monitor(&self) -> Option<isize>;
 
+    /// Where the mouse pointer is, in physical pixels from the top left of the window's client
+    /// area. A pointer outside the window gives a negative value or one past its size. It can be
+    /// read during a drag from another program, when the window gets no mouse messages.
+    fn cursor_position(&self) -> Option<(i32, i32)>;
+
     /// Reads the current state. A value that cannot be read counts as not applied.
     fn status(&self) -> ViewStatus;
 }
@@ -93,12 +98,12 @@ fn all_clear(colors: impl IntoIterator<Item = u32>) -> bool {
 
 #[cfg(windows)]
 mod win {
-    use windows::Win32::Foundation::RECT;
     use windows::Win32::Foundation::{GetLastError, HWND, SetLastError, WIN32_ERROR};
-    use windows::Win32::Graphics::Gdi::{BLACKNESS, GetDC, GetPixel, HDC, MONITOR_DEFAULTTONEAREST, MonitorFromWindow, PatBlt, ReleaseDC};
+    use windows::Win32::Foundation::{POINT, RECT};
+    use windows::Win32::Graphics::Gdi::{BLACKNESS, GetDC, GetPixel, HDC, MONITOR_DEFAULTTONEAREST, MonitorFromWindow, PatBlt, ReleaseDC, ScreenToClient};
     use windows::Win32::UI::WindowsAndMessaging::{
-        FindWindowW, GCLP_HBRBACKGROUND, GWL_EXSTYLE, GetClientRect, GetWindowDisplayAffinity, GetWindowLongPtrW, GetWindowThreadProcessId, HWND_TOPMOST,
-        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetClassLongPtrW, SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos,
+        FindWindowW, GCLP_HBRBACKGROUND, GWL_EXSTYLE, GetClientRect, GetCursorPos, GetWindowDisplayAffinity, GetWindowLongPtrW, GetWindowThreadProcessId,
+        HWND_TOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetClassLongPtrW, SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos,
         WDA_EXCLUDEFROMCAPTURE,
     };
     use windows::core::PCWSTR;
@@ -168,6 +173,17 @@ mod win {
             #[allow(unsafe_code)]
             let monitor = unsafe { MonitorFromWindow(hwnd(*self), MONITOR_DEFAULTTONEAREST) };
             (!monitor.is_invalid()).then_some(monitor.0 as isize)
+        }
+
+        fn cursor_position(&self) -> Option<(i32, i32)> {
+            let mut point = POINT::default();
+            // SAFETY: `point` is a live, writable POINT.
+            #[allow(unsafe_code)]
+            unsafe { GetCursorPos(&mut point) }.ok()?;
+            // SAFETY: `point` is a live, writable POINT; a bad handle makes the call fail.
+            #[allow(unsafe_code)]
+            let converted = unsafe { ScreenToClient(hwnd(*self), &mut point) };
+            converted.as_bool().then_some((point.x, point.y))
         }
 
         fn status(&self) -> ViewStatus {
@@ -328,6 +344,10 @@ impl ViewWindow for NativeWindow {
     }
 
     fn monitor(&self) -> Option<isize> {
+        None
+    }
+
+    fn cursor_position(&self) -> Option<(i32, i32)> {
         None
     }
 

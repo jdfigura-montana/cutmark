@@ -39,15 +39,24 @@ pub struct ScriptsPanel {
     sort: Sort,
     /// Lowercased text for the search, by script id, with the edit time it was read at.
     bodies: HashMap<String, (DateTime<Utc>, String)>,
+    /// Where the last frame showed each folder's row, for files dropped on it.
+    folder_rows: Vec<(egui::Rect, String)>,
     /// The search field, once drawn.
     #[cfg(test)]
     pub search_id: Option<egui::Id>,
 }
 
 impl ScriptsPanel {
+    /// The folder whose row is under `at`, with where that row is, as of the last
+    /// [`ScriptsPanel::show`].
+    pub fn folder_at(&self, at: egui::Pos2) -> Option<(egui::Rect, &str)> {
+        self.folder_rows.iter().find(|(row, _)| row.contains(at)).map(|(row, folder)| (*row, folder.as_str()))
+    }
+
     /// Draws the panel under its header. `focus_search` gives the search field the keyboard
     /// and selects its text.
     pub fn show(&mut self, ui: &mut egui::Ui, workspace: &Workspace, focus_search: bool) -> Option<Action> {
+        self.folder_rows.clear();
         ui.add_space(space::SCALE_8);
         let search = ui_kit::search_field(ui, &mut self.search, "Search scripts");
         if focus_search {
@@ -90,6 +99,9 @@ impl ScriptsPanel {
                     }
                 });
                 if let Some(folder) = group.folder {
+                    // The heading is only as wide as its text; the row is as wide as the list.
+                    let row = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), shown.header_response.rect.y_range());
+                    self.folder_rows.push((row.intersect(ui.clip_rect()), folder.to_owned()));
                     let empty = !library.scripts.iter().any(|script| script.folder.as_deref() == Some(folder));
                     shown.header_response.context_menu(|ui| {
                         if ui.button("Rename").clicked() {

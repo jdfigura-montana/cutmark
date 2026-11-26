@@ -7,6 +7,7 @@ use egui::text::{CCursor, CCursorRange, CharIndex, LayoutJob, TextFormat};
 use egui::text_edit::TextEditState;
 use ui_kit::tokens::{color, typography};
 
+use crate::clipboard::{self, Clipboard};
 use crate::find;
 use crate::menu::Item;
 
@@ -19,10 +20,38 @@ pub fn id(serial: u64) -> egui::Id {
     egui::Id::new(("script-editor", serial))
 }
 
+/// Puts what the clipboard holds in place of the text of each paste the window reported, if
+/// the editor has the keyboard: its HTML as Markdown, or with Ctrl+Shift held its plain text.
+/// With nothing to paste, the event is dropped. Call it before [`Editor::show`] and before
+/// [`command`], whose pastes are ready as they are. `held` is the modifiers as of the end of
+/// the last frame.
+pub fn rich_paste(ui: &egui::Ui, id: egui::Id, clipboard: &dyn Clipboard, mut held: egui::Modifiers) {
+    if !ui.memory(|memory| memory.has_focus(id)) {
+        return;
+    }
+    ui.input_mut(|input| {
+        input.events.retain_mut(|event| match event {
+            // The modifiers may change again in the same frame, so they are followed in order.
+            egui::Event::ModifiersChanged(modifiers) => {
+                held = *modifiers;
+                true
+            }
+            egui::Event::Paste(text) => match clipboard::paste_from(clipboard, held.command && held.shift) {
+                Some(pasted) => {
+                    *text = pasted;
+                    true
+                }
+                None => false,
+            },
+            _ => true,
+        });
+    });
+}
+
 /// Gives the editor the keyboard and has it do what an Edit menu item asks, as if the keys had
 /// been pressed. Call it before [`Editor::show`], and not in the frame of the click that asked:
 /// the editor drops the keyboard on a click elsewhere.
-pub fn command(ui: &egui::Ui, id: egui::Id, item: Item) {
+pub fn command(ui: &egui::Ui, id: egui::Id, item: Item, clipboard: &dyn Clipboard) {
     let key = |key| egui::Event::Key {
         key,
         physical_key: None,
@@ -35,16 +64,13 @@ pub fn command(ui: &egui::Ui, id: egui::Id, item: Item) {
         Item::Redo => Some(key(egui::Key::Y)),
         Item::Cut => Some(egui::Event::Cut),
         Item::Copy => Some(egui::Event::Copy),
-        // Only the window can read the clipboard. It sends the text in a later frame.
-        // Paste as plain text stays the same until pasting keeps formatting.
-        Item::Paste | Item::PastePlain => None,
+        Item::Paste | Item::PastePlain => clipboard::paste_from(clipboard, item == Item::PastePlain).map(egui::Event::Paste),
         Item::SelectAll => Some(key(egui::Key::A)),
         _ => return,
     };
     ui.memory_mut(|memory| memory.request_focus(id));
-    match event {
-        Some(event) => ui.input_mut(|input| input.events.push(event)),
-        None => ui.ctx().send_viewport_cmd(egui::ViewportCommand::RequestPaste),
+    if let Some(event) = event {
+        ui.input_mut(|input| input.events.push(event));
     }
 }
 
@@ -168,6 +194,12 @@ fn field(ui: &mut egui::Ui, id: egui::Id, text: &mut String, highlight: Option<H
         ui.fonts_mut(|fonts| fonts.layout_job(job))
     };
 
+    // The undo history takes points when the text has rested, so a paste gets one on each side
+    // to be exactly one step.
+    let pasting = ui.memory(|memory| memory.has_focus(id)) && ui.input(|i| i.events.iter().any(|event| matches!(event, egui::Event::Paste(_))));
+    if pasting {
+        add_undo_point(ui.ctx(), id, text);
+    }
     let right_button = ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary) || i.pointer.button_released(egui::PointerButton::Secondary));
     let output = egui::TextEdit::multiline(text)
         .id(id)
@@ -179,6 +211,9 @@ fn field(ui: &mut egui::Ui, id: egui::Id, text: &mut String, highlight: Option<H
         .layouter(&mut layouter)
         .show(ui);
     let response = output.response.response;
+    if pasting {
+        add_undo_point(ui.ctx(), id, text);
+    }
 
     if let Some(range) = kept {
         // A right-click inside the selection keeps it. Anywhere else, it moves the cursor.
@@ -208,6 +243,18 @@ fn select(ctx: &egui::Context, id: egui::Id, range: CCursorRange) {
     state.store(ctx, id);
 }
 
+/// Makes the text and cursor as they are now a step that Undo can return to.
+fn add_undo_point(ctx: &egui::Context, id: egui::Id, text: &str) {
+    let mut state = TextEditState::load(ctx, id).unwrap_or_default();
+    // A field that has had no cursor yet has it at the end.
+    let end = || CCursorRange::one(CCursor::new(CharIndex(text.chars().count())));
+    let range = state.cursor.char_range().unwrap_or_else(end);
+    let mut undoer = state.undoer();
+    undoer.add_undo(&(range, text.to_owned()));
+    state.set_undoer(undoer);
+    state.store(ctx, id);
+}
+
 /// A byte range of `text` as the editor counts it, in characters.
 fn char_range(text: &str, bytes: Range<usize>) -> CCursorRange {
     let cursor = |end: usize| CCursor::new(CharIndex(text[..end].chars().count()));
@@ -218,13 +265,30 @@ fn char_range(text: &str, bytes: Range<usize>) -> CCursorRange {
 mod tests {
     use super::*;
 
+    /// A clipboard with HTML and the text that goes with it.
+    struct Copied;
+
+    impl Clipboard for Copied {
+        fn read_html(&self) -> Option<String> {
+            Some("<b>back</b>".to_owned())
+        }
+
+        fn read_text(&self) -> Option<String> {
+            Some("back".to_owned())
+        }
+
+        fn write_text(&self, _text: &str) -> prompter_platform::Result<()> {
+            Ok(())
+        }
+    }
+
     /// One frame of the editor, with the command given first as the Library does.
     fn frame(ctx: &egui::Context, time: f64, text: &mut String, item: Option<Item>, events: Vec<egui::Event>) -> egui::FullOutput {
         let input = egui::RawInput { time: Some(time), events, ..Default::default() };
         let mut editor = Editor::default();
         let mut output = ctx.run_ui(input, |ui| {
             if let Some(item) = item {
-                command(ui, id(1), item);
+                command(ui, id(1), item, &Copied);
             }
             editor.show(ui, 1, text, None);
         });
@@ -273,10 +337,9 @@ mod tests {
         assert_eq!(copied(frame(&ctx, 2.0, &mut text, Some(Item::Copy), Vec::new())).as_deref(), Some("words"));
         assert_eq!(copied(frame(&ctx, 3.0, &mut text, Some(Item::Cut), Vec::new())).as_deref(), Some("words"));
         assert_eq!(text, "");
-        let paste = frame(&ctx, 4.0, &mut text, Some(Item::Paste), Vec::new());
-        let commands = &paste.viewport_output[&egui::ViewportId::ROOT].commands;
-        assert!(commands.contains(&egui::ViewportCommand::RequestPaste));
-        frame(&ctx, 5.0, &mut text, None, vec![egui::Event::Paste("back".to_owned())]);
-        assert_eq!(text, "back");
+        frame(&ctx, 4.0, &mut text, Some(Item::Paste), Vec::new());
+        assert_eq!(text, "**back**");
+        frame(&ctx, 5.0, &mut text, Some(Item::PastePlain), Vec::new());
+        assert_eq!(text, "**back**back");
     }
 }

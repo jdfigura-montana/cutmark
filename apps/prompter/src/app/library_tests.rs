@@ -1,7 +1,10 @@
-//! Headless tests of the whole Library: real frames, pointer and keys, with the window's
-//! clipboard stood in for.
+//! Headless tests of the whole Library: real frames, pointer and keys, with the system
+//! clipboard and files dragged from another program stood in for.
 
-use std::path::PathBuf;
+use std::cell::RefCell;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, Rect};
@@ -11,14 +14,55 @@ use super::*;
 const CTRL: Modifiers = Modifiers { alt: false, ctrl: true, shift: false, mac_cmd: false, command: true };
 const CTRL_SHIFT: Modifiers = Modifiers { shift: true, ..CTRL };
 
+/// What is on the stand-in clipboard.
+#[derive(Default)]
+struct Board {
+    html: Option<String>,
+    text: Option<String>,
+}
+
+#[derive(Clone, Default)]
+struct FakeClipboard(Rc<RefCell<Board>>);
+
+impl Clipboard for FakeClipboard {
+    fn read_html(&self) -> Option<String> {
+        self.0.borrow().html.clone()
+    }
+
+    fn read_text(&self) -> Option<String> {
+        self.0.borrow().text.clone()
+    }
+
+    fn write_text(&self, text: &str) -> prompter_platform::Result<()> {
+        *self.0.borrow_mut() = Board { html: None, text: Some(text.to_owned()) };
+        Ok(())
+    }
+}
+
+/// A file as egui reports one that was dropped.
+#[derive(Debug)]
+struct Dropped(PathBuf);
+
+impl egui::DroppedFile for Dropped {
+    fn path(&self) -> &Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|err| err.to_string())
+    }
+}
+
 struct Library {
     ctx: egui::Context,
     app: PrompterApp,
     frame: eframe::Frame,
     time: f64,
-    clipboard: String,
-    /// Frames until a requested paste arrives.
-    paste_due: Option<u8>,
+    clipboard: FakeClipboard,
+    /// Files dragged over the window.
+    hovered: Vec<egui::HoveredFile>,
+    /// Files dropped on the window, for the next frame.
+    dropped: Vec<egui::DroppedFileHandle>,
     /// The window's size.
     size: egui::Vec2,
     /// What the last frame painted.
@@ -45,42 +89,87 @@ impl Library {
         workspace.text_changed(Instant::now());
         let ctx = egui::Context::default();
         ui_kit::apply(&ctx);
-        let app = PrompterApp::with_library(true, AlphaInUse::default(), Ok(workspace));
+        let mut app = PrompterApp::with_library(true, AlphaInUse::default(), Ok(workspace));
+        let clipboard = FakeClipboard::default();
+        app.clipboard = Box::new(clipboard.clone());
         let frame = eframe::Frame::_new_kittest();
-        let mut library =
-            Self { ctx, app, frame, time: 0.0, clipboard: String::new(), paste_due: None, size: egui::vec2(1100.0, 720.0), shapes: Vec::new(), folder };
+        let size = egui::vec2(1100.0, 720.0);
+        let mut library = Self { ctx, app, frame, time: 0.0, clipboard, hovered: Vec::new(), dropped: Vec::new(), size, shapes: Vec::new(), folder };
         library.settle();
         library
     }
 
-    fn step(&mut self, mut events: Vec<Event>) {
-        if let Some(due) = &mut self.paste_due {
-            *due -= 1;
-            if *due == 0 {
-                self.paste_due = None;
-                // As eframe does, an empty clipboard sends nothing.
-                if !self.clipboard.is_empty() {
-                    events.push(Event::Paste(self.clipboard.clone()));
-                }
-            }
-        }
+    fn step(&mut self, events: Vec<Event>) {
         self.time += 0.1;
         let screen = Rect::from_min_size(Pos2::ZERO, self.size);
-        let input = egui::RawInput { screen_rect: Some(screen), time: Some(self.time), focused: true, events, ..Default::default() };
+        let hovered_files = self.hovered.clone();
+        let dropped_files = std::mem::take(&mut self.dropped);
+        let input =
+            egui::RawInput { screen_rect: Some(screen), time: Some(self.time), focused: true, events, hovered_files, dropped_files, ..Default::default() };
         let (app, frame) = (&mut self.app, &self.frame);
         let mut output = self.ctx.run_ui(input, |ui| {
             egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| app.library(ui, frame));
         });
         output.textures_delta.clear();
-        for command in &output.platform_output.commands {
-            if let egui::OutputCommand::CopyText(text) = command {
-                self.clipboard.clone_from(text);
+        let left_to_egui = output.platform_output.commands.iter().any(|command| matches!(command, egui::OutputCommand::CopyText(_)));
+        assert!(!left_to_egui, "a copy did not go through the app's clipboard");
+        self.shapes = output.shapes;
+    }
+
+    /// Ctrl+V or Ctrl+Shift+V as the window reports it: no key press, only a paste with the
+    /// clipboard's text, which the app does not use.
+    fn press_paste(&mut self, modifiers: Modifiers) {
+        let window_text = self.clipboard.read_text().unwrap_or_default();
+        self.step(vec![Event::ModifiersChanged(modifiers), Event::Paste(window_text)]);
+        self.step(vec![Event::ModifiersChanged(Modifiers::NONE)]);
+        self.settle();
+    }
+
+    fn put_on_clipboard(&self, html: Option<&str>, text: Option<&str>) {
+        *self.clipboard.0.borrow_mut() = Board { html: html.map(str::to_owned), text: text.map(str::to_owned) };
+    }
+
+    fn copied(&self) -> String {
+        self.clipboard.read_text().unwrap_or_default()
+    }
+
+    /// A file outside the library, to drag in.
+    fn outside_file(&self, name: &str, text: &str) -> PathBuf {
+        let folder = self.folder.join("outside");
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join(name);
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    /// Drags files over `at` and drops them there.
+    fn drop_files(&mut self, files: &[PathBuf], at: Pos2) {
+        self.app.drag_pointer_at = Some(at);
+        self.hovered = files.iter().map(|path| egui::HoveredFile { path: Some(path.clone()), ..Default::default() }).collect();
+        self.settle();
+        self.hovered.clear();
+        self.dropped = files.iter().map(|path| Arc::new(Dropped(path.clone())) as egui::DroppedFileHandle).collect();
+        self.settle();
+    }
+
+    /// Where the last frame drew the outline of a drop target.
+    fn drop_mark(&self) -> Option<Rect> {
+        fn search(shape: &egui::Shape) -> Option<Rect> {
+            match shape {
+                egui::Shape::Rect(painted) if painted.stroke.width == DROP_STROKE => Some(painted.rect),
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(search),
+                _ => None,
             }
         }
-        if output.viewport_output.values().any(|viewport| viewport.commands.contains(&egui::ViewportCommand::RequestPaste)) {
-            self.paste_due = Some(2);
-        }
-        self.shapes = output.shapes;
+        self.shapes.iter().find_map(|clipped| search(&clipped.shape))
+    }
+
+    /// Each script's title and folder, by title.
+    fn filed(&self) -> Vec<(String, Option<String>)> {
+        let scripts = &self.app.workspace.as_ref().unwrap().store().library().scripts;
+        let mut filed: Vec<_> = scripts.iter().map(|script| (script.title.clone(), script.folder.clone())).collect();
+        filed.sort();
+        filed
     }
 
     fn settle(&mut self) {
@@ -252,7 +341,7 @@ fn the_editor_context_menu_copies_and_pastes_the_selection() {
     assert!(library.app.menu_state().editor.has_selection);
     assert!(!library.app.menu_state().clipboard_has_text);
     library.click_text("CopyCtrl+C");
-    assert_eq!(library.clipboard, "alpha");
+    assert_eq!(library.copied(), "alpha");
     assert!(library.find_text("CopyCtrl+C").is_none(), "the menu is still open");
 
     // A right-click past the text moves the cursor to the end. Asking the clipboard whether it
@@ -266,11 +355,127 @@ fn the_editor_context_menu_copies_and_pastes_the_selection() {
 
     // The menu bar's Edit menu finds the selection too, after the menu has had the keyboard.
     library.key(CTRL, Key::A);
-    library.clipboard.clear();
+    library.put_on_clipboard(None, None);
     library.pick("Edit", Item::Cut);
-    assert_eq!((library.script(), library.clipboard.as_str()), ("", "alpha betaalpha"));
+    assert_eq!((library.script(), library.copied().as_str()), ("", "alpha betaalpha"));
     library.pick("Edit", Item::Paste);
     assert_eq!(library.script(), "alpha betaalpha");
+}
+
+#[test]
+fn ctrl_v_pastes_markdown_over_the_selection_as_one_undo_step() {
+    let mut library = Library::with_script("alpha beta");
+    library.click_into_editor();
+    library.key(CTRL, Key::Home);
+    for _ in 0..5 {
+        library.key(Modifiers::SHIFT, Key::ArrowRight);
+    }
+    library.put_on_clipboard(Some("<p><b>bold</b></p>"), Some("bold"));
+    library.press_paste(CTRL);
+    assert_eq!(library.script(), "**bold** beta");
+    library.key(CTRL, Key::Z);
+    assert_eq!(library.script(), "alpha beta");
+    library.key(CTRL, Key::Y);
+    assert_eq!(library.script(), "**bold** beta");
+
+    // Typing right before and right after a paste, with no pause, stays apart from it.
+    library.key(CTRL, Key::End);
+    library.type_text(" one ");
+    library.press_paste(CTRL_SHIFT);
+    assert_eq!(library.script(), "**bold** beta one bold");
+    library.type_text(" two");
+    library.key(CTRL, Key::Z);
+    assert_eq!(library.script(), "**bold** beta one bold");
+    library.key(CTRL, Key::Z);
+    assert_eq!(library.script(), "**bold** beta one ");
+}
+
+#[test]
+fn edit_paste_takes_the_html_and_paste_as_plain_text_does_not() {
+    let mut library = Library::with_script("");
+    library.put_on_clipboard(Some("<i>soft</i>"), Some("soft"));
+    library.pick("Edit", Item::Paste);
+    assert_eq!(library.script(), "*soft*");
+    library.pick("Edit", Item::PastePlain);
+    assert_eq!(library.script(), "*soft*soft");
+    // A menu paste is one step too.
+    library.key(CTRL, Key::Z);
+    assert_eq!(library.script(), "*soft*");
+
+    // With HTML and no text, only Paste has something to paste.
+    library.put_on_clipboard(Some("<b>only</b>"), None);
+    library.pick("Edit", Item::PastePlain);
+    assert_eq!(library.script(), "*soft*");
+    library.key(Modifiers::NONE, Key::Escape);
+    library.pick("Edit", Item::Paste);
+    assert_eq!(library.script(), "*soft***only**");
+}
+
+#[test]
+fn a_paste_into_the_find_field_stays_as_the_window_sent_it() {
+    let mut library = Library::with_script("some words");
+    library.key(CTRL, Key::F);
+    library.put_on_clipboard(Some("<b>words</b>"), Some("words"));
+    library.press_paste(CTRL);
+    assert!(library.find_text("1 of 1").is_some());
+    assert_eq!(library.script(), "some words");
+}
+
+#[test]
+fn files_dropped_on_a_folder_row_import_into_it_and_elsewhere_into_no_folder() {
+    let mut library = Library::with_script("words");
+    library.app.workspace.as_mut().unwrap().create_folder("Ads").unwrap();
+    library.settle();
+    let heading = library.find_text("Ads").unwrap();
+    // The row reaches past its text, across the panel.
+    let on_row = egui::pos2(200.0, heading.center().y);
+
+    let files = [library.outside_file("one.md", "# One"), library.outside_file("two.txt", "second"), library.outside_file("three.png", "")];
+    library.drop_files(&files, on_row);
+    let ads = Some("Ads".to_owned());
+    assert_eq!(library.filed(), [("One".to_owned(), ads.clone()), ("Test".to_owned(), None), ("two".to_owned(), ads.clone())]);
+    assert!(library.find_text("Not imported, unsupported file type:\nthree.png").is_some());
+    assert_eq!(library.script(), "second\n");
+
+    // Over the editor, which is outside the Scripts panel.
+    let elsewhere = [library.outside_file("four.html", "<h1>Four</h1>")];
+    library.drop_files(&elsewhere, egui::pos2(500.0, 300.0));
+    assert!(library.filed().contains(&("Four".to_owned(), None)), "{:?}", library.filed());
+}
+
+#[test]
+fn a_file_drag_marks_the_folder_row_under_the_pointer_or_else_the_scripts_panel() {
+    let mut library = Library::with_script("words");
+    library.app.workspace.as_mut().unwrap().create_folder("Ads").unwrap();
+    library.settle();
+    assert_eq!(library.drop_mark(), None);
+    let heading = library.find_text("Ads").unwrap();
+
+    library.hovered = vec![egui::HoveredFile::default()];
+    library.app.drag_pointer_at = Some(egui::pos2(200.0, heading.center().y));
+    library.settle();
+    let row = library.drop_mark().unwrap();
+    assert!(row.contains(heading.center()) && row.height() < 40.0 && row.width() > 200.0, "{row:?}");
+
+    library.app.drag_pointer_at = Some(egui::pos2(500.0, 300.0));
+    library.settle();
+    let panel = library.drop_mark().unwrap();
+    assert!(panel.contains_rect(row) && panel.width() <= SCRIPTS_WIDTH && panel.height() > 500.0, "{panel:?}");
+
+    // The drag leaves the window.
+    library.hovered.clear();
+    library.settle();
+    assert_eq!(library.drop_mark(), None);
+}
+
+#[test]
+fn a_dropped_file_that_cannot_be_read_is_named_in_a_toast() {
+    let mut library = Library::with_script("words");
+    let missing = library.folder.join("gone.md");
+    library.drop_files(&[missing], egui::pos2(100.0, 500.0));
+    let named = |shape: &egui::Shape| matches!(shape, egui::Shape::Text(text) if text.galley.text().starts_with("gone.md could not be imported: "));
+    assert!(library.shapes.iter().any(|clipped| named(&clipped.shape)));
+    assert_eq!(library.filed(), [("Test".to_owned(), None)]);
 }
 
 #[test]

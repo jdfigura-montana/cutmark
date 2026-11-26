@@ -7,6 +7,7 @@ mod autosave;
 mod clipboard;
 mod dialogs;
 mod editor;
+mod file_drop;
 mod find;
 mod menu;
 mod preview;
@@ -17,8 +18,29 @@ mod stats;
 mod view;
 mod workspace;
 
+use prompter_platform::instance::{Acquired, SingleInstance};
+
+/// The name only one running copy of the app can hold.
+const INSTANCE_ID: &str = "prompter";
+
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    // Before any window, and before the library, which two copies must not both write.
+    let instance = match SingleInstance::acquire(INSTANCE_ID) {
+        Acquired::Primary(instance) => instance,
+        Acquired::Secondary => {
+            log::info!("the Prompter is already running; asking it to come forward");
+            // This copy leaves even if the running one cannot be reached.
+            if let Err(err) = SingleInstance::signal_focus(INSTANCE_ID) {
+                log::warn!("the running copy could not be signaled: {err}");
+            }
+            return Ok(());
+        }
+    };
+    if let Some(err) = instance.setup_error() {
+        log::warn!("later copies cannot be heard: {err}");
+    }
 
     let alpha = renderer::AlphaInUse::default();
     let mut options = eframe::NativeOptions {
@@ -39,7 +61,7 @@ fn main() -> anyhow::Result<()> {
         Box::new(|cc| {
             ui_kit::apply_for(&cc.egui_ctx, app::APPEARANCE);
             ui_kit::chrome::install(cc);
-            Ok(Box::new(app::PrompterApp::new(prompter_platform::os::check_windows_11(), alpha)))
+            Ok(Box::new(app::PrompterApp::new(prompter_platform::os::check_windows_11(), alpha, instance)))
         }),
     )
     .map_err(|err| anyhow::anyhow!("{err}"))

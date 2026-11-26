@@ -148,11 +148,16 @@ impl Workspace {
         Ok(())
     }
 
-    /// Imports a file and opens the first script it made. Returns how many it made if the file
-    /// was split.
-    pub fn import(&mut self, source: &Path) -> Result<Option<usize>> {
+    /// Imports a file into `folder`, or into no folder, and opens the first script it made.
+    /// Returns how many it made if the file was split.
+    pub fn import(&mut self, source: &Path, folder: Option<&str>) -> Result<Option<usize>> {
         self.flush()?;
         let imported = self.store.import(source)?;
+        if let Some(folder) = folder {
+            for script in &imported.scripts {
+                self.store.move_to_folder(&script.id, Some(folder))?;
+            }
+        }
         if let Some(first) = imported.scripts.first() {
             self.open(&first.id)?;
         }

@@ -1,17 +1,20 @@
 //! The Prompter's root window: the Library (spec "Library window").
 
 use std::cell::Cell;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use prompter_core::store::{Store, StoreError};
+use prompter_platform::instance::{FOCUS_MESSAGE, SingleInstance};
 use prompter_platform::os::OsError;
 use prompter_platform::view::{NativeWindow, ViewStatus, ViewWindow};
 use ui_kit::tokens::{color, radius, size, space, typography};
 
-use crate::clipboard::ClipboardCheck;
+use crate::clipboard::{Clipboard, MenuClipboard, SystemClipboard};
 use crate::dialogs::{Dialog, Naming};
 use crate::editor::{self, Editor};
+use crate::file_drop;
 use crate::find::FindBar;
 use crate::menu::{EDITOR_MENU, Item, MENUS, MenuState, SCRIPTS_MENU};
 use crate::preview::Preview;
@@ -43,6 +46,14 @@ const HEADER_PAD: f32 = 6.0;
 const HAIRLINE: f32 = 1.0;
 /// How often to repaint while a toast shows, so that it goes away on time.
 const TOAST_TICK: Duration = Duration::from_millis(250);
+/// How often to look for a message from a second copy of the app. A message does not wake egui.
+const INSTANCE_POLL: Duration = Duration::from_millis(250);
+/// How often to repaint while files are dragged over the window. The pointer's moves send no
+/// events then.
+const DRAG_TICK: Duration = Duration::from_millis(30);
+/// How strongly the accent color fills what files would be dropped on, and its outline.
+const DROP_TINT: f32 = 0.12;
+const DROP_STROKE: f32 = 2.0;
 
 const ABOUT: ui_kit::widgets::AboutInfo = ui_kit::widgets::AboutInfo {
     app_name: "Cutmark Prompter",
@@ -74,7 +85,17 @@ pub struct PrompterApp {
     editor: Editor,
     find: FindBar,
     preview: Preview,
-    clipboard: ClipboardCheck,
+    clipboard: Box<dyn Clipboard>,
+    menu_clipboard: MenuClipboard,
+    /// The modifier keys held at the end of the last frame.
+    held: egui::Modifiers,
+    /// This copy's hold on being the only one, through which later copies are heard.
+    instance: Option<SingleInstance>,
+    /// The root window, once found.
+    root_window: Option<NativeWindow>,
+    /// Stands in for the pointer's place during a file drag, which tests have no window to ask.
+    #[cfg(test)]
+    drag_pointer_at: Option<egui::Pos2>,
     /// The editor's right-click menu is open.
     editor_menu_open: bool,
     dialog: Option<Dialog>,
@@ -86,8 +107,8 @@ pub struct PrompterApp {
 }
 
 impl PrompterApp {
-    /// Takes the result of the startup OS check.
-    pub fn new(os_check: Result<(), OsError>, alpha: AlphaInUse) -> Self {
+    /// Takes the result of the startup OS check and the claim to be the only running copy.
+    pub fn new(os_check: Result<(), OsError>, alpha: AlphaInUse, instance: SingleInstance) -> Self {
         if let Err(err) = &os_check {
             log::error!("unsupported system: {err}");
         }
@@ -100,7 +121,7 @@ impl PrompterApp {
         } else {
             Err(String::new())
         };
-        Self::with_library(os_check.is_ok(), alpha, workspace)
+        Self { instance: Some(instance), ..Self::with_library(os_check.is_ok(), alpha, workspace) }
     }
 
     fn with_library(supported: bool, alpha: AlphaInUse, workspace: Result<Workspace, String>) -> Self {
@@ -119,7 +140,13 @@ impl PrompterApp {
             editor: Editor::default(),
             find: FindBar::default(),
             preview: Preview::default(),
-            clipboard: ClipboardCheck::default(),
+            clipboard: Box::new(SystemClipboard),
+            menu_clipboard: MenuClipboard::default(),
+            held: egui::Modifiers::default(),
+            instance: None,
+            root_window: None,
+            #[cfg(test)]
+            drag_pointer_at: None,
             editor_menu_open: false,
             dialog: None,
             queued: None,
@@ -135,7 +162,8 @@ impl PrompterApp {
             library_open: workspace.is_some(),
             script_open,
             editor: if script_open { self.editor.status() } else { Default::default() },
-            clipboard_has_text: self.clipboard.has_text(),
+            clipboard_has_text: self.menu_clipboard.has_text(),
+            clipboard_has_html: self.menu_clipboard.has_html(),
         }
     }
 
@@ -148,6 +176,7 @@ impl PrompterApp {
         if let Some(window) = NativeWindow::find_own_window(ROOT_TITLE) {
             log_failure("exclude_from_capture on the Library", window.exclude_from_capture());
             log::info!("Library excluded from capture: {}", window.status().excluded);
+            self.root_window = Some(window);
             self.root_find_frames = 0;
         } else if self.root_find_frames == 0 {
             log::warn!("the Library window was not found; it is not excluded from capture");
@@ -188,13 +217,9 @@ impl PrompterApp {
         let open = workspace.open_script().map(|open| open.id.clone());
         let result = match (item, open) {
             (Item::Import, _) => {
-                let picker = rfd::FileDialog::new().set_parent(frame).add_filter("Scripts", &["txt", "md"]);
+                let picker = rfd::FileDialog::new().set_parent(frame).add_filter("Scripts", &file_drop::EXTENSIONS);
                 match picker.pick_file() {
-                    Some(source) => workspace.import(&source).map(|split| {
-                        if let Some(parts) = split {
-                            toast(ctx, format!("The file was over the word limit, so it was split into {parts} scripts."));
-                        }
-                    }),
+                    Some(source) => workspace.import(&source, None).map(|split| report_split(ctx, split)),
                     None => Ok(()),
                 }
             }
@@ -296,9 +321,11 @@ impl PrompterApp {
         };
         let serial = open.serial;
         let id = editor::id(serial);
+        // Before the menu's pastes, which are ready as they are.
+        editor::rich_paste(ui, id, self.clipboard.as_ref(), self.held);
         match command {
             Some(Item::FindInScript) => self.find.open(),
-            Some(item) => editor::command(ui, id, item),
+            Some(item) => editor::command(ui, id, item, self.clipboard.as_ref()),
             None => {}
         }
         if self.find.is_open() {
@@ -373,8 +400,6 @@ impl PrompterApp {
         if click_through_hotkey(ui) {
             self.click_through = !self.click_through;
         }
-        // Before any field, which would take the reply as text to paste.
-        self.clipboard.take_reply(ui);
         let command = self.queued.take();
         let modal = self.dialog.is_some() || self.appearance_open || self.about_open;
         if let Some(item) = (!modal).then(|| shortcut(ui)).flatten()
@@ -399,7 +424,7 @@ impl PrompterApp {
             panel_header(ui, "Run", |_| {});
             self.view_controls(ui, frame);
         });
-        self.clipboard.watch(ui.ctx(), edit_menu_open.get() || self.editor_menu_open);
+        self.menu_clipboard.watch(ui.ctx(), self.clipboard.as_ref(), edit_menu_open.get() || self.editor_menu_open);
 
         let capture = capture_label(self.view.as_ref().map(|view| view.status()));
         let mut items = vec!["Ready"];
@@ -411,9 +436,98 @@ impl PrompterApp {
         ui_kit::appearance_dialog(ui.ctx(), &mut self.appearance_open);
         ui_kit::about_dialog(ui.ctx(), &mut self.about_open, &ABOUT);
         self.show_dialog(ui.ctx());
+        // After everything that can copy, and before the toasts, which report a failure.
+        self.write_copies(ui.ctx());
+        self.file_drag(ui, scripts, modal);
         if ui_kit::widgets::show_toasts(ui.ctx()).is_some() {
             ui.ctx().request_repaint_after(TOAST_TICK);
         }
+        self.held = ui.input(|i| i.modifiers);
+    }
+
+    /// Puts what a widget copied or cut on the clipboard, in place of egui's own write.
+    fn write_copies(&self, ctx: &egui::Context) {
+        let mut copied = Vec::new();
+        ctx.output_mut(|output| {
+            output.commands.retain_mut(|command| match command {
+                egui::OutputCommand::CopyText(text) => {
+                    copied.push(std::mem::take(text));
+                    false
+                }
+                _ => true,
+            });
+        });
+        for text in copied {
+            if let Err(error) = self.clipboard.write_text(&text) {
+                log::error!("the clipboard could not be written: {error}");
+                toast(ctx, "The text could not be copied to the clipboard.");
+            }
+        }
+    }
+
+    /// Files dragged in from another program. While they are over the window, the folder row
+    /// under the pointer is marked, or else the whole Scripts panel, which is `panel`. A drop
+    /// imports them into that folder, or into no folder. `blocked` is a dialog being open.
+    fn file_drag(&mut self, ui: &egui::Ui, panel: egui::Rect, blocked: bool) {
+        let (hovering, dropped) = ui.input(|i| {
+            let dropped: Vec<_> = i.raw.dropped_files.iter().map(|file| file.path().to_owned()).collect();
+            (!i.raw.hovered_files.is_empty(), dropped)
+        });
+        if blocked || self.workspace.is_err() || (!hovering && dropped.is_empty()) {
+            return;
+        }
+        let target = self.drag_pointer(ui.ctx()).and_then(|at| self.scripts.folder_at(at));
+        if dropped.is_empty() {
+            mark_drop_target(ui, target.map_or(panel, |(row, _)| row));
+            ui.ctx().request_repaint_after(DRAG_TICK);
+        } else {
+            let folder = target.map(|(_, folder)| folder.to_owned());
+            self.import_dropped(ui.ctx(), dropped, folder.as_deref());
+        }
+    }
+
+    /// Where the pointer is during a file drag. The window gets no mouse events then, so egui
+    /// does not know.
+    fn drag_pointer(&self, ctx: &egui::Context) -> Option<egui::Pos2> {
+        #[cfg(test)]
+        if let Some(at) = self.drag_pointer_at {
+            return Some(at);
+        }
+        let (x, y) = self.root_window?.cursor_position()?;
+        Some(egui::pos2(x as f32, y as f32) / ctx.pixels_per_point())
+    }
+
+    /// Imports each dropped file that can be, and says which could not.
+    fn import_dropped(&mut self, ctx: &egui::Context, dropped: Vec<PathBuf>, folder: Option<&str>) {
+        let Ok(workspace) = &mut self.workspace else {
+            return;
+        };
+        let (supported, unsupported) = file_drop::by_support(dropped);
+        for source in supported {
+            match workspace.import(&source, folder) {
+                Ok(split) => report_split(ctx, split),
+                Err(error) => {
+                    log::error!("a dropped file was not imported: {error}");
+                    toast(ctx, format!("{} could not be imported: {error}", file_drop::name(&source)));
+                }
+            }
+        }
+        if !unsupported.is_empty() {
+            toast(ctx, file_drop::unsupported_message(&unsupported));
+        }
+        // What is already drawn this frame shows the old library.
+        ctx.request_repaint();
+    }
+
+    /// Looks for messages from later copies of the app, which exit after sending them.
+    fn hear_other_copies(&self, ctx: &egui::Context) {
+        let Some(instance) = &self.instance else {
+            return;
+        };
+        while let Some(message) = instance.try_recv() {
+            handle_instance_message(ctx, &message);
+        }
+        ctx.request_repaint_after(INSTANCE_POLL);
     }
 
     /// Draws the open library dialog, if there is one.
@@ -472,6 +586,32 @@ fn open_library() -> anyhow::Result<Workspace> {
 
 fn toast(ctx: &egui::Context, text: impl Into<String>) {
     ui_kit::widgets::toast(ctx, text);
+}
+
+/// Tells the user when an imported file was split into `parts` scripts.
+fn report_split(ctx: &egui::Context, parts: Option<usize>) {
+    if let Some(parts) = parts {
+        toast(ctx, format!("The file was over the word limit, so it was split into {parts} scripts."));
+    }
+}
+
+/// Does what a message from another copy of the app asks.
+fn handle_instance_message(ctx: &egui::Context, message: &str) {
+    if message != FOCUS_MESSAGE {
+        log::warn!("another copy sent an unknown message");
+        return;
+    }
+    // A minimized window cannot take the focus, so it is restored first.
+    for command in [egui::ViewportCommand::Minimized(false), egui::ViewportCommand::Focus] {
+        ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, command);
+    }
+}
+
+/// Marks what dragged files would be dropped on.
+fn mark_drop_target(ui: &egui::Ui, target: egui::Rect) {
+    let accent = ui_kit::Theme::get(ui.ctx()).accent.accent;
+    let outline = egui::Stroke::new(DROP_STROKE, accent);
+    ui.painter().rect(target, radius::SEGMENT, accent.gamma_multiply(DROP_TINT), outline, egui::StrokeKind::Inside);
 }
 
 /// Tells the user about a library operation that failed.
@@ -764,6 +904,7 @@ impl eframe::App for PrompterApp {
 
     /// Runs before each frame, and also while the window is hidden.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.hear_other_copies(ctx);
         self.keep_saved(ctx);
     }
 
@@ -859,6 +1000,31 @@ mod tests {
         assert_eq!(capture_label(Some(None)), Some("Visible to capture"));
         assert_eq!(capture_label(Some(Some(ViewStatus::default()))), Some("Visible to capture"));
         assert_eq!(capture_label(Some(Some(hidden))), Some("Hidden from capture"));
+    }
+
+    /// The commands the root window gets for a message from another copy.
+    fn commands_for(message: &str) -> Vec<egui::ViewportCommand> {
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| handle_instance_message(ui.ctx(), message));
+        output.textures_delta.clear();
+        output.viewport_output.remove(&egui::ViewportId::ROOT).map(|viewport| viewport.commands).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_focus_message_restores_the_library_and_then_focuses_it() {
+        let commands = commands_for(prompter_platform::instance::FOCUS_MESSAGE);
+        let at = |wanted: egui::ViewportCommand| commands.iter().position(|command| *command == wanted);
+        let restore = at(egui::ViewportCommand::Minimized(false)).unwrap();
+        assert!(restore < at(egui::ViewportCommand::Focus).unwrap(), "{commands:?}");
+    }
+
+    #[test]
+    fn any_other_message_is_ignored() {
+        for message in ["", "Focus", "focus ", "quit"] {
+            let commands = commands_for(message);
+            assert!(!commands.contains(&egui::ViewportCommand::Focus), "{message:?}: {commands:?}");
+            assert!(!commands.contains(&egui::ViewportCommand::Minimized(false)), "{message:?}: {commands:?}");
+        }
     }
 
     #[test]
