@@ -3,7 +3,7 @@
 //! Pure logic with no capture, files or UI, so every rule and boundary is unit tested.
 
 use super::cam::CamSummary;
-use super::session::{Summary, TrackPeak};
+use super::session::{Summary, TrackPeak, TrackSnapshot};
 
 /// The text the controller state shows while a pre-flight runs.
 pub const RUNNING: &str = "Pre-flight running";
@@ -80,12 +80,19 @@ pub struct PreflightReport {
     pub lines: Vec<CheckLine>,
 }
 
+/// For each session track, the app name when it records or leaves out an app that is not attached.
+/// `apps` names each track's app, None for a device track.
+pub fn waiting_apps(apps: &[Option<String>], tracks: &[TrackSnapshot]) -> Vec<Option<String>> {
+    apps.iter().enumerate().map(|(n, app)| app.clone().filter(|_| !tracks.get(n).is_some_and(|track| track.attached))).collect()
+}
+
 /// Judges a finished pre-flight take recorded at `fps` frames per second, with the camera file's totals when one was written.
+/// A track named in `waiting` (see [`waiting_apps`]) gets an Info line instead of a judgement of its level.
 ///
 /// Fail when any frame was dropped or the 95th percentile encode time is over the frame budget (1000 / fps ms).
 /// Warn when that percentile is over 80% of the budget, or a track's peak is under -60 dBFS (silent) or at least -0.1 dBFS (clipping).
 /// The camera file gets one "Camera encode" line with the same rules at the camera's own frame rate.
-pub fn judge_with_cam(summary: &Summary, cam: Option<&CamSummary>, fps: u32) -> PreflightReport {
+pub fn judge_with_cam(summary: &Summary, cam: Option<&CamSummary>, waiting: &[Option<String>], fps: u32) -> PreflightReport {
     let budget_ms = 1000.0 / f64::from(fps.max(1));
     let mut lines = vec![
         dropped_line(summary.dropped),
@@ -98,7 +105,10 @@ pub fn judge_with_cam(summary: &Summary, cam: Option<&CamSummary>, fps: u32) -> 
         encode_line(summary.encode_avg_ms, summary.encode_p95_ms, budget_ms),
     ];
     lines.extend(cam.map(cam_line));
-    lines.extend(summary.track_peaks.iter().map(track_line));
+    lines.extend(summary.track_peaks.iter().enumerate().map(|(n, track)| match waiting.get(n) {
+        Some(Some(app_name)) => waiting_line(track, app_name),
+        _ => track_line(track),
+    }));
     let overall = lines.iter().map(|line| line.status).max().unwrap_or(Status::Pass);
     PreflightReport { overall, lines }
 }
@@ -171,6 +181,16 @@ fn cam_line(cam: &CamSummary) -> CheckLine {
     }
 }
 
+/// The line for a track whose app is not running: a neutral note, whatever its level was.
+fn waiting_line(track: &TrackPeak, app_name: &str) -> CheckLine {
+    let detail = if app_name.is_empty() {
+        "No app is selected for this track".to_owned()
+    } else {
+        format!("{app_name} is not running; the track will attach when it opens")
+    };
+    CheckLine { label: format!("Track {}", track.name), status: Status::Info, detail, stats: Vec::new() }
+}
+
 /// The line for one track's peak level.
 fn track_line(track: &TrackPeak) -> CheckLine {
     let status = track_status(track.peak_dbfs);
@@ -195,7 +215,7 @@ mod tests {
 
     /// Judges a take that has no camera file.
     fn judge(summary: &Summary, fps: u32) -> PreflightReport {
-        judge_with_cam(summary, None, fps)
+        judge_with_cam(summary, None, &[], fps)
     }
 
     /// A summary with these numbers; the average is half the percentile.
@@ -303,37 +323,37 @@ mod tests {
     fn a_camera_file_adds_one_camera_encode_line_before_the_tracks() {
         let take = summary(0, 5.0, &[-12.0]);
         assert_eq!(judge(&take, 60).lines.len(), 4);
-        let report = judge_with_cam(&take, Some(&cam(30.0, 5.0, 0)), 60);
+        let report = judge_with_cam(&take, Some(&cam(30.0, 5.0, 0)), &[], 60);
         assert_eq!(report.lines.len(), 5);
         assert_eq!(report.lines[3].label, "Camera encode");
         assert_eq!(report.lines[3].status, Status::Pass);
         assert_eq!(report.lines[4].label, "Track T0");
         assert_eq!(report.overall, Status::Pass);
-        assert_eq!(judge_with_cam(&take, None, 60), judge(&take, 60));
+        assert_eq!(judge_with_cam(&take, None, &[], 60), judge(&take, 60));
     }
 
     #[test]
     fn the_camera_encode_follows_the_main_video_rules_at_the_camera_frame_rate() {
         let take = summary(0, 5.0, &[]);
         // 25 fps gives a budget of exactly 40 ms: warn above 32 ms, fail above 40 ms.
-        assert_eq!(judge_with_cam(&take, Some(&cam(25.0, 32.0, 0)), 60).overall, Status::Pass);
-        assert_eq!(judge_with_cam(&take, Some(&cam(25.0, 33.0, 0)), 60).overall, Status::Warn);
-        assert_eq!(judge_with_cam(&take, Some(&cam(25.0, 41.0, 0)), 60).overall, Status::Fail);
+        assert_eq!(judge_with_cam(&take, Some(&cam(25.0, 32.0, 0)), &[], 60).overall, Status::Pass);
+        assert_eq!(judge_with_cam(&take, Some(&cam(25.0, 33.0, 0)), &[], 60).overall, Status::Warn);
+        assert_eq!(judge_with_cam(&take, Some(&cam(25.0, 41.0, 0)), &[], 60).overall, Status::Fail);
         // The same time passes at 30 fps (33.3 ms budget) only below 26.7 ms.
-        assert_eq!(judge_with_cam(&take, Some(&cam(30.0, 30.0, 0)), 60).overall, Status::Warn);
+        assert_eq!(judge_with_cam(&take, Some(&cam(30.0, 30.0, 0)), &[], 60).overall, Status::Warn);
         // One dropped camera frame fails, like a dropped frame of the main video.
-        assert_eq!(judge_with_cam(&take, Some(&cam(30.0, 5.0, 1)), 60).overall, Status::Fail);
+        assert_eq!(judge_with_cam(&take, Some(&cam(30.0, 5.0, 1)), &[], 60).overall, Status::Fail);
     }
 
     #[test]
     fn the_camera_encode_line_names_the_numbers_and_the_budget() {
-        let report = judge_with_cam(&summary(0, 5.0, &[]), Some(&cam(25.0, 8.0, 2)), 60);
+        let report = judge_with_cam(&summary(0, 5.0, &[]), Some(&cam(25.0, 8.0, 2)), &[], 60);
         assert_eq!(report.lines[3].detail, "average 4.0 ms, 95th percentile 8.0 ms, budget 40.0 ms, dropped 2");
     }
 
     #[test]
     fn every_check_line_carries_its_numbers_as_stats() {
-        let report = judge_with_cam(&summary(0, 8.0, &[-75.0]), Some(&cam(25.0, 8.0, 2)), 50);
+        let report = judge_with_cam(&summary(0, 8.0, &[-75.0]), Some(&cam(25.0, 8.0, 2)), &[], 50);
         let stats: Vec<Vec<(&str, &str)>> =
             report.lines.iter().map(|line| line.stats.iter().map(|stat| (stat.value.as_str(), stat.label.as_str())).collect()).collect();
         let expected: [Vec<(&str, &str)>; 5] = [
@@ -367,5 +387,32 @@ mod tests {
         assert_ne!(dnd_line().status, Status::Fail);
         // Info sorts below Pass, so an Info line can never raise the overall result.
         assert!(Status::Info < Status::Pass);
+    }
+
+    #[test]
+    fn a_waiting_app_track_is_info_and_never_a_failure() {
+        // The track recorded silence, which would warn for a device track.
+        let take = summary(0, 5.0, &[-100.0, -12.0]);
+        let report = judge_with_cam(&take, None, &[Some("Discord".to_owned()), None], 60);
+        assert_eq!(report.lines[3].status, Status::Info);
+        assert_eq!(report.lines[3].detail, "Discord is not running; the track will attach when it opens");
+        assert_eq!(report.lines[4].status, Status::Pass);
+        assert_eq!(report.overall, Status::Pass);
+    }
+
+    #[test]
+    fn only_app_tracks_that_are_not_attached_are_waiting() {
+        let track = |attached| TrackSnapshot {
+            name: String::new(),
+            peak_dbfs: -100.0,
+            clipped: false,
+            packets: 0,
+            overflows: 0,
+            device_lost: false,
+            attached,
+            instances: Default::default(),
+        };
+        let apps = [None, Some("Discord".to_owned()), Some("Spotify".to_owned())];
+        assert_eq!(waiting_apps(&apps, &[track(false), track(false), track(true)]), [None, Some("Discord".to_owned()), None]);
     }
 }

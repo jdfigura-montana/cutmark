@@ -82,6 +82,15 @@ pub struct AppSpec {
     pub except: bool,
 }
 
+/// How many of an app's running instances a desktop-except capture leaves out; both zero for every other capture.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Instances {
+    /// The instances that are left out.
+    pub excluded: usize,
+    /// The instances that were running when the capture started.
+    pub total: usize,
+}
+
 /// An app track gaining or losing its capture during a take.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct AppEvent {
@@ -180,6 +189,7 @@ impl Stats {
                     overflows: AtomicU64::new(0),
                     device_lost: AtomicBool::new(false),
                     attached: AtomicBool::new(track.device.is_some()),
+                    instances: Mutex::new(Instances::default()),
                     gain_db_bits: AtomicU32::new(track.gain_db.to_bits()),
                     muted: AtomicBool::new(track.muted),
                 })
@@ -204,6 +214,13 @@ impl Stats {
     pub(super) fn set_track_attached(&self, index: usize, attached: bool) {
         if let Some(slot) = self.tracks.get(index) {
             slot.attached.store(attached, Ordering::Relaxed);
+        }
+    }
+
+    /// Records how many app instances a track's capture leaves out.
+    pub(super) fn set_track_instances(&self, index: usize, instances: Instances) {
+        if let Some(Ok(mut slot)) = self.tracks.get(index).map(|slot| slot.instances.lock()) {
+            *slot = instances;
         }
     }
 
@@ -323,6 +340,8 @@ pub struct TrackSnapshot {
     pub device_lost: bool,
     /// Whether the track has a running capture: its device, or its app while that runs.
     pub attached: bool,
+    /// The app instances a desktop-except track leaves out.
+    pub instances: Instances,
 }
 
 /// One audio track's live state, shared between the audio thread and snapshots.
@@ -339,6 +358,8 @@ struct TrackSlot {
     device_lost: AtomicBool,
     /// Whether the track has a running capture.
     attached: AtomicBool,
+    /// The app instances the capture leaves out.
+    instances: Mutex<Instances>,
     /// The track's live gain in dB, as f32 bits, set by the UI and applied by the audio thread.
     gain_db_bits: AtomicU32,
     /// Whether the track is muted right now, set by the UI and applied by the audio thread.
@@ -375,6 +396,7 @@ impl TrackSlot {
             overflows: self.overflows.load(Ordering::Relaxed),
             device_lost: self.device_lost.load(Ordering::Relaxed),
             attached: self.attached.load(Ordering::Relaxed),
+            instances: self.instances.lock().map(|instances| *instances).unwrap_or_default(),
         }
     }
 }

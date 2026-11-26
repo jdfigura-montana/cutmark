@@ -504,7 +504,13 @@ mod tests {
             track_names: vec!["Desktop".to_owned()],
             track_kinds: vec![TrackKind::DesktopExcept { exe: "spotify.exe".to_owned(), app_name: "Spotify".to_owned() }],
             track_enabled: vec![true],
-            idle_apps: vec![crate::engine::app_monitor::IdleAppTrack { index: 0, attached: true, peak_dbfs: -100.0 }],
+            idle_apps: vec![crate::engine::app_monitor::IdleAppTrack {
+                index: 0,
+                app: crate::engine::session::AppSpec { exe: "spotify.exe".to_owned(), app_name: "Spotify".to_owned(), except: true },
+                instances: Default::default(),
+                attached: true,
+                peak_dbfs: -100.0,
+            }],
             ..ControllerState::default()
         };
         assert_eq!(

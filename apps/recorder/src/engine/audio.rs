@@ -22,7 +22,7 @@ use media_io::mux::{MuxSender, SendParameters};
 use media_io::{AudioCodec, AudioEncoder};
 
 use super::audio_track::{AppChange, AppSource, AppSystem, TrackLink, TrackPipeline, app_pids};
-use super::session::{AppEvent, AudioStreamSpec, EngineError, Stats, TrackSpec};
+use super::session::{AppEvent, AudioStreamSpec, EngineError, Instances, Stats, TrackSpec};
 
 /// The audio thread's tick, about one AAC frame.
 const TICK: Duration = Duration::from_millis(10);
@@ -491,6 +491,7 @@ impl AudioRig {
                     (packets, overflows, *lost)
                 }
             };
+            stats.set_track_instances(n, self.apps[n].as_ref().map(TrackLink::instances).unwrap_or_default());
             stats.fold_audio_track(n, peak, clipped, packets, overflows, device_lost);
         }
     }
@@ -651,6 +652,9 @@ impl AppSource for AppLoopback {
     }
     fn overflows(&self) -> u64 {
         AppLoopback::overflows(self)
+    }
+    fn instances(&self) -> Instances {
+        Instances { excluded: self.excluded_instances(), total: self.total_instances() }
     }
 }
 

@@ -11,6 +11,8 @@ use capture::{AppTarget, AudioApp, AudioPacket, CaptureError, LoopbackMode};
 use rubato::audioadapter_buffers::direct::{InterleavedSlice, SequentialSliceOfVecs};
 use rubato::{Adjustable, Async, FixedAsync, PolynomialDegree, Resampler, Resizable};
 
+use super::session::Instances;
+
 /// Proportional gain of the drift controller, in ratio per frame of error.
 const DRIFT_KP: f64 = 2.0e-4;
 /// Integral gain of the drift controller, in ratio per accumulated frame of error.
@@ -329,6 +331,10 @@ pub(super) trait AppSource {
     fn packets(&self) -> u64;
     /// Packets dropped because the queue was full.
     fn overflows(&self) -> u64;
+    /// The app instances this capture leaves out; zero unless it excludes an app.
+    fn instances(&self) -> Instances {
+        Instances::default()
+    }
 }
 
 /// What app links ask of the system.
@@ -673,6 +679,17 @@ impl TrackLink {
         match self {
             Self::App(link) => link.source(),
             Self::Except(link) => link.current.as_ref().map(|feed| feed.source.as_ref()),
+        }
+    }
+
+    /// The app instances a desktop-except link leaves out now; zero while it leaves none out.
+    pub(super) fn instances(&self) -> Instances {
+        match self {
+            Self::Except(link) if link.excluding => {
+                let feed = link.next.as_ref().or(link.current.as_ref()).filter(|feed| feed.excluding);
+                feed.map(|feed| feed.source.instances()).unwrap_or_default()
+            }
+            _ => Instances::default(),
         }
     }
 

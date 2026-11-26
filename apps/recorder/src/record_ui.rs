@@ -12,7 +12,7 @@ use crate::config::AudioSettings;
 use crate::engine::controller::{ControllerState, Phase};
 use crate::engine::session::Summary;
 use crate::marks_ui;
-use crate::tracks_ui::{self, LiveTrackStats};
+use crate::tracks_ui::{self, AppSources, LiveTrackStats};
 
 /// Left padding of a panel header's title, the same inset the app's other
 /// headers use.
@@ -28,7 +28,7 @@ pub(crate) fn pill_label(paused: bool) -> &'static str {
 /// The Record mode's right Live panel (spec "Record mode"): the levels, the
 /// running take's encoder stats, the marks, the last take's summary while
 /// idle, and the mark hotkeys. `live` holds the running take's meters.
-pub fn live_panel(ui: &mut Ui, state: &ControllerState, audio: &AudioSettings, live: Option<&LiveTrackStats>) {
+pub fn live_panel(ui: &mut Ui, state: &ControllerState, audio: &AudioSettings, apps: &AppSources, live: Option<&LiveTrackStats>) {
     live_header(ui, state);
     ui.add_space(space::SCALE_8);
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
@@ -36,7 +36,7 @@ pub fn live_panel(ui: &mut Ui, state: &ControllerState, audio: &AudioSettings, l
         caption(ui, "Levels");
         // One row per enabled track with its level meter and peak; these are
         // the same rows the Sources panel shows (spec "Record mode").
-        tracks_ui::sources_rows(ui, audio, live);
+        tracks_ui::sources_rows(ui, audio, apps, live);
         ui.add_space(space::SCALE_8);
         if state.phase.has_take() {
             caption(ui, "Encoder");

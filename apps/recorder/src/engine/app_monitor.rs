@@ -11,7 +11,7 @@ use capture::{AudioApp, list_audio_apps, qpc_now};
 
 use super::audio::{WindowsApps, spawn_app_lister};
 use super::audio_track::{AppSystem, TrackLink, app_pids};
-use super::session::AppSpec;
+use super::session::{AppSpec, Instances};
 
 /// How often the monitor drains its captures.
 const TICK: Duration = Duration::from_millis(20);
@@ -32,6 +32,10 @@ pub(super) struct WatchedTrack {
 pub struct IdleAppTrack {
     /// The track, counted in settings order.
     pub index: usize,
+    /// The app the track records or leaves out, so a reading is never taken for a newly picked app.
+    pub app: AppSpec,
+    /// The app instances a desktop-except track leaves out.
+    pub instances: Instances,
     /// Whether the app is being captured, or for a desktop-except track being left out.
     pub attached: bool,
     /// The peak since the last reading in dBFS, -100.0 for silence.
@@ -40,12 +44,12 @@ pub struct IdleAppTrack {
 
 /// The links of the watched tracks, with the peak each has heard since the last reading.
 struct AppWatch {
-    tracks: Vec<(usize, TrackLink, f32)>,
+    tracks: Vec<(WatchedTrack, TrackLink, f32)>,
 }
 
 impl AppWatch {
     fn new(watched: &[WatchedTrack]) -> Self {
-        Self { tracks: watched.iter().map(|track| (track.index, TrackLink::new(&track.app.exe, track.app.except), 0.0)).collect() }
+        Self { tracks: watched.iter().map(|track| (track.clone(), TrackLink::new(&track.app.exe, track.app.except), 0.0)).collect() }
     }
 
     /// Attaches, detaches, switches or restarts every link. With no take running, a change is not an event.
@@ -66,11 +70,12 @@ impl AppWatch {
     /// Puts the state of every track into `readings`, keeping the louder of a peak not read yet and the new one.
     fn publish(&mut self, readings: &mut Vec<IdleAppTrack>) {
         let unread = std::mem::take(readings);
-        readings.extend(self.tracks.iter_mut().map(|(index, link, peak)| {
+        readings.extend(self.tracks.iter_mut().map(|(track, link, peak)| {
             let heard = std::mem::take(peak);
             let dbfs = if heard > 0.0 { (20.0 * heard.log10()).max(SILENCE_DBFS) } else { SILENCE_DBFS };
-            let before = unread.iter().find(|track| track.index == *index).map_or(SILENCE_DBFS, |track| track.peak_dbfs);
-            IdleAppTrack { index: *index, attached: link.attached(), peak_dbfs: dbfs.max(before) }
+            let before = unread.iter().find(|reading| reading.index == track.index).map_or(SILENCE_DBFS, |reading| reading.peak_dbfs);
+            let (app, instances) = (track.app.clone(), link.instances());
+            IdleAppTrack { index: track.index, app, instances, attached: link.attached(), peak_dbfs: dbfs.max(before) }
         }));
     }
 }
@@ -148,14 +153,14 @@ mod tests {
     #[test]
     fn an_idle_attach_sets_attached_and_feeds_only_the_meter() {
         let app = AppSpec { exe: "discord.exe".to_owned(), app_name: "Discord".to_owned(), except: false };
-        let mut watch = AppWatch::new(&[WatchedTrack { index: 2, app }]);
+        let mut watch = AppWatch::new(&[WatchedTrack { index: 2, app: app.clone() }]);
         let system = FakeSystem::default();
         *system.instances.borrow_mut() = vec![40];
         let mut apps = system.clone();
         let mut readings = Vec::new();
         watch.poll(&[], &mut apps);
         watch.publish(&mut readings);
-        assert_eq!(readings, [IdleAppTrack { index: 2, attached: false, peak_dbfs: SILENCE_DBFS }]);
+        assert_eq!(readings, [IdleAppTrack { index: 2, app, instances: Instances::default(), attached: false, peak_dbfs: SILENCE_DBFS }]);
 
         let running = [AudioApp { exe: "discord.exe".to_owned(), display_name: "Discord".to_owned(), pids: vec![40, 41], active: true }];
         watch.poll(&running, &mut apps);

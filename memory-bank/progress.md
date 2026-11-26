@@ -1,6 +1,7 @@
 # Progress
 
 ## Done
+- Recorder Phase 10 A3 (2026-11-26): app and desktop-except track UI (Source choice, app dropdown, state captions, Sources rows, Add track menu) and Info pre-flight lines for waiting apps. cargo test -p cutmark-recorder passed, fmt + clippy -D warnings clean. check.ps1, release build and a real-app run not done.
 - Recorder Phase 10 A2b (2026-11-26): desktop-except tracks, idle watch of app and desktop-except tracks, capture `top_level_pids` in place of trial captures. cargo test: cutmark-recorder 337, capture 80 (1 ignored); fmt + recorder clippy -D warnings clean. check.ps1, release build and a real-app run not done.
 - Recorder Phase 10 A2a (2026-11-26): app tracks in the engine (settings kind, once-a-second attach/detach/restart, silence while detached, System marks, session.json times, status `tracks`). 332 recorder tests passed, fmt + clippy clean; check.ps1 and release build not run. Idle polling and A3 are open. Details in activeContext.md.
 - Recorder Phase 9e C3c (2026-11-24, 3bd78c1): renaming a take changes only the file name values in `.marks.json` (`media[].path`) and `_session.json`, keeping each file's key order and formatting; a `_cam` video without its main video in the same folder lists as its own take. cargo test -p cutmark-recorder 299 passed, fmt + clippy clean; check.ps1 and release build not run. Details in activeContext.md.

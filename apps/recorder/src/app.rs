@@ -33,7 +33,7 @@ use crate::review_ui;
 use crate::settings_ui::{self, ApiUi, NextTake, Section, SettingsDialog};
 use crate::status_ui;
 use crate::tools_ui::{self, Tool};
-use crate::tracks_ui::{self, LiveTrackStats, TracksChanged};
+use crate::tracks_ui::{self, AppSources, LiveTrackStats, TracksChanged};
 
 /// The Recorder's own appearance file folder and default accent.
 pub const APPEARANCE: ui_kit::AppAppearance = ui_kit::AppAppearance::RECORDER;
@@ -80,6 +80,8 @@ pub struct RecorderApp {
     devices: Vec<AudioDevice>,
     /// The level meters of the running take.
     live_tracks: LiveTrackStats,
+    /// What the window keeps about app and desktop-except tracks.
+    app_sources: AppSources,
     /// Whether the track settings changed and are not saved yet.
     settings_dirty: bool,
     /// True when the window could not be excluded from screen capture.
@@ -241,6 +243,7 @@ impl RecorderApp {
             controller,
             devices,
             live_tracks: LiveTrackStats::default(),
+            app_sources: AppSources::default(),
             settings_dirty: false,
             capture_exclusion_failed,
             was_minimized: false,
@@ -536,6 +539,7 @@ impl RecorderApp {
             }
             state.ui_seen_seq = state.stats_seq;
         }
+        self.app_sources.observe(&self.settings.audio.tracks, &state.idle_apps, active.then_some(&self.live_tracks));
     }
 
     /// Gives the controller the settings whenever they differ from what it last got, and marks them to be saved.
@@ -844,6 +848,10 @@ impl RecorderApp {
             stage_column(ui, center, |ui| self.preview_panel(ui, state, active));
             self.settings_dirty |= resize_dividers(ui, [left, center, right], self.settings.panel_widths.entry(Mode::Setup));
         });
+        // The idle meters of app tracks move without any other news from the controller.
+        if !state.idle_apps.is_empty() {
+            ctx.request_repaint_after(METER_REFRESH);
+        }
     }
 
     /// The left Sources panel (spec "Setup mode"): the video group with the display and camera
@@ -879,7 +887,7 @@ impl RecorderApp {
         ui.add_space(space::SCALE_8);
         group_caption(ui, "Audio");
         let live = if state.phase.has_take() { Some(&self.live_tracks) } else { None };
-        tracks_ui::sources_rows(ui, &self.settings.audio, live);
+        tracks_ui::sources_rows(ui, &self.settings.audio, &self.app_sources, live);
     }
 
     /// The camera row of the video group: the camera's name, its format and a status dot;
@@ -944,7 +952,7 @@ impl RecorderApp {
                 }
                 Tool::Audio => {
                     let live_tracks = if active { Some(&self.live_tracks) } else { None };
-                    let changed = tracks_ui::audio_panel(ui, &mut self.settings.audio, &self.devices, live_tracks, active);
+                    let changed = tracks_ui::audio_panel(ui, &mut self.settings.audio, &self.devices, &mut self.app_sources, live_tracks, active);
                     self.push_settings_if_changed();
                     self.on_tracks_changed(ctx, changed);
                     if active {
@@ -1313,11 +1321,11 @@ impl RecorderApp {
     }
 
     /// The Live panel (spec "Record mode"): read-only, so only the meters may
-    /// ask for a repaint while a take runs.
+    /// ask for a repaint, while a take runs or an app track is watched.
     fn live_panel(&self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
         let live = if state.phase.has_take() { Some(&self.live_tracks) } else { None };
-        record_ui::live_panel(ui, state, &self.settings.audio, live);
-        if state.phase.has_take() {
+        record_ui::live_panel(ui, state, &self.settings.audio, &self.app_sources, live);
+        if state.phase.has_take() || !state.idle_apps.is_empty() {
             ctx.request_repaint_after(METER_REFRESH);
         }
     }

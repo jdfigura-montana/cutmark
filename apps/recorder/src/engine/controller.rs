@@ -587,6 +587,8 @@ struct SyncRun {
 struct PreflightRun {
     folder: PathBuf,
     keep_files: bool,
+    /// For each session track, the name of the app it records or leaves out; None for a device track.
+    apps: Vec<Option<String>>,
     /// When the session had started, for the wall-clock limit.
     began: Instant,
 }
@@ -1078,6 +1080,7 @@ impl Worker {
         if !missing.is_empty() {
             log::warn!("pre-flight without these audio devices: {}", missing.join(", "));
         }
+        let apps = tracks.iter().map(|track| track.app.as_ref().map(|app| app.app_name.clone())).collect();
         let script = TakeScript::new(&folder, &base_name, now);
         let started = Instant::now();
         let tracker = StatsTracker::new(folder.clone(), started);
@@ -1101,7 +1104,7 @@ impl Worker {
             fps,
             tracker,
             monitor: Monitor::default(),
-            preflight: Some(PreflightRun { folder, keep_files, began: Instant::now() }),
+            preflight: Some(PreflightRun { folder, keep_files, apps, began: Instant::now() }),
             sync: None,
         });
         self.update(|state| state.preflight = Some(PreflightProgress { status: preflight::RUNNING, progress: 0.0 }));
@@ -1129,9 +1132,11 @@ impl Worker {
         let Some(active) = self.active.take() else { return };
         let Some(run) = active.preflight else { return };
         let fps = active.fps;
+        // The apps still not running at the end are read before the session goes.
+        let waiting = preflight::waiting_apps(&run.apps, &active.session.stats().tracks);
         // The report is built from the summary before the folder goes.
         let (stopped, cam) = active.session.stop_with_cam();
-        let report = stopped.map(|summary| preflight::judge_with_cam(&summary, cam.as_ref(), fps));
+        let report = stopped.map(|summary| preflight::judge_with_cam(&summary, cam.as_ref(), &waiting, fps));
         let keep = run.keep_files && report.is_ok();
         if !keep {
             remove_folder(&run.folder);
