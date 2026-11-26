@@ -29,8 +29,8 @@ Geometry on a 64 by 64 grid:
 
 ## 3. The wordmark
 
-- Bricolage Grotesque ExtraBold (SIL OFL), lowercase `cutmark`, letter spacing -0.045em.
-- `cut` in ink, `mark` in the app's accent, with a 0.05em gap; `mark` sits 0.08em lower. This echoes the mark's cut.
+- Bricolage Grotesque ExtraBold (SIL OFL), `CutMark` with a capital C and a capital M, letter spacing -0.045em.
+- `Cut` in ink, `Mark` in the app's accent, with a 0.05em gap; `Mark` sits 0.08em lower. This echoes the mark's cut.
 - App name after it: Bricolage Grotesque Medium at 0.6 of the size, `text.tertiary`, 0.28em gap, title case ("Audio", "Recorder", "Video", "Prompter").
 - Lockup: mark height equals the font size, 0.33em gap between mark and word.
 - Shipped as outlined SVG, so the apps don't load the font at runtime.
