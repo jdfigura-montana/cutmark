@@ -126,6 +126,7 @@ pub fn transport_deck<R>(ui: &Ui, content_rect: Rect, id: Id, scrubbing: bool, a
 /// the phosphor glyph in `text.secondary` (`text.primary` hovered). The
 /// tooltip doubles as the accessible label.
 pub fn deck_button(ui: &mut Ui, icon: &str, tooltip: &str) -> Response {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let side = size::TRANSPORT_BUTTON;
     let (rect, response) = ui.allocate_exact_size(vec2(side, side), Sense::click());
     let response = response.on_hover_text(tooltip);
@@ -133,10 +134,13 @@ pub fn deck_button(ui: &mut Ui, icon: &str, tooltip: &str) -> Response {
     let hovered = response.hovered();
     if ui.is_rect_visible(rect) {
         if hovered {
-            ui.painter().circle_filled(rect.center(), side / 2.0, color::BG_HOVER);
+            ui.painter().circle_filled(rect.center(), side / 2.0, neutrals.bg_hover);
         }
-        let galley =
-            ui.painter().layout_no_wrap(icon.to_owned(), fonts::icon_fill(DECK_ICON_SIZE), if hovered { color::TEXT_PRIMARY } else { color::TEXT_SECONDARY });
+        let galley = ui.painter().layout_no_wrap(
+            icon.to_owned(),
+            fonts::icon_fill(DECK_ICON_SIZE),
+            if hovered { neutrals.text_primary } else { neutrals.text_secondary },
+        );
         ui.painter().galley(rect.center() - galley.size() / 2.0, galley, Color32::PLACEHOLDER);
     }
     if response.has_focus() {
@@ -200,12 +204,13 @@ pub fn play_button(ui: &mut Ui, playing: bool, kind: PlayKind) -> Response {
 /// JetBrains Mono step): the main readout in `text.primary`, the sub-second
 /// fraction in `text.tertiary`.
 pub fn timecode(ui: &mut Ui, main: &str, fraction: &str) -> InnerResponse<()> {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let font = fonts::mono_semibold(typography::TIME_LARGE_SIZE);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::SCALE_2;
-        ui.add(egui::Label::new(egui::RichText::new(main).font(font.clone()).color(color::TEXT_PRIMARY)));
+        ui.add(egui::Label::new(egui::RichText::new(main).font(font.clone()).color(neutrals.text_primary)));
         if !fraction.is_empty() {
-            ui.add(egui::Label::new(egui::RichText::new(fraction).font(font).color(color::TEXT_TERTIARY)));
+            ui.add(egui::Label::new(egui::RichText::new(fraction).font(font).color(neutrals.text_tertiary)));
         }
     })
 }

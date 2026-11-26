@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use egui::{Color32, CornerRadius, Galley, Key, Pos2, Rect, Response, Sense, Ui, WidgetInfo, WidgetType, vec2};
 
+use crate::Theme;
 use crate::fonts;
-use crate::tokens::{color, radius, space, typography};
+use crate::tokens::{radius, space, typography};
 use crate::widgets::focus_ring;
 
 /// The tool strip cell height (spec "Components": "Tool strip" 52 tall; no
@@ -42,6 +43,7 @@ const HOVER_STRENGTH: f32 = 0.5;
 /// ]);
 /// ```
 pub fn tool_strip<T: PartialEq + Copy>(ui: &mut Ui, selected: &mut T, items: &[(T, &str /*icon*/, &str /*label*/)]) -> Response {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let selected_index = items.iter().position(|(value, _, _)| *value == *selected);
     let icon_font = fonts::icon_regular(typography::HEADLINE_SIZE);
     let label_font = fonts::medium(typography::MICRO_SIZE);
@@ -85,11 +87,11 @@ pub fn tool_strip<T: PartialEq + Copy>(ui: &mut Ui, selected: &mut T, items: &[(
         }
         if ui.is_rect_visible(cell_rect) {
             if is_selected {
-                ui.painter().rect_filled(cell_rect, radius::SEGMENT, color::BG_HOVER);
+                ui.painter().rect_filled(cell_rect, radius::SEGMENT, neutrals.bg_hover);
             } else if hovered {
-                ui.painter().rect_filled(cell_rect, radius::SEGMENT, color::BG_HOVER.gamma_multiply(HOVER_STRENGTH));
+                ui.painter().rect_filled(cell_rect, radius::SEGMENT, neutrals.bg_hover.gamma_multiply(HOVER_STRENGTH));
             }
-            let text = if is_selected { color::TEXT_PRIMARY } else { color::TEXT_SECONDARY };
+            let text = if is_selected { neutrals.text_primary } else { neutrals.text_secondary };
             let content_height = icon_galley.size().y + ICON_LABEL_GAP + label_galley.size().y;
             let content_top = cell_rect.top() + (CELL_HEIGHT - content_height) / 2.0;
             let center_x = cell_rect.center().x;

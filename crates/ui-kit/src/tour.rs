@@ -8,7 +8,7 @@ use egui::{Context, Id, Key, Margin, Modifiers, Order, Pos2, Rect, RichText, Str
 
 use crate::Theme;
 use crate::fonts;
-use crate::tokens::{color, motion, radius, space, typography};
+use crate::tokens::{motion, radius, space, typography};
 use crate::widgets::glass_frame;
 
 /// Alpha of the dimmed window behind the spotlight (spec "First-run tour":
@@ -231,7 +231,8 @@ fn card_position(cutout: Rect, screen: Rect) -> Pos2 {
 
 /// Paints the dim over the window with a rounded cutout around the target.
 fn paint_spotlight(painter: &egui::Painter, screen: Rect, cutout: Rect) {
-    let dim = color::BG_GROUND.gamma_multiply(DIM_ALPHA);
+    let neutrals = Theme::get(painter.ctx()).neutrals;
+    let dim = neutrals.bg_ground.gamma_multiply(DIM_ALPHA);
     let cut = cutout.intersect(screen);
     if !cut.is_positive() {
         painter.rect_filled(screen, 0.0, dim);
@@ -275,17 +276,18 @@ fn corner_wedge(corner: Pos2, center: Pos2, radius: f32, start: f32, end: f32) -
 /// The callout card: the step's title in `type.headline`, its body, "Step n of
 /// m", and Back, Next (primary) and Skip tour. Returns the button clicked.
 fn card(ui: &mut Ui, tour: &Tour, index: usize, anchors: &[(String, Rect)]) -> Option<Action> {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let step = tour.steps[index];
     ui.set_width(CARD_WIDTH);
     let mut action = None;
     glass_frame(ui.ctx(), radius::GROUP).inner_margin(Margin::same(CARD_PADDING as i8)).show(ui, |ui| {
         ui.set_width(CARD_WIDTH - 2.0 * CARD_PADDING);
-        ui.label(RichText::new(step.title).font(fonts::semibold(typography::HEADLINE_SIZE)).color(color::TEXT_PRIMARY));
+        ui.label(RichText::new(step.title).font(fonts::semibold(typography::HEADLINE_SIZE)).color(neutrals.text_primary));
         ui.add_space(CARD_LINE_GAP);
-        ui.label(RichText::new(step.body).font(fonts::medium(typography::BODY_SIZE)).color(color::TEXT_SECONDARY));
+        ui.label(RichText::new(step.body).font(fonts::medium(typography::BODY_SIZE)).color(neutrals.text_secondary));
         ui.add_space(CARD_LINE_GAP);
         let progress = format!("Step {} of {}", index + 1, tour.steps.len());
-        ui.label(RichText::new(progress).font(fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY));
+        ui.label(RichText::new(progress).font(fonts::medium(typography::CAPTION_SIZE)).color(neutrals.text_tertiary));
         ui.add_space(CARD_LINE_GAP);
         ui.horizontal(|ui| {
             let has_back = previous_step(tour, anchors, index).is_some();

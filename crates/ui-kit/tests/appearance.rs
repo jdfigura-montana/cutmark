@@ -119,7 +119,7 @@ fn bad_files_load_the_apps_default() {
 #[test]
 fn save_then_load_round_trips() {
     let temp = TempAppearance::new("round-trip");
-    let theme = Theme { accent: accent::derive(preset("Violet")), reduce_motion: false };
+    let theme = Theme::new(accent::derive(preset("Violet")), false);
     assert!(!temp.file(&AUDIO).exists(), "no folder before the first save");
     save_ok(&AUDIO, &theme);
     assert!(temp.file(&AUDIO).exists(), "the first save creates the app folder and file");
@@ -130,12 +130,12 @@ fn save_then_load_round_trips() {
 #[test]
 fn saving_in_one_app_does_not_change_another() {
     let temp = TempAppearance::new("isolation");
-    let violet = Theme { accent: accent::derive(preset("Violet")), reduce_motion: false };
+    let violet = Theme::new(accent::derive(preset("Violet")), false);
     save_ok(&AUDIO, &violet);
     assert!(!temp.file(&RECORDER).exists(), "the recorder file was not created");
     assert_eq!(appearance::load(&RECORDER), RECORDER.default_theme());
 
-    let orange = Theme { accent: accent::derive(preset("Orange")), reduce_motion: false };
+    let orange = Theme::new(accent::derive(preset("Orange")), false);
     save_ok(&RECORDER, &orange);
     assert_eq!(appearance::load(&AUDIO), violet, "audio kept its own pick");
     assert_eq!(appearance::load(&RECORDER), orange);
@@ -164,7 +164,7 @@ fn the_shared_file_is_not_read_or_written() {
     fs::write(&shared, r##"{"version": 1, "accent_pick": "#7C5CFF", "glass": true}"##).expect("write shared file");
     assert_eq!(appearance::load(&AUDIO), AUDIO.default_theme(), "the shared file is not migrated");
 
-    save_ok(&AUDIO, &Theme { accent: accent::derive(preset("Teal")), reduce_motion: false });
+    save_ok(&AUDIO, &Theme::new(accent::derive(preset("Teal")), false));
     let text = fs::read_to_string(&shared).expect("read shared file");
     assert!(text.contains("#7C5CFF"), "the shared file is left as it was");
 }
@@ -182,11 +182,11 @@ fn poll_picks_up_a_changed_file() {
     assert_eq!(Theme::get(&ctx), Theme::default());
 
     // Another app's file changing does not matter to this app.
-    save_ok(&RECORDER, &Theme { accent: accent::derive(preset("Orange")), reduce_motion: false });
+    save_ok(&RECORDER, &Theme::new(accent::derive(preset("Orange")), false));
     appearance::poll_at(&ctx, start + Duration::from_secs(2));
     assert_eq!(Theme::get(&ctx), Theme::default(), "the recorder's file is not watched");
 
-    let theme = Theme { accent: accent::derive(preset("Teal")), reduce_motion: false };
+    let theme = Theme::new(accent::derive(preset("Teal")), false);
     save_ok(&AUDIO, &theme);
     bump(&temp.file(&AUDIO));
 

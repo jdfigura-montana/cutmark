@@ -6,8 +6,9 @@
 use egui::{Align, CornerRadius, Layout, Rect, Sense, Ui, UiBuilder, pos2, vec2};
 
 use crate::HAIRLINE;
+use crate::Theme;
 use crate::chrome::{self, Regions};
-use crate::tokens::{color, size, space};
+use crate::tokens::{size, space};
 use crate::widgets::caption_buttons::{self, CaptionRects};
 
 /// Padding before the left zone's first element (the app mark).
@@ -94,11 +95,12 @@ where
     C: Fn(&mut Ui),
     R: Fn(&mut Ui),
 {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), size::TOOLBAR_MAIN_HEIGHT), Sense::hover());
     if ui.is_rect_visible(bar) {
-        ui.painter().rect_filled(bar, CornerRadius::ZERO, color::BG_GROUND);
+        ui.painter().rect_filled(bar, CornerRadius::ZERO, neutrals.bg_ground);
         let hairline = Rect::from_min_max(pos2(bar.left(), bar.bottom() - HAIRLINE), bar.right_bottom());
-        ui.painter().rect_filled(hairline, CornerRadius::ZERO, color::STROKE_HAIRLINE);
+        ui.painter().rect_filled(hairline, CornerRadius::ZERO, neutrals.stroke_hairline);
     }
     // Inactive window: toolbar text drops to text.tertiary (spec "Window
     // chrome", "Both"). The primary button keeps its color: it lays its own
@@ -109,7 +111,7 @@ where
     let left_rect = Rect::from_min_max(pos2(bar.left() + LEFT_PADDING, bar.top()), bar.right_bottom());
     let mut left_ui = ui.new_child(UiBuilder::new().max_rect(left_rect).layout(Layout::left_to_right(Align::Center)));
     if unfocused {
-        left_ui.style_mut().visuals.override_text_color = Some(color::TEXT_TERTIARY);
+        left_ui.style_mut().visuals.override_text_color = Some(neutrals.text_tertiary);
     }
     left(&mut left_ui);
     // The caption buttons join at the far right, only with the custom chrome
@@ -128,7 +130,7 @@ where
         let separator_left = actions_right - HAIRLINE;
         let separator = Rect::from_center_size(pos2(separator_left + HAIRLINE / 2.0, bar.center().y), vec2(HAIRLINE, SEPARATOR_HEIGHT));
         if ui.is_rect_visible(separator) {
-            ui.painter().rect_filled(separator, CornerRadius::ZERO, color::STROKE_SEPARATOR_STRONG);
+            ui.painter().rect_filled(separator, CornerRadius::ZERO, neutrals.stroke_separator_strong);
         }
         actions_right = separator_left - ACTIONS_GAP;
     }
@@ -147,7 +149,7 @@ where
     let content_rect = Rect::from_min_max(pos2(actions_right - content_width, bar.top()), pos2(actions_right, bar.bottom()));
     let mut right_ui = ui.new_child(UiBuilder::new().max_rect(content_rect).layout(Layout::left_to_right(Align::Center)));
     if unfocused {
-        right_ui.style_mut().visuals.override_text_color = Some(color::TEXT_TERTIARY);
+        right_ui.style_mut().visuals.override_text_color = Some(neutrals.text_tertiary);
     }
     right(&mut right_ui);
     let right_content = right_ui.min_rect();
@@ -171,7 +173,7 @@ where
     let center_rect = Rect::from_center_size(bar.center(), vec2(width, bar.height()));
     let mut center_ui = ui.new_child(UiBuilder::new().max_rect(center_rect).layout(Layout::left_to_right(Align::Center)));
     if unfocused {
-        center_ui.style_mut().visuals.override_text_color = Some(color::TEXT_TERTIARY);
+        center_ui.style_mut().visuals.override_text_color = Some(neutrals.text_tertiary);
     }
     center(&mut center_ui);
 

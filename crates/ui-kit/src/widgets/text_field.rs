@@ -3,25 +3,27 @@
 
 use egui::{Margin, Response, Ui, WidgetInfo, WidgetType};
 
+use crate::Theme;
 use crate::fonts;
-use crate::tokens::{color, radius, space, typography};
+use crate::tokens::{radius, space, typography};
 
 /// The shared field body: a `bg.group` frame with `radius.group`, the hint in
 /// `text.tertiary`, and `icon` drawn ahead of the edit when present.
 pub(crate) fn field(ui: &mut Ui, text: &mut String, hint: &str, icon: Option<&str>) -> Response {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let response = egui::Frame::new()
-        .fill(color::BG_GROUP)
+        .fill(neutrals.bg_group)
         .corner_radius(radius::GROUP)
         .inner_margin(Margin::symmetric(space::SCALE_4 as i8, space::SCALE_2 as i8))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 if let Some(icon) = icon {
-                    ui.label(egui::RichText::new(icon).font(fonts::icon_regular(typography::BODY_SIZE)).color(color::TEXT_TERTIARY));
+                    ui.label(egui::RichText::new(icon).font(fonts::icon_regular(typography::BODY_SIZE)).color(neutrals.text_tertiary));
                 }
                 ui.scope(|ui| {
                     // egui takes the hint color from `weak_text_color`
                     // (spec "Search field": placeholder in `text.tertiary`).
-                    ui.style_mut().visuals.weak_text_color = Some(color::TEXT_TERTIARY);
+                    ui.style_mut().visuals.weak_text_color = Some(neutrals.text_tertiary);
                     egui::TextEdit::singleline(text).hint_text(hint).desired_width(ui.available_width()).frame(egui::Frame::NONE).show(ui).response.response
                 })
                 .inner

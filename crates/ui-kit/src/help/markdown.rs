@@ -8,7 +8,7 @@ use egui::{Label, Pos2, Response, RichText, Sense, Stroke, StrokeKind, Ui, Vec2}
 
 use crate::Theme;
 use crate::fonts;
-use crate::tokens::{color, space, typography};
+use crate::tokens::{space, typography};
 
 /// Horizontal gap between two inline runs in a wrapped paragraph.
 const INLINE_GAP: f32 = 4.0;
@@ -361,20 +361,21 @@ fn plain_text(spans: &[Span]) -> String {
 
 /// Renders one block with ui-kit tokens. Returns the topic id of a clicked link.
 pub fn render(ui: &mut Ui, block: &Block) -> Option<String> {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     match block {
         Block::Heading1(spans) => {
             ui.add_space(space::SCALE_8);
-            ui.label(RichText::new(plain_text(spans)).font(fonts::semibold(typography::TITLE_SIZE)).color(color::TEXT_PRIMARY));
+            ui.label(RichText::new(plain_text(spans)).font(fonts::semibold(typography::TITLE_SIZE)).color(neutrals.text_primary));
             None
         }
         Block::Heading2(spans) => {
             ui.add_space(space::SCALE_8);
-            ui.label(RichText::new(plain_text(spans)).font(fonts::semibold(typography::HEADLINE_SIZE)).color(color::TEXT_PRIMARY));
+            ui.label(RichText::new(plain_text(spans)).font(fonts::semibold(typography::HEADLINE_SIZE)).color(neutrals.text_primary));
             None
         }
         Block::Heading3(spans) => {
             ui.add_space(space::SCALE_4);
-            ui.label(RichText::new(plain_text(spans)).font(fonts::semibold(typography::BODY_SIZE)).color(color::TEXT_PRIMARY));
+            ui.label(RichText::new(plain_text(spans)).font(fonts::semibold(typography::BODY_SIZE)).color(neutrals.text_primary));
             None
         }
         Block::Paragraph(spans) => inline_spans(ui, spans),
@@ -390,6 +391,7 @@ pub fn render(ui: &mut Ui, block: &Block) -> Option<String> {
 
 /// Renders a wrapped run of inline spans.
 fn inline_spans(ui: &mut Ui, spans: &[Span]) -> Option<String> {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let mut clicked = None;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::splat(INLINE_GAP);
@@ -397,21 +399,21 @@ fn inline_spans(ui: &mut Ui, spans: &[Span]) -> Option<String> {
             match span {
                 Span::Text(text) => {
                     for word in text.split_whitespace() {
-                        ui.label(RichText::new(word).font(fonts::medium(typography::BODY_SIZE)).color(color::TEXT_SECONDARY));
+                        ui.label(RichText::new(word).font(fonts::medium(typography::BODY_SIZE)).color(neutrals.text_secondary));
                     }
                 }
                 Span::Bold(text) => {
                     for word in text.split_whitespace() {
-                        ui.label(RichText::new(word).font(fonts::semibold(typography::BODY_SIZE)).color(color::TEXT_PRIMARY));
+                        ui.label(RichText::new(word).font(fonts::semibold(typography::BODY_SIZE)).color(neutrals.text_primary));
                     }
                 }
                 Span::Italic(text) => {
                     for word in text.split_whitespace() {
-                        ui.label(RichText::new(word).italics().font(fonts::medium(typography::BODY_SIZE)).color(color::TEXT_SECONDARY));
+                        ui.label(RichText::new(word).italics().font(fonts::medium(typography::BODY_SIZE)).color(neutrals.text_secondary));
                     }
                 }
                 Span::Code(text) => {
-                    ui.label(RichText::new(text).font(fonts::mono(typography::VALUE_SIZE)).color(color::TEXT_PRIMARY).background_color(color::BG_CONTROL));
+                    ui.label(RichText::new(text).font(fonts::mono(typography::VALUE_SIZE)).color(neutrals.text_primary).background_color(neutrals.bg_control));
                 }
                 Span::Key(key) => {
                     paint_key_cap(ui, key);
@@ -447,22 +449,24 @@ fn list(ui: &mut Ui, items: &[Vec<Span>], numbered: bool) -> Option<String> {
 
 /// Draws the bullet or number ahead of a list item.
 fn marker(ui: &mut Ui, numbered: bool, index: usize) {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let (rect, _) = ui.allocate_exact_size(Vec2::new(LIST_MARKER, ui.text_style_height(&egui::TextStyle::Body)), Sense::hover());
     if numbered {
         let label = format!("{}.", index + 1);
-        let galley = ui.painter().layout_no_wrap(label, fonts::mono(typography::VALUE_SIZE), color::TEXT_TERTIARY);
+        let galley = ui.painter().layout_no_wrap(label, fonts::mono(typography::VALUE_SIZE), neutrals.text_tertiary);
         let position = Pos2::new(rect.right() - galley.size().x, rect.center().y - galley.size().y / 2.0);
-        ui.painter().galley(position, galley, color::TEXT_TERTIARY);
+        ui.painter().galley(position, galley, neutrals.text_tertiary);
     } else {
-        ui.painter().circle_filled(rect.center(), BULLET / 2.0, color::TEXT_TERTIARY);
+        ui.painter().circle_filled(rect.center(), BULLET / 2.0, neutrals.text_tertiary);
     }
 }
 
 /// Renders a `> Tip:` block as an inspector group.
 fn tip(ui: &mut Ui, spans: &[Span]) -> Option<String> {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let mut clicked = None;
     crate::inspector_group(ui, |ui| {
-        ui.label(RichText::new("Tip").font(fonts::semibold(typography::HEADLINE_SIZE)).color(color::TEXT_PRIMARY));
+        ui.label(RichText::new("Tip").font(fonts::semibold(typography::HEADLINE_SIZE)).color(neutrals.text_primary));
         clicked = inline_spans(ui, spans);
     });
     clicked
@@ -470,22 +474,24 @@ fn tip(ui: &mut Ui, spans: &[Span]) -> Option<String> {
 
 /// Draws a horizontal rule in the hairline color.
 fn rule(ui: &mut Ui) {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     ui.add_space(space::SCALE_4);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), RULE), Sense::hover());
-    ui.painter().rect_filled(rect, 0.0, color::STROKE_HAIRLINE);
+    ui.painter().rect_filled(rect, 0.0, neutrals.stroke_hairline);
     ui.add_space(space::SCALE_4);
 }
 
 /// Draws a key cap: a small rounded box with a hairline stroke.
 fn paint_key_cap(ui: &mut Ui, key: &str) -> Response {
-    let galley = ui.painter().layout_no_wrap(key.to_string(), fonts::mono(typography::VALUE_SIZE), color::TEXT_PRIMARY);
+    let neutrals = Theme::get(ui.ctx()).neutrals;
+    let galley = ui.painter().layout_no_wrap(key.to_string(), fonts::mono(typography::VALUE_SIZE), neutrals.text_primary);
     let size = galley.size() + Vec2::new(KEY_PAD_X * 2.0, KEY_PAD_Y * 2.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
-        painter.rect_filled(rect, KEY_RADIUS, color::BG_CONTROL);
-        painter.rect_stroke(rect, KEY_RADIUS, Stroke::new(crate::HAIRLINE, color::STROKE_HAIRLINE), StrokeKind::Inside);
-        painter.galley(rect.center() - galley.size() / 2.0, galley, color::TEXT_PRIMARY);
+        painter.rect_filled(rect, KEY_RADIUS, neutrals.bg_control);
+        painter.rect_stroke(rect, KEY_RADIUS, Stroke::new(crate::HAIRLINE, neutrals.stroke_hairline), StrokeKind::Inside);
+        painter.galley(rect.center() - galley.size() / 2.0, galley, neutrals.text_primary);
     }
     response
 }

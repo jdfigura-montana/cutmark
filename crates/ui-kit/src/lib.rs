@@ -21,6 +21,7 @@ pub mod fonts;
 pub mod help;
 pub mod icons;
 pub mod meter;
+mod oklch;
 pub mod palette;
 pub mod shortcuts;
 pub mod theme;
@@ -30,7 +31,7 @@ pub mod widgets;
 
 pub use appearance::{AppAppearance, Preset};
 pub use meter::{level_meter, level_meter_vertical, stereo_meter_vertical};
-pub use theme::Theme;
+pub use theme::{Neutrals, Theme};
 pub use widgets::{
     AboutInfo, CaptionRects, ClipKind, ClipLook, DeckState, MainToolbar, MarkerKind, Menu, MenuBarOutput, PlayKind, SliderKind, Title, Toggle, ToggleKind,
     about_dialog, accent_picker, appearance_dialog, caption_buttons, chip, deck_button, dialog, fader, focus_ring, glass_frame, icon_button, inspector_group,
@@ -62,7 +63,8 @@ const MENU_ROW_HEIGHT: f32 = 32.0;
 ///
 /// Builds the whole look from the design tokens and the runtime
 /// [`Theme`] (spec: "Glass Deck"): the token surfaces, the glass popup
-/// shadow, the States-table widget fills, one accent color for selection and
+/// shadow, the States-table widget fills, neutrals tinted toward the accent
+/// (spec "Tinted neutrals"), one accent color for selection and
 /// focus, Inter (Proportional) and JetBrains Mono (Monospace) with named
 /// Inter families for the weight steps, the phosphor icon font, and the
 /// token spacing grid.
@@ -77,47 +79,27 @@ pub fn apply(ctx: &egui::Context) {
     let accent = theme.accent.accent;
     let mut v = egui::Visuals::dark();
 
-    // Surfaces from the surface tokens; menus and popovers are glass (spec
-    // "Menus and popovers" and "Elevation and glass").
-    v.panel_fill = color::BG_PANEL;
+    // Menus and popovers are glass (spec "Menus and popovers" and "Elevation
+    // and glass").
     apply_glass(&mut v);
-    v.extreme_bg_color = color::BG_CONTROL; // recessed surfaces (fader slot, etc.)
-    v.faint_bg_color = color::BG_TRACK_ALT; // alternate row shade
-    v.window_stroke = egui::Stroke::new(HAIRLINE, color::STROKE_HAIRLINE);
     v.window_corner_radius = radius::GROUP.into();
     v.menu_corner_radius = radius::GROUP.into();
 
     // One accent for selection, focus and links.
     apply_accent(&mut v, accent);
 
-    // Widgets: every state takes its fill from the States table, no border
-    // stroke except the hairline on noninteractive elements, and its text
-    // from the text tokens (tertiary captions, secondary idle, primary on
-    // hover and press).
-    v.override_text_color = Some(color::TEXT_SECONDARY);
+    // Surfaces, strokes and text from the theme's tinted neutrals.
+    apply_neutrals(&mut v, &theme.neutrals);
+
+    // Widgets: no border stroke except the hairline on noninteractive
+    // elements.
     for w in [&mut v.widgets.noninteractive, &mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
         w.corner_radius = radius::SEGMENT.into();
     }
-    v.widgets.noninteractive.bg_fill = color::BG_PANEL;
-    v.widgets.noninteractive.weak_bg_fill = color::BG_PANEL;
-    v.widgets.noninteractive.bg_stroke = egui::Stroke::new(HAIRLINE, color::STROKE_HAIRLINE);
-    v.widgets.noninteractive.fg_stroke = egui::Stroke::new(HAIRLINE, color::TEXT_TERTIARY);
-    v.widgets.inactive.bg_fill = color::BG_CONTROL;
-    v.widgets.inactive.weak_bg_fill = color::BG_CONTROL;
     v.widgets.inactive.bg_stroke = egui::Stroke::NONE;
-    v.widgets.inactive.fg_stroke = egui::Stroke::new(HAIRLINE, color::TEXT_SECONDARY);
-    v.widgets.hovered.bg_fill = color::BG_HOVER;
-    v.widgets.hovered.weak_bg_fill = color::BG_HOVER;
     v.widgets.hovered.bg_stroke = egui::Stroke::NONE;
-    v.widgets.hovered.fg_stroke = egui::Stroke::new(HAIRLINE, color::TEXT_PRIMARY);
-    v.widgets.active.bg_fill = color::BG_SELECTED;
-    v.widgets.active.weak_bg_fill = color::BG_SELECTED;
     v.widgets.active.bg_stroke = egui::Stroke::NONE;
-    v.widgets.active.fg_stroke = egui::Stroke::new(HAIRLINE, color::TEXT_PRIMARY);
-    v.widgets.open.bg_fill = color::BG_SELECTED;
-    v.widgets.open.weak_bg_fill = color::BG_SELECTED;
     v.widgets.open.bg_stroke = egui::Stroke::NONE;
-    v.widgets.open.fg_stroke = egui::Stroke::new(HAIRLINE, color::TEXT_SECONDARY);
 
     // Text styles from the type tokens; the token spacing grid; the
     // overlay scrollbar (spec "Scrollbar": 6px thumb, tertiary at 40%, 70%
@@ -168,14 +150,44 @@ pub fn apply_for(ctx: &egui::Context, app: appearance::AppAppearance) {
 }
 
 /// Re-applies the theme-dependent parts of the `Visuals` from the runtime
-/// [`Theme`]: the accent and the glass popup look. [`appearance::poll`] calls
-/// this when it loads a new theme.
+/// [`Theme`]: the tinted neutrals, the accent and the glass popup look.
+/// [`appearance::poll`] calls this when it loads a new theme.
 pub fn refresh(ctx: &egui::Context) {
+    // Setting the theme again recomputes the neutrals from its accent.
+    Theme::set(ctx, Theme::get(ctx));
     let theme = Theme::get(ctx);
     ctx.all_styles_mut(|style| {
+        apply_neutrals(&mut style.visuals, &theme.neutrals);
         apply_accent(&mut style.visuals, theme.accent.accent);
         apply_glass(&mut style.visuals);
     });
+}
+
+/// Writes the neutrals into the `Visuals` surfaces, strokes and text colors.
+/// Every widget state takes its fill from the States table and its text from
+/// the text tokens (tertiary captions, secondary idle, primary on hover and
+/// press).
+fn apply_neutrals(v: &mut egui::Visuals, n: &Neutrals) {
+    v.panel_fill = n.bg_panel;
+    v.extreme_bg_color = n.bg_control; // recessed surfaces (fader slot, etc.)
+    v.faint_bg_color = n.bg_track_alt; // alternate row shade
+    v.code_bg_color = n.bg_control;
+    v.window_stroke = egui::Stroke::new(HAIRLINE, n.stroke_hairline);
+    v.override_text_color = Some(n.text_secondary);
+
+    let states = [
+        (&mut v.widgets.noninteractive, n.bg_panel, n.text_tertiary),
+        (&mut v.widgets.inactive, n.bg_control, n.text_secondary),
+        (&mut v.widgets.hovered, n.bg_hover, n.text_primary),
+        (&mut v.widgets.active, n.bg_selected, n.text_primary),
+        (&mut v.widgets.open, n.bg_selected, n.text_secondary),
+    ];
+    for (widget, fill, text) in states {
+        widget.bg_fill = fill;
+        widget.weak_bg_fill = fill;
+        widget.fg_stroke = egui::Stroke::new(HAIRLINE, text);
+    }
+    v.widgets.noninteractive.bg_stroke = egui::Stroke::new(HAIRLINE, n.stroke_hairline);
 }
 
 /// Writes the accent into selection (35% alpha fill, 2px stroke) and links.
@@ -228,12 +240,27 @@ mod tests {
         let ctx = egui::Context::default();
         apply(&ctx);
         let violet = accent::derive(tokens::accent::PRESET_VIOLET);
-        Theme::set(&ctx, Theme { accent: violet, reduce_motion: false });
+        Theme::set(&ctx, Theme::new(violet, false));
         refresh(&ctx);
         let visuals = &ctx.style_of(ctx.theme()).visuals;
         assert_eq!(visuals.selection.stroke.color, violet.accent, "selection stroke follows Violet after refresh");
         assert_eq!(visuals.selection.bg_fill, violet.accent.gamma_multiply(0.35), "selection fill is the accent at 35% alpha");
         assert_eq!(visuals.hyperlink_color, violet.accent);
+    }
+
+    /// A new accent recolors the neutral Visuals after refresh().
+    #[test]
+    fn refresh_recolors_the_neutrals_for_a_new_accent() {
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        let before = ctx.style_of(ctx.theme()).visuals.panel_fill;
+        let teal = Theme::new(accent::derive(tokens::accent::PRESET_TEAL), false);
+        Theme::set(&ctx, teal);
+        refresh(&ctx);
+        let visuals = &ctx.style_of(ctx.theme()).visuals;
+        assert_ne!(visuals.panel_fill, before, "the panel must be retinted");
+        assert_eq!(visuals.panel_fill, teal.neutrals.bg_panel);
+        assert_eq!(visuals.override_text_color, Some(teal.neutrals.text_secondary));
     }
 
     /// Menus and popovers always take the glass fill and shadow, also after a refresh.

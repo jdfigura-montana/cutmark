@@ -5,8 +5,9 @@
 
 use egui::{Color32, Response, Sense, Ui, WidgetInfo, WidgetType, vec2};
 
+use crate::Theme;
 use crate::fonts;
-use crate::tokens::{color, size, typography};
+use crate::tokens::{size, typography};
 use crate::widgets::{capsule_radius, focus};
 
 /// The icon button: a 32px transparent circle, `bg.hover` on hover, the icon
@@ -24,6 +25,7 @@ use crate::widgets::{capsule_radius, focus};
 /// }
 /// ```
 pub fn icon_button(ui: &mut Ui, icon: &str, tooltip: &str) -> Response {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let side = size::ICON_BUTTON;
     let (rect, response) = ui.allocate_exact_size(vec2(side, side), Sense::click());
     let response = response.on_hover_text(tooltip);
@@ -31,14 +33,14 @@ pub fn icon_button(ui: &mut Ui, icon: &str, tooltip: &str) -> Response {
     let hovered = response.hovered();
     if ui.is_rect_visible(rect) {
         if hovered {
-            ui.painter().circle_filled(rect.center(), side / 2.0, color::BG_HOVER);
+            ui.painter().circle_filled(rect.center(), side / 2.0, neutrals.bg_hover);
         }
         // No icon-size token exists; the headline size is the closest match
         // for an icon inside the 32px circle (spec "Icons").
         let galley = ui.painter().layout_no_wrap(
             icon.to_owned(),
             fonts::icon_regular(typography::HEADLINE_SIZE),
-            if hovered { color::TEXT_PRIMARY } else { color::TEXT_SECONDARY },
+            if hovered { neutrals.text_primary } else { neutrals.text_secondary },
         );
         ui.painter().galley(rect.center() - galley.size() / 2.0, galley, Color32::PLACEHOLDER);
     }

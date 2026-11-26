@@ -3,8 +3,9 @@
 
 use egui::{Align, Event, Key, Layout, Margin, Modifiers, Popup, PopupKind, Rect, Response, Sense, Ui, WidgetInfo, WidgetType, vec2};
 
+use crate::Theme;
 use crate::fonts;
-use crate::tokens::{color, radius, space, typography};
+use crate::tokens::{radius, space, typography};
 use crate::widgets::{focus, glass};
 
 /// Height of a menu title button (spec rev 3 "Title bar": 28 tall).
@@ -93,9 +94,10 @@ struct State {
 /// ui_kit::menu_bar(ui, &mut menus);
 /// ```
 pub fn menu_bar(ui: &mut Ui, menus: &mut [Menu<'_>]) -> MenuBarOutput {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let id = ui.unique_id().with("menu-bar");
-    let dim = ui.visuals().override_text_color == Some(color::TEXT_TERTIARY);
-    let idle = if dim { color::TEXT_TERTIARY } else { color::TEXT_SECONDARY };
+    let dim = ui.visuals().override_text_color == Some(neutrals.text_tertiary);
+    let idle = if dim { neutrals.text_tertiary } else { neutrals.text_secondary };
 
     // Allocate every title first, so the interactions can settle the state
     // before anything is painted.
@@ -159,10 +161,10 @@ pub fn menu_bar(ui: &mut Ui, menus: &mut [Menu<'_>]) -> MenuBarOutput {
         let keyboard = state.focus == Some(index);
         let lit = state.open == Some(index) || keyboard || (response.hovered() && state.open.is_none());
         if lit {
-            ui.painter().rect_filled(rect, TITLE_RADIUS, color::BG_HOVER);
+            ui.painter().rect_filled(rect, TITLE_RADIUS, neutrals.bg_hover);
         }
         let pos = rect.center() - galley.size() / 2.0;
-        ui.painter().galley_with_override_text_color(pos, galley, if lit { color::TEXT_PRIMARY } else { idle });
+        ui.painter().galley_with_override_text_color(pos, galley, if lit { neutrals.text_primary } else { idle });
         if (keyboard && state.open.is_none()) || response.has_focus() {
             focus::focus_ring(ui, rect, TITLE_RADIUS.into());
         }

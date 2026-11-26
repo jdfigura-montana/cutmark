@@ -3,7 +3,7 @@
 use egui::{Color32, Context, Id, Pos2, Rect, Response, Sense, Ui, WidgetInfo, WidgetType, vec2};
 
 use crate::Theme;
-use crate::tokens::{color, motion, size, space};
+use crate::tokens::{motion, size, space};
 use crate::widgets::{capsule_radius, focus};
 
 /// The accessible name of the switch (it has no visible label).
@@ -23,6 +23,7 @@ const KNOB_COLOR: Color32 = Color32::WHITE;
 /// ui_kit::switch(ui, &mut solo);
 /// ```
 pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let width = size::SWITCH_WIDTH;
     let height = size::SWITCH_HEIGHT;
     let (rect, mut response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
@@ -37,7 +38,7 @@ pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
     let knob_diameter = height - 2.0 * inset;
     let travel = width - 2.0 * inset - knob_diameter;
     if ui.is_rect_visible(rect) {
-        let fill = if *on { theme.accent.accent } else { color::BG_SELECTED };
+        let fill = if *on { theme.accent.accent } else { neutrals.bg_selected };
         ui.painter().rect_filled(rect, capsule_radius(height), fill);
         let knob_x = knob_offset(ui.ctx(), response.id, *on, theme.reduce_motion, travel);
         let knob_rect = Rect::from_min_size(Pos2::new(rect.left() + inset + knob_x, rect.top() + inset), vec2(knob_diameter, knob_diameter));

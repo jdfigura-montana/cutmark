@@ -9,7 +9,7 @@ use crate::HAIRLINE;
 use crate::Theme;
 use crate::fonts;
 use crate::icons::regular;
-use crate::tokens::{color, radius, size, space, typography};
+use crate::tokens::{radius, size, space, typography};
 
 use super::markdown;
 use super::search::{Hit, search};
@@ -73,6 +73,7 @@ pub fn open(state: &mut HelpState, id: &str) {
 /// generated topic instead of its Markdown: it gets the topic id and the
 /// content ui, and returns true when it drew the page.
 pub fn help_window(ctx: &Context, state: &mut HelpState, book: &HelpBook, extra: &mut dyn FnMut(&str, &mut Ui) -> bool) {
+    let neutrals = Theme::get(ctx).neutrals;
     if !state.open {
         return;
     }
@@ -93,9 +94,9 @@ pub fn help_window(ctx: &Context, state: &mut HelpState, book: &HelpBook, extra:
     let mut keep_open = true;
     let mut requested: Option<String> = None;
     let frame = egui::Frame::new()
-        .fill(color::BG_PANEL)
+        .fill(neutrals.bg_panel)
         .corner_radius(radius::PANEL)
-        .stroke(Stroke::new(HAIRLINE, color::STROKE_HAIRLINE))
+        .stroke(Stroke::new(HAIRLINE, neutrals.stroke_hairline))
         .inner_margin(Margin::same(space::PANEL_PADDING as i8));
     let default_pos = ctx.content_rect().center() - vec2(WINDOW_WIDTH, WINDOW_HEIGHT) / 2.0;
     Window::new("Help")
@@ -129,6 +130,7 @@ pub fn help_window(ctx: &Context, state: &mut HelpState, book: &HelpBook, extra:
 
 /// Draws the search field and the topic or result list.
 fn topic_list(ui: &mut Ui, state: &mut HelpState, book: &HelpBook, focus_search: bool, requested: &mut Option<String>) {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let previous_query = state.query.clone();
     let response = crate::search_field(ui, &mut state.query, SEARCH_HINT);
     if focus_search {
@@ -173,7 +175,7 @@ fn topic_list(ui: &mut Ui, state: &mut HelpState, book: &HelpBook, focus_search:
         ui.allocate_ui_with_layout(vec2(ui.available_width(), ui.available_height()), Layout::top_down(Align::Min), |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("ui_kit_help_results").show(ui, |ui| {
                 if hits.is_empty() {
-                    ui.label(egui::RichText::new("No topics match").font(fonts::medium(typography::BODY_SIZE)).color(color::TEXT_TERTIARY));
+                    ui.label(egui::RichText::new("No topics match").font(fonts::medium(typography::BODY_SIZE)).color(neutrals.text_tertiary));
                 }
                 for (index, hit) in hits.iter().enumerate() {
                     let topic = &book.topics[hit.topic];
@@ -188,29 +190,31 @@ fn topic_list(ui: &mut Ui, state: &mut HelpState, book: &HelpBook, focus_search:
 
 /// Draws a section name above its topic rows.
 fn section_label(ui: &mut Ui, name: &str) {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), SECTION_HEIGHT), Sense::hover());
     if ui.is_rect_visible(rect) {
-        let galley = ui.painter().layout_no_wrap(name.to_owned(), fonts::semibold(typography::CAPTION_SIZE), color::TEXT_TERTIARY);
+        let galley = ui.painter().layout_no_wrap(name.to_owned(), fonts::semibold(typography::CAPTION_SIZE), neutrals.text_tertiary);
         let position = Pos2::new(rect.left() + space::SCALE_4, rect.bottom() - galley.size().y - space::SCALE_4);
-        ui.painter().galley(position, galley, color::TEXT_TERTIARY);
+        ui.painter().galley(position, galley, neutrals.text_tertiary);
     }
 }
 
 /// Draws one search result row with its matched words in the accent color.
 fn result_row(ui: &mut Ui, topic: &Topic, hit: &Hit, selected: bool) -> Response {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), size::LIST_ROW_HEIGHT), Sense::click());
     if ui.is_rect_visible(rect) {
         let fill = if selected {
-            Some(color::BG_ROW_SELECTED)
+            Some(neutrals.bg_row_selected)
         } else if response.hovered() {
-            Some(color::BG_GROUP)
+            Some(neutrals.bg_group)
         } else {
             None
         };
         if let Some(fill) = fill {
             ui.painter().rect_filled(rect, radius::SEGMENT, fill);
         }
-        let text_color = if selected { color::TEXT_PRIMARY } else { color::TEXT_SECONDARY };
+        let text_color = if selected { neutrals.text_primary } else { neutrals.text_secondary };
         paint_highlighted(ui, rect, &topic.title, &hit.words, text_color);
     }
     if response.has_focus() {
@@ -269,6 +273,7 @@ fn highlight_runs(title: &str, words: &[String]) -> Vec<(String, bool)> {
 
 /// Draws the Back and Forward buttons and the current topic.
 fn topic_page(ui: &mut Ui, state: &mut HelpState, book: &HelpBook, extra: &mut dyn FnMut(&str, &mut Ui) -> bool, requested: &mut Option<String>) {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     ui.horizontal(|ui| {
         let back = ui.add_enabled_ui(!state.back.is_empty(), |ui| crate::icon_button(ui, regular::ARROW_LEFT, "Back (Alt+Left)")).inner;
         if back.clicked() {
@@ -284,7 +289,7 @@ fn topic_page(ui: &mut Ui, state: &mut HelpState, book: &HelpBook, extra: &mut d
     // frame shows its topic instead of being overwritten by the old one.
     let current = state.current.clone().filter(|id| book.get(id).is_some()).or_else(|| book.first().map(|topic| topic.id.clone()));
     let Some(id) = current else {
-        ui.label(egui::RichText::new("No help topics").font(fonts::medium(typography::BODY_SIZE)).color(color::TEXT_TERTIARY));
+        ui.label(egui::RichText::new("No help topics").font(fonts::medium(typography::BODY_SIZE)).color(neutrals.text_tertiary));
         return;
     };
     let Some(topic) = book.get(&id) else {
@@ -296,7 +301,7 @@ fn topic_page(ui: &mut Ui, state: &mut HelpState, book: &HelpBook, extra: &mut d
             // A generated page draws its own heading.
             return;
         }
-        ui.label(egui::RichText::new(topic.title.clone()).font(fonts::semibold(typography::TITLE_SIZE)).color(color::TEXT_PRIMARY));
+        ui.label(egui::RichText::new(topic.title.clone()).font(fonts::semibold(typography::TITLE_SIZE)).color(neutrals.text_primary));
         ui.add_space(TITLE_GAP);
         for block in markdown::parse(&topic.body) {
             if let Some(target) = markdown::render(ui, &block) {

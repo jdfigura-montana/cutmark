@@ -9,10 +9,12 @@ use std::path::PathBuf;
 use ui_kit::tokens;
 
 /// Every token named in the Design Language spec's tables.
-const SPEC_TOKENS: [&str; 54] = [
+const SPEC_TOKENS: [&str; 57] = [
     // Color: surfaces
     "bg.ground",
+    "bg.side",
     "bg.panel",
+    "bg.stage.inner",
     "bg.group",
     "bg.control",
     "bg.hover",
@@ -66,6 +68,7 @@ const SPEC_TOKENS: [&str; 54] = [
     // Radii
     "radius.window",
     "radius.panel",
+    "radius.side",
     "radius.group",
     "radius.control",
     "radius.segment",
@@ -99,15 +102,18 @@ fn every_spec_token_exists_in_tokens_json() {
 
 #[test]
 fn spot_checks_match_the_spec() {
-    assert_eq!(tokens::color::BG_GROUND, Color32::from_rgb(0x0A, 0x0A, 0x0B));
+    // A neutral's constant carries the default Blue hue.
+    assert_eq!(tokens::neutral::BG_GROUND, (0.141, 0.006, 1.0));
+    assert_eq!(tokens::neutral::STROKE_HAIRLINE, (0.963, 0.0075, 0.07));
     assert_eq!(tokens::accent::ACCENT, Color32::from_rgb(0x5B, 0x9D, 0xFF));
-    assert_eq!(tokens::color::SEM_METER_CLIP, Color32::from_rgb(0xFF, 0x45, 0x3A));
+    assert_eq!(tokens::color::SEM_METER_CLIP, Color32::from_rgb(0xFF, 0x4D, 0x3D));
     assert!((tokens::radius::PANEL - 18.0).abs() < f32::EPSILON);
+    assert!((tokens::radius::SIDE - 12.0).abs() < f32::EPSILON);
+    assert!((tokens::radius::GROUP - 8.0).abs() < f32::EPSILON);
     // rgba(255,255,255,.025) premultiplied: 0.025 * 255 rounds to 6.
     assert_eq!(tokens::color::BG_TRACK_ALT.a(), 6);
-    assert_eq!(tokens::color::BG_TRACK_HEADER, Color32::from_rgb(0x1B, 0x1B, 0x1E));
-    assert_eq!(tokens::color::BG_TRACK_HEADER_SELECTED, Color32::from_rgb(0x26, 0x26, 0x2A));
-    assert_eq!(tokens::color::BG_TRACK_EMPTY, Color32::from_rgb(0x11, 0x11, 0x13));
+    assert_eq!(tokens::color::STROKE_HAIRLINE.a(), 18);
+    assert_eq!(tokens::color::STROKE_SEPARATOR.a(), 13);
     // rgba(255,255,255,.10) premultiplied: alpha 26 (0.10 * 255 = 25.5 rounds up).
     assert_eq!(tokens::color::STROKE_SEPARATOR_STRONG.a(), 26);
     assert_eq!(tokens::color::STROKE_TRACK.a(), 18);

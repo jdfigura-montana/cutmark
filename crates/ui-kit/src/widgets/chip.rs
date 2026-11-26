@@ -2,8 +2,9 @@
 
 use egui::{Color32, Response, Sense, Ui, WidgetInfo, WidgetType, vec2};
 
+use crate::Theme;
 use crate::fonts;
-use crate::tokens::{color, size, typography};
+use crate::tokens::{size, typography};
 use crate::widgets::{capsule_radius, focus};
 
 /// Horizontal padding inside the chip (spec "Spacing and sizes": chip 26 tall
@@ -22,6 +23,7 @@ const CHIP_PADDING: f32 = 11.0;
 /// ui_kit::chip(ui, &mut snap, "Snap");
 /// ```
 pub fn chip(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let height = size::CHIP_HEIGHT;
     let font = fonts::medium(typography::BODY_SIZE);
     let galley = ui.painter().layout_no_wrap(label.to_owned(), font, Color32::PLACEHOLDER);
@@ -33,13 +35,13 @@ pub fn chip(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
     }
     if ui.is_rect_visible(rect) {
         let fill = if *on {
-            color::TEXT_PRIMARY
+            neutrals.text_primary
         } else if response.hovered() {
-            color::BG_HOVER
+            neutrals.bg_hover
         } else {
-            color::BG_CONTROL
+            neutrals.bg_control
         };
-        let text = if *on { color::BG_GROUND } else { color::TEXT_SECONDARY };
+        let text = if *on { neutrals.bg_ground } else { neutrals.text_secondary };
         ui.painter().rect_filled(rect, capsule_radius(height), fill);
         ui.painter().galley(rect.center() - galley.size() / 2.0, galley, text);
     }

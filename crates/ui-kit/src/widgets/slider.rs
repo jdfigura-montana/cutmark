@@ -5,7 +5,7 @@ use std::ops::RangeInclusive;
 use egui::{Color32, Key, Pos2, Rect, Response, Sense, Ui, WidgetInfo, vec2};
 
 use crate::Theme;
-use crate::tokens::{color, size};
+use crate::tokens::size;
 use crate::widgets::{capsule_radius, focus};
 
 /// Height of the thin track (spec "Slider": thin track).
@@ -31,10 +31,10 @@ pub enum SliderKind {
 
 impl SliderKind {
     /// The fill color for this kind, given the theme accent.
-    fn fill_color(self, accent: Color32) -> Color32 {
+    fn fill_color(self, accent: Color32, zoom: Color32) -> Color32 {
         match self {
             Self::Accent | Self::Bipolar => accent,
-            Self::Zoom => color::TEXT_PRIMARY,
+            Self::Zoom => zoom,
         }
     }
 }
@@ -70,6 +70,7 @@ fn fill_span(kind: SliderKind, fraction: f32) -> (f32, f32) {
 /// ui_kit::slider(ui, &mut gain, 0.0..=1.0, ui_kit::SliderKind::Accent);
 /// ```
 pub fn slider(ui: &mut Ui, value: &mut f32, range: RangeInclusive<f32>, kind: SliderKind) -> Response {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), size::SEGMENT_HEIGHT), Sense::click_and_drag());
     response.widget_info(|| WidgetInfo::slider(true, *value as f64, ""));
     if (response.clicked() || response.dragged())
@@ -96,13 +97,13 @@ pub fn slider(ui: &mut Ui, value: &mut f32, range: RangeInclusive<f32>, kind: Sl
         let accent = Theme::get(ui.ctx()).accent.accent;
         let painter = ui.painter();
         let track = Rect::from_center_size(rect.center(), vec2(rect.width(), TRACK_HEIGHT));
-        painter.rect_filled(track, capsule_radius(TRACK_HEIGHT), color::BG_SELECTED);
+        painter.rect_filled(track, capsule_radius(TRACK_HEIGHT), neutrals.bg_selected);
         let fraction = fraction(*value, range);
         let (from, to) = fill_span(kind, fraction);
         if to > from {
             let fill =
                 Rect::from_min_max(Pos2::new(track.left() + track.width() * from, track.min.y), Pos2::new(track.left() + track.width() * to, track.max.y));
-            painter.rect_filled(fill, capsule_radius(TRACK_HEIGHT), kind.fill_color(accent));
+            painter.rect_filled(fill, capsule_radius(TRACK_HEIGHT), kind.fill_color(accent, neutrals.text_primary));
         }
         let knob_center = Pos2::new(track.left() + track.width() * fraction, track.center().y);
         painter.circle_filled(knob_center, KNOB_DIAMETER / 2.0, Color32::WHITE);

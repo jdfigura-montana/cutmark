@@ -70,7 +70,7 @@ impl AppAppearance {
 
     /// The theme of a fresh install of this app: its default accent.
     pub fn default_theme(&self) -> Theme {
-        Theme { accent: crate::accent::derive(self.default_preset.pick()), reduce_motion: false }
+        Theme::new(crate::accent::derive(self.default_preset.pick()), false)
     }
 }
 
@@ -144,7 +144,7 @@ fn load_from_str(app: &AppAppearance, text: &str) -> Theme {
         return app.default_theme();
     }
     let Some(pick) = parse_hex(&file.accent_pick) else { return app.default_theme() };
-    Theme { accent: crate::accent::derive(pick), reduce_motion: false }
+    Theme::new(crate::accent::derive(pick), false)
 }
 
 /// Parses a `#RRGGBB` pick (the `#` optional) into an sRGB color.

@@ -6,8 +6,9 @@
 use egui::{Context, KeyboardShortcut, Response, RichText, Sense, Stroke, StrokeKind, Ui, Vec2};
 
 use crate::HAIRLINE;
+use crate::Theme;
 use crate::fonts;
-use crate::tokens::{color, space, typography};
+use crate::tokens::{space, typography};
 
 /// Horizontal gap around the "+" between two key caps.
 const CAP_GAP: f32 = space::SCALE_2;
@@ -175,41 +176,46 @@ fn caps_width(ui: &Ui, items: &[CapItem]) -> f32 {
 
 /// Lays out the text of one key cap in `type.value` `text.primary`.
 fn cap_galley(ui: &Ui, text: &str) -> std::sync::Arc<egui::Galley> {
-    ui.painter().layout_no_wrap(text.to_owned(), fonts::mono(typography::VALUE_SIZE), color::TEXT_PRIMARY)
+    let neutrals = Theme::get(ui.ctx()).neutrals;
+    ui.painter().layout_no_wrap(text.to_owned(), fonts::mono(typography::VALUE_SIZE), neutrals.text_primary)
 }
 
 /// Lays out the "+" between two key caps in `type.value` `text.tertiary`.
 fn plus_galley(ui: &Ui) -> std::sync::Arc<egui::Galley> {
-    ui.painter().layout_no_wrap("+".to_owned(), fonts::mono(typography::VALUE_SIZE), color::TEXT_TERTIARY)
+    let neutrals = Theme::get(ui.ctx()).neutrals;
+    ui.painter().layout_no_wrap("+".to_owned(), fonts::mono(typography::VALUE_SIZE), neutrals.text_tertiary)
 }
 
 /// Draws one key cap: a small rounded key with a hairline rim, the same recipe
 /// as the Markdown `<kbd>` keys.
 fn cap(ui: &mut Ui, text: &str) -> Response {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let galley = cap_galley(ui, text);
     let size = galley.size() + Vec2::new(KEY_PAD_X * 2.0, KEY_PAD_Y * 2.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
-        painter.rect_filled(rect, KEY_RADIUS, color::BG_CONTROL);
-        painter.rect_stroke(rect, KEY_RADIUS, Stroke::new(HAIRLINE, color::STROKE_HAIRLINE), StrokeKind::Inside);
-        painter.galley(rect.center() - galley.size() / 2.0, galley, color::TEXT_PRIMARY);
+        painter.rect_filled(rect, KEY_RADIUS, neutrals.bg_control);
+        painter.rect_stroke(rect, KEY_RADIUS, Stroke::new(HAIRLINE, neutrals.stroke_hairline), StrokeKind::Inside);
+        painter.galley(rect.center() - galley.size() / 2.0, galley, neutrals.text_primary);
     }
     response
 }
 
 /// Draws the "+" between two key caps.
 fn plus(ui: &mut Ui) {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let galley = plus_galley(ui);
     let size = Vec2::new(galley.size().x + CAP_GAP * 2.0, galley.size().y);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, color::TEXT_TERTIARY);
+    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, neutrals.text_tertiary);
 }
 
 /// Draws the generated "Keyboard shortcuts" page: the heading, a filter field
 /// and then one table per group, in the spec's group order.
 pub fn shortcut_sheet(ui: &mut Ui, table: &ShortcutTable, filter: &mut String) {
-    ui.label(RichText::new(SHEET_TITLE).font(fonts::semibold(typography::TITLE_SIZE)).color(color::TEXT_PRIMARY));
+    let neutrals = Theme::get(ui.ctx()).neutrals;
+    ui.label(RichText::new(SHEET_TITLE).font(fonts::semibold(typography::TITLE_SIZE)).color(neutrals.text_primary));
     ui.add_space(space::SCALE_8);
     crate::search_field(ui, filter, FILTER_HINT);
     ui.add_space(space::SCALE_12);
@@ -224,7 +230,7 @@ pub fn shortcut_sheet(ui: &mut Ui, table: &ShortcutTable, filter: &mut String) {
         if rows.is_empty() {
             continue;
         }
-        ui.label(RichText::new(group).font(fonts::semibold(typography::HEADLINE_SIZE)).color(color::TEXT_PRIMARY));
+        ui.label(RichText::new(group).font(fonts::semibold(typography::HEADLINE_SIZE)).color(neutrals.text_primary));
         ui.add_space(GROUP_GAP);
         for shortcut in rows {
             sheet_row(ui, shortcut);
@@ -257,12 +263,13 @@ fn row_matches(shortcut: &Shortcut, keys_text: &str, query: &str) -> bool {
 /// One sheet row: the action name on the left, its key caps on the right, laid
 /// out left to right so the caps read in order.
 fn sheet_row(ui: &mut Ui, shortcut: &Shortcut) {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let Some(key) = shortcut.keys.first() else {
         return;
     };
     let width = caps_width(ui, &cap_items(ui.ctx(), key));
     ui.horizontal(|ui| {
-        ui.label(RichText::new(shortcut.label).font(fonts::medium(typography::BODY_SIZE)).color(color::TEXT_SECONDARY));
+        ui.label(RichText::new(shortcut.label).font(fonts::medium(typography::BODY_SIZE)).color(neutrals.text_secondary));
         let space_left = (ui.available_width() - width).max(0.0);
         ui.add_space(space_left);
         key_caps(ui, key);

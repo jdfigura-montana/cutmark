@@ -79,12 +79,12 @@ impl<'a> ClipLook<'a> {
 
 /// The clip body color: `accent.tint` when selected, `bg.clip` otherwise.
 fn clip_body_color(look: &ClipLook, theme: &Theme) -> Color32 {
-    if look.selected { theme.accent.tint } else { color::BG_CLIP }
+    if look.selected { theme.accent.tint } else { theme.neutrals.bg_clip }
 }
 
 /// The clip rim: 2px `accent` when selected, 1px `stroke.clip` otherwise.
 fn clip_rim(look: &ClipLook, theme: &Theme) -> Stroke {
-    if look.selected { Stroke::new(crate::SELECTION_STROKE, theme.accent.accent) } else { Stroke::new(crate::HAIRLINE, color::STROKE_CLIP) }
+    if look.selected { Stroke::new(crate::SELECTION_STROKE, theme.accent.accent) } else { Stroke::new(crate::HAIRLINE, theme.neutrals.stroke_clip) }
 }
 
 /// The clip's overall opacity: `opacity` times 45% when dimmed.
@@ -108,11 +108,11 @@ pub fn paint_clip(painter: &Painter, rect: Rect, look: &ClipLook, theme: &Theme)
     painter.rect_filled(rect, rounding, clip_body_color(look, theme).gamma_multiply(alpha));
     painter.rect_stroke(rect, rounding, faded_stroke(clip_rim(look, theme), alpha), StrokeKind::Inside);
 
-    let label_galley = painter.layout_no_wrap(look.label.to_owned(), fonts::medium(typography::MICRO_SIZE), color::TEXT_PRIMARY.gamma_multiply(alpha));
+    let label_galley = painter.layout_no_wrap(look.label.to_owned(), fonts::medium(typography::MICRO_SIZE), theme.neutrals.text_primary.gamma_multiply(alpha));
     let label_left = rect.left() + space::SCALE_8;
     let label_top = rect.top() + space::SCALE_4;
     let label_height = label_galley.size().y;
-    painter.with_clip_rect(rect).galley(Pos2::new(label_left, label_top), label_galley, color::TEXT_PRIMARY);
+    painter.with_clip_rect(rect).galley(Pos2::new(label_left, label_top), label_galley, theme.neutrals.text_primary);
 
     Rect::from_min_max(
         Pos2::new(rect.left() + space::SCALE_8, label_top + label_height),
@@ -123,7 +123,7 @@ pub fn paint_clip(painter: &Painter, rect: Rect, look: &ClipLook, theme: &Theme)
 /// The waveform color: `accent.content` in a selected clip, `text.tertiary`
 /// otherwise (spec "Clip").
 pub fn waveform_color(selected: bool, theme: &Theme) -> Color32 {
-    if selected { theme.accent.content } else { color::TEXT_TERTIARY }
+    if selected { theme.accent.content } else { theme.neutrals.text_tertiary }
 }
 
 /// Builds the waveform envelope as one filled mesh: two vertices per column
@@ -188,7 +188,8 @@ pub enum MarkerKind {
 }
 
 /// The color of a marker kind (spec "Marker": category color, user ring
-/// `text.tertiary`).
+/// `text.tertiary`). It has no context, so a user marker gets the untinted
+/// fallback here; [`paint_marker`] uses the theme's `text.tertiary`.
 pub fn marker_color(kind: MarkerKind) -> Color32 {
     match kind {
         MarkerKind::Note => color::MARKER_NOTE,
@@ -206,7 +207,8 @@ pub fn paint_marker(painter: &Painter, center: Pos2, kind: MarkerKind) {
     let marker_radius = MARKER_DIAMETER / 2.0;
     match kind {
         MarkerKind::User => {
-            painter.circle_stroke(center, marker_radius, Stroke::new(USER_RING_STROKE, marker_color(kind)));
+            let ring = Theme::get(painter.ctx()).neutrals.text_tertiary;
+            painter.circle_stroke(center, marker_radius, Stroke::new(USER_RING_STROKE, ring));
         }
         _ => {
             painter.circle_filled(center, marker_radius, marker_color(kind));
@@ -249,18 +251,19 @@ pub fn paint_snap_line(painter: &Painter, x: f32, rect: Rect, theme: &Theme) {
 /// "Marker"). Ticks are `(x, label)`; `None` labels draw a shorter minor
 /// tick. Markers are `(x, kind)` on the same x scale as the ticks.
 pub fn paint_ruler(painter: &Painter, rect: Rect, ticks: &[(f32, Option<String>)], markers: &[(f32, MarkerKind)]) {
+    let neutrals = Theme::get(painter.ctx()).neutrals;
     let clipped = painter.with_clip_rect(rect);
     let label_font = fonts::mono(typography::VALUE_SIZE);
     let label_height = ticks
         .iter()
         .find_map(|(_, label)| label.as_ref())
-        .map_or(0.0, |text| clipped.layout_no_wrap(text.clone(), label_font.clone(), color::TEXT_TERTIARY).size().y);
+        .map_or(0.0, |text| clipped.layout_no_wrap(text.clone(), label_font.clone(), neutrals.text_tertiary).size().y);
     for (x, label) in ticks {
         let tick_top = if label.is_some() { rect.top() } else { rect.center().y };
-        clipped.line_segment([Pos2::new(*x, tick_top), Pos2::new(*x, rect.bottom())], Stroke::new(crate::HAIRLINE, color::STROKE_HAIRLINE));
+        clipped.line_segment([Pos2::new(*x, tick_top), Pos2::new(*x, rect.bottom())], Stroke::new(crate::HAIRLINE, neutrals.stroke_hairline));
         if let Some(text) = label {
-            let galley = clipped.layout_no_wrap(text.clone(), label_font.clone(), color::TEXT_TERTIARY);
-            clipped.galley(Pos2::new(x + space::SCALE_4, rect.top() + space::SCALE_2), galley, color::TEXT_TERTIARY);
+            let galley = clipped.layout_no_wrap(text.clone(), label_font.clone(), neutrals.text_tertiary);
+            clipped.galley(Pos2::new(x + space::SCALE_4, rect.top() + space::SCALE_2), galley, neutrals.text_tertiary);
         }
     }
     let dot_y = ruler_marker_center(rect, label_height);

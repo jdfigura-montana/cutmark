@@ -4,8 +4,9 @@
 use egui::text::LayoutJob;
 use egui::{Painter, Response, Sense, Ui, WidgetInfo, WidgetType, vec2};
 
+use crate::Theme;
 use crate::fonts;
-use crate::tokens::{color, space, typography};
+use crate::tokens::{space, typography};
 
 /// Diameter of the unsaved dot (spec rev 3: 6px).
 const DOT_DIAMETER: f32 = 6.0;
@@ -48,17 +49,18 @@ pub enum Title<'a> {
 /// ui_kit::title_block(ui, &ui_kit::Title::Document { name: "Take 3", unsaved: true, caption: Some("48 kHz") });
 /// ```
 pub fn title_block(ui: &mut Ui, title: &Title<'_>) -> Response {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let available = ui.available_width();
     // An inactive window dims toolbar text (main_toolbar sets the override).
-    let dim = ui.visuals().override_text_color == Some(color::TEXT_TERTIARY);
+    let dim = ui.visuals().override_text_color == Some(neutrals.text_tertiary);
     let painter = ui.painter().clone();
     let (name, name_color, unsaved, caption) = match *title {
-        Title::App(name) => (name, if dim { color::TEXT_TERTIARY } else { color::TEXT_SECONDARY }, false, None),
-        Title::Document { name, unsaved, caption } => (name, if dim { color::TEXT_TERTIARY } else { color::TEXT_PRIMARY }, unsaved, caption),
+        Title::App(name) => (name, if dim { neutrals.text_tertiary } else { neutrals.text_secondary }, false, None),
+        Title::Document { name, unsaved, caption } => (name, if dim { neutrals.text_tertiary } else { neutrals.text_primary }, unsaved, caption),
     };
     let name_font = fonts::semibold(typography::BODY_SIZE);
     let caption_galley =
-        caption.map(|text| painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(typography::CAPTION_SIZE), color::TEXT_TERTIARY));
+        caption.map(|text| painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(typography::CAPTION_SIZE), neutrals.text_tertiary));
     let dot_width = if unsaved { GAP + DOT_DIAMETER } else { 0.0 };
     let caption_width = caption_galley.as_ref().map_or(0.0, |galley| GAP + galley.size().x);
     let natural_name = painter.layout_no_wrap(name.to_owned(), name_font.clone(), name_color);
@@ -89,11 +91,11 @@ pub fn title_block(ui: &mut Ui, title: &Title<'_>) -> Response {
     x += name_galley.size().x;
     if unsaved {
         let center = egui::pos2(x + GAP + DOT_DIAMETER / 2.0, rect.center().y);
-        painter.circle_filled(center, DOT_DIAMETER / 2.0, if dim { color::TEXT_TERTIARY } else { color::TEXT_SECONDARY });
+        painter.circle_filled(center, DOT_DIAMETER / 2.0, if dim { neutrals.text_tertiary } else { neutrals.text_secondary });
         x += dot_width;
     }
     if let Some(galley) = caption_galley {
-        painter.galley_with_override_text_color(egui::pos2(x + GAP, rect.center().y - galley.size().y / 2.0), galley, color::TEXT_TERTIARY);
+        painter.galley_with_override_text_color(egui::pos2(x + GAP, rect.center().y - galley.size().y / 2.0), galley, neutrals.text_tertiary);
     }
     response
 }

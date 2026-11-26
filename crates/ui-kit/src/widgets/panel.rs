@@ -3,7 +3,8 @@
 use egui::{InnerResponse, Margin, Ui};
 
 use crate::HAIRLINE;
-use crate::tokens::{color, radius, space};
+use crate::Theme;
+use crate::tokens::{radius, space};
 #[cfg(test)]
 use crate::widgets;
 
@@ -18,11 +19,12 @@ use crate::widgets;
 /// });
 /// ```
 pub fn panel<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     egui::Frame::new()
-        .fill(color::BG_PANEL)
+        .fill(neutrals.bg_panel)
         .corner_radius(radius::PANEL)
         .inner_margin(Margin::same(space::PANEL_PADDING as i8))
-        .stroke(egui::Stroke::new(HAIRLINE, color::STROKE_HAIRLINE))
+        .stroke(egui::Stroke::new(HAIRLINE, neutrals.stroke_hairline))
         .show(ui, add_contents)
 }
 

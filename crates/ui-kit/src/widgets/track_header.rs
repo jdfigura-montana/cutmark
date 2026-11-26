@@ -2,6 +2,7 @@
 
 use egui::{Color32, CornerRadius, Galley, Pos2, Rect, Response, Sense, Ui, UiBuilder, WidgetInfo, WidgetType, vec2};
 
+use crate::Theme;
 use crate::fonts;
 use crate::meter;
 use crate::tokens::{color, space, typography};
@@ -56,6 +57,7 @@ impl<'a> Toggle<'a> {
 /// under the toggles. The whole header reports a click, which the caller
 /// turns into a selection.
 pub fn track_header(ui: &mut Ui, number: usize, name: &str, selected: bool, toggles: &mut [Toggle], meter: Option<(f32, bool)>) -> Response {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), ui.available_height()), Sense::click());
     response.widget_info(|| WidgetInfo::selected(WidgetType::SelectableLabel, true, selected, name));
     // rect_contains_pointer rather than response.hovered(): the toggles below
@@ -70,11 +72,11 @@ pub fn track_header(ui: &mut Ui, number: usize, name: &str, selected: bool, togg
     // `bg.track.header.selected` when selected) so it reads right on its own;
     // over `paint_track_header_column` it is the same opaque color. Every
     // header ends in a `stroke.track` line like its row.
-    painter.rect_filled(rect, CornerRadius::ZERO, if selected { color::BG_TRACK_HEADER_SELECTED } else { color::BG_TRACK_HEADER });
+    painter.rect_filled(rect, CornerRadius::ZERO, if selected { neutrals.bg_track_header_selected } else { neutrals.bg_track_header });
     paint_row_separator(painter, rect);
-    let number_color = if selected { color::TEXT_PRIMARY } else { color::TEXT_TERTIARY };
+    let number_color = if selected { neutrals.text_primary } else { neutrals.text_tertiary };
     let number_galley = painter.layout_no_wrap(number.to_string(), fonts::mono(typography::VALUE_SIZE), number_color);
-    let name_galley = painter.layout_no_wrap(name.to_owned(), fonts::semibold(typography::HEADLINE_SIZE), color::TEXT_PRIMARY);
+    let name_galley = painter.layout_no_wrap(name.to_owned(), fonts::semibold(typography::HEADLINE_SIZE), neutrals.text_primary);
     let line_height = name_galley.size().y.max(number_galley.size().y);
     let mut y = rect.top() + pad;
     let name_x = rect.left() + pad + number_galley.size().x + space::SCALE_8;
@@ -85,7 +87,7 @@ pub fn track_header(ui: &mut Ui, number: usize, name: &str, selected: bool, togg
     painter.with_clip_rect(Rect::from_min_max(Pos2::new(rect.left() + pad, y), Pos2::new(rect.right() - pad, y + line_height))).galley(
         Pos2::new(name_x, name_y),
         name_galley,
-        color::TEXT_PRIMARY,
+        neutrals.text_primary,
     );
     y += line_height + space::SCALE_2;
     let mut x = rect.left() + pad;
@@ -102,8 +104,8 @@ pub fn track_header(ui: &mut Ui, number: usize, name: &str, selected: bool, togg
         }
         let (fill, glyph_color) = match (toggle.kind, *toggle.on) {
             (ToggleKind::RecordArm, true) => (color::SEM_RECORD, Color32::WHITE),
-            (_, true) => (color::BG_SELECTED, color::TEXT_PRIMARY),
-            (_, false) => (color::BG_CONTROL, color::TEXT_TERTIARY),
+            (_, true) => (neutrals.bg_selected, neutrals.text_primary),
+            (_, false) => (neutrals.bg_control, neutrals.text_tertiary),
         };
         painter.rect_filled(toggle_rect, TOGGLE_ROUNDING, fill);
         let glyph = painter.layout_no_wrap(toggle.label.to_owned(), fonts::semibold(typography::CAPTION_SIZE), glyph_color);
