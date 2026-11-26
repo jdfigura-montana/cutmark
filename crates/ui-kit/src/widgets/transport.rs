@@ -1,6 +1,10 @@
 //! The transport deck (spec "Components": row "Transport deck"): a glass
 //! capsule at the bottom center of the content area with the timecode and the
 //! transport buttons, draggable sideways, fading while scrubbing near it.
+//!
+//! The deck is deprecated: the E3 amendment ("1. The notch") replaces it with
+//! [`stage_panel`](crate::widgets::stage_panel). It stays until every app has
+//! moved over.
 
 use egui::{Align2, Color32, Context, Id, InnerResponse, Margin, Order, Pos2, Rect, Response, Sense, Ui, UiBuilder, WidgetInfo, WidgetType, pos2, vec2};
 
@@ -65,6 +69,8 @@ fn deck_opacity(ctx: &Context, id: Id, deck: Option<Rect>, pointer: Option<Pos2>
     ctx.animate_value_with_time(id, target, duration)
 }
 
+/// **Deprecated:** new code uses [`stage_panel`](crate::widgets::stage_panel).
+///
 /// The transport deck: a glass capsule 56 tall, anchored to the bottom center
 /// of `content_rect`, 16 px from its bottom, drawn in a foreground
 /// [`egui::Area`]. `add_contents` lays the timecode and the transport buttons

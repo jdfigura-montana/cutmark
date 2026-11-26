@@ -9,17 +9,17 @@ context: media
 
 # Media widgets
 
-The Media page hosts a mock timeline with a transport deck, meters, faders and
+The Media page hosts a mock timeline, two recording panels, meters, faders and
 menus. The audio is fake: the waveforms come from a fixed seed and the meters
 run on a repeating signal.
 
 ## How to use the page
 
-1. Press **Play** on the transport deck. The playhead moves and the meters
-   follow it.
-2. Press **Stop** to park the playhead.
-3. Drag the ruler to scrub. The deck fades while the pointer is near it.
-4. Drag the transport deck sideways to move it out of the way.
+1. Press **Play**, the round button under the timeline. The playhead moves and
+   the meters follow it.
+2. Press **Stop** in the bar beside it to park the playhead.
+3. Drag the ruler to scrub.
+4. Press **Record** under the panel marked Live to start and stop recording.
 
 ## What the timeline shows
 
@@ -28,9 +28,9 @@ run on a repeating signal.
 - A pending cut band, a marquee selection, a snap line and markers in every
   category color.
 
-The two small panels below the timeline repeat the transport deck on the
-glass surface, which is always on.
+The two panels below the timeline show the Record button: one you can click and
+one that is always recording.
 
-> Tip: With reduced motion on, the meters freeze and the deck stops fading.
+> Tip: With reduced motion on, the meters freeze.
 
 See [Core widgets](topic:core-widgets).

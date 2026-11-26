@@ -30,11 +30,11 @@ const PAGES: &[&str] = &["Core", "Media"];
 /// The Media page's index: the page where all three tour targets exist.
 const MEDIA_PAGE: usize = 1;
 
-/// The demo tour's steps: the toolbar, a panel and the transport deck.
+/// The demo tour's steps: the toolbar, a panel and the transport button.
 const TOUR_STEPS: [TourStep; 3] = [
     TourStep { target: "toolbar", title: "The title bar", body: "The menus, the page switch and the actions all live here." },
     TourStep { target: "panel", title: "A panel", body: "Each panel groups the widgets for one job." },
-    TourStep { target: "transport", title: "The transport deck", body: "Play, stop and record from the deck over the timeline." },
+    TourStep { target: "transport", title: "The transport button", body: "Play sits in the notch under the timeline, with the other controls beside it." },
 ];
 
 /// The gallery's demo tour. Its seen flag marks it shown once (spec: S1 Help

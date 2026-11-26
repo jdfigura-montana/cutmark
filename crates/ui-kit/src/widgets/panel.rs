@@ -28,6 +28,21 @@ pub fn panel<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerRe
         .show(ui, add_contents)
 }
 
+/// A side panel: `bg.side` fill, `radius.side`, no rim, and the same 8px
+/// padding as [`panel`] (spec: E3 amendment, "4. No generic tells").
+///
+/// Usage:
+///
+/// ```ignore
+/// ui_kit::side_panel(ui, |ui| {
+///     ui.label("Library");
+/// });
+/// ```
+pub fn side_panel<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
+    egui::Frame::new().fill(neutrals.bg_side).corner_radius(radius::SIDE).inner_margin(Margin::same(space::PANEL_PADDING as i8)).show(ui, add_contents)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
