@@ -46,6 +46,25 @@ const MAX_STAMP_ERROR_100NS: i64 = 50_000_000;
 /// The IID of IAgileObject, the marker for objects any thread may call.
 const IID_AGILE_OBJECT: GUID = GUID::from_u128(0x94ea2b94_e9cc_49e0_c0ff_ee64ca8f5b90);
 
+/// The process IDs of the app's instances (top-level processes) running now,
+/// oldest first, found exactly as [`AppLoopback::start`] finds them. Compare
+/// them with [`AppLoopback::instance_pids`] to see whether a running capture
+/// still covers the app. Empty when the app is not running or the processes
+/// cannot be read. Opens no capture. `exe` is a file name or a path.
+pub fn top_level_pids(exe: &str) -> Vec<u32> {
+    instances(&AppTarget::new(exe)).unwrap_or_else(|err| {
+        log::debug!("the processes of {exe} could not be read: {err}");
+        Vec::new()
+    })
+}
+
+/// The app's top-level processes, oldest first.
+fn instances(target: &AppTarget) -> Result<Vec<u32>, CaptureError> {
+    let mut table = process_table()?;
+    fill_creation_times(&mut table, target.exe());
+    Ok(top_level_processes(&table, target.exe()).iter().map(|process| process.pid).collect())
+}
+
 /// A running capture of one app's sound, or of everything but one app, on its
 /// own thread. Packets are 48 kHz stereo float.
 pub struct AppLoopback {
@@ -103,9 +122,7 @@ impl AppLoopback {
     /// everything except the oldest top-level process and its children. Fails
     /// when the app is not running.
     pub fn start(target: AppTarget, mode: LoopbackMode) -> Result<Self, CaptureError> {
-        let mut table = process_table()?;
-        fill_creation_times(&mut table, target.exe());
-        let instance_pids: Vec<u32> = top_level_processes(&table, target.exe()).iter().map(|process| process.pid).collect();
+        let instance_pids = instances(&target)?;
         if instance_pids.is_empty() {
             return Err(CaptureError::Missing("no running process matches the app"));
         }

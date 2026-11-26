@@ -67,17 +67,19 @@ pub struct TrackSpec {
     pub offset_ms: i32,
     /// Whether the track takes part in the mixdown stream.
     pub in_mixdown: bool,
-    /// The app this track records; None for a device track. An app track has no device.
+    /// The app this track records or leaves out; None for a device track. Such a track has no device of its own.
     pub app: Option<AppSpec>,
 }
 
-/// The app an app track records.
+/// The app an app track records, or a desktop-except track leaves out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppSpec {
     /// The executable's file name in lowercase, for example `discord.exe`.
     pub exe: String,
     /// The app's name for display.
     pub app_name: String,
+    /// True for a desktop-except track.
+    pub except: bool,
 }
 
 /// An app track gaining or losing its capture during a take.
@@ -87,6 +89,8 @@ pub(super) struct AppEvent {
     pub(super) track: usize,
     /// The app's name for display.
     pub(super) app_name: String,
+    /// True for a desktop-except track, where attached means the app is being left out.
+    pub(super) except: bool,
     /// True when the track attached, false when it detached.
     pub(super) attached: bool,
     /// The moment on the take's clock, in ms.
@@ -566,7 +570,7 @@ fn track_entry(track: &TrackSpec) -> serde_json::Value {
         "in_mixdown": track.in_mixdown,
     });
     if let (Some(app), Some(fields)) = (&track.app, entry.as_object_mut()) {
-        fields.insert("kind".to_owned(), "app".into());
+        fields.insert("kind".to_owned(), if app.except { "desktop_except" } else { "app" }.into());
         fields.insert("exe".to_owned(), app.exe.clone().into());
         fields.insert("app_name".to_owned(), app.app_name.clone().into());
         fields.insert("attached_ms".to_owned(), serde_json::Value::Array(Vec::new()));
@@ -784,7 +788,7 @@ impl RecordingSession {
             if event.mark
                 && let Some(marks) = self.marks.as_mut()
             {
-                marks.app(&event.app_name, event.attached, event.t_ms);
+                marks.app(&event.app_name, event.except, event.attached, event.t_ms);
                 marked = true;
             }
         }
@@ -1037,14 +1041,18 @@ mod app_track_tests {
             muted: false,
             offset_ms: 0,
             in_mixdown: true,
-            app: Some(AppSpec { exe: "discord.exe".to_owned(), app_name: "Discord".to_owned() }),
+            app: Some(AppSpec { exe: "discord.exe".to_owned(), app_name: "Discord".to_owned(), except: false }),
         };
         let app = track_entry(&track);
+        if let Some(spec) = track.app.as_mut() {
+            spec.except = true;
+        }
+        assert_eq!(track_entry(&track)["kind"], "desktop_except");
         track.app = None;
         assert!(track_entry(&track).get("kind").is_none());
         let mut file = SessionFile { path: PathBuf::new(), doc: serde_json::json!({ "audio": { "tracks": [app] } }) };
         for (attached, t_ms) in [(true, 0), (false, 4_000), (true, 9_000)] {
-            file.app_event(&AppEvent { track: 0, app_name: "Discord".to_owned(), attached, t_ms, mark: t_ms > 0 });
+            file.app_event(&AppEvent { track: 0, app_name: "Discord".to_owned(), except: false, attached, t_ms, mark: t_ms > 0 });
         }
         let entry = &file.doc["audio"]["tracks"][0];
         assert_eq!((&entry["kind"], &entry["exe"], &entry["app_name"]), (&"app".into(), &"discord.exe".into(), &"Discord".into()));

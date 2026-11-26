@@ -154,10 +154,17 @@ impl TakeMarks {
     }
 
     /// Adds the System mark of an app track attaching or detaching, at `t_ms` already on the take's clock.
-    pub fn app(&mut self, app_name: &str, attached: bool, t_ms: u64) {
+    /// On a desktop-except track (`except`), attached means the app is being left out.
+    pub fn app(&mut self, app_name: &str, except: bool, attached: bool, t_ms: u64) {
         let t_ms = ::marks::snap_to_frame(t_ms, self.fps, 1);
-        let (kind, verb) = if attached { ("recorder.app_attached", "attached") } else { ("recorder.app_detached", "detached") };
-        self.add_system(kind, &format!("App {verb}: {app_name}"), t_ms);
+        let kind = if attached { "recorder.app_attached" } else { "recorder.app_detached" };
+        let label = match (except, attached) {
+            (false, true) => format!("App attached: {app_name}"),
+            (false, false) => format!("App detached: {app_name}"),
+            (true, true) => format!("Now excluding {app_name}"),
+            (true, false) => format!("{app_name} closed, capturing all desktop audio"),
+        };
+        self.add_system(kind, &label, t_ms);
     }
 
     /// Ends the take's marks: writes the sidecar with the Markdown and CSV logs, and returns the chapters for the MKV.

@@ -66,7 +66,7 @@ impl Default for ApiSettings {
     }
 }
 
-/// What a track records: a capture device, a render device, or one app's audio.
+/// What a track records: a capture device, a render device, one app's audio, or the desktop without one app.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrackKind {
@@ -77,6 +77,14 @@ pub enum TrackKind {
     /// One app and its child processes, captured through process loopback. The track's device fields are unused.
     App {
         /// The executable's file name in lowercase, for example `discord.exe`.
+        exe: String,
+        /// The app's name for display.
+        app_name: String,
+    },
+    /// All desktop audio except one app and its child processes; the default output as it is while the app
+    /// is not running. The track's device fields are unused.
+    DesktopExcept {
+        /// The executable's file name in lowercase, for example `spotify.exe`.
         exe: String,
         /// The app's name for display.
         app_name: String,
@@ -1529,6 +1537,10 @@ mod tests {
         let text = serde_json::to_string(&audio)?;
         assert_eq!(serde_json::from_str::<AudioSettings>(&text)?, audio);
         assert!(text.contains(r#""kind":{"app":{"exe":"discord.exe","app_name":"Discord"}}"#), "{text}");
+        let except = TrackKind::DesktopExcept { exe: "spotify.exe".to_owned(), app_name: "Spotify".to_owned() };
+        let text = serde_json::to_string(&except)?;
+        assert_eq!(text, r#"{"desktop_except":{"exe":"spotify.exe","app_name":"Spotify"}}"#);
+        assert_eq!(serde_json::from_str::<TrackKind>(&text)?, except);
         assert_eq!(serde_json::to_string(&TrackKind::Input)?, "\"input\"");
         assert_eq!(serde_json::to_string(&TrackKind::Output)?, "\"output\"");
         Ok(())

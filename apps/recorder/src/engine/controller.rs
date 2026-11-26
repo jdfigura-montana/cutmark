@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
+use super::app_monitor::{AppMonitor, IdleAppTrack, SILENCE_DBFS, WatchedTrack};
 use super::bus::{Bus, BusSender, Command, CommandKind, MarkKind};
 use super::cam::CamSummary;
 use super::marks::{MarksWarning, RecentMark, TakeMarks};
@@ -236,6 +237,8 @@ pub struct ControllerState {
     pub take_stats: Option<TakeStats>,
     /// Free space on the volume the next take goes to, read every 2 seconds while idle.
     pub idle_free_bytes: Option<u64>,
+    /// The enabled app and desktop-except tracks as watched while no take runs; empty during one.
+    pub idle_apps: Vec<IdleAppTrack>,
     /// The warning banners of the running or last take, oldest first.
     pub banners: Vec<String>,
     /// The warnings raised most recently, newest last.
@@ -478,6 +481,7 @@ impl Controller {
             overlay,
             flash: SyncFlashHandle::start(),
             measuring: None,
+            app_monitor: None,
         };
         let handle = match std::thread::Builder::new().name("controller".to_owned()).spawn(move || worker.run()) {
             Ok(handle) => Some(handle),
@@ -630,6 +634,8 @@ struct Worker {
     flash: SyncFlashHandle,
     /// Receives the sync test's report from the thread that measures it.
     measuring: Option<Receiver<Result<media_io::SyncReport, String>>>,
+    /// Watches the app and desktop-except tracks while no take runs.
+    app_monitor: Option<AppMonitor>,
 }
 
 /// The callback the countdown overlay calls on Esc: it queues a start/stop command that carries the Escape intent.
@@ -739,6 +745,7 @@ impl Worker {
             }
             self.poll_measuring();
             self.poll_idle_disk();
+            self.poll_idle_apps();
         }
         self.cancel_countdown();
         self.stop_take();
@@ -1666,6 +1673,36 @@ impl Worker {
         }
     }
 
+    /// While no take runs, watches the enabled app and desktop-except tracks, so their state and meters are
+    /// current before one. A pre-flight or sync test is not a take. The take's own links replace the watch.
+    fn poll_idle_apps(&mut self) {
+        let in_take = self.active.as_ref().is_some_and(|active| active.preflight.is_none() && active.sync.is_none());
+        let watched = if in_take { Vec::new() } else { watched_tracks(&self.settings) };
+        if watched.is_empty() {
+            self.app_monitor = None;
+        } else if self.app_monitor.as_ref().is_none_or(|monitor| monitor.watched() != watched.as_slice()) {
+            self.app_monitor = Some(AppMonitor::start(watched));
+        }
+        let mut tracks = self.app_monitor.as_ref().map(AppMonitor::read).unwrap_or_default();
+        // The meters show the track as it would be recorded.
+        for track in &mut tracks {
+            if let Some(settings) = self.settings.audio.tracks.get(track.index) {
+                track.peak_dbfs = if settings.muted { SILENCE_DBFS } else { (track.peak_dbfs + settings.gain_db).max(SILENCE_DBFS) };
+            }
+        }
+        let (changed, attach_changed) = {
+            let state = lock(&self.shared);
+            let attach = |tracks: &[IdleAppTrack]| tracks.iter().map(|track| (track.index, track.attached)).collect::<Vec<_>>();
+            (state.idle_apps != tracks, attach(&state.idle_apps) != attach(&tracks))
+        };
+        // An attach or detach is news for the listeners and the window; a meter level alone is not.
+        if attach_changed {
+            self.update(|state| state.idle_apps = tracks);
+        } else if changed {
+            self.update_quietly(|state| state.idle_apps = tracks);
+        }
+    }
+
     /// While no take runs, reads the free space on the volume the next take goes to every couple of seconds,
     /// and the active profile's composite mode, since profile edits reach its file without a message.
     fn poll_idle_disk(&mut self) {
@@ -1900,16 +1937,29 @@ fn find_cam_file(folder: &Path, main_file: &Path) -> Option<PathBuf> {
     })
 }
 
+/// The app an app or desktop-except track names; None for a device track.
+fn app_spec(kind: &TrackKind) -> Option<AppSpec> {
+    let (exe, app_name, except) = match kind {
+        TrackKind::App { exe, app_name } => (exe, app_name, false),
+        TrackKind::DesktopExcept { exe, app_name } => (exe, app_name, true),
+        TrackKind::Input | TrackKind::Output => return None,
+    };
+    Some(AppSpec { exe: capture::AppTarget::new(exe).exe().to_owned(), app_name: app_name.clone(), except })
+}
+
+/// The enabled app and desktop-except tracks, for the idle watch.
+fn watched_tracks(settings: &Settings) -> Vec<WatchedTrack> {
+    let enabled = settings.audio.tracks.iter().enumerate().filter(|(_, track)| track.enabled);
+    enabled.filter_map(|(index, track)| app_spec(&track.kind).map(|app| WatchedTrack { index, app })).collect()
+}
+
 /// Builds a spec for every enabled track in the settings, resolving each device, and names the tracks whose device is missing.
 fn track_specs(settings: &Settings) -> (Vec<TrackSpec>, Vec<String>) {
     let mut specs = Vec::new();
     let mut missing = Vec::new();
     for track in settings.audio.tracks.iter().filter(|track| track.enabled) {
-        let app = match &track.kind {
-            TrackKind::App { exe, app_name } => Some(AppSpec { exe: capture::AppTarget::new(exe).exe().to_owned(), app_name: app_name.clone() }),
-            TrackKind::Input | TrackKind::Output => None,
-        };
-        // An app track has no device, and an app that is not running is not a missing device.
+        let app = app_spec(&track.kind);
+        // An app or desktop-except track has no device of its own, and an app that is not running is not a missing device.
         let device = if app.is_some() { None } else { capture::find_device(&track.device_id, &track.device_name) };
         if device.is_none() && app.is_none() {
             missing.push(if track.device_name.is_empty() { track.name.clone() } else { format!("{} ({})", track.name, track.device_name) });

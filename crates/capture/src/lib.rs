@@ -28,12 +28,12 @@ mod webcam;
 mod wgc;
 
 #[cfg(not(windows))]
-pub use app_audio::{AppLoopback, list_audio_apps};
+pub use app_audio::{AppLoopback, list_audio_apps, top_level_pids};
 pub use app_audio::{AppTarget, AudioApp, AudioPacket, LoopbackMode};
 #[cfg(windows)]
 pub use app_list::list_audio_apps;
 #[cfg(windows)]
-pub use app_loopback::AppLoopback;
+pub use app_loopback::{AppLoopback, top_level_pids};
 #[cfg(windows)]
 pub use audio::{AudioCapture, AudioDevice, DeviceKind, find_device, list_audio_devices};
 #[cfg(windows)]

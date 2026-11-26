@@ -371,12 +371,13 @@ pub struct StatusData {
 pub struct TrackStatus {
     /// The track name.
     pub name: String,
-    /// `input`, `output` or `app`.
+    /// `input`, `output`, `app` or `desktop_except`.
     pub kind: &'static str,
-    /// The executable an app track records; absent for a device track.
+    /// The executable an app track records or a desktop-except track leaves out; absent for a device track.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exe: Option<String>,
-    /// Whether the running take is capturing the track's device or app; false while no take records.
+    /// Whether the track's device or app is being captured, or for desktop-except the app is being left out.
+    /// A device track is only known to be while a take records.
     pub attached: bool,
 }
 
@@ -389,13 +390,19 @@ fn track_statuses(state: &ControllerState) -> Vec<TrackStatus> {
         .iter()
         .zip(&state.track_kinds)
         .zip(&state.track_enabled)
-        .map(|((name, kind), enabled)| {
-            let attached = *enabled && live.and_then(|stats| stats.tracks.get(slot)).is_some_and(|track| track.attached);
+        .enumerate()
+        .map(|(index, ((name, kind), enabled))| {
+            let attached = *enabled
+                && match live {
+                    Some(stats) => stats.tracks.get(slot).is_some_and(|track| track.attached),
+                    None => state.idle_apps.iter().any(|track| track.index == index && track.attached),
+                };
             slot += usize::from(*enabled);
             let (kind, exe) = match kind {
                 TrackKind::Input => ("input", None),
                 TrackKind::Output => ("output", None),
                 TrackKind::App { exe, .. } => ("app", Some(exe.clone())),
+                TrackKind::DesktopExcept { exe, .. } => ("desktop_except", Some(exe.clone())),
             };
             TrackStatus { name: name.clone(), kind, exe, attached }
         })
@@ -488,6 +495,21 @@ mod tests {
         assert_eq!(
             StatusData::from_state(&state).to_value()["tracks"],
             json!([{ "name": "Mic", "kind": "input", "attached": false }, { "name": "Discord", "kind": "app", "exe": "discord.exe", "attached": false }])
+        );
+    }
+
+    #[test]
+    fn while_idle_the_status_takes_attached_from_the_idle_watch() {
+        let state = ControllerState {
+            track_names: vec!["Desktop".to_owned()],
+            track_kinds: vec![TrackKind::DesktopExcept { exe: "spotify.exe".to_owned(), app_name: "Spotify".to_owned() }],
+            track_enabled: vec![true],
+            idle_apps: vec![crate::engine::app_monitor::IdleAppTrack { index: 0, attached: true, peak_dbfs: -100.0 }],
+            ..ControllerState::default()
+        };
+        assert_eq!(
+            StatusData::from_state(&state).to_value()["tracks"],
+            json!([{ "name": "Desktop", "kind": "desktop_except", "exe": "spotify.exe", "attached": true }])
         );
     }
 

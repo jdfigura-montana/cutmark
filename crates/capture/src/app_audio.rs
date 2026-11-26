@@ -313,10 +313,15 @@ mod unsupported {
     pub fn list_audio_apps(_include_all: bool) -> Result<Vec<AudioApp>, CaptureError> {
         Err(CaptureError::Unsupported("listing audio apps"))
     }
+
+    /// Always empty: listing processes needs Windows.
+    pub fn top_level_pids(_exe: &str) -> Vec<u32> {
+        Vec::new()
+    }
 }
 
 #[cfg(not(windows))]
-pub use unsupported::{AppLoopback, list_audio_apps};
+pub use unsupported::{AppLoopback, list_audio_apps, top_level_pids};
 
 #[cfg(test)]
 mod tests {
