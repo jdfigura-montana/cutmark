@@ -1,5 +1,5 @@
-//! Importing .md, .txt and .html files (docs/suite/prompter.md, "Import"). The source file is
-//! only read.
+//! Importing .md, .txt, .html, .docx and .odt files (docs/suite/prompter.md, "Import"). The
+//! source file is only read.
 
 use std::ffi::OsStr;
 use std::fs;
@@ -7,7 +7,7 @@ use std::ops::Range;
 use std::path::Path;
 
 use super::{Imported, Result, ScriptMeta, Store, StoreError, io_error, write_atomic};
-use crate::convert::html_to_markdown;
+use crate::convert::{docx_to_markdown, html_to_markdown, odt_to_markdown};
 use crate::limits::{MAX_WORDS, split_at_heading};
 use crate::script;
 
@@ -16,12 +16,14 @@ enum Source {
     Markdown,
     Text,
     Html,
+    Docx,
+    Odt,
 }
 
 impl Store {
-    /// Copies a .md, .txt or .html file into a new script, or into several if it is over
-    /// [`MAX_WORDS`]. The file must be UTF-8, or UTF-16 with a byte order mark. The new
-    /// script is always UTF-8.
+    /// Copies a .md, .txt, .html (or .htm), .docx or .odt file into a new script, or into
+    /// several if it is over [`MAX_WORDS`]. A text file must be UTF-8, or UTF-16 with a byte
+    /// order mark. The new script is always UTF-8.
     ///
     /// The title is the first heading, else the file name without its extension. The parts of
     /// a split file share that title and are numbered.
@@ -30,15 +32,19 @@ impl Store {
         let kind = match extension.as_deref() {
             Some("md") => Source::Markdown,
             Some("txt") => Source::Text,
-            Some("html") => Source::Html,
+            Some("html" | "htm") => Source::Html,
+            Some("docx") => Source::Docx,
+            Some("odt") => Source::Odt,
             _ => return Err(StoreError::UnsupportedImport(source.to_path_buf())),
         };
         let bytes = fs::read(source).map_err(io_error(source))?;
-        let raw = decode(bytes).ok_or(StoreError::ImportEncoding)?;
+        let decoded = |bytes| decode(bytes).ok_or(StoreError::ImportEncoding);
         let text = match kind {
-            Source::Markdown => raw,
-            Source::Text => markdown_from_text(&raw),
-            Source::Html => html_to_markdown(&raw),
+            Source::Markdown => decoded(bytes)?,
+            Source::Text => markdown_from_text(&decoded(bytes)?),
+            Source::Html => html_to_markdown(&decoded(bytes)?),
+            Source::Docx => docx_to_markdown(&bytes)?,
+            Source::Odt => odt_to_markdown(&bytes)?,
         };
 
         let title = title_of(&text, source);
@@ -59,7 +65,7 @@ impl Store {
 
 /// The file's text without its byte order mark, or `None` if it is neither UTF-8 nor UTF-16
 /// with a mark.
-fn decode(bytes: Vec<u8>) -> Option<String> {
+pub(crate) fn decode(bytes: Vec<u8>) -> Option<String> {
     let text = match bytes.as_slice() {
         // The UTF-32 LE mark starts with the UTF-16 LE one.
         [0xff, 0xfe, 0, 0, ..] => return None,

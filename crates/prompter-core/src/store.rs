@@ -6,7 +6,7 @@
 
 mod import;
 
-pub(crate) use import::escape_plan;
+pub(crate) use import::{decode, escape_plan};
 
 use std::fs::{self, File};
 use std::io::{self, Write};
@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
+use crate::convert::DocumentError;
 use crate::index::WordIndex;
 use crate::script;
 
@@ -47,10 +48,12 @@ pub enum StoreError {
     BlankName,
     #[error("that snapshot no longer exists")]
     UnknownSnapshot,
-    #[error("{}: only .md, .txt and .html files can be imported", .0.display())]
+    #[error("{}: only .md, .txt, .html, .htm, .docx and .odt files can be imported", .0.display())]
     UnsupportedImport(PathBuf),
     #[error("This file is not UTF-8 or UTF-16. Save it as UTF-8 and import again.")]
     ImportEncoding,
+    #[error(transparent)]
+    Document(#[from] DocumentError),
 }
 
 pub type Result<T, E = StoreError> = std::result::Result<T, E>;

@@ -8,7 +8,7 @@
 ## Done
 - Phase 1 (V4 passed): prompter-platform and apps/prompter: DX12 (PreMultiplied on JD's PC), one Floating view, white backing fix (JD approved), Library shell. Minimum window 900 x 480.
 - Phase 2, pending JD's check: C1 to C3b prompter-core; C4, C4b library, editor, autosave, menus, find; C5 renderer.rs (shared with the views later), Preview chip, Snapshots.
-- Phase 3: E1 prompter-platform instance and clipboard; E2 core HTML converter and .html import. Neither wired into the app.
+- Phase 3: E1 platform instance and clipboard; E2 core HTML converter and .html import; E3 .docx, .odt, .htm import. None wired into the app.
 
 ## Platform (E1)
 - App wiring: poll try_recv with request_repaint_after (a message does not wake egui); log setup_error.
@@ -27,7 +27,8 @@
 - Tokens: a word may cross spans, so char_range can end past its first span. source_line_of gives the block's first line. No spoken characters, no token.
 - Forms: the aligner must split multi-word forms. Contractions expand inside one token only, so normalize heard words the same way. No readings yet for "1990s", a minus sign, or other currencies.
 - C5 added Store::snapshot_text (JD approved the change outside apps/prompter).
-- convert (E2): htmd only parses; our writer escapes like .txt. Unwritable styles shrink or drop. No `<hr>`. More paragraphs in an item become hard breaks. Only MsoListParagraph* makes Word lists; other Word list text loses its marker.
+- convert: htmd only parses HTML; one writer serves HTML, .docx, .odt. Unwritable styles shrink or drop. More paragraphs in an item become hard breaks.
+- Not read: .docx styles.xml (bold, italic or lists set only by a style), .odt paragraph-style bold or italic, automatic numbers of .docx and .odt headings. Table paragraphs are kept.
 
 ## App
 - Data folder: BaseDirs config_dir + Cutmark\prompter (ProjectDirs would add a subfolder).
@@ -42,24 +43,23 @@
 - Untimed on long scripts (UI thread): Find, preview, Snapshots counts.
 
 ## Next
-- JD's Phase 2 check; Phase 3 after E2.
-- App: Import dialog may need .html (not checked).
+- JD's Phase 2 check; Phase 3 after E3.
+- App: Import dialog may need .html, .htm, .docx, .odt (not checked).
+- By hand: import real Word, Google Docs, LibreOffice files.
 - By hand: preview look and follow, Snapshots dialog, dialogs (Enter, Esc, Import, Export), right-click menus, Paste with empty, text and image clipboards, Ctrl+Shift+F, autosave on switch and exit.
 - By hand: see-through, flash on open, move to another monitor or DPI, lock and sleep, scroll with the Library minimized, OBS capture.
-- Open: Preview has no menu item (spec wants one for every action; the View list has none). Most File, Script, View and Help shortcuts are missing. About notices are hand-written.
-- check.ps1 not run for C4 to C5 (prompts). It fails here at clippy cutmark-audio: FFmpeg headers not found.
-
+- Open: Preview has no menu item (spec wants one per action). Most File, Script, View and Help shortcuts are missing. About notices are hand-written.
 ## White layer
 - The view's GDI redirection surface is opaque white after a show, under the DirectComposition visual (painter unknown), only over the area present at show.
 - PatBlt BLACKNESS on the window DC fixes it (class brush is 0), but not on a hidden window. An outside hide and show needs a new clear; the once-a-second read-back catches it. A one-frame flash on open is not ruled out.
 
 ## Notes
-- Phase 9 normalize fixes: decades (1990s, '90s), minus signs, currency words for €, £ and ¥.
+- Phase 9 normalize fixes: decades, minus signs, currency words for €, £ and ¥.
 - winit drops no-activate on each MousePassthrough toggle; view.rs re-applies it.
 - egui-winit 0.36.2 ignores StartDrag without focus, so the view moves itself with OuterPosition.
 - egui-winit sends Ctrl+Alt+C as Event::Copy; app.rs puts the C key back, or menu_bar reads the Alt release as a tap and focuses File.
 - The root viewport must be transparent or egui-wgpu uses alpha Auto for every viewport. clear_color keeps the Library opaque.
-- To screenshot a window, use a temporary build with capture exclusion off.
+- To screenshot, use a temporary build with capture exclusion off.
 - Shown alpha mode copies egui-wgpu's rule; recheck on upgrade.
 - "Primary monitor" size is the Library's monitor. os::OsError is not PlatformError.
 - Untested: the Windows 11 dialog on older Windows; the Linux stubs are not compiled.

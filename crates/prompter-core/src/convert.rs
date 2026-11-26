@@ -1,10 +1,18 @@
-//! HTML to Markdown, for rich paste and .html import (docs/suite/prompter.md, "Rich paste"
-//! and "Import").
+//! HTML, .docx and .odt to Markdown, for rich paste and import (docs/suite/prompter.md,
+//! "Rich paste" and "Import").
 //!
 //! htmd parses the HTML. The Markdown is written here, because htmd's own writer would escape
-//! `[[...]]` cues and does not escape plain text the way the .txt import does.
+//! `[[...]]` cues and does not escape plain text the way the .txt import does. The .docx and
+//! .odt readers use the same writer.
 
+mod docx;
 mod inline;
+mod odt;
+mod package;
+
+pub(crate) use docx::docx_to_markdown;
+pub(crate) use odt::odt_to_markdown;
+pub use package::DocumentError;
 
 use htmd::HtmlToMarkdown;
 use htmd::node::Node;
@@ -74,6 +82,8 @@ enum Kind {
     Paragraph,
     Heading(usize),
     Item(Item),
+    /// A horizontal rule. It has no text.
+    Rule,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -83,6 +93,7 @@ struct Quote {
     id: usize,
 }
 
+#[derive(Debug)]
 struct Block {
     kind: Kind,
     quote: Quote,
@@ -91,9 +102,9 @@ struct Block {
 
 /// Converts HTML, a whole document or a fragment of one, to the Markdown a script uses.
 ///
-/// Headings, bold, italic, lists, blockquotes and line breaks are kept, and `[[...]]` cues
-/// stay cues. Each table cell becomes its own paragraph, links become their text, and
-/// everything else is dropped. The result ends with a newline unless it is empty.
+/// Headings, bold, italic, lists, blockquotes, horizontal rules and line breaks are kept, and
+/// `[[...]]` cues stay cues. Each table cell becomes its own paragraph, links become their
+/// text, and everything else is dropped. The result ends with a newline unless it is empty.
 pub fn html_to_markdown(html: &str) -> String {
     // htmd parses a string without reading or decoding anything, so this does not fail.
     let Ok(tree) = HtmlToMarkdown::new().html_to_tree(html) else {
@@ -106,7 +117,7 @@ pub fn html_to_markdown(html: &str) -> String {
 }
 
 /// Collects the document's text into blocks.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Reader {
     blocks: Vec<Block>,
     text: Vec<Glyph>,
@@ -138,7 +149,9 @@ impl Reader {
     }
 
     fn element(&mut self, node: &Node<'_>, tag: &str, style: Style, nesting: usize) {
-        if DROPPED.contains(&tag) || is_list_marker(node) {
+        // A numbered heading keeps its number as text. Every other marker is rewritten.
+        let kept_number = || self.heading.is_some() && self.item.is_none() && is_number(&text_of(node));
+        if DROPPED.contains(&tag) || (is_list_marker(node) && !kept_number()) {
             return;
         }
         if nesting >= MAX_NESTING {
@@ -150,6 +163,11 @@ impl Reader {
         let word_item = if self.item.is_none() && matches!(tag, "p" | "div") { word_item(node) } else { None };
         match tag {
             "br" => self.push_break(),
+            // Inside a heading or a list item a rule only ends a line.
+            "hr" if self.item.is_none() && self.heading.is_none() => {
+                self.flush();
+                self.blocks.push(Block { kind: Kind::Rule, quote: self.quote, text: Vec::new() });
+            }
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" if self.item.is_none() => {
                 self.flush();
                 let outer = self.heading.replace(usize::from(tag.as_bytes()[1] - b'0'));
@@ -377,15 +395,21 @@ fn is_list_marker(node: &Node<'_>) -> bool {
 }
 
 /// The list item a Word paragraph stands for, if it is one. Word writes lists as paragraphs:
-/// the level is in the `mso-list` style, and the marker is text.
+/// the level is in the `mso-list` style, whatever the paragraph's class, and the marker is
+/// text. A `MsoListParagraph` is an item even without that style.
 fn word_item(node: &Node<'_>) -> Option<Item> {
-    let class = node.attr("class");
-    if !class.is_some_and(|class| class.split_whitespace().any(|name| name.starts_with("MsoListParagraph"))) {
+    let level = css(node, "mso-list").and_then(|list| list.split_whitespace().find_map(|part| part.strip_prefix("level")?.parse::<usize>().ok()));
+    let listed = || node.attr("class").is_some_and(|class| class.split_whitespace().any(|name| name.starts_with("MsoListParagraph")));
+    if level.is_none() && !listed() {
         return None;
     }
-    let level = css(node, "mso-list").and_then(|list| list.split_whitespace().find_map(|part| part.strip_prefix("level")?.parse::<usize>().ok()));
     let marker = node.find(is_list_marker).map(|marker| text_of(&marker));
     Some(Item { depth: level.unwrap_or(1).saturating_sub(1), number: marker.and_then(|marker| number_of(&marker)) })
+}
+
+/// True if a heading's marker is a number, such as "1.", "2.1" or "A.", and not a bullet.
+fn is_number(marker: &str) -> bool {
+    marker.chars().any(|c| c.is_ascii_digit()) || number_of(marker).is_some()
 }
 
 /// The number of a marker such as "3." or "b)", or `None` for a bullet. A letter or a Roman
@@ -403,6 +427,8 @@ fn number_of(marker: &str) -> Option<u64> {
 
 /// An open level of a Markdown list.
 struct Level {
+    /// The depth the source gave it, which may be more than the depth it is written at.
+    depth: usize,
     /// The width of its marker, which is how far its contents are indented.
     width: usize,
     ordered: bool,
@@ -421,8 +447,10 @@ fn write(blocks: &[Block]) -> String {
             if !in_list {
                 levels.clear();
             }
-            // A level deeper than the next one would read as a code block.
-            let depth = item.depth.min(levels.len());
+            // A level deeper than the next one would read as a code block. Counting the open
+            // levels above this one also keeps equal depths level with each other in a list
+            // that starts, or skips to, a deeper one.
+            let depth = levels.iter().take_while(|level| level.depth < item.depth).count();
             let ordered = item.number.is_some();
             let new_level = depth == levels.len();
             let new_type = levels.get(depth).is_some_and(|level| level.ordered != ordered);
@@ -432,11 +460,13 @@ fn write(blocks: &[Block]) -> String {
             levels.truncate(depth);
             let indent: usize = levels.iter().map(|level| level.width).sum();
             let marker = item.number.map_or_else(|| "- ".to_owned(), |number| format!("{number}. "));
-            levels.push(Level { width: marker.len(), ordered });
+            levels.push(Level { depth: item.depth, width: marker.len(), ordered });
             (indent, marker)
         } else {
             let marker = match block.kind {
                 Kind::Heading(level) => format!("{} ", "#".repeat(level)),
+                // The blank line before it keeps it from underlining the text above.
+                Kind::Rule => "---".to_owned(),
                 _ => String::new(),
             };
             (0, marker)

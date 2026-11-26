@@ -264,6 +264,58 @@ fn deep_nesting_keeps_the_text() {
 }
 
 #[test]
+fn horizontal_rules_are_kept() {
+    let html = "<p>above</p><hr><p>below</p><blockquote>a<hr>b</blockquote><ul><li>one</li></ul><hr/><ul><li>two<hr>three</li></ul>";
+    let markdown = html_to_markdown(html);
+    assert_eq!(markdown, "above\n\n---\n\nbelow\n\n> a\n>\n> ---\n>\n> b\n\n- one\n\n---\n\n- two\\\n  three\n");
+    let rules = script::parse(&markdown).blocks.into_iter().filter(|block| block.kind == BlockKind::Rule).count();
+    assert_eq!(rules, 3);
+    // Without the blank line it would make a heading of the text above.
+    assert_eq!(html_to_markdown("text<hr>"), "text\n\n---\n");
+    assert_eq!(html_to_markdown("<h2>a<hr>b</h2>"), "## a b\n");
+}
+
+/// The marker Word writes into a list paragraph's text.
+fn word_marker(text: &str) -> String {
+    format!("<![if !supportLists]><span style='mso-list:Ignore'>{text}<span style='font:7.0pt \"Times\"'>&nbsp;&nbsp; </span></span><![endif]>")
+}
+
+#[test]
+fn word_list_styles_of_any_class_make_lists() {
+    let html = format!(
+        "<p class=MsoListBullet style='mso-list:l0 level1 lfo1'>{}one</p>\
+         <p class=MsoNormal style='text-indent:-.25in;mso-list:l0 level2 lfo1'>{}two</p>\
+         <div style='mso-list:l1 level1 lfo2'>{}three</div>\
+         <p class=MsoNormal style='mso-list:none'>plain</p>",
+        word_marker("\u{b7}"),
+        word_marker("o"),
+        word_marker("4."),
+    );
+    assert_eq!(html_to_markdown(&html), "- one\n  - two\n\n4. three\n\nplain\n");
+
+    // A selection may start below the top level.
+    let deep = "<p style='mso-list:l0 level2 lfo1'>a</p><p style='mso-list:l0 level2 lfo1'>b</p>";
+    assert_eq!(html_to_markdown(deep), "- a\n- b\n");
+}
+
+#[test]
+fn numbered_headings_keep_their_number() {
+    let cases = [
+        ("1.", "1\\. Intro", "1. Intro"),
+        ("2.1", "2.1 Intro", "2.1 Intro"),
+        ("IV.", "IV. Intro", "IV. Intro"),
+        ("\u{b7}", "Intro", "Intro"),
+        ("o", "Intro", "Intro"),
+    ];
+    for (marker, written, shown) in cases {
+        let html = format!("<h2 style='mso-list:l0 level1 lfo1'>{}Intro<o:p></o:p></h2>", word_marker(marker));
+        let markdown = html_to_markdown(&html);
+        assert_eq!(markdown, format!("## {written}\n"), "{marker}");
+        assert_eq!(outline(&html), [(BlockKind::Heading(2), shown.to_owned())], "{marker}");
+    }
+}
+
+#[test]
 fn nothing_gives_an_empty_string() {
     for html in ["", "   ", "<img src=x>", "<style>p{}</style><!-- c -->", "<p><b> </b></p><ul><li></li></ul>"] {
         assert_eq!(html_to_markdown(html), "", "{html:?}");

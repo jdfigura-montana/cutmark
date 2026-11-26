@@ -22,10 +22,12 @@ panic = "deny"
 chrono = { workspace = true, features = ["now", "serde"] }
 htmd = "0.6.1"
 pulldown-cmark = { version = "0.13.6", default-features = false }
+quick-xml = { version = "0.42.0", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
+zip = { version = "9.8.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

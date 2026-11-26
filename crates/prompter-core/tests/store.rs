@@ -347,6 +347,16 @@ fn import_html_converts_and_takes_the_heading() {
 }
 
 #[test]
+fn import_htm_is_read_like_html() {
+    let (_dir, mut store) = temp_store();
+    for file in ["page.htm", "page.HTM"] {
+        let (_outside, imported) = import_text(&mut store, file, "<h1>Title</h1><p>a<br>b</p><hr>");
+        assert_eq!(imported.scripts[0].title, "Title");
+        assert_eq!(store.load(&imported.scripts[0].id).unwrap(), "# Title\n\na\\\nb\n\n---\n");
+    }
+}
+
+#[test]
 fn import_html_splits_large_input() {
     let folder = tempfile::tempdir().unwrap();
     let mut store = Store::open(folder.path()).unwrap();
@@ -469,7 +479,7 @@ fn import_at_the_limit_is_not_split() {
 #[test]
 fn import_refuses_other_types_and_text_that_is_not_utf8() {
     let (dir, mut store) = temp_store();
-    assert!(matches!(store.import(Path::new("a.docx")), Err(StoreError::UnsupportedImport(_))));
+    assert!(matches!(store.import(Path::new("a.doc")), Err(StoreError::UnsupportedImport(_))));
     let source = dir.path().join("latin1.txt");
     fs::write(&source, b"caf\xe9").unwrap();
     assert!(matches!(store.import(&source), Err(StoreError::ImportEncoding)));
