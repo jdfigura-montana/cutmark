@@ -14,7 +14,8 @@ use crate::engine::controller::Phase;
 
 /// The id of the Setup and Record stage.
 const TAKE_STAGE_ID: &str = "recorder-take-stage";
-/// Space between the buttons of the bar's right side, and before its readout.
+/// Space between the buttons of the bar's right side, and before its readout. Between the
+/// buttons it shrinks, down to nothing, before a button is left out.
 const BUTTON_GAP: f32 = space::SCALE_8;
 /// Space between the timecode and the control beside it.
 const TIMECODE_GAP: f32 = space::SCALE_12;
@@ -73,17 +74,30 @@ fn left_fit(column: f32, timecode: TimecodeWidths, companion: Companion) -> (Tim
     }
 }
 
-/// The width of `count` bar buttons in a row.
-fn buttons_width(count: usize) -> f32 {
-    (0..count).fold(0.0, |width, index| width + STAGE_BAR_BUTTON_DIAMETER + if index == 0 { 0.0 } else { BUTTON_GAP })
+/// The width of `count` bar buttons in a row, `gap` apart.
+fn buttons_width(count: usize, gap: f32) -> f32 {
+    (0..count).fold(0.0, |width, index| width + STAGE_BAR_BUTTON_DIAMETER + if index == 0 { 0.0 } else { gap })
 }
 
-/// What fits in the right side, `column` wide: how many of its `count` buttons, from the first,
-/// and whether the readout, `readout` wide, fits after all of them. The readout goes first.
-fn right_fit(column: f32, count: usize, readout: f32) -> (usize, bool) {
-    let shown = (0..=count).rev().find(|shown| buttons_width(*shown) <= column).unwrap_or(0);
-    let readout_fits = shown == count && buttons_width(count) + BUTTON_GAP + readout <= column;
-    (shown, readout_fits)
+/// What the bar's right side draws.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RightFit {
+    /// How many buttons, from the first.
+    shown: usize,
+    /// The space between them.
+    gap: f32,
+    /// Whether the readout is drawn after them.
+    readout: bool,
+}
+
+/// What fits in the right side, `column` wide, of its `count` buttons and the readout,
+/// `readout` wide. The readout goes first, then the gaps shrink, then buttons go from the end.
+fn right_fit(column: f32, count: usize, readout: f32) -> RightFit {
+    let shown = (0..=count).rev().find(|shown| buttons_width(*shown, 0.0) <= column).unwrap_or(0);
+    let gaps = shown.saturating_sub(1).max(1) as f32;
+    let gap = ((column - buttons_width(shown, 0.0)) / gaps).clamp(0.0, BUTTON_GAP);
+    let readout = shown == count && buttons_width(count, BUTTON_GAP) + BUTTON_GAP + readout <= column;
+    RightFit { shown, gap, readout }
 }
 
 /// The bar's left side: the timecode (`main` and its `fraction`), then the control
@@ -118,19 +132,21 @@ pub struct BarButton<A> {
 }
 
 /// The bar's right side: the buttons, the most important first, then the small readout. A
-/// narrow side leaves out the readout first, then buttons from the end. Returns the clicked
-/// button's action.
+/// narrow side leaves out the readout first, then closes up the buttons, then leaves out
+/// buttons from the end. Returns the clicked button's action.
 pub fn right_side<A: Clone>(ui: &mut Ui, buttons: &[BarButton<A>], readout: Option<LayoutJob>) -> Option<A> {
     let readout_width = readout.as_ref().map_or(0.0, |job| ui.painter().layout_job(job.clone()).size().x);
-    let (shown, readout_fits) = right_fit(ui.available_width(), buttons.len(), readout_width);
-    ui.spacing_mut().item_spacing.x = BUTTON_GAP;
+    let fit = right_fit(ui.available_width(), buttons.len(), readout_width);
+    ui.spacing_mut().item_spacing.x = fit.gap;
     let mut clicked = None;
-    for button in buttons.iter().take(shown) {
+    for button in buttons.iter().take(fit.shown) {
         if bar_button(ui, button.icon, &button.tooltip, button.enabled).clicked() {
             clicked = Some(button.action.clone());
         }
     }
-    if readout_fits && let Some(job) = readout {
+    if fit.readout
+        && let Some(job) = readout
+    {
         ui.add(egui::Label::new(job).extend().selectable(false));
     }
     clicked
@@ -313,7 +329,7 @@ pub(crate) mod bar_checks {
     use ui_kit::tokens::space;
 
     use crate::app::{three_columns, two_columns};
-    use crate::config::{Mode, PanelWidths};
+    use crate::config::{self, Mode, PanelWidths};
 
     /// The height of the test stage, with room under it for the notch button.
     const STAGE_HEIGHT: f32 = 300.0;
@@ -341,13 +357,25 @@ pub(crate) mod bar_checks {
         (harness, drawn)
     }
 
-    /// The width of `mode`'s stage in the narrowest window the app allows, and in the default one.
+    /// The width of `mode`'s stage in a window that wide, at the default panel widths.
     pub(crate) fn stage_width(mode: Mode, window_width: f32) -> f32 {
         let body = Rect::from_min_size(pos2(0.0, 0.0), vec2(window_width, 400.0)).shrink(space::WINDOW_GAP);
         match mode {
             Mode::Record => two_columns(body, PanelWidths::default())[0].width(),
             Mode::Setup | Mode::Review => three_columns(body, PanelWidths::default())[1].width(),
         }
+    }
+
+    /// `mode`'s stage widths in the narrowest window the Recorder allows: with the default
+    /// panel widths, and with the widest saved ones.
+    pub(crate) fn narrowest_stage_widths(mode: Mode) -> [f32; 2] {
+        let body = Rect::from_min_size(pos2(0.0, 0.0), vec2(config::MIN_WINDOW_WIDTH, 400.0)).shrink(space::WINDOW_GAP);
+        let widest = PanelWidths { left: config::LEFT_PANEL_MAX, right: config::RIGHT_PANEL_MAX };
+        let dragged = match mode {
+            Mode::Record => two_columns(body, widest)[0].width(),
+            Mode::Setup | Mode::Review => three_columns(body, widest)[1].width(),
+        };
+        [stage_width(mode, config::MIN_WINDOW_WIDTH), dragged]
     }
 
     /// Fails when anything but the notch button reaches into the bar's center column, or when
@@ -390,7 +418,7 @@ mod tests {
 
     use super::bar_checks::{self, assert_bar_is_clean, stage_harness, stage_width};
     use super::*;
-    use crate::config::Mode;
+    use crate::config::{self, Mode};
     use crate::engine::bus::Bus;
 
     fn chords() -> Chords {
@@ -501,7 +529,7 @@ mod tests {
     /// nothing in the bar is cut off.
     #[test]
     fn the_take_bar_center_column_stays_free_at_minimum_width() {
-        let minimum = ui_kit::chrome::MIN_SIZE.x;
+        let minimum = config::MIN_WINDOW_WIDTH;
         let mut widths = vec![stage_width(Mode::Setup, minimum), stage_width(Mode::Record, minimum)];
         widths.extend((100..=900).step_by(20).map(|width| width as f32));
         for width in widths {
@@ -509,6 +537,33 @@ mod tests {
                 let (harness, drawn, _bus) = take_harness(width, Rc::new(Cell::new(running)), 3);
                 let stage = drawn.borrow().clone().expect("the stage was drawn");
                 assert_bar_is_clean(&harness, &stage, width);
+            }
+        }
+    }
+
+    /// In the narrowest window every action of the Setup and Record bars is shown, at the
+    /// default panel widths and with the panels as wide as they go.
+    #[test]
+    fn the_narrowest_window_shows_every_take_bar_action() {
+        for mode in [Mode::Setup, Mode::Record] {
+            for width in bar_checks::narrowest_stage_widths(mode) {
+                let phases: &[(Phase, &[&str])] = &[
+                    (Phase::Idle, &["Record", "Add mark (F9)", "Pause (F11)"]),
+                    (Phase::Recording, &["Stop recording", "Add mark (F9)", "Pause (F11)", "Mute mic (F8)"]),
+                    (Phase::Paused, &["Stop recording", "Add mark (F9)", "Resume (F11)", "Mute mic (F8)"]),
+                ];
+                for (phase, labels) in phases {
+                    // A take is only ever on screen in Record mode.
+                    if mode == Mode::Setup && phase.has_take() {
+                        continue;
+                    }
+                    let (harness, drawn, _bus) = take_harness(width, Rc::new(Cell::new(*phase)), 3);
+                    for label in *labels {
+                        assert!(harness.query_by_label(label).is_some(), "{label} is shown at {width} in {mode:?}");
+                    }
+                    let stage = drawn.borrow().clone().expect("the stage was drawn");
+                    assert_bar_is_clean(&harness, &stage, width);
+                }
             }
         }
     }
@@ -535,15 +590,19 @@ mod tests {
         }
     }
 
-    /// The right side drops the readout before any button, then buttons from the end.
+    /// The right side drops the readout before any button, closes up the buttons, and only
+    /// then drops buttons from the end.
     #[test]
     fn a_narrow_right_side_drops_the_readout_first() {
-        let two = buttons_width(2);
+        let two = buttons_width(2, BUTTON_GAP);
         assert_eq!(two, 2.0 * STAGE_BAR_BUTTON_DIAMETER + BUTTON_GAP);
-        assert_eq!(right_fit(two + BUTTON_GAP + 60.0, 2, 60.0), (2, true));
-        assert_eq!(right_fit(two + BUTTON_GAP + 59.0, 2, 60.0), (2, false));
-        assert_eq!(right_fit(two - 1.0, 2, 60.0), (1, false));
-        assert_eq!(right_fit(0.0, 2, 60.0), (0, false));
+        let fit = |column, count| right_fit(column, count, 60.0);
+        assert_eq!(fit(two + BUTTON_GAP + 60.0, 2), RightFit { shown: 2, gap: BUTTON_GAP, readout: true });
+        assert_eq!(fit(two + BUTTON_GAP + 59.0, 2), RightFit { shown: 2, gap: BUTTON_GAP, readout: false });
+        assert_eq!(fit(two - 1.0, 2), RightFit { shown: 2, gap: BUTTON_GAP - 1.0, readout: false });
+        assert_eq!(fit(3.0 * STAGE_BAR_BUTTON_DIAMETER, 3), RightFit { shown: 3, gap: 0.0, readout: false });
+        assert_eq!(fit(2.0 * STAGE_BAR_BUTTON_DIAMETER - 1.0, 2).shown, 1);
+        assert_eq!(fit(0.0, 2).shown, 0);
     }
 
     /// The left side shrinks the timecode before it drops the control beside it.

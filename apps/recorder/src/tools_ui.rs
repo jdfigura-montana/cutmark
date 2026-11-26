@@ -422,7 +422,7 @@ pub(crate) mod row_checks {
             let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(width, HEIGHT));
             let mut column = ui.new_child(UiBuilder::new().max_rect(rect));
             column.set_clip_rect(rect);
-            ui_kit::panel(&mut column, |ui| {
+            ui_kit::side_panel(&mut column, |ui| {
                 ui.set_min_size(ui.available_size());
                 draw(ui);
             });
@@ -459,8 +459,8 @@ pub(crate) mod row_checks {
     /// Fails when a text is clipped or leaves the panel's content, or when any two of the texts
     /// and controls overlap.
     pub(crate) fn assert_no_overlap(texts: &[&Painted], controls: &[Rect], panel_width: f32) {
-        // The panel's padding and its 1px rim.
-        let content_right = panel_width - space::PANEL_PADDING - 1.0;
+        // The side panel's padding.
+        let content_right = panel_width - space::PANEL_PADDING;
         for painted in texts {
             assert!(painted.clip.expand(0.5).contains_rect(painted.rect), "{:?} is clipped: {:?} in {:?}", painted.text, painted.rect, painted.clip);
             assert!(

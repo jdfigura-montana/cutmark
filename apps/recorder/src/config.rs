@@ -293,6 +293,9 @@ pub struct Settings {
     pub shipped_written: Vec<String>,
 }
 
+/// The narrowest the Recorder's window may be, in points; wider than the suite's own minimum.
+pub const MIN_WINDOW_WIDTH: f32 = 960.0;
+
 /// The narrowest the left column may be (spec "Panels").
 pub const LEFT_PANEL_MIN: f32 = 220.0;
 
@@ -347,12 +350,21 @@ impl ModeWidths {
         }
     }
 
-    /// Overwrites the widths of `mode`.
-    pub fn set(&mut self, mode: Mode, widths: PanelWidths) {
+    /// The saved widths of `mode`, to change in place.
+    pub fn entry(&mut self, mode: Mode) -> &mut PanelWidths {
         match mode {
-            Mode::Setup => self.setup = widths,
-            Mode::Record => self.record = widths,
-            Mode::Review => self.review = widths,
+            Mode::Setup => &mut self.setup,
+            Mode::Record => &mut self.record,
+            Mode::Review => &mut self.review,
+        }
+    }
+
+    /// Clamps every mode's widths into the columns' ranges, as they are loaded. What a window
+    /// has room for is up to the layout, which keeps the stage's minimum at any window width.
+    fn clamp_to_ranges(&mut self) {
+        for widths in [&mut self.setup, &mut self.record, &mut self.review] {
+            widths.left = widths.left.clamp(LEFT_PANEL_MIN, LEFT_PANEL_MAX);
+            widths.right = widths.right.clamp(RIGHT_PANEL_MIN, RIGHT_PANEL_MAX);
         }
     }
 }
@@ -1127,6 +1139,7 @@ fn load_settings(path: &Path) -> Result<(Settings, bool), ConfigError> {
             Ok(match serde_json::from_str::<Settings>(text) {
                 Ok(mut settings) => {
                     settings.audio.normalize();
+                    settings.panel_widths.clamp_to_ranges();
                     (settings, true)
                 }
                 Err(err) => {
@@ -1236,9 +1249,9 @@ mod mode_tests {
     fn the_panel_widths_are_persisted_per_mode_with_the_settings() -> Result<(), Box<dyn std::error::Error>> {
         let mut settings = Settings::default();
         assert_eq!(settings.panel_widths.setup, PanelWidths::default(), "a fresh install uses the default widths");
-        settings.panel_widths.set(Mode::Setup, PanelWidths { left: 300.0, right: 420.0 });
-        settings.panel_widths.set(Mode::Record, PanelWidths { left: 220.0, right: 320.0 });
-        settings.panel_widths.set(Mode::Review, PanelWidths { left: 260.0, right: 340.0 });
+        *settings.panel_widths.entry(Mode::Setup) = PanelWidths { left: 300.0, right: 420.0 };
+        *settings.panel_widths.entry(Mode::Record) = PanelWidths { left: 220.0, right: 320.0 };
+        *settings.panel_widths.entry(Mode::Review) = PanelWidths { left: 260.0, right: 340.0 };
         let text = serde_json::to_string(&settings)?;
         let back: Settings = serde_json::from_str(&text)?;
         assert_eq!(back.panel_widths.get(Mode::Setup), PanelWidths { left: 300.0, right: 420.0 });
@@ -1498,6 +1511,20 @@ mod tests {
         assert_eq!(track.kind, TrackKind::Output);
         assert!(track.enabled);
         assert_eq!(track.gain_db, 0.0);
+        Ok(())
+    }
+
+    #[test]
+    fn loaded_panel_widths_are_clamped_into_their_ranges() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = fresh_dir("panel-width-clamp")?;
+        let path = dir.join("settings.json");
+        let mut settings = Settings::default();
+        *settings.panel_widths.entry(Mode::Setup) = PanelWidths { left: 5000.0, right: 10.0 };
+        fs::write(&path, serde_json::to_string(&settings)?)?;
+        let (loaded, _) = load_settings(&path)?;
+        assert_eq!(loaded.panel_widths.get(Mode::Setup), PanelWidths { left: LEFT_PANEL_MAX, right: RIGHT_PANEL_MIN });
+        assert_eq!(loaded.panel_widths.get(Mode::Record), PanelWidths::default());
+        fs::remove_dir_all(&dir)?;
         Ok(())
     }
 

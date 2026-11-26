@@ -44,7 +44,9 @@ fn main() -> anyhow::Result<()> {
         renderer: eframe::Renderer::Wgpu,
         // The suite's undecorated window chrome: the native caption goes, resize borders and
         // Aero Snap stay, and the title bar is drawn by ui_kit::main_toolbar in the app.
-        viewport: ui_kit::chrome::viewport(egui::ViewportBuilder::default().with_title("Cutmark Recorder").with_inner_size([1280.0, 800.0])),
+        viewport: ui_kit::chrome::viewport(egui::ViewportBuilder::default().with_title("Cutmark Recorder").with_inner_size([1280.0, 800.0]))
+            // The Recorder needs more width than the suite's minimum for its stage and two panels.
+            .with_min_inner_size([config::MIN_WINDOW_WIDTH, ui_kit::chrome::MIN_SIZE.y]),
         ..Default::default()
     };
     eframe::run_native(

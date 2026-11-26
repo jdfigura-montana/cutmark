@@ -1,6 +1,7 @@
 //! The Recorder window: draws what the engine controller publishes and sends it commands and settings.
 
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -59,7 +60,7 @@ const TOAST_BUTTON_HALF_HEIGHT: f32 = 14.0;
 const HEADER_PAD: f32 = 6.0;
 
 /// Width the center column keeps while the side columns give way (spec "Panels").
-const CENTER_MIN_W: f32 = 480.0;
+const CENTER_MIN_W: f32 = 400.0;
 
 /// Width of a column divider's accent line.
 const DIVIDER_LINE_W: f32 = 2.0;
@@ -91,6 +92,8 @@ pub struct RecorderApp {
     seen_settings_rev: u64,
     /// Whether a take was running on the previous frame, to clear the meters when it starts or ends.
     was_active: bool,
+    /// The press time of the newest mark command seen, so each press adds one Review mark.
+    seen_mark_press: i64,
     /// The live preview of the composite, or None while it is off or could not start.
     preview: Option<Preview>,
     /// Draws the preview picture.
@@ -244,6 +247,7 @@ impl RecorderApp {
             was_minimized: false,
             seen_settings_rev: 0,
             was_active: false,
+            seen_mark_press: 0,
             preview: None,
             preview_view: PreviewView::default(),
             preview_enabled: true,
@@ -706,6 +710,9 @@ impl RecorderApp {
         let sync_ready = idle && state.sync_test.is_none() && self.webcam.settings(&self.profile_store).is_some_and(|settings| settings.iso);
         let keep_files = self.preflight_section.keep_files();
         let mode = self.modes.mode;
+        // In Review the menu's Add mark goes to the selected take, which needs its playback.
+        let can_mark = mode != Mode::Review || self.review_playback.is_some();
+        let review_mark = Cell::new(false);
         let mode_labels = Mode::ALL.map(Mode::label);
         let selected = Cell::new(Mode::ALL.iter().position(|candidate| *candidate == mode).unwrap_or(0));
 
@@ -739,10 +746,16 @@ impl RecorderApp {
                         ui.close();
                     }
                     ui.separator();
-                    if menu_item(ui, "Add mark", &chords.mark).clicked() {
-                        send(&bus, CommandKind::Mark(MarkKind::Silent));
-                        ui.close();
-                    }
+                    ui.add_enabled_ui(can_mark, |ui| {
+                        if menu_item(ui, "Add mark", &chords.mark).clicked() {
+                            if mode == Mode::Review {
+                                review_mark.set(true);
+                            } else {
+                                send(&bus, CommandKind::Mark(MarkKind::Silent));
+                            }
+                            ui.close();
+                        }
+                    });
                     if menu_item(ui, "Add mark with label", &chords.mark_label).clicked() {
                         send(&bus, CommandKind::Mark(MarkKind::WithLabel));
                         ui.close();
@@ -818,6 +831,10 @@ impl RecorderApp {
             },
         );
 
+        if review_mark.get() {
+            self.add_mark_at_playhead(ui.ctx());
+        }
+
         // The rename popover wrote the project like the old Project field did.
         if project_changed.get() {
             self.settings.project = edited_project.into_inner();
@@ -849,39 +866,8 @@ impl RecorderApp {
             column(ui, left, |ui| self.sources_panel(ui, state));
             column(ui, right, |ui| self.settings_panel(ui, ctx, state));
             stage_column(ui, center, |ui| self.preview_panel(ui, state, active));
-            self.resize_dividers(ui, &left, &center, &right, Mode::Setup);
+            self.settings_dirty |= resize_dividers(ui, [left, center, right], self.settings.panel_widths.entry(Mode::Setup));
         });
-    }
-
-    /// Handles the two column dividers of a three-column mode: a drag, the arrow keys or a
-    /// double-click writes the new width into the mode's saved widths (spec "Panels").
-    fn resize_dividers(&mut self, ui: &mut egui::Ui, left: &egui::Rect, center: &egui::Rect, right: &egui::Rect, mode: Mode) {
-        let mut widths = self.settings.panel_widths.get(mode);
-        let mut changed = false;
-        if let Some(w) = column_divider(ui, gap_between(left, center), "left", widths.left, DividerSide::Left) {
-            widths.left = w;
-            changed = true;
-        }
-        if let Some(w) = column_divider(ui, gap_between(center, right), "right", widths.right, DividerSide::Right) {
-            widths.right = w;
-            changed = true;
-        }
-        if changed {
-            self.settings.panel_widths.set(mode, widths);
-            self.settings_dirty = true;
-        }
-    }
-
-    /// Handles the Record mode's single divider between the center and the Live panel: a
-    /// drag, the arrow keys or a double-click writes the new width into the mode's saved
-    /// widths (spec "Panels").
-    fn resize_right_divider(&mut self, ui: &mut egui::Ui, center: &egui::Rect, right: &egui::Rect, mode: Mode) {
-        let mut widths = self.settings.panel_widths.get(mode);
-        if let Some(w) = column_divider(ui, gap_between(center, right), "right", widths.right, DividerSide::Right) {
-            widths.right = w;
-            self.settings.panel_widths.set(mode, widths);
-            self.settings_dirty = true;
-        }
     }
 
     /// The left Sources panel (spec "Setup mode"): the video group with the display and camera
@@ -1133,7 +1119,7 @@ impl RecorderApp {
                     review_ui::TakeAction::None => {}
                 }
             });
-            self.resize_dividers(ui, &left, &center, &right, Mode::Review);
+            self.settings_dirty |= resize_dividers(ui, [left, center, right], self.settings.panel_widths.entry(Mode::Review));
         });
         // The delete confirmation dialog (spec "Review mode"): every file of the
         // take with its size, Cancel and Move to Recycle Bin.
@@ -1155,6 +1141,29 @@ impl RecorderApp {
         }
         // The bar was drawn before the click took effect.
         ctx.request_repaint();
+    }
+
+    /// Adds a mark to the selected take where its playback is; without a playback it does nothing.
+    fn add_mark_at_playhead(&mut self, ctx: &egui::Context) {
+        let Some(position) = self.review_playback.as_ref().map(Playback::position_ms) else { return };
+        self.add_review_mark(position);
+        // The marks were drawn before this one was added.
+        ctx.request_repaint();
+    }
+
+    /// The mark hotkey in Review. It is a global hotkey, so Windows keeps the key from the
+    /// window and sends it to the controller, which ignores a mark while no take runs; the
+    /// window sees the press among the controller's recent commands. It acts only while the
+    /// window has the focus, so a press meant for another program never changes a take, and
+    /// with no dialog over Review.
+    fn review_mark_hotkey(&mut self, ctx: &egui::Context, state: &ControllerState) {
+        // Every frame, so a press made in another mode is never applied later.
+        let pressed = new_mark_press(&state.recent, &mut self.seen_mark_press);
+        let focused = ctx.input(|input| input.viewport().focused) == Some(true);
+        let in_review = self.modes.mode == Mode::Review && state.phase == Phase::Idle;
+        if pressed && focused && in_review && !self.settings_dialog.open && !self.take_panel.confirm_delete {
+            self.add_mark_at_playhead(ctx);
+        }
     }
 
     /// The review playback lifecycle: opened on the selected take's main file
@@ -1324,7 +1333,7 @@ impl RecorderApp {
             let [center, right] = two_columns(ui.max_rect(), self.settings.panel_widths.get(Mode::Record));
             column(ui, right, |ui| self.live_panel(ui, ctx, state));
             stage_column(ui, center, |ui| self.record_center(ui, state));
-            self.resize_right_divider(ui, &center, &right, Mode::Record);
+            self.settings_dirty |= resize_right_divider(ui, [center, right], self.settings.panel_widths.entry(Mode::Record));
         });
     }
 
@@ -1444,6 +1453,19 @@ fn write_synced(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut file = std::fs::File::create(path)?;
     std::io::Write::write_all(&mut file, bytes)?;
     file.sync_all()
+}
+
+/// Whether `recent` holds a plain mark command (the mark hotkey's kind) pressed after `seen`,
+/// which moves on to the newest one.
+fn new_mark_press(recent: &VecDeque<Command>, seen: &mut i64) -> bool {
+    let newest = recent.iter().filter(|command| command.kind == CommandKind::Mark(MarkKind::Silent)).map(|command| command.press_qpc).max();
+    match newest {
+        Some(press) if press > *seen => {
+            *seen = press;
+            true
+        }
+        _ => false,
+    }
 }
 
 /// The hotkey chords the Capture menu and the bar's tooltips show as their shortcuts; empty
@@ -1608,7 +1630,7 @@ fn ground(ctx: &egui::Context) -> egui::Color32 {
 }
 
 /// Where the mode's stage, and so its notch button, is centered in a `window` that wide.
-fn stage_center_x(window: egui::Rect, mode: Mode, widths: PanelWidths) -> f32 {
+pub(crate) fn stage_center_x(window: egui::Rect, mode: Mode, widths: PanelWidths) -> f32 {
     let body = window.shrink(space::WINDOW_GAP);
     let center = match mode {
         Mode::Record => two_columns(body, widths)[0],
@@ -1689,12 +1711,12 @@ fn gap_between(a: &egui::Rect, b: &egui::Rect) -> egui::Rect {
     egui::Rect::from_min_max(egui::Pos2::new(a.right(), a.top()), egui::Pos2::new(b.left(), a.bottom()))
 }
 
-/// One column of the window body: the [`ui_kit::panel`] drawn exactly in `rect` and clipped to
+/// One column of the window body: the [`ui_kit::side_panel`] drawn exactly in `rect` and clipped to
 /// it, so content wider than the column is clipped and never widens the column (spec "Panels").
 fn column<R>(parent: &mut egui::Ui, rect: egui::Rect, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let mut ui = parent.new_child(egui::UiBuilder::new().max_rect(rect));
     ui.set_clip_rect(rect);
-    ui_kit::panel(&mut ui, |ui| {
+    ui_kit::side_panel(&mut ui, |ui| {
         ui.set_min_size(ui.available_size());
         add_contents(ui)
     })
@@ -1744,11 +1766,47 @@ impl DividerSide {
     }
 }
 
+/// Handles the two column dividers of a three-column mode: a drag, the arrow keys or a
+/// double-click writes the new width into the mode's saved `widths` (spec "Panels"). A
+/// divider stops where the stage would get narrower than [`CENTER_MIN_W`]. A change saves
+/// both widths as they are on screen, so a width the window had shrunk does not take the
+/// room back from the column being dragged. Returns whether the widths changed.
+fn resize_dividers(ui: &mut egui::Ui, columns: [egui::Rect; 3], widths: &mut PanelWidths) -> bool {
+    let [left, center, right] = columns;
+    // What the two side columns can share while the stage keeps its minimum.
+    let room = right.right() - left.left() - 2.0 * space::WINDOW_GAP - CENTER_MIN_W;
+    let mut changed = false;
+    if let Some(width) = column_divider(ui, gap_between(&left, &center), "left", left.width(), DividerSide::Left, room - right.width()) {
+        *widths = PanelWidths { left: width, right: right.width() };
+        changed = true;
+    }
+    if let Some(width) = column_divider(ui, gap_between(&center, &right), "right", right.width(), DividerSide::Right, room - left.width()) {
+        *widths = PanelWidths { left: left.width(), right: width };
+        changed = true;
+    }
+    changed
+}
+
+/// Handles the Record mode's single divider between the center and the Live panel, like
+/// [`resize_dividers`]; the unused left width is left as it is.
+fn resize_right_divider(ui: &mut egui::Ui, columns: [egui::Rect; 2], widths: &mut PanelWidths) -> bool {
+    let [center, right] = columns;
+    let room = right.right() - center.left() - space::WINDOW_GAP - CENTER_MIN_W;
+    let Some(width) = column_divider(ui, gap_between(&center, &right), "right", right.width(), DividerSide::Right, room) else {
+        return false;
+    };
+    widths.right = width;
+    true
+}
+
 /// One column divider in the window gap beside a column (spec "Panels"): dragging it resizes
 /// the column, the arrow keys move 16 px when it is focused, and double-clicking restores
 /// the default width. The cursor becomes the resize cursor on hover, and a thin accent line
-/// shows on hover and while dragging. Returns the column's new width when this frame changed it.
-fn column_divider(ui: &mut egui::Ui, rect: egui::Rect, id_salt: &'static str, width: f32, side: DividerSide) -> Option<f32> {
+/// shows on hover and while dragging. `width` is the column's width on screen and `max` the
+/// widest the stage leaves room for. Returns the column's new width when this frame changed it.
+fn column_divider(ui: &mut egui::Ui, rect: egui::Rect, id_salt: &'static str, width: f32, side: DividerSide, max: f32) -> Option<f32> {
+    // The side's own minimum wins over `max` in a window too narrow for both.
+    let limit = |wanted: f32| side.clamp(side.clamp(wanted).min(max));
     let response = ui.interact(rect, egui::Id::new("column_divider").with(id_salt), egui::Sense::click_and_drag());
     if response.clicked() {
         response.request_focus();
@@ -1759,7 +1817,7 @@ fn column_divider(ui: &mut egui::Ui, rect: egui::Rect, id_salt: &'static str, wi
         ui.painter().vline(rect.center().x, rect.y_range(), egui::Stroke::new(DIVIDER_LINE_W, theme.accent.accent));
     }
     if response.double_clicked() {
-        return Some(side.default_width());
+        return Some(limit(side.default_width()));
     }
     let mut moved = 0.0;
     if response.dragged() {
@@ -1773,7 +1831,10 @@ fn column_divider(ui: &mut egui::Ui, rect: egui::Rect, id_salt: &'static str, wi
         };
         moved += side.sign() * step * DIVIDER_KEY_STEP;
     }
-    let new_width = side.clamp(width + moved);
+    if moved == 0.0 {
+        return None;
+    }
+    let new_width = limit(width + moved);
     (new_width != width).then_some(new_width)
 }
 
@@ -1849,17 +1910,19 @@ impl eframe::App for RecorderApp {
         let window_shown = !ctx.input(|input| input.viewport().minimized).unwrap_or(false);
         self.webcam.sync(&mut self.profile_store, &self.settings.active_profile, window_shown);
         self.sync_compositor(window_shown);
+        // Before the mode rules, so the mode is still the one the press was made in.
+        self.review_mark_hotkey(&ctx, &state);
         // The mode rules (spec "Modes"): a take starting or ending moves the mode; ending
         // also queues the "takeNN saved" toast.
         self.sync_mode(&state, &ctx);
 
-        // The 26px status bar (spec "Status bar"): state, disk free, camera note, API clients.
+        // The status bar (docs/suite/Recorder-E3.md, section 4): state, disk free, camera note, API clients.
         // The notch button reaches into the status bar, so its text stays clear of it.
         let notch_x = stage_center_x(ui.max_rect(), self.modes.mode, self.settings.panel_widths.get(self.modes.mode));
         egui::Panel::bottom("status-bar").frame(egui::Frame::new().fill(ground(&ctx))).show(ui, |ui| {
             let clients = self.api.as_ref().map(|server| server.client_count());
             let blocked = state.phase == Phase::Idle && self.profile_section.blocked();
-            status_ui::show(ui, &state, clients, blocked, notch_x);
+            status_ui::show(ui, &state, clients, blocked, crate::engine::cam::info_line().as_deref(), notch_x);
         });
 
         // The 44px title bar (spec "Title bar", rev 3); it reports a picked mode through the cell.
@@ -1925,6 +1988,8 @@ impl eframe::App for RecorderApp {
 
 #[cfg(test)]
 mod tests {
+    use std::rc::Rc;
+
     use super::*;
 
     /// The app saves its accent in its own folder and resets to its own default.
@@ -1972,29 +2037,29 @@ mod tests {
     }
 
     /// On a window too narrow for the wanted widths, the side columns give way first and the
-    /// center keeps its 480 px minimum; they shrink in proportion to the room each has left
+    /// center keeps its 400 px minimum; they shrink in proportion to the room each has left
     /// down to its minimum (spec "Panels").
     #[test]
     fn the_center_keeps_its_minimum_while_the_side_columns_give_way() {
         let gap = space::WINDOW_GAP;
-        // 270 + 340 + 2 gaps + 480 = 1106 is 56 more than the 1050 the window offers.
-        let (left, right) = fitted_widths(270.0, 340.0, 1050.0, gap);
+        // 270 + 340 + 2 gaps + 400 = 1026 is 26 more than the 1000 the window offers.
+        let (left, right) = fitted_widths(270.0, 340.0, 1000.0, gap);
         let left_room = 270.0 - config::LEFT_PANEL_MIN;
         let right_room = 340.0 - config::RIGHT_PANEL_MIN;
-        assert_eq!(left, 270.0 - 56.0 * left_room / (left_room + right_room), "the left column gives way in proportion");
-        assert_eq!(right, 340.0 - 56.0 * right_room / (left_room + right_room), "the right column gives way in proportion");
-        assert_eq!(left + right + 2.0 * gap + CENTER_MIN_W, 1050.0, "the center keeps its 480 px minimum");
+        assert_eq!(left, 270.0 - 26.0 * left_room / (left_room + right_room), "the left column gives way in proportion");
+        assert_eq!(right, 340.0 - 26.0 * right_room / (left_room + right_room), "the right column gives way in proportion");
+        assert!((left + right + 2.0 * gap + CENTER_MIN_W - 1000.0).abs() < 1e-3, "the center keeps its 400 px minimum");
     }
 
     /// A window narrower than the minimums cannot keep the center's minimum: the side
-    /// columns stay at their minimums and the center goes below 480 px (spec "Panels").
+    /// columns stay at their minimums and the center goes below 400 px (spec "Panels").
     #[test]
     fn a_window_too_narrow_for_the_minimums_leaves_the_center_below_its_minimum() {
         let gap = space::WINDOW_GAP;
         let (left, right) = fitted_widths(270.0, 340.0, 900.0, gap);
         assert_eq!(left, config::LEFT_PANEL_MIN, "the left column stops at its minimum");
         assert_eq!(right, config::RIGHT_PANEL_MIN, "the right column stops at its minimum");
-        assert_eq!(left + right + 2.0 * gap + CENTER_MIN_W, 1016.0, "which is more than the 900 the window offers");
+        assert_eq!(left + right + 2.0 * gap + CENTER_MIN_W, 936.0, "which is more than the 900 the window offers");
         let [left, center, right] = three_columns(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0)), PanelWidths::default());
         assert_eq!(left.width(), config::LEFT_PANEL_MIN);
         assert_eq!(right.width(), config::RIGHT_PANEL_MIN);
@@ -2002,15 +2067,15 @@ mod tests {
     }
 
     /// Record mode has one divider: the Live panel's width clamps into its range and gives
-    /// way to the center's 480 px minimum on a narrow window (spec "Panels").
+    /// way to the center's 400 px minimum on a narrow window (spec "Panels").
     #[test]
     fn the_record_columns_keep_the_center_at_its_minimum_on_a_narrow_window() {
         let gap = space::WINDOW_GAP;
         assert_eq!(fitted_right(340.0, 2000.0, gap), config::RIGHT_PANEL_DEFAULT, "a wide window keeps the saved width");
-        // 340 + gap + 480 = 828 is 28 more than the 800 the window offers.
-        let [center, right] = two_columns(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0)), PanelWidths::default());
+        // 340 + gap + 400 = 748 is 28 more than the 720 the window offers.
+        let [center, right] = two_columns(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(720.0, 600.0)), PanelWidths::default());
         assert_eq!(right.width(), 340.0 - 28.0, "the Live panel gives way to the center");
-        assert_eq!(center.width(), CENTER_MIN_W, "the center keeps its 480 px minimum");
+        assert_eq!(center.width(), CENTER_MIN_W, "the center keeps its 400 px minimum");
     }
 
     /// Ctrl+, opens the Settings dialog only on the press itself, while the dialog is
@@ -2043,5 +2108,122 @@ mod tests {
         assert!(!pressed(true, false, true), "Ctrl+, is ignored while the dialog is already open");
         assert!(!pressed(false, true, true), "Ctrl+, is ignored while a text field has the focus");
         assert!(!pressed(false, false, false), "a bare comma does not open the dialog");
+    }
+
+    /// A harness that draws a three-column mode `width` wide with live dividers over the
+    /// shared `widths`, and reports the columns of the last frame.
+    fn divider_harness(width: f32, widths: Rc<Cell<PanelWidths>>) -> (egui_kittest::Harness<'static>, Rc<Cell<[egui::Rect; 3]>>) {
+        let columns = Rc::new(Cell::new([egui::Rect::NOTHING; 3]));
+        let drawn = Rc::clone(&columns);
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(width, 600.0)).build_ui(move |ui| {
+            // The harness's own panel has a margin; the columns are laid out on the whole window.
+            let window = ui.ctx().content_rect();
+            let mut body = ui.new_child(egui::UiBuilder::new().max_rect(window.shrink(space::WINDOW_GAP)));
+            body.set_clip_rect(window);
+            let mut saved = widths.get();
+            let laid_out = three_columns(body.max_rect(), saved);
+            drawn.set(laid_out);
+            if resize_dividers(&mut body, laid_out, &mut saved) {
+                widths.set(saved);
+            }
+        });
+        harness.run();
+        (harness, columns)
+    }
+
+    /// Drags from `from` by `by` points in a few steps and lets go.
+    fn drag(harness: &mut egui_kittest::Harness<'_>, from: egui::Pos2, by: f32) {
+        harness.hover_at(from);
+        harness.run();
+        harness.drag_at(from);
+        harness.run();
+        let steps = 8_u8;
+        for step in 1..=steps {
+            harness.hover_at(from + egui::vec2(by * f32::from(step) / f32::from(steps), 0.0));
+            harness.run();
+        }
+        harness.drop_at(from + egui::vec2(by, 0.0));
+        harness.run();
+    }
+
+    /// The middle of the divider between two columns.
+    fn divider_at(a: egui::Rect, b: egui::Rect) -> egui::Pos2 {
+        gap_between(&a, &b).center()
+    }
+
+    /// Dragging a divider resizes its column, and the new width comes back after a save and a load.
+    #[test]
+    fn a_divider_drag_resizes_the_column_and_the_width_is_remembered() -> Result<(), Box<dyn std::error::Error>> {
+        let widths = Rc::new(Cell::new(PanelWidths::default()));
+        let (mut harness, columns) = divider_harness(1280.0, Rc::clone(&widths));
+        let [left, center, _] = columns.get();
+        drag(&mut harness, divider_at(left, center), 50.0);
+        let dragged = widths.get();
+        assert!(dragged.left > config::LEFT_PANEL_DEFAULT + 30.0, "the drag widened the left column: {dragged:?}");
+        assert_eq!(columns.get()[0].width(), dragged.left, "the column is drawn at the saved width");
+        assert_eq!(dragged.right, config::RIGHT_PANEL_DEFAULT, "the other column keeps its width");
+
+        let [_, center, right] = columns.get();
+        drag(&mut harness, divider_at(center, right), -50.0);
+        let both = widths.get();
+        assert!(both.right > config::RIGHT_PANEL_DEFAULT + 30.0, "the drag widened the right column: {both:?}");
+        assert_eq!(both.left, dragged.left);
+
+        let mut settings = Settings::default();
+        *settings.panel_widths.entry(Mode::Setup) = both;
+        let loaded: Settings = serde_json::from_str(&serde_json::to_string(&settings)?)?;
+        assert_eq!(loaded.panel_widths.get(Mode::Setup), both);
+        Ok(())
+    }
+
+    /// In the narrowest window, dragging either divider as far as it goes, in either order,
+    /// leaves the stage at least 400 wide, and what is saved is what is drawn.
+    #[test]
+    fn the_stage_keeps_400_in_the_narrowest_window_with_the_dividers_dragged_to_the_maximum() {
+        let widest = PanelWidths { left: config::LEFT_PANEL_MAX, right: config::RIGHT_PANEL_MAX };
+        for (saved, left_first) in [(PanelWidths::default(), true), (PanelWidths::default(), false), (widest, true)] {
+            let widths = Rc::new(Cell::new(saved));
+            let (mut harness, columns) = divider_harness(config::MIN_WINDOW_WIDTH, Rc::clone(&widths));
+            assert!(columns.get()[1].width() >= CENTER_MIN_W - 0.01, "remembered widths are clamped on the first frame");
+            for dragging_left in [left_first, !left_first] {
+                let [left, center, right] = columns.get();
+                if dragging_left {
+                    drag(&mut harness, divider_at(left, center), 600.0);
+                } else {
+                    drag(&mut harness, divider_at(center, right), -600.0);
+                }
+                let [left, center, right] = columns.get();
+                assert!(center.width() >= CENTER_MIN_W - 0.01, "the stage is {} wide", center.width());
+                assert!(left.width() >= config::LEFT_PANEL_MIN && right.width() >= config::RIGHT_PANEL_MIN);
+                let now = widths.get();
+                if now != saved {
+                    assert!((now.left - left.width()).abs() < 0.01 && (now.right - right.width()).abs() < 0.01, "{now:?} is not what is drawn");
+                }
+            }
+        }
+    }
+
+    /// Record mode's stage keeps 400 in the narrowest window with the widest saved panel.
+    #[test]
+    fn the_record_stage_keeps_400_in_the_narrowest_window() {
+        let widths = PanelWidths { left: config::LEFT_PANEL_MAX, right: config::RIGHT_PANEL_MAX };
+        let body = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(config::MIN_WINDOW_WIDTH, 600.0)).shrink(space::WINDOW_GAP);
+        assert!(two_columns(body, widths)[0].width() >= CENTER_MIN_W);
+    }
+
+    /// Each mark press counts once; other commands do not count.
+    #[test]
+    fn a_mark_press_is_seen_once() {
+        let mut seen = 0;
+        let mut recent = VecDeque::new();
+        assert!(!new_mark_press(&recent, &mut seen));
+        recent.push_back(Command::new(CommandKind::StartStop, 5));
+        recent.push_back(Command::new(CommandKind::Mark(MarkKind::WithLabel), 6));
+        assert!(!new_mark_press(&recent, &mut seen), "only the plain mark counts");
+        recent.push_back(Command::new(CommandKind::Mark(MarkKind::Silent), 10));
+        assert!(new_mark_press(&recent, &mut seen));
+        assert!(!new_mark_press(&recent, &mut seen), "the same press does not count again");
+        recent.push_back(Command::new(CommandKind::Mark(MarkKind::Silent), 11));
+        assert!(new_mark_press(&recent, &mut seen));
     }
 }

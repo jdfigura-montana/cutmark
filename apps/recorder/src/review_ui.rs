@@ -383,7 +383,7 @@ pub fn stage(ui: &mut Ui, transport: Option<ReviewTransport>, add_content: impl 
         add_content,
         |ui| {
             let (main, fraction) = position_timecode(transport.map_or(0, |transport| transport.position));
-            // Review has no other way to add a mark: no key, and the menu's Add mark needs a take.
+            // Add mark stays after the timecode has gone. The Capture menu and the mark hotkey add one too.
             let companion = Companion { width: STAGE_BAR_BUTTON_DIAMETER, only_route: true };
             let add = bar_ui::left_side(ui, &main, &fraction, companion, |ui| bar_ui::bar_button(ui, ui_kit::icons::fill::FLAG, "Add mark", ready).clicked());
             left = (add == Some(true)).then_some(BarAction::AddMark);
@@ -980,17 +980,24 @@ mod tests {
         Ok(())
     }
 
-    /// The default window shows the whole Review bar, and a 900 point window still has Add
-    /// mark, which has no other route in Review.
+    /// The default window shows the whole Review bar, and the narrowest one still shows
+    /// every action, with the panels as wide as they go too.
     #[test]
-    fn the_review_bar_keeps_add_mark_on_a_narrow_window() {
+    fn the_review_bar_keeps_every_action_in_the_narrowest_window() {
         let transport = Some(ReviewTransport { position: 0, duration: 61_000, playing: false });
+        let actions = ["Play", "Add mark", "Previous mark ([)", "Next mark (])", "Stop"];
         let (harness, _, _) = review_harness(stage_width(Mode::Review, 1280.0), transport);
-        for label in ["Play", "00:00:00.000", "Add mark", "Previous mark ([)", "Next mark (])", "Stop", "00:01:01"] {
+        for label in actions.into_iter().chain(["00:00:00.000", "00:01:01"]) {
             assert!(harness.query_by_label(label).is_some(), "{label} is shown");
         }
-        let (harness, _, _) = review_harness(stage_width(Mode::Review, 900.0), transport);
-        assert!(harness.query_by_label("Add mark").is_some());
+        for width in bar_checks::narrowest_stage_widths(Mode::Review) {
+            let (harness, drawn, _) = review_harness(width, transport);
+            for label in actions {
+                assert!(harness.query_by_label(label).is_some(), "{label} is shown at {width}");
+            }
+            let stage = drawn.borrow().clone().expect("the stage was drawn");
+            assert_bar_is_clean(&harness, &stage, width);
+        }
     }
 
     /// From the narrowest window up, the Review bar's center column stays empty and nothing in
@@ -998,7 +1005,7 @@ mod tests {
     #[test]
     fn the_review_bar_center_column_stays_free_at_minimum_width() {
         let transport = ReviewTransport { position: 3_698_784, duration: 359_999_000, playing: false };
-        let mut widths = vec![stage_width(Mode::Review, ui_kit::chrome::MIN_SIZE.x)];
+        let mut widths = vec![stage_width(Mode::Review, config::MIN_WINDOW_WIDTH)];
         widths.extend((100..=900).step_by(20).map(|width| width as f32));
         for width in widths {
             for transport in [None, Some(transport)] {
