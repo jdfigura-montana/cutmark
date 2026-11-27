@@ -1,10 +1,11 @@
 //! The input track of a capture: one input logger feeds the running take's `{stem}.events` file and
 //! the replay buffer's history.
 //!
-//! See the input track spec: Recording, items 1, 8 and 9. Event times in a file follow the video's
-//! timeline: paused time is taken out, with the same frame borders the take gate cuts the video at.
-//! Wherever a file starts or goes on after a gap, the cursor, window and app of that moment are
-//! stated again.
+//! See the input track spec: Recording, items 1, 6, 8 and 9. Event times in a file follow the
+//! video's timeline: paused time is taken out, with the same frame borders the take gate cuts the
+//! video at. A take's file is created once its first video frame has arrived, and until then its
+//! events are held. Wherever a file starts or goes on after a gap, the cursor, window and app of
+//! that moment are stated again.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::File;
@@ -18,6 +19,8 @@ use events::{
     AppSwitch, CaptureSource, CursorSample, CursorShape, DisplayInfo, EventsError, EventsWriter, GeometryChange, GeometryEvent, Header, InputEvent, ScreenRect,
     Streams,
 };
+
+use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
 use crate::config::{CursorMode, Profile};
 
@@ -63,6 +66,8 @@ pub(crate) struct SourceInfo {
     pub(crate) displays: Vec<DisplayInfo>,
     /// What the take captures.
     pub(crate) capture: CaptureSource,
+    /// The app in front at the logger's start, which the logger itself never reports. None while app switches are off.
+    pub(crate) app: Option<AppSwitch>,
 }
 
 /// The streams a Track profile writes.
@@ -189,14 +194,47 @@ impl History {
     }
 }
 
+/// A take's pauses on the QPC clock.
+#[derive(Default)]
+struct Pauses {
+    /// The finished pauses, as QPC ranges.
+    cuts: Vec<(i64, i64)>,
+    paused_from: Option<i64>,
+}
+
+impl Pauses {
+    fn pause(&mut self, from_qpc: i64) {
+        self.paused_from.get_or_insert(from_qpc);
+    }
+
+    /// Ends the running pause at `to_qpc`; false when none is running.
+    fn resume(&mut self, to_qpc: i64) -> bool {
+        let Some(from) = self.paused_from.take() else { return false };
+        match self.cuts.last_mut() {
+            // A pause that began before the last one ended (it held no frame) lengthens that one.
+            Some(last) if from < last.1 => last.1 = last.1.max(to_qpc),
+            _ => self.cuts.push((from, to_qpc.max(from))),
+        }
+        true
+    }
+}
+
+/// A take whose first video frame has not arrived, so it has no file yet.
+struct WaitingTake {
+    path: PathBuf,
+    /// The QPC time the take began at: its first frame is not before it, and the history keeps everything from here on.
+    since_qpc: i64,
+    pauses: Pauses,
+    /// True when the logger had ended before the take began, which leaves it no events.
+    dead_at_start: bool,
+}
+
 /// The events file of the running take.
 struct TakeTrack {
     /// None once writing has failed or the logger has ended; the file then stays without its tail.
     writer: Option<EventsWriter<File>>,
     first_qpc: i64,
-    /// The finished pauses, as QPC ranges.
-    cuts: Vec<(i64, i64)>,
-    paused_from: Option<i64>,
+    pauses: Pauses,
     /// The QPC time at which the state must be stated again before any later event.
     catch_up: Option<i64>,
     /// What a reader of the file knows so far.
@@ -207,12 +245,12 @@ struct TakeTrack {
 impl TakeTrack {
     /// The time removed by the pauses that ended at or before `qpc`.
     fn removed(&self, qpc: i64) -> i64 {
-        self.cuts.iter().filter(|(_, to)| qpc >= *to).map(|(from, to)| to - from).sum()
+        self.pauses.cuts.iter().filter(|(_, to)| qpc >= *to).map(|(from, to)| to - from).sum()
     }
 
     /// The video time of a QPC stamp; None before the first frame and inside a pause.
     fn map(&self, qpc: i64) -> Option<i64> {
-        let paused = self.paused_from.is_some_and(|from| qpc >= from) || self.cuts.iter().any(|(from, to)| qpc >= *from && qpc < *to);
+        let paused = self.pauses.paused_from.is_some_and(|from| qpc >= from) || self.pauses.cuts.iter().any(|(from, to)| qpc >= *from && qpc < *to);
         (qpc >= self.first_qpc && !paused).then(|| qpc - self.removed(qpc))
     }
 
@@ -249,10 +287,25 @@ impl TakeTrack {
         }
     }
 
-    /// Goes on from `from`, taking in what the history already has from there on.
+    /// Goes on from `from`, taking in what the history already has from there on. The state is stated again at `from`
+    /// and wherever a later pause ended.
     fn go_on_from(&mut self, from: i64, history: &History) -> Option<String> {
-        self.catch_up = Some(from);
-        history.events.iter().filter(|event| stamp(event).is_some_and(|at| at >= from)).fold(None, |notice, event| self.feed(event, history).or(notice))
+        let ends = self.pauses.cuts.iter().map(|(_, to)| *to).filter(|to| *to > from);
+        let mut points: VecDeque<i64> = std::iter::once(from).chain(ends).collect();
+        let mut notice = None;
+        for event in &history.events {
+            let Some(at) = stamp(event).filter(|at| *at >= from) else { continue };
+            while let Some(point) = points.front().copied().filter(|point| at >= *point) {
+                self.catch_up = Some(point);
+                points.pop_front();
+            }
+            notice = self.feed(event, history).or(notice);
+        }
+        // A point no event has reached yet waits for the next one, or for the take's end.
+        if let Some(point) = points.back() {
+            self.catch_up = Some(*point);
+        }
+        notice
     }
 
     /// Writes what is pending and leaves the file without its tail, which marks it incomplete.
@@ -296,8 +349,12 @@ pub(crate) struct Core {
     shapes: BTreeMap<u32, CursorShape>,
     history: History,
     newest_qpc: i64,
+    /// The exe of the app last known to be in front.
+    front_exe: Option<String>,
     /// How long the history reaches back.
     keep: Duration,
+    /// A take before its first video frame; never set together with `take`.
+    waiting: Option<WaitingTake>,
     take: Option<TakeTrack>,
     dead: bool,
     notices: Vec<String>,
@@ -305,8 +362,10 @@ pub(crate) struct Core {
 
 impl Core {
     pub(crate) fn new(source: Box<dyn InputSource>, info: SourceInfo, streams: Streams) -> Self {
-        let history = History { base: State { displays: info.displays.clone(), ..State::default() }, events: VecDeque::new() };
-        Self { source, info, streams, shapes: BTreeMap::new(), history, newest_qpc: 0, keep: HISTORY_MARGIN, take: None, dead: false, notices: Vec::new() }
+        let history = History { base: State { displays: info.displays.clone(), app: info.app.clone(), ..State::default() }, events: VecDeque::new() };
+        let front_exe = info.app.as_ref().map(|app| app.exe.clone());
+        let (shapes, notices) = (BTreeMap::new(), Vec::new());
+        Self { source, info, streams, shapes, history, newest_qpc: 0, front_exe, keep: HISTORY_MARGIN, waiting: None, take: None, dead: false, notices }
     }
 
     /// Takes in everything the logger has sent, and notices when it has ended.
@@ -330,6 +389,12 @@ impl Core {
     }
 
     fn accept(&mut self, event: InputEvent) {
+        // The logger does not know what was in front when it started, so its first report may name that app again.
+        if let InputEvent::App(app) = &event
+            && self.front_exe.replace(app.exe.clone()).as_ref() == Some(&app.exe)
+        {
+            return;
+        }
         let notice = match (&event, &mut self.take) {
             // A shape has no time: it goes in even during a pause, as a later sample may use it.
             (InputEvent::Shape(_), Some(take)) => take.write(|writer| writer.push(event.clone())),
@@ -343,7 +408,9 @@ impl Core {
             self.newest_qpc = self.newest_qpc.max(at);
             self.history.events.push_back(event);
             let keep = i128::from(self.info.qpc_frequency) * self.keep.as_millis() as i128 / 1000;
-            self.history.trim(self.newest_qpc.saturating_sub(i64::try_from(keep).unwrap_or(i64::MAX)));
+            let oldest = self.newest_qpc.saturating_sub(i64::try_from(keep).unwrap_or(i64::MAX));
+            // A take that waits for its first frame has its events held here, however long that takes.
+            self.history.trim(self.waiting.as_ref().map_or(oldest, |waiting| oldest.min(waiting.since_qpc)));
         }
     }
 
@@ -363,11 +430,25 @@ impl Core {
         }
     }
 
-    /// Starts the events file of a take whose first video frame is at `first_qpc`.
-    pub(crate) fn begin_take(&mut self, path: &Path, first_qpc: i64) {
+    /// Takes on a take that began at `since_qpc`. Its events are held until [`Core::first_frame`] creates its file.
+    pub(crate) fn begin_take(&mut self, path: &Path, since_qpc: i64) {
         self.pump();
+        if self.dead {
+            self.notices.push(ALREADY_DEAD.to_owned());
+        }
+        self.waiting = Some(WaitingTake { path: path.to_owned(), since_qpc, pauses: Pauses::default(), dead_at_start: self.dead });
+    }
+
+    /// Creates the waiting take's events file, now that its first video frame, at `first_qpc`, has arrived, and writes
+    /// the held events. Does nothing when no take waits.
+    pub(crate) fn first_frame(&mut self, first_qpc: i64) {
+        // Drained while the take still waits, so the history keeps all of it.
+        self.pump();
+        let Some(WaitingTake { path, mut pauses, dead_at_start, .. }) = self.waiting.take() else { return };
+        // A pause that ended before the first frame took nothing out of the video.
+        pauses.cuts.retain(|(_, to)| *to > first_qpc);
         let displays = self.history.state_before(first_qpc).displays;
-        let writer = match EventsWriter::create(path, &self.header(first_qpc, &displays)) {
+        let writer = match EventsWriter::create(&path, &self.header(first_qpc, &displays)) {
             Ok(writer) => writer,
             Err(err) => {
                 log::warn!("the events file {} could not be created: {err}", path.display());
@@ -376,16 +457,16 @@ impl Core {
             }
         };
         let written = State { displays, ..State::default() };
-        let mut take = TakeTrack { writer: Some(writer), first_qpc, cuts: Vec::new(), paused_from: None, catch_up: None, written, flushed: Instant::now() };
+        let mut take = TakeTrack { writer: Some(writer), first_qpc, pauses, catch_up: None, written, flushed: Instant::now() };
         let mut notice = None;
         for shape in self.shapes.values() {
             notice = take.write(|writer| writer.push(InputEvent::Shape(shape.clone()))).or(notice);
         }
+        if !dead_at_start {
+            notice = take.go_on_from(first_qpc, &self.history).or(notice);
+        }
         if self.dead {
             take.abandon();
-            self.notices.push(ALREADY_DEAD.to_owned());
-        } else {
-            notice = take.go_on_from(first_qpc, &self.history).or(notice);
         }
         self.notices.extend(notice);
         self.take = Some(take);
@@ -393,33 +474,38 @@ impl Core {
 
     /// Pauses the take's file from the QPC time the video is cut at.
     pub(crate) fn pause(&mut self, from_qpc: i64) {
-        if let Some(take) = &mut self.take {
-            take.paused_from.get_or_insert(from_qpc);
+        if let Some(waiting) = &mut self.waiting {
+            waiting.pauses.pause(from_qpc);
+        } else if let Some(take) = &mut self.take {
+            take.pauses.pause(from_qpc);
         }
     }
 
     /// Goes on at the QPC time of the first frame after the pause.
     pub(crate) fn resume(&mut self, to_qpc: i64) {
-        let Some(take) = &mut self.take else { return };
-        let Some(from) = take.paused_from.take() else { return };
-        match take.cuts.last_mut() {
-            // A pause that began before the last one ended (it held no frame) lengthens that one.
-            Some(last) if from < last.1 => last.1 = last.1.max(to_qpc),
-            _ => take.cuts.push((from, to_qpc.max(from))),
+        if let Some(waiting) = &mut self.waiting {
+            waiting.pauses.resume(to_qpc);
+        } else if let Some(take) = &mut self.take
+            && take.pauses.resume(to_qpc)
+        {
+            let notice = take.go_on_from(to_qpc, &self.history);
+            self.notices.extend(notice);
         }
-        let notice = take.go_on_from(to_qpc, &self.history);
-        self.notices.extend(notice);
     }
 
-    /// Ends the take's file at `end_qpc`. A file whose logger ended gets no tail.
+    /// Ends the take's file at `end_qpc`. A file whose logger ended gets no tail. A take whose first frame never
+    /// arrived gets no file.
     pub(crate) fn finish_take(&mut self, end_qpc: i64) {
         self.pump();
+        if let Some(waiting) = self.waiting.take() {
+            log::warn!("the take had no video frame, so {} was not written", waiting.path.display());
+        }
         let Some(mut take) = self.take.take() else { return };
         if let Some(from) = take.catch_up.filter(|from| *from <= end_qpc) {
             let notice = take.state_again(&self.history.state_before(from), from);
             self.notices.extend(notice);
         }
-        let end = take.paused_from.map_or(end_qpc, |from| from.min(end_qpc));
+        let end = take.pauses.paused_from.map_or(end_qpc, |from| from.min(end_qpc));
         let end = end - take.removed(end);
         if let Some(writer) = take.writer.take()
             && let Err(err) = writer.finish(end)
@@ -503,6 +589,8 @@ impl InputTrack {
             cursor_size: start.cursor_size,
             displays: start.displays.iter().map(display).collect(),
             capture: CaptureSource::Monitor(screen_rect(rect)),
+            // Read after the logger's start, so no switch can fall between the two.
+            app: if streams.apps { foreground_app() } else { None },
         };
         Self::start(Core::new(Box::new(Logger(logger)), info, streams)).map_err(|err| err.to_string())
     }
@@ -520,6 +608,28 @@ impl Drop for InputTrack {
             let _ = thread.join();
         }
     }
+}
+
+/// The app whose window is in front right now, named as the logger names apps; None when it cannot be told. Only the
+/// exe name and the display name are read, never a window title.
+fn foreground_app() -> Option<AppSwitch> {
+    let mut pid = 0u32;
+    // SAFETY: both calls accept any window, also none, and pid is a local out parameter.
+    #[allow(unsafe_code)]
+    unsafe {
+        GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut pid))
+    };
+    if pid == 0 {
+        return None;
+    }
+    // The app list leaves out this process.
+    if pid == std::process::id() {
+        let exe = std::env::current_exe().ok()?.file_name()?.to_string_lossy().to_lowercase();
+        return Some(AppSwitch { qpc: 0, exe, display_name: "CutMark Recorder".to_owned() });
+    }
+    let apps = capture::list_audio_apps(true).map_err(|err| log::warn!("the app in front could not be read: {err}")).ok()?;
+    let app = apps.into_iter().find(|app| app.pids.contains(&pid))?;
+    Some(AppSwitch { qpc: 0, exe: app.exe, display_name: app.display_name })
 }
 
 /// The capture crate's logger as a source of the events crate's records.

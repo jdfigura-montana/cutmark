@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use events::{CaptureSource, CursorSample, CursorShape, EventsTrack, InputEvent, MouseAction, MouseButton, MouseEvent, ScreenRect, ShapeFrame, Streams};
+use events::{
+    AppSwitch, CaptureSource, CursorSample, CursorShape, EventsTrack, GeometryChange, GeometryEvent, InputEvent, MouseAction, MouseButton, MouseEvent,
+    ScreenRect, ShapeFrame, Streams,
+};
 
 use super::*;
 
@@ -35,7 +38,13 @@ impl InputSource for Fake {
 
 /// One tick is a millisecond.
 fn core(fake: &Fake) -> Core {
-    let info = SourceInfo { qpc_frequency: 1000, cursor_size: 32, displays: Vec::new(), capture: CaptureSource::Monitor(ScreenRect::default()) };
+    core_with_app(fake, None)
+}
+
+/// A core whose logger started with `exe` in front.
+fn core_with_app(fake: &Fake, exe: Option<&str>) -> Core {
+    let app = exe.map(|exe| AppSwitch { qpc: 0, exe: exe.to_owned(), display_name: exe.to_owned() });
+    let info = SourceInfo { qpc_frequency: 1000, cursor_size: 32, displays: Vec::new(), capture: CaptureSource::Monitor(ScreenRect::default()), app };
     Core::new(Box::new(fake.clone()), info, Streams { cursor: true, clicks: true, keys: false, apps: true })
 }
 
@@ -55,6 +64,15 @@ fn temp_file(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("cutmark-input-track-{}-{name}.events", std::process::id()));
     let _ = std::fs::remove_file(&path);
     path
+}
+
+fn app(qpc: i64, exe: &str) -> InputEvent {
+    InputEvent::App(AppSwitch { qpc, exe: exe.to_owned(), display_name: exe.to_owned() })
+}
+
+/// The app switches of a file as (microseconds, exe).
+fn apps(track: &EventsTrack) -> Vec<(i64, &str)> {
+    track.apps().iter().map(|timed| (timed.time_us, timed.event.exe.as_str())).collect()
 }
 
 /// The samples of a file as (microseconds, x).
@@ -95,6 +113,7 @@ fn a_take_file_starts_at_the_first_frame_and_leaves_out_the_pause() -> Result<()
     fake.send([shape(1), sample(900, 1), click(950)]);
     let path = temp_file("pause");
     core.begin_take(&path, 1000);
+    core.first_frame(1000);
     fake.send([sample(1100, 2)]);
     core.pump();
     core.pause(1200);
@@ -114,11 +133,14 @@ fn a_take_file_starts_at_the_first_frame_and_leaves_out_the_pause() -> Result<()
 }
 
 #[test]
-fn a_replay_snapshot_includes_the_events_and_what_they_rely_on() -> Result<(), EventsError> {
+fn a_replay_file_starts_with_its_shapes_and_the_state_at_its_start() -> Result<(), EventsError> {
     let fake = Fake::default();
-    let mut core = core(&fake);
+    let mut core = core_with_app(&fake, Some("code.exe"));
     core.set_replay(Some(Duration::from_secs(60)));
-    fake.send([shape(1), sample(1_000, 1), click(1_500), sample(20_000, 2), click(20_500), sample(30_000, 3)]);
+    let rect = ScreenRect { x: 10, y: 20, width: 300, height: 200 };
+    let window = InputEvent::Geometry(GeometryEvent { qpc: 900, change: GeometryChange::WindowRect(rect) });
+    let later = InputEvent::Sample(CursorSample { qpc: 20_000, x: 2, y: 0, shape: Some(2), visible: true });
+    fake.send([shape(1), shape(2), shape(3), window, sample(1_000, 1), click(1_500), later, click(20_500), sample(30_000, 3)]);
     let path = temp_file("replay");
     core.clip(10_000, 25_000).write(&path)?;
 
@@ -126,8 +148,56 @@ fn a_replay_snapshot_includes_the_events_and_what_they_rely_on() -> Result<(), E
     assert!(track.is_complete());
     // The cursor from before the clip is stated at its start, with the shape the logger sent long before.
     assert_eq!(samples(&track), [(0, 1), (10_000_000, 2)]);
+    assert_eq!(track.shapes().map(|shape| shape.id).collect::<Vec<_>>(), [1, 2]);
+    let geometry: Vec<_> = track.geometry().iter().map(|timed| (timed.time_us, timed.event.change.clone())).collect();
+    assert_eq!(geometry, [(0, GeometryChange::WindowRect(rect))]);
+    assert_eq!(apps(&track), [(0, "code.exe")]);
     assert_eq!(track.mouse().len(), 1);
-    assert!(track.cursor_at(0).is_some_and(|state| state.shape.is_some()));
+    Ok(())
+}
+
+#[test]
+fn the_app_in_front_is_the_first_app_event_at_time_zero() -> Result<(), EventsError> {
+    let fake = Fake::default();
+    let mut core = core_with_app(&fake, Some("code.exe"));
+    let path = temp_file("front-app");
+    core.begin_take(&path, 1000);
+    core.first_frame(1000);
+    // The logger's first report may name the app that was already in front.
+    fake.send([app(1100, "code.exe"), app(1300, "chrome.exe")]);
+    core.finish_take(2000);
+
+    let track = read(&path)?;
+    assert_eq!(apps(&track), [(0, "code.exe"), (300_000, "chrome.exe")]);
+    Ok(())
+}
+
+#[test]
+fn events_are_held_until_the_first_frame_and_timed_from_it() -> Result<(), EventsError> {
+    let fake = Fake::default();
+    let mut core = core(&fake);
+    fake.send([shape(1), sample(900, 1)]);
+    let path = temp_file("held");
+    core.begin_take(&path, 1000);
+    // Over more than the history's margin, with a pause, all before the first frame is known.
+    fake.send([sample(1010, 2), click(1020), sample(1100, 3), click(1200), sample(9000, 4)]);
+    core.pump();
+    core.pause(9100);
+    fake.send([sample(9200, 5), click(9250)]);
+    core.pump();
+    core.resume(9300);
+    fake.send([sample(9400, 6)]);
+    core.pump();
+    assert!(!path.exists());
+    core.first_frame(1050);
+    core.finish_take(9500);
+
+    let track = read(&path)?;
+    assert!(track.is_complete());
+    assert_eq!(track.header().first_frame_qpc, 1050);
+    assert_eq!(samples(&track), [(0, 2), (50_000, 3), (7_950_000, 4), (8_050_000, 5), (8_150_000, 6)]);
+    assert_eq!(track.mouse().iter().map(|timed| timed.time_us).collect::<Vec<_>>(), [150_000]);
+    assert!(core.take_notices().is_empty());
     Ok(())
 }
 
@@ -137,6 +207,7 @@ fn a_logger_that_dies_leaves_the_take_incomplete() -> Result<(), EventsError> {
     let mut core = core(&fake);
     let path = temp_file("died");
     core.begin_take(&path, 1000);
+    core.first_frame(1000);
     fake.send([shape(1), sample(1100, 1)]);
     core.pump();
     fake.die();

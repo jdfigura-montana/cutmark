@@ -98,17 +98,11 @@ TARGETS = {
     "cutmark-recorder": (RECORDER_PREAMBLE, WORKSPACE / "apps" / "recorder" / "licenses" / "THIRD_PARTY.txt"),
 }
 
-# Workspace crates that ship with a package but that it does not depend on yet; their trees are
-# listed with it. The Recorder takes on events in Phase 11 I4.
-ALSO_LISTED = {"cutmark-recorder": ["events"]}
-
-
 def tree_packages(package: str) -> list[tuple[str, str]]:
     """Unique third-party (name, version) pairs in the package's dependency tree on Windows,
     sorted by name. Crates from this workspace are our own code and are left out."""
-    roots = [arg for root in [package, *ALSO_LISTED.get(package, [])] for arg in ("-p", root)]
     out = subprocess.run(
-        ["cargo", "tree", *roots, "-e", "normal", "--target", "x86_64-pc-windows-msvc",
+        ["cargo", "tree", "-p", package, "-e", "normal", "--target", "x86_64-pc-windows-msvc",
          "--prefix", "none", "--format", "{p}", "--offline"],
         cwd=ROOT, capture_output=True, text=True, check=True,
     ).stdout

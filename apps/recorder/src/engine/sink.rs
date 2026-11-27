@@ -260,6 +260,7 @@ impl CaptureOutput {
     /// Gives the capture its take before any stream has started: the take holds everything from the start.
     pub(super) fn begin_take(&self, take: Arc<dyn PacketSink>) {
         let mut routing = lock(&self.routing);
+        self.stats.first_video_qpc.store(0, Ordering::Relaxed);
         routing.gate.begin_with_capture();
         routing.take = Some(take);
     }
@@ -274,6 +275,7 @@ impl CaptureOutput {
         if routing.pcm_open {
             take.open_pcm()?;
         }
+        self.stats.first_video_qpc.store(0, Ordering::Relaxed);
         routing.take = Some(take);
         let frame = routing.gate.open(press_qpc);
         Ok(routing.gate.frame_qpc(frame))
@@ -376,7 +378,14 @@ fn feed_rings<E>(
 impl PacketSink for CaptureOutput {
     fn video(&self, packet: EncodedPacket) -> Result<(), MediaError> {
         let (pts, key) = (packet.pts().unwrap_or(-1), packet.is_key());
-        let Routed { rings, take } = self.route(|gate| gate.video_packet(pts, key));
+        let Routed { rings, take } = self.route(|gate| {
+            let offset = gate.video_packet(pts, key)?;
+            // Under the routing lock, so a take that begins cannot be given the last one's frame. Only the first
+            // packet the take gets finds the 0.
+            let due = gate.frame_qpc(pts.unsigned_abs()) as u64;
+            let _ = self.stats.first_video_qpc.compare_exchange(0, due, Ordering::Relaxed, Ordering::Relaxed);
+            Some(offset)
+        });
         let packet = feed_rings(rings, packet, take.is_some(), |rings, packet| rings.video(packet))?;
         let Some(((take, offset), packet)) = take.zip(packet) else {
             return Ok(());

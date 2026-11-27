@@ -157,6 +157,8 @@ pub struct Stats {
     pub(super) bytes_written: AtomicU64,
     /// The QPC value at recording time 0.
     pub(super) started_qpc: AtomicU64,
+    /// The QPC time of the first main video frame the latest take received; 0 until it has one.
+    pub(super) first_video_qpc: AtomicU64,
     /// Whether the take is paused, for the snapshot; the capture goes on and its output leaves the pause out.
     pub(super) paused: AtomicBool,
     /// The text of the last frame error, if any.
@@ -187,6 +189,7 @@ impl Stats {
             frames_received: AtomicU64::new(0),
             bytes_written: AtomicU64::new(0),
             started_qpc: AtomicU64::new(0),
+            first_video_qpc: AtomicU64::new(0),
             paused: AtomicBool::new(false),
             last_error: Mutex::new(None),
             audio_frames: AtomicU64::new(0),
@@ -800,10 +803,19 @@ impl LiveCapture {
         cfg
     }
 
-    /// Starts the events file of a take whose first frame is at `start_qpc`, when the cursor is tracked.
+    /// Gives the input track a take that began at `start_qpc`, when the cursor is tracked.
     fn begin_input_take(&self, take_folder: &Path, base_name: &str, start_qpc: i64) {
         if let Some(input) = &self.input {
             input.core().begin_take(&input_track::events_path(take_folder, base_name), start_qpc);
+        }
+    }
+
+    /// Tells the input track about the take's first video frame once there is one, which creates the take's events
+    /// file. Calls after that do nothing.
+    fn pass_first_frame(stats: &Stats, input: &InputTrack) {
+        let first = stats.first_video_qpc.load(Ordering::Relaxed);
+        if first != 0 {
+            input.core().first_frame(first as i64);
         }
     }
 
@@ -877,6 +889,8 @@ impl SharedCapture for LiveCapture {
         let end_qpc = self.capture.output().pause(press_qpc);
         let end = self.capture.leave_take(press_qpc);
         if let Some(input) = &self.input {
+            // A very short take's first frame may only have left the encoder just now.
+            Self::pass_first_frame(self.capture.stats(), input);
             input.core().finish_take(end_qpc.unwrap_or(press_qpc));
         }
         take.finish(end, self.capture.stats())
@@ -887,6 +901,7 @@ impl SharedCapture for LiveCapture {
         let stats = Arc::clone(self.capture.stats());
         let end = self.capture.stop();
         if let Some(input) = &self.input {
+            Self::pass_first_frame(&stats, input);
             input.core().finish_take(qpc_now());
         }
         take.map(|take| take.finish(end, &stats))
@@ -986,11 +1001,13 @@ impl Sharing<LiveCapture> {
         self.take_mut().is_some_and(|take| take.apply_app_events(events))
     }
 
-    /// The toasts the input track has raised since the last call.
+    /// Passes the take's first video frame on to the input track, and returns the toasts it has raised since the last
+    /// call.
     pub(super) fn take_input_notices(&mut self) -> Vec<String> {
         let Some(live) = self.capture_mut() else { return Vec::new() };
         let mut notices = std::mem::take(&mut live.input_notices);
         if let Some(input) = &live.input {
+            LiveCapture::pass_first_frame(live.capture.stats(), input);
             notices.extend(input.core().take_notices());
         }
         notices
