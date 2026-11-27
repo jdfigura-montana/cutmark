@@ -1,17 +1,17 @@
 //! ui::timeline::track_header: the per-track header column on the timeline's
-//! left: number, name, M, S and R toggles and a compact meter (the ui-kit
-//! track header when the height allows two rows, one row of the same parts
-//! below that), plus reorder grip, inline rename, context menu, bottom-edge
-//! resize and the volume and pan sliders.
+//! left: the number in its own column, then the name on a row with the M, S and R toggles right-aligned
+//! (the name elided when too long), the volume and pan slider rows under it as
+//! the height allows, and a meter strip along the bottom, plus reorder grip,
+//! inline rename, context menu and bottom-edge resize.
 
-use crate::ui::timeline::metrics;
+use crate::ui::timeline::{lane, metrics};
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
 
 use eframe::egui;
 use ui_kit::icons::regular;
 use ui_kit::tokens::{color, size, space, typography};
-use ui_kit::{SliderKind, Toggle, ToggleKind};
+use ui_kit::{SliderKind, ToggleKind};
 use uuid::Uuid;
 
 use crate::editor::Editor;
@@ -21,25 +21,20 @@ use crate::ui::widgets::meter;
 
 /// Key under which the interaction state is carried between frames.
 const STATE_KEY: &str = "track_header_state";
-/// Width of the reorder grip at the right end of the name row.
+/// Width of the reorder grip, between the name and the toggles.
 const GRIP_W: f32 = 14.0;
-/// Height of the toggle row of ui-kit's track header (spec "Track header":
-/// 24 x 24 toggles). The slider row sits below the header content, so this
-/// mirrors that layout.
-const TOGGLE_ROW_H: f32 = 24.0;
-/// Height of the compact meter of ui-kit's track header (spec "Meter": 6 px).
-const METER_H: f32 = 6.0;
+/// Right padding of the whole header: nothing touches the lane edge.
+const RIGHT_PAD: f32 = space::SCALE_12;
+/// Width of the right-hand value column of the slider rows, in points.
+const VALUE_COL_W: f32 = 56.0;
 /// Height of the "+ Add track" row under the last track header.
 pub const ADD_ROW_H: f32 = 32.0;
-/// Side of a toggle square, as in ui-kit's track header.
+/// Side of a toggle square (spec "Track header": 24 x 24).
 const TOGGLE_SIDE: f32 = 24.0;
-/// Gap between neighbouring toggles, as in ui-kit's track header.
+/// Gap between neighbouring toggles.
 const TOGGLE_GAP: f32 = 4.0;
-/// Corner radius of a toggle square, as in ui-kit's track header.
+/// Corner radius of a toggle square.
 const TOGGLE_ROUNDING: f32 = 6.0;
-/// Header height from which the slider values show next to the sliders; below
-/// it the value is only in the hover tooltip.
-const VALUE_MIN_H: f32 = 86.0;
 /// Tooltips of the M, S and R toggles, in toggle order.
 const TOGGLE_TIPS: [&str; 3] = ["Mute", "Solo", "Arm for recording"];
 
@@ -74,12 +69,14 @@ struct State {
 
 /// Draws the header column: one header per track, scrolled with the lanes.
 ///
-/// Each header is a ui-kit track header (number, name, M, S and R toggles,
-/// compact level meter) with a reorder grip at the right end of the name row
-/// (double-click the name to rename inline), a volume and a pan slider side
-/// by side below it when they fit, a context menu and a 4 px resize strip at
-/// the bottom. `lane_rect` is only used to span the reorder insertion line
-/// across the full timeline width.
+/// Each header is drawn by hand from the tokens: the number sits in its own
+/// column; row 1 holds the name (elided when too long) with the M, S and R toggles right-aligned,
+/// the volume and pan slider rows sit under it as the height allows (pan goes
+/// first), and a plain meter strip runs along the bottom. A reorder grip sits
+/// between the name and the toggles (double-click the name to rename inline),
+/// and there is a context menu and a 4 px resize strip at the bottom.
+/// `lane_rect` is only used to span the reorder insertion line across the full
+/// timeline width.
 pub fn show(
     ui: &mut egui::Ui,
     editor: &mut Editor,
@@ -88,6 +85,7 @@ pub fn show(
     scroll_y: f32,
     meters: &mut HashMap<Uuid, [meter::ChannelBallistics; 2]>,
 ) {
+    let neutral = crate::ui::neutrals(ui.ctx());
     let mut state = ui.ctx().data_mut(|d| d.get_temp_mut_or_default::<State>(egui::Id::new(STATE_KEY)).clone());
     // While a take is recorded the headers ignore input (Arm, M, S, the
     // sliders, rename, reorder and the right-click menu); the meters keep
@@ -151,80 +149,66 @@ pub fn show(
         }
 
         let selected = selected_tracks.contains(&ht.id);
-
-        // Geometry of the header's parts. Two rows (ui-kit's track header, its
-        // layout mirrored) when the height holds the sliders under it, one row
-        // of the same parts otherwise.
-        let pad = space::SCALE_2;
-        let number_galley = painter.layout_no_wrap((index + 1).to_string(), ui_kit::fonts::mono(typography::VALUE_SIZE), color::TEXT_TERTIARY);
-        let name_galley = painter.layout_no_wrap(ht.name.clone(), ui_kit::fonts::semibold(typography::HEADLINE_SIZE), color::TEXT_PRIMARY);
-        let geo = geometry(rect, number_galley.size().x, name_galley.size().y.max(number_galley.size().y));
-        let renaming_here = state.renaming.as_ref().is_some_and(|(rid, _)| *rid == ht.id);
-
-        // The header: the toggles edit local copies, applied below as the same
-        // editor actions the old buttons ran. The name is left to the inline
-        // editor while it is open.
-        let mut mute = ht.mute;
-        let mut solo = ht.solo;
-        let mut armed = ht.armed;
         let reading = {
             let channels = meters.entry(ht.id).or_default();
             (channels[0].peak_db.max(channels[1].peak_db), channels[0].clip || channels[1].clip)
         };
-        let mut header_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).id_salt(("track_header_ui", ht.id)));
-        header_ui.set_clip_rect(rect.intersect(header_rect));
-        let host = if geo.two_row {
-            let host = {
-                let mut toggles = [
-                    Toggle::visible("M", &mut mute),
-                    Toggle::visible("S", &mut solo),
-                    Toggle { label: "R", on: &mut armed, kind: ToggleKind::RecordArm, always_visible: true },
-                ];
-                ui_kit::track_header(&mut header_ui, index + 1, if renaming_here { "" } else { &ht.name }, selected, &mut toggles, Some(reading))
-            };
-            // ui-kit's toggles carry no tooltip: hover-only areas on top add it.
-            for (toggle_rect, tip) in geo.toggles.iter().zip(TOGGLE_TIPS) {
-                let _ = ui.interact(*toggle_rect, egui::Id::new(("track_toggle_tip", ht.id, tip)), egui::Sense::hover()).on_hover_text(tip);
+        let renaming_here = state.renaming.as_ref().is_some_and(|(rid, _)| *rid == ht.id);
+
+        // The header fill, its number column and its bottom line; a selected
+        // track takes `bg.selected`.
+        paint_header_row(&painter, rect, selected);
+
+        // The header itself is the host for the context menu; Ctrl+click
+        // toggles the track in or out of the current range selection (the
+        // toggles, grip, name, meter and sliders sit on top and take their own
+        // clicks). A plain click leaves the clip lights alone.
+        let host = ui.interact(rect, egui::Id::new(("track_host", ht.id)), egui::Sense::click());
+        host.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &ht.name));
+
+        // The number, centered in its own column.
+        let number_color = if selected { neutral.text_secondary } else { neutral.text_tertiary };
+        let number_galley = painter.layout_job(ui_kit::fonts::tracked(
+            (index + 1).to_string(),
+            ui_kit::fonts::mono(typography::VALUE_SIZE),
+            number_color,
+            ui_kit::fonts::MONO_LETTER_SPACING_EM,
+        ));
+        let number_pos = number_column(rect).center() - number_galley.size() / 2.0;
+        painter.galley(number_pos, number_galley, number_color);
+
+        // Row 1: the name on the left, the toggles right.
+        let geo = geometry(rect);
+        if !renaming_here {
+            let name = name_galley(&painter, &ht.name, geo.name.width(), neutral.text_primary);
+            painter.with_clip_rect(geo.name).galley(egui::pos2(geo.name.left(), geo.row.center().y - name.size().y / 2.0), name, neutral.text_primary);
+        }
+
+        // The M, S and R toggles, right-aligned at the end of row 1; the
+        // toggles edit local copies, applied below as the same editor actions
+        // the old buttons ran.
+        let mut mute = ht.mute;
+        let mut solo = ht.solo;
+        let mut armed = ht.armed;
+        let flags = [&mut mute, &mut solo, &mut armed];
+        let kinds = [ToggleKind::Normal, ToggleKind::Normal, ToggleKind::RecordArm];
+        for ((((toggle_rect, tip), label), on), kind) in geo.toggles.iter().zip(TOGGLE_TIPS).zip(["M", "S", "R"]).zip(flags).zip(kinds) {
+            let resp = ui.interact(*toggle_rect, egui::Id::new(("track_toggle", ht.id, label)), egui::Sense::click()).on_hover_text(tip);
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, *on, label));
+            if resp.clicked() {
+                *on = !*on;
             }
-            host
-        } else {
-            // The one-row header has no ui-kit widget to paint its selected
-            // fill and bottom line (the two-row one does).
-            paint_header_row(&painter, rect, selected);
-            let host = ui.interact(rect, egui::Id::new(("track_host", ht.id)), egui::Sense::click());
-            let row_center_y = geo.toggles[0].center().y;
-            let number_color = if selected { color::TEXT_PRIMARY } else { color::TEXT_TERTIARY };
-            let number_pos = egui::pos2(rect.left() + pad, row_center_y - number_galley.size().y / 2.0);
-            painter.galley(number_pos, number_galley, number_color);
-            if !renaming_here {
-                let name_pos = egui::pos2(geo.name.left(), row_center_y - name_galley.size().y / 2.0);
-                painter.with_clip_rect(geo.name).galley(name_pos, name_galley, color::TEXT_PRIMARY);
-            }
-            let flags = [&mut mute, &mut solo, &mut armed];
-            let kinds = [ToggleKind::Normal, ToggleKind::Normal, ToggleKind::RecordArm];
-            for ((((toggle_rect, tip), label), on), kind) in geo.toggles.iter().zip(TOGGLE_TIPS).zip(["M", "S", "R"]).zip(flags).zip(kinds) {
-                let resp = ui.interact(*toggle_rect, egui::Id::new(("track_toggle", ht.id, label)), egui::Sense::click()).on_hover_text(tip);
-                resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, *on, label));
-                if resp.clicked() {
-                    *on = !*on;
-                }
-                paint_toggle(&painter, *toggle_rect, label, *on, kind);
-            }
-            if let Some(meter_rect) = geo.meter {
-                let mut meter_ui = header_ui.new_child(egui::UiBuilder::new().max_rect(meter_rect));
-                ui_kit::level_meter(&mut meter_ui, reading.0, reading.1, meter_rect.width());
-            }
-            host
-        };
+            paint_toggle(&painter, *toggle_rect, label, *on, kind);
+        }
         let (grip_rect, name_rect) = (geo.grip, geo.name);
 
-        // Clicking the meter clears its clip lights, as before; nothing else does.
-        if let Some(meter_rect) = geo.meter {
-            let meter_resp = ui.interact(meter_rect, egui::Id::new(("track_meter", ht.id)), egui::Sense::click());
-            if meter_resp.clicked() {
-                for channel in meters.entry(ht.id).or_default().iter_mut() {
-                    channel.clear_clip();
-                }
+        // The meter strip along the bottom; clicking it clears its clip
+        // lights, as before; nothing else does.
+        paint_meter_strip(&painter, geo.meter, reading.0, reading.1);
+        let meter_resp = ui.interact(geo.meter, egui::Id::new(("track_meter", ht.id)), egui::Sense::click());
+        if meter_resp.clicked() {
+            for channel in meters.entry(ht.id).or_default().iter_mut() {
+                channel.clear_clip();
             }
         }
 
@@ -261,7 +245,7 @@ pub fn show(
                 egui::Align2::CENTER_CENTER,
                 regular::DOTS_SIX_VERTICAL,
                 ui_kit::fonts::icon_regular(typography::BODY_SIZE),
-                color::TEXT_TERTIARY,
+                neutral.text_tertiary,
             );
         }
 
@@ -285,8 +269,8 @@ pub fn show(
         } else if grip.drag_started() && !locked {
             state.reorder = Some((ht.id, index));
         }
-        // Name: inline rename on double-click; the ui-kit header draws the
-        // name otherwise.
+        // Name: inline rename on double-click; the name is drawn above
+        // otherwise.
         let name_resp = ui.interact(name_rect, egui::Id::new(("track_name", ht.id)), egui::Sense::click());
         if let Some((rid, text)) = state.renaming.as_mut()
             && *rid == ht.id
@@ -328,47 +312,35 @@ pub fn show(
             }
         }
 
-        // Volume and pan, side by side below the header content from 64 px
-        // up, each with its label on the left and, from 86 px up, its value on
-        // the right (below that the value is the hover tooltip). Each drag is
-        // one gesture: begin, preview every frame, end on release.
-        if let Some(slider_top) = geo.slider_top {
-            let gap = space::SCALE_8;
-            let slot_w = (rect.width() - 2.0 * pad - gap) / 2.0;
-            let vol_slot = egui::Rect::from_min_size(egui::pos2(rect.left() + pad, slider_top), egui::vec2(slot_w, size::SEGMENT_HEIGHT));
-            let pan_slot = vol_slot.translate(egui::vec2(slot_w + gap, 0.0));
-            let show_values = rect.height() >= VALUE_MIN_H;
-
-            let value = show_values.then(|| (format!("{:+.1}", ht.volume_db.max(-60.0)), "-60.0"));
-            let vol_rect = slider_cell(&painter, vol_slot, "Vol", value);
+        // The volume and pan rows under row 1 (pan goes first when the height
+        // runs out): the type.micro label on the left, the slider filling the
+        // space, the value right-aligned in the fixed 56 px mono column. Each
+        // drag is one gesture: begin, preview every frame, end on release.
+        if let Some(top) = geo.vol_top {
+            let slot = egui::Rect::from_min_max(egui::pos2(content_left(rect), top), egui::pos2(rect.right() - RIGHT_PAD, top + size::SEGMENT_HEIGHT));
+            let vol_rect = slider_cell(&painter, slot, "Vol", format!("{:+.1}", ht.volume_db.max(-60.0)));
             let tip = format!("Volume {}", fader::db_text(ht.volume_db));
             let make = |db| Action::SetTrackVolume { id: ht.id, db };
             gesture_slider(ui, editor, locked, ("track_volume", ht.id), vol_rect, ht.volume_db, -60.0..=12.0, SliderKind::Accent, make, tip);
-
-            let value = show_values.then(|| (fader::pan_text(ht.pan), "R100"));
-            let pan_rect = slider_cell(&painter, pan_slot, "Pan", value);
-            let tip = format!("Pan {}", fader::pan_text(ht.pan));
+        }
+        if let Some(top) = geo.pan_top {
+            let slot = egui::Rect::from_min_max(egui::pos2(content_left(rect), top), egui::pos2(rect.right() - RIGHT_PAD, top + size::SEGMENT_HEIGHT));
+            let pan_text = fader::pan_text(ht.pan);
+            let pan_rect = slider_cell(&painter, slot, "Pan", pan_text.clone());
+            let tip = format!("Pan {pan_text}");
             let make = |pan| Action::SetTrackPan { id: ht.id, pan };
             gesture_slider(ui, editor, locked, ("track_pan", ht.id), pan_rect, ht.pan, -1.0..=1.0, SliderKind::Bipolar, make, tip);
         }
     }
 
-    // "+ Add track" row under the last header (same action and shortcut as
-    // before: Ctrl+Shift+T); off while a take is recorded. It ends in a
-    // `stroke.track` line across the header column and the lanes, like a
-    // track row.
+    // "+ Add track" row under the last header, in the header column only (same
+    // action and shortcut as before: Ctrl+Shift+T); off while a take is
+    // recorded.
     let tracks_h = tracks.iter().map(|t| t.height).sum();
-    let add_full = add_row_rect(header_rect, scroll_y, tracks_h);
-    let add_rect = add_full.intersect(header_rect);
-    if add_full.bottom() <= lane_rect.bottom() {
-        paint_row_line(
-            &ui.painter_at(header_rect.union(lane_rect)),
-            egui::Rect::from_min_max(add_full.left_top(), egui::pos2(lane_rect.right(), add_full.bottom())),
-        );
-    }
+    let add_rect = add_row_rect(header_rect, scroll_y, tracks_h).intersect(header_rect);
     if add_rect.height() > 0.0 {
         let add = ui.interact(add_rect, egui::Id::new("track_add_row"), egui::Sense::click()).on_hover_text("Add a new track (Ctrl+Shift+T)");
-        let text_color = if add.hovered() && !locked { color::TEXT_SECONDARY } else { color::TEXT_TERTIARY };
+        let text_color = if add.hovered() && !locked { neutral.text_secondary } else { neutral.text_tertiary };
         painter.text(
             egui::pos2(add_rect.left() + space::SCALE_8, add_rect.center().y),
             egui::Align2::LEFT_CENTER,
@@ -403,23 +375,27 @@ pub fn show(
 /// The "+ Add track" row's rect, unclipped: it starts where the last track
 /// header ends (`tracks_h` is the sum of the track heights, `scroll_y` the
 /// vertical scroll) and spans the header column.
-pub fn add_row_rect(header_rect: egui::Rect, scroll_y: f32, tracks_h: f32) -> egui::Rect {
+fn add_row_rect(header_rect: egui::Rect, scroll_y: f32, tracks_h: f32) -> egui::Rect {
     egui::Rect::from_min_size(egui::pos2(header_rect.left(), header_rect.top() - scroll_y + tracks_h), egui::vec2(header_rect.width(), ADD_ROW_H))
 }
 
-/// The 1 px `stroke.track` line along the bottom edge of `rect`.
-fn paint_row_line(painter: &egui::Painter, rect: egui::Rect) {
-    let line = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - metrics::HAIRLINE), rect.right_bottom());
-    painter.rect_filled(line, 0.0, color::STROKE_TRACK);
+/// Paints one header's fill (`bg.group`, or `bg.selected` when the track is
+/// selected), its `bg.panel` number column and the line along its bottom edge.
+fn paint_header_row(painter: &egui::Painter, rect: egui::Rect, selected: bool) {
+    let neutral = crate::ui::neutrals(painter.ctx());
+    painter.rect_filled(rect, 0.0, if selected { neutral.bg_selected } else { neutral.bg_group });
+    painter.rect_filled(number_column(rect), 0.0, neutral.bg_panel);
+    lane::paint_row_line(painter, rect);
 }
 
-/// Paints a one-row header's selected fill (`bg.track.header.selected`; the
-/// unselected header is the column strip itself) and its bottom line.
-fn paint_header_row(painter: &egui::Painter, rect: egui::Rect, selected: bool) {
-    if selected {
-        painter.rect_filled(rect, 0.0, color::BG_TRACK_HEADER_SELECTED);
-    }
-    paint_row_line(painter, rect);
+/// The track number column at the far left of the header `rect`.
+fn number_column(rect: egui::Rect) -> egui::Rect {
+    rect.with_max_x(rect.left() + metrics::NUMBER_GUTTER_W)
+}
+
+/// Where the content of the header `rect` starts, right of the number column.
+fn content_left(rect: egui::Rect) -> f32 {
+    number_column(rect).right() + space::SCALE_8
 }
 
 /// Right-click menu on one track header: Rename, Delete Track, Add Above/Below.
@@ -493,70 +469,59 @@ fn gesture_slider(
 
 /// Where the parts of one header sit.
 struct Geometry {
-    /// True when ui-kit's two-row header draws the number, name, toggles and
-    /// meter; false for the one-row layout drawn here.
-    two_row: bool,
-    /// The reorder grip at the right end of the first row.
-    grip: egui::Rect,
-    /// The name, between the number and the toggles (two rows: the grip).
+    /// Row 1: the name and the toggles share it.
+    row: egui::Rect,
+    /// The name, between the number column and the reorder grip.
     name: egui::Rect,
-    /// The M, S and R toggles, in that order.
+    /// The reorder grip, between the name and the toggles.
+    grip: egui::Rect,
+    /// The M, S and R toggles, right-aligned at the end of row 1.
     toggles: [egui::Rect; 3],
-    /// The compact level meter, when it fits.
-    meter: Option<egui::Rect>,
-    /// Top of the slider row (28 px high), from 64 px of header height up.
-    slider_top: Option<f32>,
+    /// The meter strip along the bottom, from the content edge to the right padding.
+    meter: egui::Rect,
+    /// Top of the volume row, when the height holds it.
+    vol_top: Option<f32>,
+    /// Top of the pan row, when the height holds it.
+    pan_top: Option<f32>,
 }
 
-/// Lays out one header in `rect`. `number_w` and `line_h` are the track
-/// number's width and the height of the number and name line.
+/// Lays out one header in `rect`, right of its number column.
 ///
-/// Two rows (number and name, then toggles, meter and sliders) once the height
-/// holds the sliders under the meter; below that one row: number, name,
-/// toggles and grip, with the meter as a thin line under it if it fits. The
+/// Row 1 and the meter strip always show. The pan slider row goes first when
+/// the height runs out, then the volume row (the layout by height tiers); the
 /// toggles are fully inside the header at every height from the model minimum.
-fn geometry(rect: egui::Rect, number_w: f32, line_h: f32) -> Geometry {
+fn geometry(rect: egui::Rect) -> Geometry {
     let pad = space::SCALE_2;
     let content_bottom = rect.bottom() - metrics::TRACK_RESIZE_H;
-    let two_row_h = pad + line_h + pad + TOGGLE_ROW_H + pad + METER_H + pad + size::SEGMENT_HEIGHT + metrics::TRACK_RESIZE_H;
-    let toggles_at = |left: f32, top: f32| -> [egui::Rect; 3] {
-        std::array::from_fn(|i| egui::Rect::from_min_size(egui::pos2(left + i as f32 * (TOGGLE_SIDE + TOGGLE_GAP), top), egui::vec2(TOGGLE_SIDE, TOGGLE_SIDE)))
-    };
-    let grip_left = rect.right() - pad - GRIP_W;
-    if rect.height() >= two_row_h.max(VALUE_MIN_H) {
-        let first_row_top = rect.top() + pad;
-        let grip = egui::Rect::from_min_max(egui::pos2(grip_left, first_row_top), egui::pos2(rect.right() - pad, first_row_top + line_h));
-        let name = egui::Rect::from_min_max(egui::pos2(rect.left() + pad + number_w + space::SCALE_8, first_row_top), grip.left_bottom());
-        let toggles = toggles_at(rect.left() + pad, grip.bottom() + pad);
-        let meter = egui::Rect::from_min_size(egui::pos2(rect.left() + pad, toggles[0].bottom() + pad), egui::vec2(rect.width() - 2.0 * pad, METER_H));
-        return Geometry { two_row: true, grip, name, toggles, meter: Some(meter), slider_top: Some(meter.bottom() + pad) };
-    }
+    // The meter strip always shows along the bottom.
+    let meter =
+        egui::Rect::from_min_max(egui::pos2(content_left(rect), content_bottom - metrics::METER_STRIP_H), egui::pos2(rect.right() - RIGHT_PAD, content_bottom));
     let row_top = rect.top() + pad;
-    let row_bottom = row_top + TOGGLE_ROW_H;
-    let grip = egui::Rect::from_min_max(egui::pos2(grip_left, row_top), egui::pos2(rect.right() - pad, row_bottom));
+    let row = egui::Rect::from_min_max(egui::pos2(rect.left(), row_top), egui::pos2(rect.right(), row_top + TOGGLE_SIDE));
+    // The M, S and R toggles right-aligned: R ends at the right padding edge.
     let toggles_w = 3.0 * TOGGLE_SIDE + 2.0 * TOGGLE_GAP;
-    let toggles = toggles_at(grip.left() - TOGGLE_GAP - toggles_w, row_top);
-    let name_left = rect.left() + pad + number_w + space::SCALE_8;
-    let name = egui::Rect::from_min_max(egui::pos2(name_left, row_top), egui::pos2((toggles[0].left() - TOGGLE_GAP).max(name_left), row_bottom));
-    let meter_top = row_bottom + pad;
-    let meter = (meter_top + METER_H <= content_bottom)
-        .then(|| egui::Rect::from_min_size(egui::pos2(rect.left() + pad, meter_top), egui::vec2(rect.width() - 2.0 * pad, METER_H)));
-    // The slider row sits centered between the meter and the resize strip; the
-    // 28 px hit area may touch the meter, the visible 14 px knob never does.
-    let slider_top = (rect.height() >= metrics::COMPACT_TRACK_H).then(|| {
-        let above = meter.map_or(row_bottom + pad, |m| m.bottom());
-        let slack = content_bottom - above - size::SEGMENT_HEIGHT;
-        (above + slack / 2.0).min(content_bottom - size::SEGMENT_HEIGHT)
+    let toggles = std::array::from_fn(|i| {
+        let left = rect.right() - RIGHT_PAD - toggles_w + i as f32 * (TOGGLE_SIDE + TOGGLE_GAP);
+        egui::Rect::from_min_size(egui::pos2(left, row_top), egui::vec2(TOGGLE_SIDE, TOGGLE_SIDE))
     });
-    Geometry { two_row: false, grip, name, toggles, meter, slider_top }
+    // The reorder grip sits between the name and the toggles.
+    let grip = egui::Rect::from_min_max(egui::pos2(toggles[0].left() - TOGGLE_GAP - GRIP_W, row_top), egui::pos2(toggles[0].left() - TOGGLE_GAP, row.bottom()));
+    let name = egui::Rect::from_min_max(egui::pos2(content_left(rect), row_top), egui::pos2(grip.left() - TOGGLE_GAP, row.bottom()));
+    // The slider rows fill in from the top; each must end above the meter.
+    let vol_top = row.bottom() + pad;
+    let fits = |top: f32| top + size::SEGMENT_HEIGHT + pad <= meter.top();
+    let pan_top = fits(vol_top + size::SEGMENT_HEIGHT + pad).then_some(vol_top + size::SEGMENT_HEIGHT + pad);
+    let vol_top = fits(vol_top).then_some(vol_top);
+    Geometry { row, name, grip, toggles, meter, vol_top, pan_top }
 }
 
 /// Paints one toggle square exactly as ui-kit's track header does.
 fn paint_toggle(painter: &egui::Painter, rect: egui::Rect, label: &str, on: bool, kind: ToggleKind) {
+    let neutral = crate::ui::neutrals(painter.ctx());
     let (fill, glyph_color) = match (kind, on) {
         (ToggleKind::RecordArm, true) => (color::SEM_RECORD, egui::Color32::WHITE),
-        (_, true) => (color::BG_SELECTED, color::TEXT_PRIMARY),
-        (_, false) => (color::BG_CONTROL, color::TEXT_TERTIARY),
+        (_, true) => (neutral.bg_selected, neutral.text_primary),
+        (_, false) => (neutral.bg_control, neutral.text_tertiary),
     };
     painter.rect_filled(rect, TOGGLE_ROUNDING, fill);
     let glyph = painter.layout_no_wrap(label.to_owned(), ui_kit::fonts::semibold(typography::CAPTION_SIZE), glyph_color);
@@ -564,27 +529,68 @@ fn paint_toggle(painter: &egui::Painter, rect: egui::Rect, label: &str, on: bool
     painter.with_clip_rect(rect).galley(pos, glyph, glyph_color);
 }
 
-/// Paints one slider cell's label (`type.micro`) on the left and, when
-/// `value` is given, its text (`type.value`, `text.tertiary`) right-aligned on
-/// the right, in a column as wide as the `sample` text. Returns the rect left
-/// for the slider between them.
-fn slider_cell(painter: &egui::Painter, slot: egui::Rect, label: &str, value: Option<(String, &str)>) -> egui::Rect {
+/// Paints one slider row's `type.micro` label on the left and its value
+/// (`type.value`, `text.tertiary`) right-aligned in the fixed value column at
+/// the right. Returns the rect left for the slider between them. The label
+/// column is one fixed width for Vol and Pan, so both sliders start at the
+/// same x.
+fn slider_cell(painter: &egui::Painter, slot: egui::Rect, label: &str, value: String) -> egui::Rect {
+    let neutral = crate::ui::neutrals(painter.ctx());
     let gap = space::SCALE_4;
     let label_font = ui_kit::fonts::medium(typography::MICRO_SIZE);
-    // One label column for Vol and Pan, so both sliders start alike.
     let label_w =
-        ["Vol", "Pan"].iter().map(|text| painter.layout_no_wrap((*text).to_owned(), label_font.clone(), color::TEXT_TERTIARY).size().x).fold(0.0, f32::max);
-    let label_galley = painter.layout_no_wrap(label.to_owned(), label_font, color::TEXT_TERTIARY);
-    painter.galley(egui::pos2(slot.left(), slot.center().y - label_galley.size().y / 2.0), label_galley, color::TEXT_TERTIARY);
-    let mut right = slot.right();
-    if let Some((text, sample)) = value {
-        let value_font = ui_kit::fonts::mono(typography::VALUE_SIZE);
-        let column_w = painter.layout_no_wrap(sample.to_owned(), value_font.clone(), color::TEXT_TERTIARY).size().x;
-        let galley = painter.layout_no_wrap(text, value_font, color::TEXT_TERTIARY);
-        painter.galley(egui::pos2(slot.right() - galley.size().x, slot.center().y - galley.size().y / 2.0), galley, color::TEXT_TERTIARY);
-        right -= column_w + gap;
+        ["Vol", "Pan"].iter().map(|text| painter.layout_no_wrap((*text).to_owned(), label_font.clone(), neutral.text_tertiary).size().x).fold(0.0, f32::max);
+    let label_galley = painter.layout_no_wrap(label.to_owned(), label_font, neutral.text_tertiary);
+    painter.galley(egui::pos2(slot.left(), slot.center().y - label_galley.size().y / 2.0), label_galley, neutral.text_tertiary);
+    let value_font = ui_kit::fonts::mono(typography::VALUE_SIZE);
+    let value_galley = painter.layout_no_wrap(value, value_font, neutral.text_tertiary);
+    painter.galley(egui::pos2(slot.right() - value_galley.size().x, slot.center().y - value_galley.size().y / 2.0), value_galley, neutral.text_tertiary);
+    let left = slot.left() + label_w + gap;
+    egui::Rect::from_min_max(egui::pos2(left, slot.top()), egui::pos2((slot.right() - VALUE_COL_W - gap).max(left), slot.bottom()))
+}
+
+/// The row-1 name galley: one line, elided with an ellipsis when wider than
+/// `max_w` (the room between the number column and the reorder grip).
+fn name_galley(painter: &egui::Painter, name: &str, max_w: f32, text_color: egui::Color32) -> std::sync::Arc<egui::Galley> {
+    let mut job =
+        egui::text::LayoutJob::single_section(name.to_owned(), egui::TextFormat::simple(ui_kit::fonts::semibold(typography::HEADLINE_SIZE), text_color));
+    job.wrap.max_width = max_w.max(0.0);
+    job.wrap.max_rows = 1;
+    job.wrap.overflow_character = Some('\u{2026}');
+    painter.layout_job(job)
+}
+
+/// The meter strip: a plain 4 px bar from the meter floor up to the peak in
+/// the ok, warn and clip zone colors, with the clip square at its right end,
+/// lit only on clip. No knob or dot look: square ends, no separate light.
+fn paint_meter_strip(painter: &egui::Painter, rect: egui::Rect, peak_db: f32, clipped: bool) {
+    let neutral = crate::ui::neutrals(painter.ctx());
+    painter.rect_filled(rect, 0.0, neutral.bg_control);
+    let fraction = |db: f32| {
+        if db.is_nan() { 0.0 } else { ((db - metrics::METER_FLOOR_DB) / -metrics::METER_FLOOR_DB).clamp(0.0, 1.0) }
+    };
+    let bands = [
+        (metrics::METER_FLOOR_DB, metrics::METER_WARN_DB, color::SEM_METER_OK),
+        (metrics::METER_WARN_DB, metrics::METER_CLIP_DB, color::SEM_METER_WARN),
+        (metrics::METER_CLIP_DB, 0.0, color::SEM_METER_CLIP),
+    ];
+    for (from, to, band_color) in bands {
+        let low = fraction(from);
+        let high = fraction(peak_db.min(to)).max(low);
+        if high > low {
+            painter.rect_filled(
+                egui::Rect::from_min_max(
+                    egui::pos2(rect.left() + rect.width() * low, rect.top()),
+                    egui::pos2(rect.left() + rect.width() * high, rect.bottom()),
+                ),
+                0.0,
+                band_color,
+            );
+        }
     }
-    egui::Rect::from_min_max(egui::pos2(slot.left() + label_w + gap, slot.top()), egui::pos2(right.max(slot.left() + label_w + gap), slot.bottom()))
+    let side = rect.height();
+    let light = egui::Rect::from_min_max(egui::pos2(rect.right() - side, rect.top()), rect.right_bottom());
+    painter.rect_filled(light, 0.0, if clipped { color::SEM_METER_CLIP } else { neutral.stroke_hairline });
 }
 
 /// Insertion boundary index (0..=count) for content-space y position.
@@ -730,7 +736,7 @@ mod tests {
         assert_eq!(slider_knobs(&out), 2, "the default height shows the volume and pan sliders");
 
         editor.set_track_height(id, 40.0);
-        assert!(editor.project.tracks[0].height < metrics::COMPACT_TRACK_H);
+        assert_eq!(editor.project.tracks[0].height, 40.0, "the model minimum: row 1 and the meter only");
         let out = h.frame(Vec::new(), |ui| {
             show(ui, &mut editor, header, lane, 0.0, &mut meters);
         });
@@ -752,10 +758,9 @@ mod tests {
         let id = editor.project.tracks[0].id;
         let (header, lane) = rects();
         let mut meters = HashMap::new();
-        // (height, sliders shown, values shown)
-        for (height, sliders, values) in
-            [(40.0, false, false), (54.0, false, false), (63.0, false, false), (64.0, true, false), (80.0, true, false), (86.0, true, true), (96.0, true, true)]
-        {
+        // (height, slider rows shown): the pan row goes first, then the volume
+        // row; row 1 and the meter always show.
+        for (height, sliders) in [(40.0, 0), (54.0, 0), (65.0, 0), (66.0, 1), (80.0, 1), (96.0, 2)] {
             editor.set_track_height(id, height);
             assert_eq!(editor.project.tracks[0].height, height);
             let out = h.frame(Vec::new(), |ui| {
@@ -771,35 +776,43 @@ mod tests {
             for label in ["M", "S", "R"] {
                 assert!(out.text_rect(label).is_some_and(|r| inside.contains_rect(r)), "the {label} label inside the header at {height} px");
             }
-            assert_eq!(slider_knobs(&out), if sliders { 2 } else { 0 }, "sliders at {height} px");
-            assert_eq!(out.text_rect("Vol").is_some() && out.text_rect("Pan").is_some(), sliders, "slider labels at {height} px");
-            assert_eq!(out.text_rect("+0.0").is_some() && out.text_rect("C").is_some(), values, "slider values at {height} px");
-            if height < 86.0 {
-                // One row: the number, the name and the toggles share it.
-                let number = out.text_rect("1").expect("track number");
-                let name = out.text_rect("Track 1").expect("track name");
-                let m = out.text_rect("M").expect("M toggle");
-                assert!((number.center().y - m.center().y).abs() < TOL && (name.center().y - m.center().y).abs() < TOL, "one row at {height} px");
-                assert!(name.right() <= m.left(), "the name ends before the toggles at {height} px");
-            }
+            assert_eq!(slider_knobs(&out), sliders, "slider rows at {height} px");
+            let vol = out.text_rect("Vol").is_some();
+            let pan = out.text_rect("Pan").is_some();
+            assert_eq!((vol as usize) + (pan as usize), sliders, "slider labels at {height} px");
+            assert_eq!(out.text_rect("+0.0").is_some(), vol, "the volume value shows with its row (in the fixed value column) at {height} px");
+            assert_eq!(out.text_rect("C").is_some(), pan, "the pan value shows with its row at {height} px");
+            // Row 1 always: the name and the toggles share it.
+            let number = out.text_rect("1").expect("track number");
+            let name = out.text_rect("Track 1").expect("track name");
+            let m = out.text_rect("M").expect("M toggle");
+            assert!((number.center().y - height / 2.0).abs() < TOL, "the number is centered in the header at {height} px");
+            assert!((name.center().y - m.center().y).abs() < TOL, "row 1 at {height} px");
+            assert!(name.right() <= m.left(), "the name ends before the toggles at {height} px");
         }
     }
 
     #[test]
     fn the_geometry_keeps_the_toggles_inside_at_the_three_key_heights() {
-        for height in [40.0, 64.0, 86.0] {
+        for height in [40.0, 66.0, 96.0] {
             let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(208.0, height));
-            let geo = geometry(rect, 8.0, 17.0);
+            let geo = geometry(rect);
             let inside = rect.with_max_y(rect.bottom() - metrics::TRACK_RESIZE_H);
             for toggle in geo.toggles {
                 assert!(inside.contains_rect(toggle), "{toggle:?} inside {inside:?} at {height} px");
             }
             assert!(inside.contains_rect(geo.grip), "the grip inside at {height} px");
-            assert!(geo.meter.is_none_or(|meter| inside.contains_rect(meter)), "the meter inside at {height} px");
-            assert_eq!(geo.slider_top.is_some(), height >= metrics::COMPACT_TRACK_H);
-            if let Some(top) = geo.slider_top {
-                assert!(top + size::SEGMENT_HEIGHT <= inside.bottom() + 0.01, "the sliders end above the resize strip at {height} px");
+            assert!(inside.contains_rect(geo.meter), "the meter strip inside at {height} px");
+            assert!((geo.meter.bottom() - inside.bottom()).abs() < 0.01, "the meter strip is at the bottom at {height} px");
+            assert_eq!(geo.meter.left(), content_left(rect), "the meter strip starts right of the number column at {height} px");
+            assert_eq!(geo.meter.right(), rect.right() - space::SCALE_12, "and ends at the right padding at {height} px");
+            assert_eq!(geo.vol_top.is_some(), height >= 66.0, "the volume row tier at {height} px");
+            assert_eq!(geo.pan_top.is_some(), height >= 96.0, "the pan row tier at {height} px");
+            for top in [geo.vol_top, geo.pan_top].into_iter().flatten() {
+                assert!(top + size::SEGMENT_HEIGHT + space::SCALE_2 <= geo.meter.top() + 0.01, "the slider rows end above the meter at {height} px");
             }
+            assert!(geo.toggles.windows(2).all(|pair| pair[0].right() <= pair[1].left()), "the toggles do not overlap at {height} px");
+            assert!(geo.name.right() <= geo.grip.left() && geo.grip.right() <= geo.toggles[0].left(), "name, grip and toggles in order at {height} px");
         }
     }
 
@@ -846,7 +859,7 @@ mod tests {
 
         // Clicking the meter clears it.
         let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(header.width(), editor.project.tracks[0].height));
-        let meter_rect = geometry(rect, 8.0, 17.0).meter.expect("the meter");
+        let meter_rect = geometry(rect).meter;
         let mut draw = |ui: &mut egui::Ui, editor: &mut Editor| {
             show(ui, editor, header, lane, 0.0, &mut meters);
         };
@@ -856,7 +869,7 @@ mod tests {
     }
 
     #[test]
-    fn a_selected_header_fills_with_the_selected_header_token_at_every_height() {
+    fn a_selected_header_fills_with_bg_selected_at_every_height() {
         let mut h = Headless::new(1280.0, 800.0);
         let (header, lane) = rects();
         let mut meters = HashMap::new();
@@ -868,18 +881,41 @@ mod tests {
             let out = h.frame(Vec::new(), |ui| {
                 show(ui, &mut editor, header, lane, 0.0, &mut meters);
             });
-            let selected: Vec<_> = out.rects().into_iter().filter(|r| r.fill == color::BG_TRACK_HEADER_SELECTED).collect();
+            // The slider troughs are bg.selected too, so the width picks out the blocks.
+            let selected: Vec<_> = out.rects().into_iter().filter(|r| r.fill == color::BG_SELECTED && r.rect.width() == header.width()).collect();
             assert_eq!(selected.len(), 1, "one selected header at {height} px");
             assert_eq!(selected[0].rect.top(), 0.0);
             assert_eq!(selected[0].rect.height(), height);
-            assert!(out.rects().iter().all(|r| r.fill != color::BG_TRACK_SELECTED && r.fill != color::BG_TRACK_ALT), "the headers never take a lane fill");
-            let lines = out.rects().into_iter().filter(|r| r.fill == color::STROKE_TRACK && r.rect.width() >= header.width()).count();
-            assert_eq!(lines, 3, "a line under each header and one under the Add track row at {height} px");
+            let row_line = egui::vec2(header.width(), metrics::HAIRLINE);
+            let lines = out.rects().into_iter().filter(|r| r.fill == color::BG_GROUND && r.rect.size() == row_line).count();
+            assert_eq!(lines, 2, "a line under each header at {height} px");
         }
     }
 
     #[test]
-    fn the_name_sits_on_the_first_row_above_the_toggles() {
+    fn the_number_sits_centered_in_its_own_column() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let mut editor = editor(2);
+        let id = editor.project.tracks[0].id;
+        editor.set_range(0, 1_000, vec![id]);
+        let (header, lane) = rects();
+        let mut meters = HashMap::new();
+        let out = h.frame(Vec::new(), |ui| {
+            show(ui, &mut editor, header, lane, 0.0, &mut meters);
+        });
+        let columns: Vec<_> =
+            out.rects().into_iter().filter(|r| r.fill == color::BG_PANEL && r.rect.width() == metrics::NUMBER_GUTTER_W).map(|r| r.rect).collect();
+        assert_eq!(columns.len(), 2, "a bg.panel number column per header, the selected one too");
+        for (column, (label, tint)) in columns.iter().zip([("1", color::TEXT_SECONDARY), ("2", color::TEXT_TERTIARY)]) {
+            assert_eq!(column.left(), header.left(), "on the far left");
+            let number = out.texts().into_iter().find(|t| t.text == label).expect("the track number");
+            assert!((number.rect.center() - column.center()).length() < TOL, "centered both ways: {:?} in {column:?}", number.rect);
+            assert_eq!(number.color, tint, "the color of number {label}");
+        }
+    }
+
+    #[test]
+    fn the_number_and_name_share_row_1_with_the_right_aligned_toggles() {
         let mut h = Headless::new(1280.0, 800.0);
         let mut editor = editor(1);
         let (header, lane) = rects();
@@ -891,7 +927,65 @@ mod tests {
         let name = out.text_rect("Track 1").expect("track name");
         let m = out.text_rect("M").expect("M toggle");
         assert!(number.right() < name.left(), "number {number:?} left of name {name:?}");
-        assert!(name.bottom() <= m.top(), "name {name:?} above M {m:?}");
+        assert!((name.center().y - m.center().y).abs() < TOL, "the name shares row 1 with the toggles: {name:?} vs {m:?}");
+        assert!(name.right() < m.left(), "the name ends before the toggles");
+        // The toggles end 12 px inside the lane edge (the header right padding).
+        let squares = toggle_squares(&out);
+        let rightmost = squares.iter().map(|r| r.right()).fold(f32::MIN, f32::max);
+        assert!((rightmost - (header.right() - space::SCALE_12)).abs() < TOL, "the toggles end at the right padding: {rightmost}");
+    }
+
+    #[test]
+    fn the_slider_rows_share_the_label_column_and_the_value_column() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let mut editor = editor(1);
+        let (header, lane) = rects();
+        let mut meters = HashMap::new();
+        let out = h.frame(Vec::new(), |ui| {
+            show(ui, &mut editor, header, lane, 0.0, &mut meters);
+        });
+        let vol = out.text_rect("Vol").expect("Vol label");
+        let pan = out.text_rect("Pan").expect("Pan label");
+        assert!((vol.left() - pan.left()).abs() < TOL, "one fixed label column: {vol:?} vs {pan:?}");
+        let vol_value = out.text_rect("+0.0").expect("volume value");
+        let pan_value = out.text_rect("C").expect("pan value");
+        assert!((vol_value.right() - pan_value.right()).abs() < TOL, "one fixed value column, right-aligned");
+        assert!((vol_value.right() - (header.right() - space::SCALE_12)).abs() < TOL, "the value column ends at the right padding");
+        // Both sliders span the same x (the space between the two columns).
+        let troughs: Vec<_> =
+            out.rects().into_iter().filter(|r| (r.rect.height() - 4.0).abs() < 1e-3 && r.fill == color::BG_SELECTED).map(|r| r.rect).collect();
+        assert_eq!(troughs.len(), 2, "one trough per slider: {troughs:?}");
+        assert!(
+            (troughs[0].left() - troughs[1].left()).abs() < TOL && (troughs[0].right() - troughs[1].right()).abs() < TOL,
+            "both sliders start and end alike"
+        );
+    }
+
+    #[test]
+    fn the_meter_strip_is_a_plain_4px_line_at_the_bottom_right_of_the_number_column() {
+        let mut h = Headless::new(1280.0, 800.0);
+        let mut editor = editor(1);
+        let (header, lane) = rects();
+        let mut meters = HashMap::new();
+        let out = h.frame(Vec::new(), |ui| {
+            show(ui, &mut editor, header, lane, 0.0, &mut meters);
+        });
+        let strips: Vec<_> = out
+            .rects()
+            .into_iter()
+            .filter(|r| (r.rect.height() - metrics::METER_STRIP_H).abs() < 1e-3 && r.fill == color::BG_CONTROL)
+            .map(|r| r.rect)
+            .collect();
+        assert_eq!(strips.len(), 1, "one meter strip: {strips:?}");
+        let strip = strips[0];
+        assert!(
+            (strip.left() - content_left(header)).abs() < TOL && (strip.right() - (header.right() - space::SCALE_12)).abs() < TOL,
+            "from the content edge to the right padding: {strip:?}"
+        );
+        // It runs along the bottom of the track, above the resize strip.
+        let track = egui::Rect::from_min_size(header.left_top(), egui::vec2(header.width(), editor.project.tracks[0].height));
+        assert!(track.contains_rect(strip), "the strip sits inside its track");
+        assert!((strip.bottom() - (track.bottom() - metrics::TRACK_RESIZE_H)).abs() < TOL, "above the resize strip: {strip:?}");
     }
 
     /// Pointer events for a left-button drag of `from` to `to` in four steps.
@@ -994,5 +1088,95 @@ mod tests {
         });
         assert!(meters.contains_key(&id), "the header meter is alive");
         assert!(out.text_rect("Track 1").is_some());
+    }
+
+    // ---- kittest at the minimum sizes ----
+
+    /// Painted text runs of one frame: (text, screen rect, clip rect).
+    fn text_runs(output: &egui::FullOutput) -> Vec<(String, egui::Rect, egui::Rect)> {
+        let mut runs = Vec::new();
+        for clipped in &output.shapes {
+            let mut stack = vec![&clipped.shape];
+            while let Some(shape) = stack.pop() {
+                match shape {
+                    egui::Shape::Vec(inner) => stack.extend(inner.iter()),
+                    egui::Shape::Text(text) => {
+                        runs.push((text.galley.text().to_string(), text.galley.rect.translate(text.pos.to_vec2()), clipped.clip_rect));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        runs
+    }
+
+    /// At the minimum header width (208) and the minimum track height (40)
+    /// the header shows row 1 and the meter strip only, nothing overlaps,
+    /// nothing is clipped, and the name is the one thing that may be elided.
+    #[test]
+    fn the_min_header_kittest_keeps_every_part_inside_without_overlap() {
+        use std::cell::Cell;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use egui_kittest::kittest::Queryable as _;
+
+        let editor = Rc::new(RefCell::new(editor(1)));
+        let long = "A track name far too long for the narrowest header";
+        let track_id = editor.borrow().project.tracks[0].id;
+        let _ = editor.borrow_mut().apply(Action::RenameTrack { id: track_id, name: long.to_string() });
+        editor.borrow_mut().set_track_height(track_id, 40.0);
+        let meters = Rc::new(RefCell::new(HashMap::new()));
+        let first_pass = Rc::new(Cell::new(true));
+        let draw_editor = Rc::clone(&editor);
+        let draw_meters = Rc::clone(&meters);
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1108.0, 400.0)).build_ui(move |ui| {
+            // The first pass installs the ui-kit theme and fonts; egui applies
+            // a font change at the start of the next pass.
+            if first_pass.get() {
+                first_pass.set(false);
+                ui_kit::apply(ui.ctx());
+                return;
+            }
+            let header = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(metrics::HEADER_COL_W, 40.0));
+            let lane = egui::Rect::from_min_max(egui::pos2(header.right(), 0.0), egui::pos2(header.right() + 900.0, 400.0));
+            show(ui, &mut draw_editor.borrow_mut(), header, lane, 0.0, &mut draw_meters.borrow_mut());
+        });
+        harness.step();
+        harness.step();
+
+        let header = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(metrics::HEADER_COL_W, 40.0));
+        // Row 1: the toggles sit right-aligned inside the header, no overlap.
+        let toggles: Vec<egui::Rect> = ["M", "S", "R"].iter().map(|label| harness.get_by_label(label).rect()).collect();
+        for rect in &toggles {
+            assert!(header.contains_rect(*rect), "toggle {rect:?} inside the header {header:?}");
+        }
+        for pair in toggles.windows(2) {
+            assert!(pair[0].right() <= pair[1].left(), "the toggles do not overlap: {pair:?}");
+        }
+        let rightmost = toggles.iter().map(|r| r.right()).fold(f32::MIN, f32::max);
+        assert!((rightmost - (header.right() - space::SCALE_12)).abs() < TOL, "the toggles end 12 px inside the lane edge: {rightmost}");
+
+        // The host spans the header and carries the full track name.
+        let host = harness.get_by_label(long).rect();
+        assert!((host.left() - header.left()).abs() < TOL && (host.right() - header.right()).abs() < TOL, "the host spans the header: {host:?}");
+
+        // The slider rows are dropped at the minimum height.
+        let runs = text_runs(harness.output());
+        let texts: Vec<_> = runs.iter().map(|(text, _, _)| text.clone()).collect();
+        assert!(runs.iter().all(|(text, _, _)| text != "Vol" && text != "Pan"), "no slider rows at the minimum height: {texts:?}");
+
+        // Nothing is clipped except the name's ellipsis: every text run sits
+        // inside its clip rect, every clip rect inside the header, and the
+        // elided name ends before the grip and the toggles.
+        let toggle_left = toggles[0].left();
+        for (text, rect, clip) in &runs {
+            assert!(header.contains_rect(*clip), "{text:?} paints with a clip outside the header: {clip:?}");
+            assert!(clip.contains_rect(*rect), "{text:?} is cut by its clip rect: {rect:?} vs {clip:?}");
+            if text.starts_with("A track name") {
+                assert!(rect.right() <= toggle_left - TOGGLE_GAP - GRIP_W + TOL, "the name is elided before the grip: {rect:?}");
+                assert!(rect.width() < 150.0, "the long name is truncated, not overflowing: {rect:?}");
+            }
+        }
     }
 }

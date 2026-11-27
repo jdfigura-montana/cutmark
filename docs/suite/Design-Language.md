@@ -1,4 +1,4 @@
-# Cutmark Design Language v1: Glass Deck
+# CutMark Design Language v1: Glass Deck
 
 Nov 19, 2026 · @JD · rev 2: Phosphor icons, Scrollbar component, ui-kit origin (from the S1 spec)
 
@@ -6,11 +6,11 @@ Exported from the Claude Project "Creator Suite". The Project copy is the source
 
 ## Overview
 
-One look for every app in the Cutmark Creator Suite: Audio editor, Video editor, Recorder, Prompter, and TuteTool's editor chrome. Direction "E · Glass Deck, blue", chosen from the design canvas "Cutmark Look" (boards: E · Glass Deck, blue and E · Audio editor, blue). Inspired by Apple's current design language: the content is the hero, the chrome is monochrome, controls float, and nested shapes share a center.
+One look for every app in the CutMark Creator Suite: Audio editor, Video editor, Recorder, Prompter, and TuteTool's editor chrome. Direction "E · Glass Deck, blue", chosen from the design canvas "Cutmark Look" (boards: E · Glass Deck, blue and E · Audio editor, blue). Inspired by Apple's current design language: the content is the hero, the chrome is monochrome, controls float, and nested shapes share a center.
 
 **Goals**
 
-- A user opening any Cutmark app knows it is a Cutmark app within one second.
+- A user opening any CutMark app knows it is a CutMark app within one second.
 - Calm, monochrome chrome. Color appears only where it carries meaning.
 - One source of truth for every value (`tokens.json`), so a look change costs prompts, not rebuilds.
 - Buildable in egui on wgpu with no custom shaders in v1.
@@ -269,13 +269,13 @@ Lives in Settings, Appearance, in every app. One setting for the whole suite.
 4. Hex field (`#RRGGBB`), accepts paste.
 5. Live preview strip: a Play capsule, a switch that is on, a selected clip with a waveform, and a playhead, all in the derived colors.
 6. "Adjusted for readability" note with before and after swatches, shown only when the clamp changed the pick.
-7. "Reset to Blue" text button.
+7. "Reset to default" text button.
 
 **Rules**
 
 - Every change previews live in the open window (150ms ease) and applies on release.
 - The setting is stored in a suite-wide file (`%APPDATA%\Cutmark\appearance.json` on Windows, `~/Library/Application Support/Cutmark/appearance.json` on macOS) as the user's raw pick plus the clamped result.
-- Running Cutmark apps watch that file and update within a second, so changing the accent in one app changes all of them.
+- Running CutMark apps watch that file and update within a second, so changing the accent in one app changes all of them.
 - Exported media and published TuteTool courses never use the accent. It is chrome only.
 
 ## Layout rules

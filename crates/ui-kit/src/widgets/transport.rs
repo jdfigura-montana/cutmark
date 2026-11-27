@@ -1,6 +1,10 @@
 //! The transport deck (spec "Components": row "Transport deck"): a glass
 //! capsule at the bottom center of the content area with the timecode and the
 //! transport buttons, draggable sideways, fading while scrubbing near it.
+//!
+//! The deck is deprecated: the E3 amendment ("1. The notch") replaces it with
+//! [`stage_panel`](crate::widgets::stage_panel). It stays until every app has
+//! moved over.
 
 use egui::{Align2, Color32, Context, Id, InnerResponse, Margin, Order, Pos2, Rect, Response, Sense, Ui, UiBuilder, WidgetInfo, WidgetType, pos2, vec2};
 
@@ -65,6 +69,8 @@ fn deck_opacity(ctx: &Context, id: Id, deck: Option<Rect>, pointer: Option<Pos2>
     ctx.animate_value_with_time(id, target, duration)
 }
 
+/// **Deprecated:** new code uses [`stage_panel`](crate::widgets::stage_panel).
+///
 /// The transport deck: a glass capsule 56 tall, anchored to the bottom center
 /// of `content_rect`, 16 px from its bottom, drawn in a foreground
 /// [`egui::Area`]. `add_contents` lays the timecode and the transport buttons
@@ -126,6 +132,7 @@ pub fn transport_deck<R>(ui: &Ui, content_rect: Rect, id: Id, scrubbing: bool, a
 /// the phosphor glyph in `text.secondary` (`text.primary` hovered). The
 /// tooltip doubles as the accessible label.
 pub fn deck_button(ui: &mut Ui, icon: &str, tooltip: &str) -> Response {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let side = size::TRANSPORT_BUTTON;
     let (rect, response) = ui.allocate_exact_size(vec2(side, side), Sense::click());
     let response = response.on_hover_text(tooltip);
@@ -133,10 +140,13 @@ pub fn deck_button(ui: &mut Ui, icon: &str, tooltip: &str) -> Response {
     let hovered = response.hovered();
     if ui.is_rect_visible(rect) {
         if hovered {
-            ui.painter().circle_filled(rect.center(), side / 2.0, color::BG_HOVER);
+            ui.painter().circle_filled(rect.center(), side / 2.0, neutrals.bg_hover);
         }
-        let galley =
-            ui.painter().layout_no_wrap(icon.to_owned(), fonts::icon_fill(DECK_ICON_SIZE), if hovered { color::TEXT_PRIMARY } else { color::TEXT_SECONDARY });
+        let galley = ui.painter().layout_no_wrap(
+            icon.to_owned(),
+            fonts::icon_fill(DECK_ICON_SIZE),
+            if hovered { neutrals.text_primary } else { neutrals.text_secondary },
+        );
         ui.painter().galley(rect.center() - galley.size() / 2.0, galley, Color32::PLACEHOLDER);
     }
     if response.has_focus() {
@@ -197,15 +207,18 @@ pub fn play_button(ui: &mut Ui, playing: bool, kind: PlayKind) -> Response {
 }
 
 /// The large transport timecode (spec "Typography": `type.time.large`, the
-/// JetBrains Mono step): the main readout in `text.primary`, the sub-second
-/// fraction in `text.tertiary`.
+/// Martian Mono step): the main readout in `text.primary`, the sub-second
+/// fraction in `text.tertiary`, both with the timecode letter spacing.
 pub fn timecode(ui: &mut Ui, main: &str, fraction: &str) -> InnerResponse<()> {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let font = fonts::mono_semibold(typography::TIME_LARGE_SIZE);
+    let spacing = font.size * fonts::TIMECODE_LETTER_SPACING_EM;
+    let part = |text: &str, color| egui::RichText::new(text).font(font.clone()).extra_letter_spacing(spacing).color(color);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::SCALE_2;
-        ui.add(egui::Label::new(egui::RichText::new(main).font(font.clone()).color(color::TEXT_PRIMARY)));
+        ui.add(egui::Label::new(part(main, neutrals.text_primary)));
         if !fraction.is_empty() {
-            ui.add(egui::Label::new(egui::RichText::new(fraction).font(font).color(color::TEXT_TERTIARY)));
+            ui.add(egui::Label::new(part(fraction, neutrals.text_tertiary)));
         }
     })
 }

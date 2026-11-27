@@ -4,7 +4,7 @@ use egui::{Color32, Key, Pos2, Rect, Response, Sense, Ui, WidgetInfo, vec2};
 
 use crate::Theme;
 use crate::fonts;
-use crate::tokens::{color, size, space, typography};
+use crate::tokens::{size, space, typography};
 use crate::widgets::{capsule_radius, focus};
 
 /// The level at the bottom of the fader travel, in dB.
@@ -53,7 +53,9 @@ fn readout(db: f32) -> String {
 /// ui_kit::fader(ui, &mut gain, 96.0);
 /// ```
 pub fn fader(ui: &mut Ui, db: &mut f32, height: f32) -> Response {
-    let galley = ui.painter().layout_no_wrap(readout(*db), fonts::mono(typography::VALUE_SIZE), color::TEXT_PRIMARY);
+    let neutrals = Theme::get(ui.ctx()).neutrals;
+    let galley =
+        ui.painter().layout_job(fonts::tracked(readout(*db), fonts::mono(typography::VALUE_SIZE), neutrals.text_primary, fonts::MONO_LETTER_SPACING_EM));
     let width = galley.size().x.max(KNOB_DIAMETER);
     let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click_and_drag());
     response.widget_info(|| WidgetInfo::slider(true, *db as f64, ""));
@@ -85,14 +87,14 @@ pub fn fader(ui: &mut Ui, db: &mut f32, height: f32) -> Response {
     if ui.is_rect_visible(rect) {
         let accent = Theme::get(ui.ctx()).accent.accent;
         let painter = ui.painter();
-        painter.rect_filled(track, capsule_radius(TRACK_WIDTH), color::BG_SELECTED);
+        painter.rect_filled(track, capsule_radius(TRACK_WIDTH), neutrals.bg_selected);
         let fraction = fraction(*db);
         let knob_y = track.bottom() - track.height() * fraction;
         let fill = Rect::from_min_max(Pos2::new(track.left(), knob_y), track.max);
         painter.rect_filled(fill, capsule_radius(TRACK_WIDTH), accent);
         painter.circle_filled(Pos2::new(track.center().x, knob_y), KNOB_DIAMETER / 2.0, Color32::WHITE);
         let pos = Pos2::new(rect.center().x - galley.size().x / 2.0, rect.bottom() - galley.size().y);
-        painter.galley(pos, galley, color::TEXT_PRIMARY);
+        painter.galley(pos, galley, neutrals.text_primary);
     }
     if response.has_focus() {
         focus::focus_ring(ui, rect, capsule_radius(size::SEGMENT_HEIGHT));

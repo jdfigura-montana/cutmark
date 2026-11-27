@@ -2,13 +2,13 @@
 //! (`accent`, `hover`, `pressed`, `on`, `tint`, `content`) in OKLCH, with the
 //! readability clamp from the Design Language spec ("Color: accent").
 //!
-//! The color math is written by hand following Björn Ottosson's OKLab: sRGB
-//! to linear sRGB, linear sRGB to OKLab, OKLab to OKLCH. Colors outside the
-//! sRGB gamut are brought back by reducing chroma with hue and lightness
+//! The color math lives in `oklch.rs`, which `build.rs` shares. Colors outside
+//! the sRGB gamut are brought back by reducing chroma with hue and lightness
 //! fixed. No color crate.
 
 use egui::Color32;
 
+use crate::oklch::{Oklch, channel_to_linear, oklch_to_rgb, rgb_to_oklch};
 use crate::tokens;
 
 /// Clamp lower bound for the accent lightness.
@@ -33,8 +33,6 @@ const CONTENT_L: f32 = 0.88;
 const CONTENT_C_SCALE: f32 = 0.35;
 /// Hue distance in degrees at or below which a pick counts as near the record color.
 const NEAR_RECORD_DEG: f32 = 20.0;
-/// Slack around the sRGB gamut bounds, so float noise at the boundary does not trigger gamut mapping.
-const GAMUT_EPS: f32 = 1e-4;
 
 /// A derived accent set: the user's pick, the six accent tokens and the two picker notes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,109 +57,23 @@ pub struct Accent {
     pub near_record: bool,
 }
 
-/// A color in OKLab: lightness and the two opponent axes.
-#[derive(Debug, Clone, Copy)]
-struct Oklab {
-    /// Lightness, 0 for black to 1 for white.
-    l: f32,
-    /// Green-red opponent axis.
-    a: f32,
-    /// Blue-yellow opponent axis.
-    b: f32,
-}
-
-/// A color in OKLCH: lightness, chroma and hue in degrees (0 to 360).
-#[derive(Debug, Clone, Copy)]
-struct Oklch {
-    /// Lightness, 0 for black to 1 for white.
-    l: f32,
-    /// Chroma: 0 for gray.
-    c: f32,
-    /// Hue in degrees, 0 to 360.
-    h: f32,
-}
-
-/// Converts one sRGB u8 channel to linear light (0 to 1).
-fn channel_to_linear(channel: u8) -> f32 {
-    let c = f32::from(channel) / 255.0;
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
-}
-
-/// Converts linear light (0 to 1) back to one sRGB u8 channel, rounded.
-fn linear_to_channel(linear: f32) -> u8 {
-    let c = if linear <= 0.0031308 { linear * 12.92 } else { 1.055 * linear.powf(1.0 / 2.4) - 0.055 };
-    (c.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
-}
-
-/// Converts an sRGB color to linear RGB.
-fn srgb_to_linear(color: Color32) -> [f32; 3] {
-    [channel_to_linear(color.r()), channel_to_linear(color.g()), channel_to_linear(color.b())]
-}
-
-/// Converts linear RGB to OKLab (Björn Ottosson's reference transform).
-fn linear_to_oklab(rgb: [f32; 3]) -> Oklab {
-    let [r, g, b] = rgb;
-    let l = (0.412_221_47 * r + 0.536_332_54 * g + 0.051_445_993 * b).cbrt();
-    let m = (0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b).cbrt();
-    let s = (0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b).cbrt();
-    Oklab {
-        l: 0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s,
-        a: 1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s,
-        b: 0.025_904_037 * l + 0.782_771_77 * m - 0.808_675_77 * s,
-    }
-}
-
-/// Converts OKLab to linear RGB (Björn Ottosson's reference transform).
-fn oklab_to_linear(color: Oklab) -> [f32; 3] {
-    let l_ = color.l + 0.396_337_78 * color.a + 0.215_803_76 * color.b;
-    let m_ = color.l - 0.105_561_35 * color.a - 0.063_854_17 * color.b;
-    let s_ = color.l - 0.089_484_18 * color.a - 1.291_485_5 * color.b;
-    let (l, m, s) = (l_.powi(3), m_.powi(3), s_.powi(3));
-    [
-        4.076_741_7 * l - 3.307_711_6 * m + 0.230_969_93 * s,
-        -1.268_438 * l + 2.609_757_4 * m - 0.341_319_38 * s,
-        -0.004_196_086 * l - 0.703_418_6 * m + 1.707_614_7 * s,
-    ]
-}
-
-/// Converts OKLab to OKLCH.
-fn oklab_to_oklch(color: Oklab) -> Oklch {
-    let c = (color.a * color.a + color.b * color.b).sqrt();
-    let h = color.b.atan2(color.a).to_degrees().rem_euclid(360.0);
-    Oklch { l: color.l, c, h }
-}
-
-/// Converts OKLCH to OKLab.
-fn oklch_to_oklab(color: Oklch) -> Oklab {
-    let radians = color.h.to_radians();
-    Oklab { l: color.l, a: color.c * radians.cos(), b: color.c * radians.sin() }
-}
-
 /// Converts an sRGB color to OKLCH.
 fn srgb_to_oklch(color: Color32) -> Oklch {
-    oklab_to_oklch(linear_to_oklab(srgb_to_linear(color)))
+    rgb_to_oklch([color.r(), color.g(), color.b()])
 }
 
 /// Converts OKLCH to an sRGB `Color32`, reducing chroma by bisection (hue and
 /// lightness fixed) when the color falls outside the sRGB gamut.
 fn oklch_to_color32(color: Oklch) -> Color32 {
-    let fits = |chroma: f32| {
-        let rgb = oklab_to_linear(oklch_to_oklab(Oklch { c: chroma, ..color }));
-        rgb.iter().all(|&value| (-GAMUT_EPS..=1.0 + GAMUT_EPS).contains(&value))
-    };
-    let chroma = if fits(color.c) {
-        color.c
-    } else {
-        // Bisect between 0 (always in gamut) and the requested chroma.
-        let (mut lo, mut hi) = (0.0_f32, color.c);
-        for _ in 0..20 {
-            let mid = (lo + hi) / 2.0;
-            if fits(mid) { lo = mid } else { hi = mid }
-        }
-        lo
-    };
-    let rgb = oklab_to_linear(oklch_to_oklab(Oklch { c: chroma, ..color }));
-    Color32::from_rgb(linear_to_channel(rgb[0]), linear_to_channel(rgb[1]), linear_to_channel(rgb[2]))
+    let [r, g, b] = oklch_to_rgb(color);
+    Color32::from_rgb(r, g, b)
+}
+
+/// The hue that tints the neutrals for a picked color, or `None` for a gray
+/// pick (chroma below 0.02), whose neutrals stay untinted.
+pub(crate) fn neutral_hue(pick: Color32) -> Option<f32> {
+    let picked = srgb_to_oklch(pick);
+    (picked.c >= GRAY_MAX_C).then_some(picked.h)
 }
 
 /// Derives the six accent tokens from a user-picked color, applying the
@@ -236,6 +148,7 @@ fn hue_distance(a: f32, b: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::oklch::linear_to_oklab;
 
     /// Reference values: OKLab of white is (1, 0, 0).
     #[test]

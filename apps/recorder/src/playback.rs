@@ -4,8 +4,11 @@
 //! No UI: the review panels call this API every frame and pull the picture with
 //! [`Playback::current_frame`]. When the file has audio and an output device exists, the
 //! clock counts the stereo frames the callback actually hands to the device minus the
-//! latency the device reports; without one it falls back to an `Instant` clock and keeps
-//! the video playing.
+//! latency the device reports; without one, or when the device or the audio decoder fails,
+//! it falls back to an `Instant` clock and keeps the video playing.
+//!
+//! A take with an input track gets its cursor drawn back onto each frame, in the default style
+//! (input track spec, "Review").
 
 use std::cell::Cell;
 use std::path::Path;
@@ -15,11 +18,15 @@ use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{OutputCallbackInfo, SampleFormat, Stream, StreamConfig, SupportedStreamConfig, SupportedStreamConfigRange};
+use cursor_render::{CaptureMap, CursorStyle};
+use events::EventsReader;
 use media_io::MediaError;
 use media_io::player::audio::AudioDecoder;
-use media_io::player::probe::probe;
+use media_io::player::probe::{VideoInfo, probe};
 use media_io::player::video::{RgbaFrame, VideoDecoder};
 use thiserror::Error;
+
+use crate::review::{self, bake};
 
 /// Errors from opening a take for playback.
 #[derive(Debug, Error)]
@@ -157,6 +164,35 @@ impl WallClock {
     }
 }
 
+/// What draws a take's cursor back onto its frames.
+struct CursorOverlay {
+    track: EventsReader,
+    map: CaptureMap,
+    /// When the first video frame is, in microseconds from the file's start; the track counts from that frame.
+    video_start_us: i64,
+}
+
+impl CursorOverlay {
+    /// The overlay of the take whose main file is `video`; None when it has no readable input track or its video does
+    /// not show the screen.
+    fn load(video: &Path, stream: &VideoInfo) -> Option<Self> {
+        let path = video.with_extension("events");
+        if !path.is_file() || !bake::shows_screen(video) {
+            return None;
+        }
+        let track = review::load_track(&path)?;
+        let video_start_us = bake::video_start_us(video).map_err(|err| log::warn!("the cursor of {} is not drawn: {err}", video.display())).ok()?;
+        Some(Self { track, map: CaptureMap::new(stream.width, stream.height), video_start_us })
+    }
+
+    /// Draws the cursor of the frame's time onto the frame.
+    fn draw(&self, frame: &mut RgbaFrame) {
+        let from_start = i64::try_from(frame.pts_ms).unwrap_or(i64::MAX).saturating_mul(1000);
+        let time_us = from_start.saturating_sub(self.video_start_us);
+        cursor_render::render(frame, &self.track, time_us, &self.map, &CursorStyle::default());
+    }
+}
+
 /// One take playing back: its video decoder, its mixdown audio decoder and the output stream
 /// that drives the shared clock. Dropping it stops the stream and joins both decoders.
 pub struct Playback {
@@ -170,14 +206,18 @@ pub struct Playback {
     shared: Arc<DeviceShared>,
     /// What the position is measured from.
     clock: Clock,
-    /// The length of the take in milliseconds, from its headers.
+    /// The length of the take in milliseconds (see [`review::take_duration`]); 0 when unknown.
     duration_ms: u64,
     /// Whether the clock runs.
     playing: bool,
-    /// Whether playback already fell back to the wall clock, so a lost device reports once.
+    /// Whether playback already fell back to the wall clock, so a failure reports once.
     fallback: bool,
-    /// The device problem that made playback fall back to the wall clock, to report once.
+    /// The audio problem that made playback fall back to the wall clock, to report once.
     device_error: Option<String>,
+    /// The take's cursor, when it has an input track.
+    cursor: Option<CursorOverlay>,
+    /// Whether the cursor is drawn.
+    show_cursor: bool,
 }
 
 impl Playback {
@@ -209,7 +249,15 @@ impl Playback {
             (Some(_), Some(rate)) => Clock::Audio(SampleClock::new(Arc::clone(&shared), rate)),
             _ => Clock::Wall(WallClock::new()),
         };
-        Ok(Self { stream, audio, video, shared, clock, duration_ms: info.duration_ms, playing: false, fallback: false, device_error })
+        let duration_ms = review::take_duration(path, Some(info.duration_ms), review::load_sidecar(path).as_ref()).unwrap_or(0);
+        let cursor = info.video.as_ref().and_then(|stream| CursorOverlay::load(path, stream));
+        Ok(Self { stream, audio, video, shared, clock, duration_ms, playing: false, fallback: false, device_error, cursor, show_cursor: true })
+    }
+
+    /// Draws the take's cursor from the next frame on, or leaves it out. A take without an input track shows the same
+    /// either way.
+    pub fn set_show_cursor(&mut self, show: bool) {
+        self.show_cursor = show;
     }
 
     /// Resumes the clock and both decoders.
@@ -270,7 +318,7 @@ impl Playback {
         if self.duration_ms > 0 { position.min(self.duration_ms) } else { position }
     }
 
-    /// The take's length in milliseconds, from its headers.
+    /// The take's length in milliseconds, the one the File group shows.
     pub fn duration_ms(&self) -> u64 {
         self.duration_ms
     }
@@ -281,23 +329,35 @@ impl Playback {
     }
 
     /// The newest video frame at or before the clock, pausing the take when it reaches its
-    /// end. A lost output device is noticed once: the clock switches to the wall clock and
-    /// the reason is reported through [`Playback::take_device_error`], the video keeps going.
+    /// end. A lost output device or a failed audio decoder is noticed once: the clock
+    /// switches to the wall clock and the reason is reported through
+    /// [`Playback::take_device_error`], the video keeps going.
     pub fn current_frame(&mut self) -> Option<RgbaFrame> {
-        if !self.fallback && self.shared.errored.load(Ordering::Relaxed) {
-            self.fallback_to_wall_clock("the output device was lost");
+        if !self.fallback {
+            if let Some(reason) = self.audio.as_ref().and_then(|audio| audio.take_error()) {
+                self.fallback_to_wall_clock(&reason);
+            } else if self.shared.errored.load(Ordering::Relaxed) {
+                self.fallback_to_wall_clock("the output device was lost");
+            }
         }
         let position = self.position_ms();
         if self.playing && end_of_file(position, self.duration_ms) {
             self.pause();
         }
-        self.video.as_ref().and_then(|video| video.frame_at(position))
+        // The decoder hands out a copy of the frame it keeps, so drawing on it leaves that one clean.
+        let mut frame = self.video.as_ref().and_then(|video| video.frame_at(position))?;
+        if self.show_cursor
+            && let Some(cursor) = &self.cursor
+        {
+            cursor.draw(&mut frame);
+        }
+        Some(frame)
     }
 
-    /// The device problem that made playback fall back to the wall clock, if it happened;
-    /// reported once, `None` afterwards.
+    /// The caption for the audio problem (device or decoder) that made playback fall back to
+    /// the wall clock, if it happened; reported once, `None` afterwards.
     pub fn take_device_error(&mut self) -> Option<String> {
-        self.device_error.take()
+        self.device_error.take().map(|reason| format!("Audio could not be played: {reason}"))
     }
 
     /// Stops playback and closes the output stream and both decoders.
@@ -320,6 +380,8 @@ impl Playback {
             clock.play();
         }
         self.clock = Clock::Wall(clock);
+        // The stream holds the decoder too, so it goes first.
+        self.stream = None;
         self.audio = None;
         if self.device_error.is_none() {
             self.device_error = Some(reason.to_owned());
@@ -472,7 +534,7 @@ fn callback_latency_ns(info: &OutputCallbackInfo, frames: usize, rate: u32) -> u
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::OnceLock;
     use std::time::Duration;
@@ -550,7 +612,7 @@ mod tests {
     }
 
     /// The shared test take: a small video-only AV1 MKV, encoded once per process.
-    fn test_take() -> Result<&'static PathBuf, String> {
+    pub(crate) fn test_take() -> Result<&'static PathBuf, String> {
         static TAKE: OnceLock<Result<PathBuf, String>> = OnceLock::new();
         TAKE.get_or_init(|| {
             let path = std::env::temp_dir().join(format!("cutmark_playback_test_{}__wall.mkv", std::process::id()));
@@ -640,6 +702,128 @@ mod tests {
         assert_eq!(playback.position_ms(), playback.duration_ms());
         assert!(playback.current_frame().is_some(), "the last frame stays shown");
         drop(frame);
+        Ok(())
+    }
+
+    /// The track counts from the first video frame, so the cursor must move on exactly the frame it moved in the
+    /// recording, also in a video that starts 100 ms into its file. The switch takes it away again.
+    #[test]
+    fn playback_draws_the_cursor_on_the_frame_of_its_time() -> Result<(), Box<dyn std::error::Error>> {
+        for (name, late) in [("playback", 0), ("playback-late", crate::review::bake::tests::LATE_FRAMES)] {
+            check_playback_cursor(name, late)?;
+        }
+        Ok(())
+    }
+
+    fn check_playback_cursor(name: &str, late: u32) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::review::bake::tests::{HEIGHT, MOVE_FRAME, TestTake, WIDTH};
+
+        let take = match TestTake::starting(name, late)? {
+            Ok(take) => take,
+            Err(reason) => {
+                eprintln!("skipped: {reason}");
+                return Ok(());
+            }
+        };
+        let green = |frame: &RgbaFrame, x: u32, y: u32| {
+            let at = ((y * frame.width + x) * 4) as usize;
+            frame.data[at..at + 4] == [0, 255, 0, 255]
+        };
+        // The middle of the cursor at its first and at its second place.
+        let (first, second) = ((108, 108), (408, 208));
+
+        let info = probe(&take.video)?;
+        let overlay = CursorOverlay::load(&take.video, info.video.as_ref().ok_or("no video")?).ok_or("no overlay")?;
+        // Matroska's millisecond times of the frame before the move and of the frame of the move.
+        let before = u64::from(late + MOVE_FRAME - 1) * 1000 / 60;
+        let moved = u64::from(late + MOVE_FRAME) * 1000 / 60;
+        for (pts_ms, here, gone) in [(before, first, second), (moved, second, first)] {
+            let mut frame = RgbaFrame { width: WIDTH, height: HEIGHT, pts_ms, data: vec![0; (WIDTH * HEIGHT * 4) as usize] };
+            overlay.draw(&mut frame);
+            assert!(green(&frame, here.0, here.1) && !green(&frame, gone.0, gone.1), "at {pts_ms} ms");
+        }
+
+        let mut playback = Playback::open(&take.video)?;
+        // The wall clock stands exactly where a seek puts it, with or without an output device here.
+        playback.stream = None;
+        playback.audio = None;
+        playback.clock = Clock::Wall(WallClock::new());
+        playback.seek(moved);
+        let started = std::time::Instant::now();
+        let shown = loop {
+            if let Some(frame) = playback.current_frame() {
+                break frame;
+            }
+            assert!(started.elapsed() < Duration::from_secs(10), "no frame arrived");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(green(&shown, second.0, second.1), "the cursor is drawn by default");
+        playback.set_show_cursor(false);
+        let hidden = playback.current_frame().ok_or("the frame stays shown")?;
+        assert!(!green(&hidden, second.0, second.1), "the switch leaves the cursor out");
+        playback.set_show_cursor(true);
+        assert!(green(&playback.current_frame().ok_or("the frame stays shown")?, second.0, second.1));
+        playback.close();
+        std::fs::remove_dir_all(&take.folder)?;
+        Ok(())
+    }
+
+    /// Writes a tenth of a second of silence as a 16-bit mono WAV.
+    fn write_silent_wav(path: &Path) -> std::io::Result<()> {
+        let data = [0u8; 9_600];
+        let mut bytes = b"RIFF".to_vec();
+        bytes.extend((36 + data.len() as u32).to_le_bytes());
+        bytes.extend(b"WAVEfmt ");
+        bytes.extend(16u32.to_le_bytes());
+        for field in [1u16, 1] {
+            bytes.extend(field.to_le_bytes());
+        }
+        for field in [48_000u32, 96_000] {
+            bytes.extend(field.to_le_bytes());
+        }
+        for field in [2u16, 16] {
+            bytes.extend(field.to_le_bytes());
+        }
+        bytes.extend(b"data");
+        bytes.extend((data.len() as u32).to_le_bytes());
+        bytes.extend(data);
+        std::fs::write(path, bytes)
+    }
+
+    #[test]
+    fn a_failed_resampler_leaves_the_video_playing_on_the_wall_clock() -> Result<(), Box<dyn std::error::Error>> {
+        let take = match test_take() {
+            Ok(take) => take,
+            Err(reason) => {
+                eprintln!("skipped: {reason}");
+                return Ok(());
+            }
+        };
+        let wav = std::env::temp_dir().join(format!("cutmark_playback_test_{}_refused.wav", std::process::id()));
+        write_silent_wav(&wav)?;
+        let mut playback = Playback::open(take)?;
+        // Stand in for an opened output: the audio clock, with no device handing samples, and a
+        // decoder whose resampler cannot start because its output rate is zero.
+        playback.audio = Some(Arc::new(AudioDecoder::open(&wav, 0)?));
+        playback.clock = Clock::Audio(SampleClock::new(Arc::clone(&playback.shared), 48_000));
+        playback.play();
+        let started = std::time::Instant::now();
+        while !playback.runs_on_the_wall_clock() && started.elapsed() < Duration::from_secs(5) {
+            playback.current_frame();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(playback.runs_on_the_wall_clock(), "the failed decoder gave up the clock");
+        assert!(playback.is_playing(), "the video keeps playing");
+        assert!(playback.audio.is_none(), "the decoder was stopped");
+        let before = playback.position_ms();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(playback.position_ms() > before, "the wall clock advances");
+        assert!(playback.current_frame().is_some(), "the picture arrives");
+        let caption = playback.take_device_error().ok_or("the failure was not reported")?;
+        assert!(caption.starts_with("Audio could not be played: "), "{caption}");
+        playback.current_frame();
+        assert_eq!(playback.take_device_error(), None, "reported once");
+        let _ = std::fs::remove_file(wav);
         Ok(())
     }
 }

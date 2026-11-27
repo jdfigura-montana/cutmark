@@ -117,8 +117,9 @@ fn output_latency_ns(info: &OutputCallbackInfo, frames: usize, rate: u32) -> u64
 /// Dropping the `Engine` (that is, the `Editor`) stops the stream: cpal
 /// joins the callback when the `Stream` is dropped.
 pub struct Engine {
-    /// The live output stream; dropping it stops playback.
-    _stream: Stream,
+    /// The live output stream; dropping it stops playback. None only in the
+    /// test double.
+    _stream: Option<Stream>,
     /// Bounded command queue into the callback; commands are dropped when full.
     cmd_tx: Sender<Command>,
     /// Latest timeline mix plan.
@@ -240,7 +241,30 @@ impl Engine {
 
         let device_info =
             if device_rate == project_rate { format!("{project_rate} Hz") } else { format!("{device_rate} Hz device, resampling from {project_rate} Hz") };
-        Ok(Engine { _stream: stream, cmd_tx, timeline, preview, shared, device_info, errored })
+        Ok(Engine { _stream: Some(stream), cmd_tx, timeline, preview, shared, device_info, errored })
+    }
+
+    /// An engine with no stream and no device, for tests: sent commands queue
+    /// up on the returned receiver, and the test writes the shared state the
+    /// way the callback would.
+    #[cfg(test)]
+    pub fn test_double(project_rate: u32) -> (Engine, Receiver<Command>) {
+        let (cmd_tx, cmd_rx) = bounded::<Command>(QUEUE_CAP);
+        let engine = Engine {
+            _stream: None,
+            cmd_tx,
+            timeline: Arc::new(ArcSwap::from(Arc::new(MixPlan::empty(project_rate)))),
+            preview: Arc::new(ArcSwap::from(Arc::new(MixPlan::empty(project_rate)))),
+            shared: Arc::new(Shared {
+                playhead: AtomicU64::new(0),
+                preview_pos: AtomicU64::new(0),
+                state: AtomicU8::new(state_code(State::Stopped)),
+                output_latency_ns: AtomicU64::new(0),
+            }),
+            device_info: format!("{project_rate} Hz"),
+            errored: Arc::new(AtomicBool::new(false)),
+        };
+        (engine, cmd_rx)
     }
 
     /// Sends a transport command; it is dropped when the queue is full.

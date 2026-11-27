@@ -119,6 +119,7 @@ fn build() -> ShortcutTable {
         one("fade_in", "Fade In", EDIT, Modifiers::CTRL | Modifiers::SHIFT, Key::I, GLOBAL),
         one("fade_out", "Fade Out", EDIT, Modifiers::CTRL | Modifiers::SHIFT, Key::O, GLOBAL),
         one("silence", "Silence", EDIT, Modifiers::CTRL, Key::L, GLOBAL),
+        one("preferences", "Preferences", EDIT, Modifiers::CTRL, Key::Comma, GLOBAL),
         one("close_menu", "Close Menu", EDIT, Modifiers::NONE, Key::Escape, MENU),
         one("cancel_edit", "Cancel Edit", EDIT, Modifiers::NONE, Key::Escape, INLINE_EDIT),
         one("confirm_edit", "Confirm Edit", EDIT, Modifiers::NONE, Key::Enter, INLINE_EDIT),

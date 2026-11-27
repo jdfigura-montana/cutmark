@@ -8,11 +8,11 @@ use crate::editor::Editor;
 use crate::ui::dialogs::audio_settings::AudioSettingsDialog;
 use crate::ui::dialogs::confirm::ConfirmDialog;
 use crate::ui::dialogs::export::ExportDialog;
+use crate::ui::dialogs::preferences::{PreferencesDialog, RemoteStatus};
 use crate::ui::dialogs::project_settings::ProjectSettingsDialog;
 use crate::ui::dialogs::save_as::SaveAsDialog;
 use crate::ui::timeline::ViewMenuAction;
-use ui_kit::fonts;
-use ui_kit::tokens::{color, space, typography};
+use ui_kit::tokens::space;
 
 /// What the user chose in the Project menu this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,37 +49,17 @@ const SEPARATOR_THICKNESS: f32 = 1.0;
 
 /// A menu separator: 1 px line in the hairline color with 4 px vertical margin.
 fn menu_sep(ui: &mut egui::Ui) {
+    let neutral = crate::ui::neutrals(ui.ctx());
     ui.add_space(space::SCALE_4);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), SEPARATOR_THICKNESS), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 0.0, color::STROKE_HAIRLINE);
+    ui.painter().rect_filled(rect, 0.0, neutral.stroke_hairline);
     ui.add_space(space::SCALE_4);
 }
 
-/// A menu item button with a right-aligned type.value shortcut hint. The hint
-/// is the shortcut table's text for `id`, so menus and the sheet never drift.
-fn item(ctx: &egui::Context, label: impl Into<String>, id: &str) -> egui::Button<'static> {
-    egui::Button::new(label.into())
-        .right_text(egui::RichText::new(crate::shortcuts::text(ctx, id)).font(fonts::mono(typography::VALUE_SIZE)).color(color::TEXT_TERTIARY))
-}
-
-/// The app mark's side (spec rev 3 "Title bar": 18).
-const APP_MARK_SIZE: f32 = 18.0;
-
-/// Draws the app mark placeholder: an accent circle with a notch cut from its
-/// top right (spec "Open questions" item 1: placeholder until a real logo).
-pub(crate) fn app_mark(ui: &mut egui::Ui) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(APP_MARK_SIZE, APP_MARK_SIZE), egui::Sense::hover());
-    paint_app_mark(ui, rect, color::BG_GROUND);
-}
-
-/// Paints the app mark into `rect` (a square); `notch` is the color of the
-/// surface behind it, which the cut-out notch shows.
-pub(crate) fn paint_app_mark(ui: &egui::Ui, rect: egui::Rect, notch: egui::Color32) {
-    let c = rect.center();
-    let radius = rect.width() / 2.0;
-    let painter = ui.painter();
-    painter.circle_filled(c, radius, ui_kit::Theme::get(ui.ctx()).accent.accent);
-    painter.rect_filled(egui::Rect::from_min_size(egui::pos2(c.x, c.y - radius), egui::vec2(radius, radius)), 0.0, notch);
+/// A menu item with a shortcut hint. The hint is the shortcut table's text for
+/// `id`, so menus and the sheet never drift.
+fn item(ctx: &egui::Context, label: impl Into<String>, id: &str) -> ui_kit::MenuItem {
+    ui_kit::MenuItem::new(label).shortcut(crate::shortcuts::text(ctx, id))
 }
 
 /// The start screen's menu bar: File with New project and Open project, the
@@ -134,7 +114,7 @@ pub fn menu_bar(
         ui_kit::Menu::new("Edit", |ui| {
             let editor = &mut **editor.borrow_mut();
             let recording = editor.is_recording();
-            ProjectMenu::edit_menu(ui, editor, recording);
+            menu.borrow_mut().edit_menu(ui, editor, recording);
         }),
         ui_kit::Menu::new("Markers", |ui| {
             let editor = &mut **editor.borrow_mut();
@@ -147,7 +127,7 @@ pub fn menu_bar(
             menu.borrow_mut().process_menu(ui, editor, recording);
         }),
         ui_kit::Menu::new("View", |ui| {
-            let chosen = menu.borrow_mut().view_menu(ui, &editor.borrow());
+            let chosen = menu.borrow_mut().view_menu(ui, &mut editor.borrow_mut());
             if chosen != ViewMenuAction::None {
                 view_action.set(chosen);
             }
@@ -164,12 +144,12 @@ pub fn menu_bar(
                 help_action.set(HelpMenuAction::Shortcuts);
                 ui.close();
             }
-            if ui.button("Show the tour").clicked() {
+            if ui.add(ui_kit::MenuItem::new("Show the tour")).clicked() {
                 help_action.set(HelpMenuAction::Tour);
                 ui.close();
             }
             menu_sep(ui);
-            if ui.button("About Cutmark Audio").clicked() {
+            if ui.add(ui_kit::MenuItem::new("About CutMark Audio")).clicked() {
                 help_action.set(HelpMenuAction::About);
                 ui.close();
             }
@@ -195,6 +175,10 @@ pub struct ProjectMenu {
     export_dialog: Option<ExportDialog>,
     /// True while the Appearance dialog (accent and glass) is open.
     appearance_open: bool,
+    /// Preferences dialog, when open.
+    preferences_dialog: Option<PreferencesDialog>,
+    /// The remote control's status, shown by the Preferences dialog.
+    remote_status: RemoteStatus,
 }
 
 impl ProjectMenu {
@@ -230,15 +214,15 @@ impl ProjectMenu {
         } else {
             menu.add_enabled(false, item(&ctx, "Export...", "export"));
         }
-        if menu.button("Close").clicked() {
+        if menu.add(ui_kit::MenuItem::new("Close")).clicked() {
             action = ProjectMenuAction::Close;
             menu.close();
         }
-        if menu.add_enabled(!recording, egui::Button::new("Project Settings...")).clicked() {
+        if menu.add_enabled(!recording, ui_kit::MenuItem::new("Project Settings...")).clicked() {
             self.open_settings(editor);
             menu.close();
         }
-        if menu.add_enabled(!recording, egui::Button::new("Audio Settings...")).clicked() {
+        if menu.add_enabled(!recording, ui_kit::MenuItem::new("Audio Settings...")).clicked() {
             self.audio_settings_dialog = Some(AudioSettingsDialog::new_open(editor));
             menu.close();
         }
@@ -246,8 +230,9 @@ impl ProjectMenu {
     }
 
     /// The Edit menu's items.
-    fn edit_menu(menu: &mut egui::Ui, editor: &mut Editor, recording: bool) {
+    fn edit_menu(&mut self, menu: &mut egui::Ui, editor: &mut Editor, recording: bool) {
         let ctx = menu.ctx().clone();
+        ui_kit::menu_check_slot(menu);
         if recording {
             menu.disable();
         }
@@ -372,13 +357,16 @@ impl ProjectMenu {
             menu.add_enabled(false, item(&ctx, "Clear Selection", "clear_selection"));
         }
         menu_sep(menu);
-        let mut ripple = editor.view.ripple;
-        if menu.add(egui::Checkbox::new(&mut ripple, format!("Ripple ({})", crate::shortcuts::text(&ctx, "toggle_ripple")))).changed() {
+        if menu.add(item(&ctx, "Ripple", "toggle_ripple").checked(editor.view.ripple)).clicked() {
             editor.toggle_ripple();
         }
-        let mut snap = editor.view.snap;
-        if menu.add(egui::Checkbox::new(&mut snap, format!("Snap ({})", crate::shortcuts::text(&ctx, "toggle_snap")))).changed() {
+        if menu.add(item(&ctx, "Snap", "toggle_snap").checked(editor.view.snap)).clicked() {
             editor.toggle_snap();
+        }
+        menu_sep(menu);
+        if menu.add(item(&ctx, "Preferences...", "preferences")).clicked() {
+            self.open_preferences();
+            menu.close();
         }
     }
 
@@ -463,8 +451,10 @@ impl ProjectMenu {
         }
     }
 
-    /// The View menu's items; returns the zoom command the user chose.
-    fn view_menu(&mut self, menu: &mut egui::Ui, editor: &Editor) -> ViewMenuAction {
+    /// The View menu's items; returns the zoom command the user chose. Go to
+    /// End acts on the editor here. It stands in for the bottom bar button a
+    /// narrow bar leaves out, and like it is disabled while a take is recorded.
+    fn view_menu(&mut self, menu: &mut egui::Ui, editor: &mut Editor) -> ViewMenuAction {
         let ctx = menu.ctx().clone();
         let mut view_action = ViewMenuAction::None;
         if menu.add(item(&ctx, "Zoom In", "zoom_in")).clicked() {
@@ -486,7 +476,12 @@ impl ProjectMenu {
             menu.close();
         }
         menu_sep(menu);
-        if menu.add(egui::Button::new("Appearance...")).clicked() {
+        if menu.add_enabled(!editor.is_recording(), item(&ctx, "Go to End", "jump_to_end")).clicked() {
+            editor.jump_end();
+            menu.close();
+        }
+        menu_sep(menu);
+        if menu.add(ui_kit::MenuItem::new("Appearance...")).clicked() {
             self.appearance_open = true;
             menu.close();
         }
@@ -518,6 +513,12 @@ impl ProjectMenu {
         if let Some(dialog) = &mut self.export_dialog {
             dialog.show(ctx, editor);
         }
+        if let Some(dialog) = &mut self.preferences_dialog {
+            dialog.show(ctx, editor, self.remote_status);
+            if dialog.is_closed() {
+                self.preferences_dialog = None;
+            }
+        }
         if let Some(dialog) = &mut self.error_dialog {
             dialog.show(ctx);
         }
@@ -527,14 +528,27 @@ impl ProjectMenu {
     }
 
     /// True while one of the menu's dialogs (save error, Save As, Project or
-    /// Audio Settings) is up. The app keeps Esc and Space away from a running
-    /// take then, so closing a dialog never discards a recording.
+    /// Audio Settings, Appearance, Preferences) is up. The app keeps Esc and
+    /// Space away from a running take then, so closing a dialog never discards
+    /// a recording.
     pub fn modal_open(&self) -> bool {
         self.error_dialog.as_ref().is_some_and(|dialog| dialog.open)
             || self.save_as_dialog.is_some()
             || self.settings_dialog.is_some()
             || self.audio_settings_dialog.is_some()
             || self.appearance_open
+            || self.preferences_dialog.is_some()
+    }
+
+    /// Opens the Preferences dialog.
+    pub fn open_preferences(&mut self) {
+        self.preferences_dialog = Some(PreferencesDialog::new_open());
+    }
+
+    /// Sets the remote control's status the Preferences dialog shows; the app
+    /// calls it before it draws the frame.
+    pub fn set_remote_status(&mut self, status: RemoteStatus) {
+        self.remote_status = status;
     }
 
     /// Shows a failed Process menu operation in the error modal, with the
@@ -589,6 +603,7 @@ mod tests {
     use crate::io::paths::ProjectPaths;
     use crate::model::project::{BitDepth, Project, ViewState};
     use crate::ui::test_util::{Headless, Out};
+    use ui_kit::tokens::color;
 
     fn editor(name: &str, dirty: bool) -> Editor {
         let mut editor =
@@ -678,8 +693,9 @@ mod tests {
                 ("Trim to Selection", "Ctrl+T"),
                 ("Select All", "Ctrl+A"),
                 ("Clear Selection", "Escape"),
-                ("Ripple (R)", ""),
-                ("Snap (N)", ""),
+                ("Ripple", "R"),
+                ("Snap", "N"),
+                ("Preferences...", "Ctrl+Comma"),
             ],
         ),
         ("Markers", &[("Add Marker", "M"), ("Previous Marker", "Comma"), ("Next Marker", "Period"), ("Delete Marker", "Delete")]),
@@ -687,8 +703,18 @@ mod tests {
             "Process",
             &[("Gain...", "Ctrl+G"), ("Normalize...", "Ctrl+Shift+N"), ("Fade In", "Ctrl+Shift+I"), ("Fade Out", "Ctrl+Shift+O"), ("Silence", "Ctrl+L")],
         ),
-        ("View", &[("Zoom In", "Plus"), ("Zoom Out", "Minus"), ("Zoom to Selection", "Ctrl+Backslash"), ("Zoom to Fit", "Backslash"), ("Appearance...", "")]),
-        ("Help", &[("Help topics", "F1"), ("Keyboard shortcuts", "Ctrl+Slash"), ("Show the tour", ""), ("About Cutmark Audio", "")]),
+        (
+            "View",
+            &[
+                ("Zoom In", "Plus"),
+                ("Zoom Out", "Minus"),
+                ("Zoom to Selection", "Ctrl+Backslash"),
+                ("Zoom to Fit", "Backslash"),
+                ("Go to End", "End"),
+                ("Appearance...", ""),
+            ],
+        ),
+        ("Help", &[("Help topics", "F1"), ("Keyboard shortcuts", "Ctrl+Slash"), ("Show the tour", ""), ("About CutMark Audio", "")]),
     ];
 
     #[test]
@@ -790,6 +816,18 @@ mod tests {
         assert!(!rig.menu.appearance_open, "Done closed the dialog");
     }
 
+    #[test]
+    fn view_go_to_end_moves_the_playhead_to_the_end_but_not_while_recording() {
+        for recording in [false, true] {
+            let (mut editor, _dir) = take_editor(recording);
+            let before = editor.view.playhead;
+            assert_ne!(before, editor.project_length(), "the playhead starts away from the end");
+            let _ = choose(&mut editor, "View", "Go to End");
+            let expected = if recording { before } else { editor.project_length() };
+            assert_eq!(editor.view.playhead, expected, "recording: {recording}");
+        }
+    }
+
     // ---- While a take is recorded ----
 
     /// On a fresh bar: opens the `title` menu and clicks `item_text`. Returns
@@ -852,7 +890,7 @@ mod tests {
         let _ = choose(&mut editor, "Edit", "Clear Selection");
         assert!(matches!(editor.selection(), crate::editor::selection::Selection::None));
         editor.select_all();
-        let _ = choose(&mut editor, "Edit", "Ripple (R)");
+        let _ = choose(&mut editor, "Edit", "Ripple");
         assert!(editor.view.ripple, "Ripple toggled");
         let (menu, _) = choose(&mut editor, "Process", "Silence");
         assert!(menu.error_dialog.is_none());
@@ -865,7 +903,7 @@ mod tests {
         let ripple = editor.view.ripple;
         let _ = choose(&mut editor, "Edit", "Clear Selection");
         assert!(!matches!(editor.selection(), crate::editor::selection::Selection::None), "Clear Selection did nothing");
-        let _ = choose(&mut editor, "Edit", "Ripple (R)");
+        let _ = choose(&mut editor, "Edit", "Ripple");
         assert_eq!(editor.view.ripple, ripple, "Ripple did nothing");
         let _ = choose(&mut editor, "Edit", "Select All");
         let (menu, _) = choose(&mut editor, "Process", "Silence");

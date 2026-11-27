@@ -1,6 +1,6 @@
 [package]
 name = "cutmark-audio"
-version = "1.2.0"
+version = "1.3.0"
 description = "CutMark Audio Editor"
 edition.workspace = true
 rust-version.workspace = true
@@ -17,12 +17,13 @@ assert_no_alloc = { version = "1.1.2", features = ["warn_debug"] }
 chrono = { workspace = true, features = ["clock"] }
 cpal = "0.18.2"
 crossbeam-channel = "0.5.17"
+cutmark-remote = { version = "0.1.0", path = "../../crates/cutmark-remote" }
 directories = "6.0.0"
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }
 egui-phosphor = { workspace = true }
 ffmpeg-next = { workspace = true, features = ["codec", "format"] }
 hound = { workspace = true }
-image = { version = "0.25.10", default-features = false, features = ["png"] }
+log.workspace = true
 rfd = { workspace = true }
 rtrb = "0.4.1"
 rubato = { workspace = true }

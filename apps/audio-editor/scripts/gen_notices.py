@@ -1,38 +1,45 @@
-"""Generate THIRD-PARTY-NOTICES.txt in apps/audio-editor.
+"""Generate the third-party notices of a CutMark app.
 
-Lists Inter + JetBrains Mono (OFL) + Phosphor icons (MIT), the FFmpeg shared libraries
-(LGPL-3.0-or-later) and the license of every crate in the cutmark-audio dependency
-tree for Windows (via cargo tree), read from the extracted crate sources
-in the local cargo registry (no network). Run from the repo root:
+By default THIRD-PARTY-NOTICES.txt in apps/audio-editor; with
+--package cutmark-recorder, apps/recorder/licenses/THIRD_PARTY.txt.
+
+Lists Instrument Sans + Martian Mono (OFL) + Phosphor icons (MIT), the FFmpeg shared libraries
+(LGPL-3.0-or-later), the LAME encoder inside them and the license of every
+third-party crate in the package's dependency tree for Windows (via cargo tree),
+read from the extracted crate sources in the local cargo registry (no network).
+Run from the repo root:
 python apps\audio-editor\scripts\gen_notices.py
+python apps\audio-editor\scripts\gen_notices.py --package cutmark-recorder
 """
+import argparse
 import json
 import re
 import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+WORKSPACE = ROOT.parent.parent
 OUT = ROOT / "THIRD-PARTY-NOTICES.txt"
 
 # Local sparse-registry cache written by cargo; no network needed.
 REGISTRY = Path.home() / ".cargo" / "registry" / "src" / "index.crates.io-1949cf8c6b5b557f"
 INDEX = Path.home() / ".cargo" / "registry" / "index" / "index.crates.io-1949cf8c6b5b557f"
 
-# Hand-written preamble: bundled assets and the FFmpeg shared libraries,
-# whose crate license is covered by the crate list below.
+# Hand-written preamble: bundled assets, the FFmpeg shared libraries (whose
+# Rust wrapper crates are in the crate list below) and the LAME encoder inside them.
 PREAMBLE = """\
 Third-party notices for CutMark Audio Editor
 ====================================
 
 Fonts and icons (embedded in the exe by the ui-kit crate):
 
-- Inter (crates/ui-kit/assets/fonts/Inter-*.ttf)
-  License: SIL Open Font License 1.1 - crates/ui-kit/assets/fonts/OFL-Inter.txt
-  Copyright (c) 2016 The Inter Project Authors
+- Instrument Sans (crates/ui-kit/assets/fonts/InstrumentSans-*.ttf)
+  License: SIL Open Font License 1.1 - crates/ui-kit/assets/fonts/OFL-InstrumentSans.txt
+  Copyright 2022 The Instrument Sans Project Authors
 
-- JetBrains Mono (crates/ui-kit/assets/fonts/JetBrainsMono-*.ttf)
-  License: SIL Open Font License 1.1 - crates/ui-kit/assets/fonts/OFL-JetBrainsMono.txt
-  Copyright 2020 The JetBrains Mono Project Authors
+- Martian Mono (crates/ui-kit/assets/fonts/MartianMono-*.ttf)
+  License: SIL Open Font License 1.1 - crates/ui-kit/assets/fonts/OFL-MartianMono.txt
+  Copyright 2021 The Martian Mono Project Authors
 
 - Phosphor Icons, used through the egui-phosphor crate
   License: MIT - licenses/Phosphor-MIT.txt
@@ -44,21 +51,65 @@ Fonts and icons (embedded in the exe by the ui-kit crate):
   Linked dynamically as separate DLL files beside the exe that the user may
   replace; build details and source location in licenses/FFmpeg-BUILDINFO.txt.
 
+- LAME MP3 encoder (libmp3lame), part of the FFmpeg shared libraries above
+  License: LGPL-2.0-or-later (https://www.gnu.org/licenses/old-licenses/lgpl-2.0.html)
+  Used for MP3 export. Project and source: https://lame.sourceforge.io
+
 Rust crates (from the cutmark-audio dependency tree; license as declared on crates.io):
 """
 
+# The Recorder's file ships inside the installed licenses folder, so its paths
+# point at the files beside it.
+RECORDER_PREAMBLE = """\
+Third-party notices for CutMark Recorder
+========================================
 
-def tree_packages() -> list[tuple[str, str]]:
-    """Unique (name, version) pairs in the cutmark-audio dependency tree on Windows, sorted by name."""
+Fonts and icons (embedded in the exe by the ui-kit crate):
+
+- Instrument Sans
+  License: SIL Open Font License 1.1 - OFL-InstrumentSans.txt (this folder)
+  Copyright 2022 The Instrument Sans Project Authors
+
+- Martian Mono
+  License: SIL Open Font License 1.1 - OFL-MartianMono.txt (this folder)
+  Copyright 2021 The Martian Mono Project Authors
+
+- Phosphor Icons, used through the egui-phosphor crate
+  License: MIT - Phosphor-MIT.txt (this folder)
+  Copyright (c) 2020 Phosphor Icons
+
+- FFmpeg 9.0.2 shared libraries (avcodec-63.dll, avdevice-63.dll, avfilter-12.dll,
+  avformat-63.dll, avutil-61.dll, swresample-7.dll, swscale-10.dll)
+  License: LGPL-3.0-or-later (https://www.gnu.org/licenses/lgpl-3.0.html)
+  Full texts: LGPL-3.0.txt and GPL-3.0.txt (this folder).
+  Linked dynamically as separate DLL files beside the exe that the user may
+  replace; build details and source location in FFmpeg-BUILDINFO.txt (this folder).
+
+- LAME MP3 encoder (libmp3lame), part of the FFmpeg shared libraries above
+  License: LGPL-2.0-or-later (https://www.gnu.org/licenses/old-licenses/lgpl-2.0.html)
+  Project and source: https://lame.sourceforge.io
+
+Rust crates (from the cutmark-recorder dependency tree; license as declared on crates.io):
+"""
+
+# Package name -> (preamble, output file).
+TARGETS = {
+    "cutmark-audio": (PREAMBLE, OUT),
+    "cutmark-recorder": (RECORDER_PREAMBLE, WORKSPACE / "apps" / "recorder" / "licenses" / "THIRD_PARTY.txt"),
+}
+
+def tree_packages(package: str) -> list[tuple[str, str]]:
+    """Unique third-party (name, version) pairs in the package's dependency tree on Windows,
+    sorted by name. Crates from this workspace are our own code and are left out."""
     out = subprocess.run(
-        ["cargo", "tree", "-p", "cutmark-audio", "-e", "normal", "--target", "x86_64-pc-windows-msvc",
+        ["cargo", "tree", "-p", package, "-e", "normal", "--target", "x86_64-pc-windows-msvc",
          "--prefix", "none", "--format", "{p}", "--offline"],
         cwd=ROOT, capture_output=True, text=True, check=True,
     ).stdout
     pkgs: dict[str, str] = {}
     for line in out.splitlines():
         m = re.match(r"^(\S+) v(\S+)", line)
-        if m:
+        if m and f"({WORKSPACE}" not in line:
             pkgs.setdefault(m.group(1), m.group(2))
     return sorted(pkgs.items())
 
@@ -89,20 +140,23 @@ def license_from_source(name: str, version: str) -> str | None:
 
 
 def main() -> None:
-    pkgs = tree_packages()
-    lines = [PREAMBLE]
+    parser = argparse.ArgumentParser(description="Generate third-party notices.")
+    parser.add_argument("--package", choices=sorted(TARGETS), default="cutmark-audio")
+    package = parser.parse_args().package
+    preamble, out = TARGETS[package]
+    pkgs = tree_packages(package)
+    lines = [preamble]
     missing = 0
     for name, version in pkgs:
-        if name == "cutmark-audio":  # the crate itself, not a dependency
-            continue
         lic = license_from_source(name, version)
         if lic is None:
             lic = "UNKNOWN (crate source not downloaded)"
             missing += 1
             print(f"  ! no license for {name} {version}")
         lines.append(f"- {name} {version} - {lic}")
-    OUT.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"wrote {OUT} ({len(pkgs) - 1} crates, {missing} unknown)")
+    # LF on every platform, as .gitattributes checks the file out.
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    print(f"wrote {out} ({len(pkgs)} crates, {missing} unknown)")
 
 
 if __name__ == "__main__":

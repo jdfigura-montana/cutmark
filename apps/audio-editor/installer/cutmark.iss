@@ -12,6 +12,10 @@
 #ifndef BinDir
 #define BinDir "..\..\..\target\release\"
 #endif
+; The setup program's icon is the exe's, from the shared brand assets.
+#ifndef BrandDir
+#define BrandDir Root + "..\..\crates\ui-kit\assets\brand\"
+#endif
 ; The font licenses live beside the fonts in the shared ui-kit crate.
 #ifndef FontsDir
 #define FontsDir Root + "..\..\crates\ui-kit\assets\fonts\"
@@ -34,7 +38,7 @@ PrivilegesRequiredOverridesAllowed=dialog
 MinVersion=10.0
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-SetupIconFile={#Root}assets\icon\app.ico
+SetupIconFile={#BrandDir}icon-audio.ico
 UninstallDisplayIcon={app}\{#AppExe}
 ; Close a running copy before updating the exe.
 CloseApplications=yes
@@ -50,8 +54,8 @@ Source: "{#FFmpegDir}dist\bin\*.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#FFmpegDir}BUILDINFO.txt"; DestDir: "{app}\licenses"; DestName: "FFmpeg-BUILDINFO.txt"; Flags: ignoreversion
 Source: "{#FFmpegDir}dist\LICENSE.txt"; DestDir: "{app}\licenses"; DestName: "FFmpeg-LICENSE.txt"; Flags: ignoreversion
 Source: "{#Root}licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs
-Source: "{#FontsDir}OFL-Inter.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
-Source: "{#FontsDir}OFL-JetBrainsMono.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "{#FontsDir}OFL-InstrumentSans.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "{#FontsDir}OFL-MartianMono.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 Source: "{#Root}README.md"; DestDir: "{app}\licenses"; DestName: "README.md"; Flags: ignoreversion
 
 [Tasks]

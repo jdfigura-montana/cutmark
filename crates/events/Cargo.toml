@@ -1,0 +1,24 @@
+[package]
+name = "events"
+description = "Cutmark input track file: chunk format, writer and reader. OS neutral, no capture, UI, audio or video dependencies."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# Strict lint set (S0 spec, Lints). Same as crates/marks.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[dependencies]
+crc32fast = "1.5.2"
+lz4_flex = { version = "0.14.2", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
+thiserror.workspace = true

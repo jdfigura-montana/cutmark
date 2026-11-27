@@ -159,7 +159,8 @@ impl AudioSettingsDialog {
     /// Saves the settings through the Editor; the error stays in the dialog.
     fn try_apply(&mut self, editor: &mut Editor) {
         self.error = None;
-        let config = AppConfig { input_device: self.device.clone(), record_channels: self.channels, latency_offset_ms: self.latency_ms };
+        let config =
+            AppConfig { input_device: self.device.clone(), record_channels: self.channels, latency_offset_ms: self.latency_ms, ..editor.config().clone() };
         match editor.set_config(config) {
             Ok(()) => self.open = false,
             Err(error) => self.error = Some(error.to_string()),
@@ -237,7 +238,14 @@ mod tests {
     fn the_dialog_opens_with_the_current_settings() {
         let dir = tempfile::tempdir().unwrap();
         let mut editor = editor_with_devices(dir.path().join("config.json"));
-        editor.set_config(AppConfig { input_device: Some("Mic".to_string()), record_channels: RecordChannels::Stereo, latency_offset_ms: -12 }).unwrap();
+        editor
+            .set_config(AppConfig {
+                input_device: Some("Mic".to_string()),
+                record_channels: RecordChannels::Stereo,
+                latency_offset_ms: -12,
+                ..AppConfig::default()
+            })
+            .unwrap();
         let dialog = AudioSettingsDialog::new_open(&editor);
         assert_eq!(dialog.device.as_deref(), Some("Mic"));
         assert_eq!(dialog.channels, RecordChannels::Stereo);
@@ -252,7 +260,14 @@ mod tests {
     fn a_saved_stereo_choice_drops_to_mono_1_on_a_one_channel_device() {
         let dir = tempfile::tempdir().unwrap();
         let mut editor = editor_with_devices(dir.path().join("config.json"));
-        editor.set_config(AppConfig { input_device: Some("Line".to_string()), record_channels: RecordChannels::Stereo, latency_offset_ms: 0 }).unwrap();
+        editor
+            .set_config(AppConfig {
+                input_device: Some("Line".to_string()),
+                record_channels: RecordChannels::Stereo,
+                latency_offset_ms: 0,
+                ..AppConfig::default()
+            })
+            .unwrap();
         let dialog = AudioSettingsDialog::new_open(&editor);
         assert_eq!(dialog.channels, RecordChannels::Mono1);
     }
@@ -355,7 +370,7 @@ mod tests {
         let ok = button(&out, "OK").center();
         let _ = h.click(ok, |ui| dialog.show(ui.ctx(), &mut editor));
         assert!(dialog.is_closed());
-        let want = AppConfig { input_device: None, record_channels: RecordChannels::Stereo, latency_offset_ms: 40 };
+        let want = AppConfig { input_device: None, record_channels: RecordChannels::Stereo, latency_offset_ms: 40, ..AppConfig::default() };
         assert_eq!(editor.config(), &want);
         assert_eq!(config::load_from(&path), want);
     }

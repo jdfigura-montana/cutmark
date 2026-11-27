@@ -7,6 +7,7 @@ use egui::{Color32, RichText, Ui};
 use ui_kit::tokens::{color, space};
 use ui_kit::{inspector_group, switch};
 
+use crate::data_text::stat_block;
 use crate::engine::bus::{BusSender, Command, CommandKind};
 use crate::engine::controller::{ControllerState, Phase, PreflightResult};
 use crate::engine::preflight::{DND_LABEL, Status, dnd_line};
@@ -49,7 +50,7 @@ impl PreflightSection {
                     ui.colored_label(tint, RichText::new(label).strong());
                     let total = report.lines.len();
                     let passed = report.lines.iter().filter(|line| matches!(line.status, Status::Pass)).count();
-                    ui.weak(format!("{passed} of {total} checks pass"));
+                    stat_block(ui, &format!("{passed}/{total}"), "Checks pass");
                 }
                 None => {
                     ui.weak("Not run");
@@ -83,19 +84,19 @@ impl PreflightSection {
 fn details_popover(ui: &mut Ui, result: Option<&PreflightResult>, keep_files: &mut bool) {
     match result.map(|result| &result.report) {
         Some(report) => {
-            egui::Grid::new("preflight-report").num_columns(3).show(ui, |ui| {
-                for line in &report.lines {
-                    ui.strong(&line.label);
-                    ui.colored_label(colour(ui, line.status), line.status.label());
-                    ui.label(&line.detail);
-                    ui.end_row();
-                }
-                let dnd = dnd_line();
-                ui.strong(DND_LABEL);
-                ui.colored_label(colour(ui, dnd.status), dnd.status.label());
-                ui.label(&dnd.detail);
-                ui.end_row();
-            });
+            for line in &report.lines {
+                check_heading(ui, &line.label, line.status);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = space::SCALE_16;
+                    for stat in &line.stats {
+                        stat_block(ui, &stat.value, &stat.label);
+                    }
+                });
+                ui.add_space(space::SCALE_8);
+            }
+            let dnd = dnd_line();
+            check_heading(ui, DND_LABEL, dnd.status);
+            ui.label(&dnd.detail);
         }
         None => {
             ui.weak("No pre-flight has run yet.");
@@ -117,6 +118,14 @@ fn details_popover(ui: &mut Ui, result: Option<&PreflightResult>, keep_files: &m
             log::warn!("could not open {}: {err}", folder.display());
         }
     }
+}
+
+/// One check's name and its result.
+fn check_heading(ui: &mut Ui, label: &str, status: Status) {
+    ui.horizontal(|ui| {
+        ui.strong(label);
+        ui.colored_label(colour(ui, status), status.label());
+    });
 }
 
 /// The colour that goes with a status: plain text, green, yellow or red.

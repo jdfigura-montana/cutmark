@@ -233,6 +233,7 @@ fn fade_blend(from: Option<accent::Accent>, to: accent::Accent, t: f32) -> accen
 
 /// One 28px swatch circle with its accessible name and the selection ring.
 fn swatch(ui: &mut Ui, name: &str, fill: Color32, selected: bool) -> Response {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let (rect, response) = ui.allocate_exact_size(vec2(SWATCH_SIZE, SWATCH_SIZE), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, name));
     if ui.is_rect_visible(rect) {
@@ -240,7 +241,7 @@ fn swatch(ui: &mut Ui, name: &str, fill: Color32, selected: bool) -> Response {
         let center = rect.center();
         painter.circle_filled(center, SWATCH_SIZE / 2.0, fill);
         if selected {
-            painter.circle_stroke(center, SWATCH_SIZE / 2.0, Stroke::new(SWATCH_RING, color::TEXT_PRIMARY));
+            painter.circle_stroke(center, SWATCH_SIZE / 2.0, Stroke::new(SWATCH_RING, neutrals.text_primary));
         }
     }
     response
@@ -345,18 +346,19 @@ fn lightness_row(ui: &mut Ui, ctx: &Context, state: &mut PickerState, theme: The
 /// The hex field: `#RRGGBB`, accepts paste; invalid text turns the field rim
 /// `sem.record` and changes nothing.
 fn hex_row(ui: &mut Ui, ctx: &Context, state: &mut PickerState) {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Hex").font(fonts::medium(typography::BODY_SIZE)).color(color::TEXT_SECONDARY));
+        ui.label(egui::RichText::new("Hex").font(fonts::medium(typography::BODY_SIZE)).color(neutrals.text_secondary));
         let rim = if state.hex_invalid { Stroke::new(HAIRLINE, color::SEM_RECORD) } else { Stroke::NONE };
         egui::Frame::new()
-            .fill(color::BG_GROUP)
+            .fill(neutrals.bg_group)
             .corner_radius(radius::GROUP)
             .stroke(rim)
             .inner_margin(Margin::symmetric(space::SCALE_8 as i8, space::SCALE_4 as i8))
             .show(ui, |ui| {
                 ui.scope(|ui| {
                     // egui takes the hint color from `weak_text_color`.
-                    ui.style_mut().visuals.weak_text_color = Some(color::TEXT_TERTIARY);
+                    ui.style_mut().visuals.weak_text_color = Some(neutrals.text_tertiary);
                     let response = egui::TextEdit::singleline(&mut state.hex_text)
                         .hint_text("#RRGGBB")
                         .desired_width(HEX_FIELD_WIDTH)
@@ -418,18 +420,19 @@ fn color_dot(ui: &mut Ui, fill: Color32) {
 /// swatches when the clamp changed the pick, the near-record note when the
 /// hue sits within 20 degrees of `sem.record`.
 fn notes(ui: &mut Ui, theme: Theme) {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     if theme.accent.adjusted {
         ui.horizontal(|ui| {
             color_dot(ui, theme.accent.pick);
             color_dot(ui, theme.accent.accent);
-            ui.label(egui::RichText::new("Adjusted for readability").font(fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_SECONDARY));
+            ui.label(egui::RichText::new("Adjusted for readability").font(fonts::medium(typography::CAPTION_SIZE)).color(neutrals.text_secondary));
         });
     }
     if theme.accent.near_record {
         ui.label(
             egui::RichText::new("Close to the record color. Record buttons will still show their R and dot.")
                 .font(fonts::medium(typography::CAPTION_SIZE))
-                .color(color::TEXT_SECONDARY),
+                .color(neutrals.text_secondary),
         );
     }
 }

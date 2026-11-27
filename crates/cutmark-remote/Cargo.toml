@@ -1,0 +1,36 @@
+[package]
+name = "cutmark-remote"
+description = "Local WebSocket remote control server: discovery files, one authenticated client, a command channel and state patches for CutMark apps."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# Strict lint set (S0 spec, Lints). Same as crates/cutmark-hotkeys: unsafe_code is
+# "deny" instead of "forbid" because the Windows pid check calls Win32 process APIs
+# and carries one scoped allow.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[dependencies]
+crossbeam-channel = "0.5.17"
+getrandom = "0.4.3"
+http = "1.5.0"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tungstenite.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }

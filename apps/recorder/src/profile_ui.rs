@@ -13,6 +13,7 @@ use ui_kit::tokens::{color, space, typography};
 use ui_kit::{inspector_group, inspector_row};
 
 use crate::config::{AudioCodecChoice, Codec, CompositeMode, Container, LayoutKind, Preset, Profile, RateControl, Settings, takes_root};
+use crate::data_text;
 use crate::engine::session::encoder_config;
 use crate::layout_ui;
 use crate::profiles::{self, ProfileStore};
@@ -151,6 +152,12 @@ impl AmfProbe {
         self.done.is_some()
     }
 
+    /// Whether the codec's encoder opens at `key`; None until the probe for that key has answered.
+    pub(crate) fn works(&self, key: ProbeKey, codec: EncoderCodec) -> Option<bool> {
+        let (done_key, list) = self.done.as_ref()?;
+        (*done_key == key).then(|| list.iter().any(|support| support.codec == codec && support.result.is_ok()))
+    }
+
     /// What the last probe reported for a codec.
     fn support(&self, codec: EncoderCodec) -> Option<&CodecSupport> {
         self.done.as_ref().and_then(|(_, list)| list.iter().find(|support| support.codec == codec))
@@ -177,6 +184,54 @@ impl AmfProbe {
     }
 }
 
+/// The tooltip of a locked control when the replay buffer is the reason.
+pub(crate) const REPLAY_LOCK_TIP: &str = "Turn off the replay buffer to change this";
+
+/// The kinds of control the window lock tells apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Control {
+    /// A profile field, the profile picker or a profile action.
+    Profile,
+    /// A track list change (add, remove, enable, source) or a track or output setting fixed for a take.
+    TrackList,
+    /// A control that works on a running capture, such as gain and mute.
+    Live,
+}
+
+/// Why the window may be locked: a take, the replay buffer, both or neither.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Lock {
+    /// A take is running, or anything else that locks the same controls.
+    pub recording: bool,
+    /// The replay buffer is on.
+    pub replay_on: bool,
+}
+
+impl Lock {
+    /// Whether a control is locked now.
+    pub(crate) fn locks(self, control: Control) -> bool {
+        control != Control::Live && (self.recording || self.replay_on)
+    }
+
+    /// The replay tooltip, only when turning the buffer off would unlock: a take locks by itself.
+    pub(crate) fn replay_tip(self) -> Option<&'static str> {
+        (self.replay_on && !self.recording).then_some(REPLAY_LOCK_TIP)
+    }
+
+    /// Adds controls of one kind in a scope that is disabled while they are locked, with the replay
+    /// tooltip. `available` is false when something else disables them; then the tooltip is left out.
+    pub(crate) fn scope(self, ui: &mut Ui, control: Control, available: bool, add: impl FnOnce(&mut Ui)) {
+        let locked = self.locks(control);
+        let response = ui.add_enabled_ui(available && !locked, add).response;
+        if available
+            && locked
+            && let Some(tip) = self.replay_tip()
+        {
+            response.on_disabled_hover_text(tip);
+        }
+    }
+}
+
 /// The Profile section: the state of its widgets. The profiles themselves live in the [`ProfileStore`].
 pub struct ProfileSection {
     /// The encoder probe.
@@ -197,14 +252,32 @@ pub struct ProfileSection {
     preview: Option<Preview>,
 }
 
+/// The next take's answer for the preview toolbar and the Settings dialog.
+#[derive(Debug, Clone, Default)]
+pub struct NextTakePlan {
+    /// The take's short label ("takeNN"), or None when the takes folder could not be read.
+    pub label: Option<String>,
+    /// The full video file path, or the error message when the takes folder could not be read.
+    pub video_path: String,
+    /// The take's folder path, or empty when the takes folder could not be read.
+    pub folder_path: String,
+    /// Where the next replay goes while the replay buffer is on, or empty otherwise or when unknown.
+    pub replay_path: String,
+}
+
 /// The next take's answer for the preview toolbar.
 struct Preview {
     /// When the takes folder was read.
     at: Instant,
-    /// What the answer was worked out from: the root, project, template, profile and container.
+    /// What the answer was worked out from: the root, project, template, profile, container,
+    /// replays folder and buffer state.
     key: String,
     /// The path as shown, or the error message when the takes folder could not be read.
     text: String,
+    /// The take's folder path, or empty when the takes folder could not be read.
+    folder: String,
+    /// Where the next replay goes while the buffer is on, or empty otherwise or when unknown.
+    replay_folder: String,
     /// The take's short label ("takeNN"), or None when the folder could not be read.
     label: Option<String>,
 }
@@ -274,14 +347,14 @@ impl ProfileSection {
     }
 
     /// Draws the Output tool's groups (spec "Setup mode"): the Profile actions, the Encode group
-    /// and the Format group. Everything is disabled while a take runs, as the profiles are today.
+    /// and the Format group. Everything is disabled while `lock` locks the profile.
     pub fn output_panel(
         &mut self,
         ui: &mut Ui,
         store: &mut ProfileStore,
         settings: &mut Settings,
         source: (u32, u32),
-        recording: bool,
+        lock: Lock,
         outcome: &mut ProfileOutcome,
     ) {
         if self.ensure_active(store, settings) {
@@ -296,12 +369,12 @@ impl ProfileSection {
         if let Some(problem) = self.problem.as_deref().or_else(|| store.save_error()) {
             ui.colored_label(error, problem);
         }
-        ui.add_enabled_ui(!recording, |ui| {
+        lock.scope(ui, Control::Profile, true, |ui| {
             self.profile_group(ui, store, settings, outcome);
             ui.add_space(space::SCALE_8);
-            self.edit_fields(ui, store, settings, source, audio, recording);
+            self.edit_fields(ui, store, settings, source, audio, lock);
         });
-        if recording {
+        if lock.recording {
             ui.colored_label(color::TEXT_TERTIARY, "Profile settings are locked while recording");
         }
     }
@@ -420,37 +493,59 @@ impl ProfileSection {
         }
     }
 
-    /// The next take for the preview toolbar: its short label ("takeNN" when the take name ends
-    /// with one) and the full video file path, or an error message in the path's place.
+    /// The next take for the preview toolbar and the Settings dialog: its short label
+    /// ("takeNN" when the take name ends with one), the full video file path, the take's folder
+    /// path and, while the replay buffer is on, where the next replay goes. The path fields
+    /// carry the error message when the takes folder could not be read.
     ///
     /// The takes folder is read again when something on the line changed or two seconds passed.
-    pub fn next_take(&mut self, store: &ProfileStore, settings: &Settings) -> (Option<String>, String) {
+    pub fn next_take(&mut self, store: &ProfileStore, settings: &Settings, replay_on: bool) -> NextTakePlan {
         let container = store.get(&settings.active_profile).map(|profile| profile.container).unwrap_or_default();
         let root = takes_root(settings);
-        let key = format!("{}|{}|{}|{}|{}", root.display(), settings.project, settings.naming_template, settings.active_profile, container.extension());
+        let replays = takes::replays_folder(settings);
+        let key = format!(
+            "{}|{}|{}|{}|{}|{}|{}",
+            root.display(),
+            settings.project,
+            settings.naming_template,
+            settings.active_profile,
+            container.extension(),
+            replays.display(),
+            replay_on
+        );
         if self.preview.as_ref().is_none_or(|preview| preview.key != key || preview.at.elapsed() > PREVIEW_REFRESH) {
             let naming = takes::Naming { project: &settings.project, template: &settings.naming_template, profile: &settings.active_profile };
-            let (text, label) = match takes::plan_take(&root, chrono::Local::now(), container, &naming) {
-                Ok(paths) => (paths.video_file.display().to_string(), Some(take_label(&paths.base_name).to_owned())),
-                Err(err) => (format!("The takes folder could not be read: {err}"), None),
+            let now = chrono::Local::now();
+            let (text, folder, label) = match takes::plan_take(&root, now, container, &naming) {
+                Ok(paths) => (paths.video_file.display().to_string(), paths.folder.display().to_string(), Some(take_label(&paths.base_name).to_owned())),
+                Err(err) => (format!("The takes folder could not be read: {err}"), String::new(), None),
             };
-            self.preview = Some(Preview { at: Instant::now(), key, text, label });
+            // The next replay's folder is planned only while the buffer is on: nothing else reads it.
+            let replay_folder = match replay_on.then(|| takes::plan_take_in(&replays, now, container, &naming)) {
+                Some(Ok(paths)) => paths.folder.display().to_string(),
+                _ => String::new(),
+            };
+            self.preview = Some(Preview { at: Instant::now(), key, text, folder, replay_folder, label });
         }
-        let mut answer = (None, String::new());
-        if let Some(preview) = self.preview.as_ref() {
-            answer = (preview.label.clone(), preview.text.clone());
+        match self.preview.as_ref() {
+            Some(preview) => NextTakePlan {
+                label: preview.label.clone(),
+                video_path: preview.text.clone(),
+                folder_path: preview.folder.clone(),
+                replay_path: preview.replay_folder.clone(),
+            },
+            None => NextTakePlan::default(),
         }
-        answer
     }
 
     /// Draws the Encode and Format groups for the active profile and writes its edits after the debounce.
     /// Draws the Encode and Format groups for the active profile and writes its edits after the debounce.
-    fn edit_fields(&mut self, ui: &mut Ui, store: &mut ProfileStore, settings: &Settings, source: (u32, u32), audio: AudioCodec, recording: bool) {
+    fn edit_fields(&mut self, ui: &mut Ui, store: &mut ProfileStore, settings: &Settings, source: (u32, u32), audio: AudioCodec, lock: Lock) {
         let ctx = ui.ctx().clone();
         let Some(original) = store.get(&settings.active_profile).cloned() else { return };
         let mut p = original.clone();
         let size = effective_size(&p, source);
-        if !recording {
+        if !lock.locks(Control::Profile) {
             self.probe.update(&ctx, (size.0, size.1, p.fps));
         }
         let errors = validate(&p, size, audio, &self.probe);
@@ -530,15 +625,16 @@ impl ProfileSection {
                     } else if custom {
                         "Custom".to_owned()
                     } else {
-                        format!("{}x{}", p.width, p.height)
+                        data_text::size_text(p.width, p.height)
                     };
+                    let text = if p.is_source_size() || custom { RichText::new(text) } else { RichText::new(text).monospace() };
                     ComboBox::from_id_salt("profile-size").selected_text(text).show_ui(ui, |ui| {
                         if ui.selectable_label(p.is_source_size(), "Source").clicked() {
                             (p.width, p.height) = (0, 0);
                             size_custom = false;
                         }
                         for (w, h) in SIZES {
-                            if ui.selectable_label(!custom && p.width == w && p.height == h, format!("{w}x{h}")).clicked() {
+                            if ui.selectable_label(!custom && p.width == w && p.height == h, RichText::new(data_text::size_text(w, h)).monospace()).clicked() {
                                 (p.width, p.height) = (w, h);
                                 size_custom = false;
                             }
@@ -551,10 +647,10 @@ impl ProfileSection {
                         }
                     });
                     if p.is_source_size() {
-                        ui.colored_label(color::TEXT_TERTIARY, format!("{}x{}", source.0, source.1));
+                        ui.label(RichText::new(data_text::size_text(source.0, source.1)).monospace().color(color::TEXT_TERTIARY));
                     } else if custom {
                         ui.add(DragValue::new(&mut p.width).range(16..=16384));
-                        ui.label("x");
+                        ui.label("\u{d7}");
                         ui.add(DragValue::new(&mut p.height).range(16..=16384));
                     }
                 },
@@ -568,10 +664,10 @@ impl ProfileSection {
                 |ui| {
                     let preset = FPS_CHOICES.contains(&p.fps);
                     let custom = fps_custom || !preset;
-                    let text = if custom { "Custom".to_owned() } else { format!("{} fps", p.fps) };
+                    let text = if custom { RichText::new("Custom") } else { RichText::new(format!("{} fps", p.fps)).monospace() };
                     ComboBox::from_id_salt("profile-fps").selected_text(text).show_ui(ui, |ui| {
                         for fps in FPS_CHOICES {
-                            if ui.selectable_label(!custom && p.fps == fps, format!("{fps} fps")).clicked() {
+                            if ui.selectable_label(!custom && p.fps == fps, RichText::new(format!("{fps} fps")).monospace()).clicked() {
                                 p.fps = fps;
                                 fps_custom = false;
                             }
@@ -630,15 +726,14 @@ fn composite_control(layout: LayoutKind, mode: CompositeMode) -> (bool, &'static
 }
 
 /// The Composite group of the Output tool: whether the camera is baked into the main video or only
-/// recorded to its own file. Disabled outside Picture in picture and, like every profile field,
-/// while recording.
-pub(crate) fn composite_group(ui: &mut Ui, store: &mut ProfileStore, profile_name: &str, recording: bool) {
+/// recorded to its own file. Disabled outside Picture in picture and while `lock` locks the profile.
+pub(crate) fn composite_group(ui: &mut Ui, store: &mut ProfileStore, profile_name: &str, lock: Lock) {
     let Some(profile) = store.get(profile_name) else { return };
     let (layout, saved) = (profile.layout, profile.composite_mode);
     let mut mode = saved;
     inspector_group(ui, |ui| {
         let (offered, _) = composite_control(layout, mode);
-        ui.add_enabled_ui(offered && !recording, |ui| {
+        lock.scope(ui, Control::Profile, offered, |ui| {
             inspector_row(
                 ui,
                 "Composite",

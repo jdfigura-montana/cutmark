@@ -1,4 +1,4 @@
-# Cutmark Design Language: rev 3 amendments (pro layout)
+# CutMark Design Language: rev 3 amendments (pro layout)
 
 Nov 21, 2026 · @JD · approved from the boards "E2 · Audio editor, pro layout" and "E2 · Start screen" on the Cutmark Look canvas.
 

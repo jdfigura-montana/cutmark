@@ -183,12 +183,13 @@ fn reset_returns_to_the_blue_default() {
 #[test]
 fn reset_returns_to_each_apps_own_default() {
     let temp = TempAppearance::new("reset-per-app");
-    for (id, preset) in [("recorder", Preset::Teal), ("video", Preset::Orange), ("prompter", Preset::Violet)] {
-        let app = AppAppearance::new(id, preset);
+    for app in [AppAppearance::AUDIO, AppAppearance::RECORDER, AppAppearance::VIDEO, AppAppearance::PROMPTER] {
+        let (id, preset) = (app.id, app.default_preset);
         let (mut harness, _open) = dialog_harness_for(app);
         assert_eq!(Theme::get(&harness.ctx), app.default_theme(), "{id} starts on its default with no file");
 
-        harness.get_by_label("Blue").click();
+        let other = if preset == Preset::Blue { "Teal" } else { "Blue" };
+        harness.get_by_label(other).click();
         harness.run();
         harness.get_by_label("Reset to default").click();
         harness.run();
@@ -203,10 +204,10 @@ fn reset_returns_to_each_apps_own_default() {
 #[test]
 fn saving_in_one_app_does_not_touch_another_apps_file() {
     let temp = TempAppearance::new("two-apps");
-    let (mut audio, _open) = dialog_harness_for(AppAppearance::new("audio", Preset::Blue));
+    let (mut audio, _open) = dialog_harness_for(AppAppearance::AUDIO);
     audio.get_by_label("Violet").click();
     audio.run();
-    let (recorder, _open) = dialog_harness_for(AppAppearance::new("recorder", Preset::Teal));
+    let (recorder, _open) = dialog_harness_for(AppAppearance::RECORDER);
 
     assert_eq!(saved_pick(&temp.folder.join("audio").join("appearance.json")), hex(accent::presets()[1].1), "audio saved Violet");
     assert!(!temp.folder.join("recorder").join("appearance.json").exists(), "the recorder file was not written");

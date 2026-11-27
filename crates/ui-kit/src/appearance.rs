@@ -3,6 +3,11 @@
 //! Design Language "accent per app" amendment). Apps do not watch each other,
 //! and the old shared `appearance.json` is neither read nor written.
 //!
+//! A file with no `scheme` field predates the current app colors (spec:
+//! Brand-Mark.md, "App colors"). If it holds the app's old default accent,
+//! loading moves it to the new default and writes the file back. Every write
+//! carries `"scheme": 2`, so a file is never moved twice.
+//!
 //! The file stores only the raw user pick as `#RRGGBB`; the derived accent
 //! tokens are recomputed with [`crate::accent::derive`] on load. Glass is
 //! always on, so old files with a `glass` field still load and the field is
@@ -18,6 +23,8 @@ use crate::theme::Theme;
 
 /// The file format version this module reads and writes.
 const VERSION: u32 = 1;
+/// The default-accent scheme every write carries.
+const SCHEME: u32 = 2;
 /// The file name inside the app's folder.
 const FILE_NAME: &str = "appearance.json";
 /// How far apart two polls may be (spec: at most once per second).
@@ -63,6 +70,15 @@ impl AppAppearance {
     /// What a context uses when the app never called [`crate::apply_for`] (tests, examples).
     pub const FALLBACK: AppAppearance = AppAppearance { id: "app", default_preset: Preset::Blue };
 
+    /// The audio editor: Orange.
+    pub const AUDIO: AppAppearance = AppAppearance::new("audio", Preset::Orange);
+    /// The Recorder: Teal.
+    pub const RECORDER: AppAppearance = AppAppearance::new("recorder", Preset::Teal);
+    /// The video editor: Violet.
+    pub const VIDEO: AppAppearance = AppAppearance::new("video", Preset::Violet);
+    /// The Prompter: Blue.
+    pub const PROMPTER: AppAppearance = AppAppearance::new("prompter", Preset::Blue);
+
     /// An app's appearance identity.
     pub const fn new(id: &'static str, default_preset: Preset) -> Self {
         Self { id, default_preset }
@@ -70,7 +86,17 @@ impl AppAppearance {
 
     /// The theme of a fresh install of this app: its default accent.
     pub fn default_theme(&self) -> Theme {
-        Theme { accent: crate::accent::derive(self.default_preset.pick()), reduce_motion: false }
+        Theme::new(crate::accent::derive(self.default_preset.pick()), false)
+    }
+
+    /// The default this app had before scheme 2, if that default changed.
+    fn old_default_preset(&self) -> Option<Preset> {
+        match self.id {
+            "audio" => Some(Preset::Blue),
+            "video" => Some(Preset::Orange),
+            "prompter" => Some(Preset::Violet),
+            _ => None,
+        }
     }
 }
 
@@ -89,11 +115,14 @@ pub fn app(ctx: &egui::Context) -> AppAppearance {
     ctx.data(|data| data.get_temp::<AppAppearance>(app_id())).unwrap_or(AppAppearance::FALLBACK)
 }
 
-/// The on-disk JSON: version and raw pick. A `glass` field in an old file is
+/// The on-disk JSON: version, scheme and raw pick. A `glass` field in an old file is
 /// ignored on load (serde skips unknown fields) and never written.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct File {
     version: u32,
+    /// Absent in files written before scheme 2.
+    #[serde(default)]
+    scheme: Option<u32>,
     accent_pick: String,
 }
 
@@ -132,19 +161,30 @@ fn config_folder() -> Option<PathBuf> {
 }
 
 /// Loads the app's theme from its file, or the app's default for any problem.
+/// A file that still holds the app's old default is moved to the new one and
+/// written back; if that write fails, the next load tries again.
 pub fn load(app: &AppAppearance) -> Theme {
     let Some(path) = path(app) else { return app.default_theme() };
-    load_from_str(app, &fs::read_to_string(path).unwrap_or_default())
+    let (theme, moved) = load_from_str(app, &fs::read_to_string(path).unwrap_or_default());
+    if moved && let Err(error) = save(app, &theme) {
+        log::warn!("cannot save the new default accent: {error}");
+    }
+    theme
 }
 
-/// Parses file text into a theme; any bad input falls back to the app's default.
-fn load_from_str(app: &AppAppearance, text: &str) -> Theme {
-    let Ok(file) = serde_json::from_str::<File>(text) else { return app.default_theme() };
+/// Parses file text into a theme; any bad input falls back to the app's
+/// default. The flag is true when the old default was moved to the new one.
+fn load_from_str(app: &AppAppearance, text: &str) -> (Theme, bool) {
+    let fallback = (app.default_theme(), false);
+    let Ok(file) = serde_json::from_str::<File>(text) else { return fallback };
     if file.version != VERSION {
-        return app.default_theme();
+        return fallback;
     }
-    let Some(pick) = parse_hex(&file.accent_pick) else { return app.default_theme() };
-    Theme { accent: crate::accent::derive(pick), reduce_motion: false }
+    let Some(pick) = parse_hex(&file.accent_pick) else { return fallback };
+    if file.scheme.is_none() && app.old_default_preset().is_some_and(|old| old.pick() == pick) {
+        return (app.default_theme(), true);
+    }
+    (Theme::new(crate::accent::derive(pick), false), false)
 }
 
 /// Parses a `#RRGGBB` pick (the `#` optional) into an sRGB color.
@@ -166,8 +206,8 @@ pub fn save(app: &AppAppearance, theme: &Theme) -> Result<(), String> {
     let folder = path.parent().ok_or_else(|| format!("{} has no parent folder", path.display()))?;
     fs::create_dir_all(folder).map_err(|error| format!("cannot create {}: {error}", folder.display()))?;
     let pick = theme.accent.pick;
-    let json = serde_json::to_string(&File { version: VERSION, accent_pick: format!("#{:02X}{:02X}{:02X}", pick.r(), pick.g(), pick.b()) })
-        .map_err(|error| format!("cannot encode {}: {error}", path.display()))?;
+    let file = File { version: VERSION, scheme: Some(SCHEME), accent_pick: format!("#{:02X}{:02X}{:02X}", pick.r(), pick.g(), pick.b()) };
+    let json = serde_json::to_string(&file).map_err(|error| format!("cannot encode {}: {error}", path.display()))?;
     let temp = path.with_extension("json.tmp");
     fs::write(&temp, json).map_err(|error| format!("cannot write {}: {error}", temp.display()))?;
     fs::rename(&temp, &path).map_err(|error| format!("cannot move {} over {}: {error}", temp.display(), path.display()))
@@ -228,17 +268,17 @@ mod tests {
     #[test]
     fn bad_text_loads_the_default() {
         let app = AppAppearance::FALLBACK;
-        assert_eq!(load_from_str(&app, ""), Theme::default());
-        assert_eq!(load_from_str(&app, "{ not json"), Theme::default());
-        assert_eq!(load_from_str(&app, r##"{"version": 99, "accent_pick": "#7C5CFF"}"##), Theme::default());
-        assert_eq!(load_from_str(&app, r##"{"version": 1, "accent_pick": "nope"}"##), Theme::default());
+        assert_eq!(load_from_str(&app, "").0, Theme::default());
+        assert_eq!(load_from_str(&app, "{ not json").0, Theme::default());
+        assert_eq!(load_from_str(&app, r##"{"version": 99, "accent_pick": "#7C5CFF"}"##).0, Theme::default());
+        assert_eq!(load_from_str(&app, r##"{"version": 1, "accent_pick": "nope"}"##).0, Theme::default());
     }
 
     /// Bad text gives the app's own default, not Blue.
     #[test]
     fn bad_text_loads_the_apps_own_default() {
-        let teal = AppAppearance::new("recorder", Preset::Teal);
-        assert_eq!(load_from_str(&teal, ""), teal.default_theme());
+        let teal = AppAppearance::RECORDER;
+        assert_eq!(load_from_str(&teal, "").0, teal.default_theme());
         assert_ne!(teal.default_theme(), Theme::default());
     }
 
@@ -253,8 +293,8 @@ mod tests {
     #[test]
     fn an_old_glass_field_is_ignored() {
         let app = AppAppearance::FALLBACK;
-        let with_glass = load_from_str(&app, r##"{"version": 1, "accent_pick": "#7C5CFF", "glass": false}"##);
-        let without = load_from_str(&app, r##"{"version": 1, "accent_pick": "#7C5CFF"}"##);
+        let with_glass = load_from_str(&app, r##"{"version": 1, "accent_pick": "#7C5CFF", "glass": false}"##).0;
+        let without = load_from_str(&app, r##"{"version": 1, "accent_pick": "#7C5CFF"}"##).0;
         assert_eq!(with_glass, without);
         assert_ne!(with_glass, Theme::default());
     }

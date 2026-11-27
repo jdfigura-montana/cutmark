@@ -1,6 +1,6 @@
 //! The video thread: the latest composite, NV12 conversion and AMF encode on one thread,
 //! paced at the exact profile frame rate from the shared start QPC, with its
-//! packets queued into the session's mux thread. The composite comes from the compose thread.
+//! packets handed to the session's sink. The composite comes from the compose thread.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -9,19 +9,17 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use capture::{Gpu, Nv12Converter, list_monitors, qpc_frequency, qpc_now};
-use media_io::mux::{MuxSender, SendParameters};
+use media_io::mux::SendParameters;
 use media_io::{AmfEncoder, D3d11Device, D3d11FramePool, EncodedPacket, Encoder, HwFrame, MediaError};
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 
 use super::pacer::Pacer;
 use super::session::{EngineError, SessionConfig, StartCommand, Stats, Summary, ThreadMessage, VideoSetup, encoder_config};
+use super::sink::PacketSink;
 use crate::compositor::{self, ComposeConfig, Composite, CompositorThread, PinGuard};
 
 /// Frames may fail in a row this many times before the session stops itself.
 const MAX_CONSECUTIVE_FAILURES: u32 = 30;
-
-/// The muxer stream index of the video stream, which the session adds first.
-const VIDEO_STREAM: usize = 0;
 
 /// The width of one bucket of the encode-time histogram, in milliseconds.
 const TIME_BUCKET_MS: f64 = 0.1;
@@ -149,19 +147,16 @@ fn setup(cfg: &SessionConfig) -> Result<(Pipeline, VideoSetup), EngineError> {
 }
 
 /// Runs the paced recording loop from the shared start QPC, then drains the
-/// encoder into the mux queue.
+/// encoder into the sink.
 fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, mut pipeline: Pipeline, command: StartCommand) -> Result<Summary, EngineError> {
     let profile = &cfg.profile;
     let qpc_freq = qpc_frequency();
     let start_qpc = command.start_qpc;
-    let mux = command.mux;
+    let output = command.output;
+    // The pacer keeps the capture's clock, which never pauses; its counters only count the take's frames.
     let mut pacer = Pacer::new(qpc_freq, profile.fps, 1, start_qpc);
-    // Mirrors of the pacer's shifted start and next frame index, used to sleep
-    // up to the next tick without ever sleeping past it.
-    let mut clock_start = start_qpc;
+    // A mirror of the pacer's next frame index, used to sleep up to the next tick without ever sleeping past it.
     let mut next_index = 0u64;
-    let mut paused = false;
-    let mut paused_at: Option<i64> = None;
     let mut consecutive_failures = 0u32;
     let mut frame_error: Option<EngineError> = None;
     let mut times = EncodeTimes::new();
@@ -170,24 +165,9 @@ fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, mut pipeline: P
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        let want_pause = stats.paused.load(Ordering::Relaxed);
-        if want_pause != paused {
-            let now = qpc_now();
-            if want_pause {
-                pacer.pause(now);
-                paused_at = Some(now);
-            } else {
-                if let Some(at) = paused_at.take() {
-                    clock_start += now - at;
-                }
-                pacer.resume(now);
-            }
-            paused = want_pause;
-        }
-
         let due = pacer.due_frames(qpc_now());
         if due.is_empty() {
-            wait_for_next_tick(qpc_freq, profile.fps, clock_start, next_index, paused);
+            wait_for_next_tick(qpc_freq, profile.fps, start_qpc, next_index);
             continue;
         }
         for n in due {
@@ -197,20 +177,31 @@ fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, mut pipeline: P
                 continue;
             };
             let pts = pacer.pts_for(n);
+            let plan = output.video_frame(n);
+            if plan.force_keyframe {
+                pipeline.encoder.force_keyframe();
+            }
             let timer = Instant::now();
-            let encoded = encode_one_frame(&mut pipeline, &mux, stats, &frame, pts);
+            let encoded = encode_one_frame(&mut pipeline, &mut |packet| output.video(packet), &frame, pts);
             times.add(timer.elapsed());
+            if encoded.is_err() {
+                output.video_failed(n);
+            }
+            if plan.in_take {
+                pacer.record(n, frame.content_seq, encoded.is_ok());
+            }
+            store_pacer_counters(stats, &pacer, frame.screen_received);
+            // About once a second, for a take that ends while the capture goes on.
+            if n.is_multiple_of(u64::from(profile.fps.max(1))) {
+                stats.set_encode_times(times.average_ms(), times.p95_ms());
+            }
             match encoded {
                 Ok(()) => {
                     consecutive_failures = 0;
-                    pacer.record(n, frame.content_seq, true);
-                    store_pacer_counters(stats, &pacer, frame.screen_received);
                 }
                 Err(err) => {
                     consecutive_failures += 1;
                     stats.set_last_error(err.to_string());
-                    pacer.record(n, frame.content_seq, false);
-                    store_pacer_counters(stats, &pacer, frame.screen_received);
                     if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
                         frame_error = Some(err);
                         break 'record;
@@ -224,45 +215,47 @@ fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, mut pipeline: P
     match frame_error {
         // Still drain the encoder so the take stays playable to the last frame.
         Some(err) => {
-            let _ = finish_file(encoder, &mux, stats);
+            let _ = finish_file(encoder, output.as_ref());
             Err(err)
         }
-        None => finish_file(encoder, &mux, stats).and_then(|()| build_summary(&cfg.output_file, &pacer, profile.fps, &times)),
+        None => finish_file(encoder, output.as_ref()).and_then(|()| build_summary(&cfg.output_file, &pacer, profile.fps, &times)),
     }
 }
 
-/// Converts, encodes and queues one due frame.
-fn encode_one_frame(pipeline: &mut Pipeline, mux: &MuxSender, stats: &Stats, frame: &Composite, pts: i64) -> Result<(), EngineError> {
+/// Where the video thread's encoded packets go.
+type VideoSink<'a> = &'a mut dyn FnMut(EncodedPacket) -> Result<(), MediaError>;
+
+/// Converts, encodes and hands on one due frame.
+fn encode_one_frame(pipeline: &mut Pipeline, sink: VideoSink<'_>, frame: &Composite, pts: i64) -> Result<(), EngineError> {
     pipeline.converter.convert(&frame.texture, &pipeline.nv12)?;
     let mut hw = HwFrame::from_pool(&pipeline.pool)?;
     hw.copy_from(pipeline.gpu.context(), &pipeline.nv12)?;
     hw.set_pts(pts);
     pipeline.encoder.send(hw)?;
-    let mut mux_err: Option<MediaError> = None;
-    pipeline.encoder.receive(&mut |packet| write_packet(packet, mux, stats, &mut mux_err))?;
-    if let Some(err) = mux_err {
+    let mut sink_err: Option<MediaError> = None;
+    pipeline.encoder.receive(&mut |packet| write_packet(packet, &mut *sink, &mut sink_err))?;
+    if let Some(err) = sink_err {
         return Err(err.into());
     }
     Ok(())
 }
 
-/// Queues one packet into the mux thread and adds its bytes to the stats.
-fn write_packet(packet: EncodedPacket, mux: &MuxSender, stats: &Stats, mux_err: &mut Option<MediaError>) {
-    stats.bytes_written.fetch_add(packet.size() as u64, Ordering::Relaxed);
-    if mux_err.is_some() {
+/// Hands one packet on; the first failure is kept.
+pub(super) fn write_packet(packet: EncodedPacket, sink: VideoSink<'_>, sink_err: &mut Option<MediaError>) {
+    if sink_err.is_some() {
         return;
     }
-    if let Err(err) = mux.send(VIDEO_STREAM, packet) {
-        *mux_err = Some(err);
+    if let Err(err) = sink(packet) {
+        *sink_err = Some(err);
     }
 }
 
-/// Drains the encoder into the mux queue; the mux thread writes the trailer
+/// Drains the encoder into the sink; the mux thread writes the trailer
 /// when the session finishes it.
-fn finish_file(mut encoder: AmfEncoder, mux: &MuxSender, stats: &Stats) -> Result<(), EngineError> {
-    let mut mux_err: Option<MediaError> = None;
-    encoder.finish(&mut |packet| write_packet(packet, mux, stats, &mut mux_err))?;
-    if let Some(err) = mux_err {
+fn finish_file(mut encoder: AmfEncoder, sink: &dyn PacketSink) -> Result<(), EngineError> {
+    let mut sink_err: Option<MediaError> = None;
+    encoder.finish(&mut |packet| write_packet(packet, &mut |packet| sink.video(packet), &mut sink_err))?;
+    if let Some(err) = sink_err {
         return Err(err.into());
     }
     Ok(())
@@ -312,12 +305,8 @@ fn wait_for_first_frame(compositor: &PinGuard, width: u32, height: u32) -> Optio
 }
 
 /// Sleeps until about 1 ms before the next tick, then yields until it is due.
-fn wait_for_next_tick(qpc_freq: i64, fps: u32, clock_start: i64, next_index: u64, paused: bool) {
-    if paused {
-        std::thread::sleep(Duration::from_millis(1));
-        return;
-    }
-    let tick = tick_time(clock_start, next_index, qpc_freq, fps);
+fn wait_for_next_tick(qpc_freq: i64, fps: u32, start_qpc: i64, next_index: u64) {
+    let tick = tick_time(start_qpc, next_index, qpc_freq, fps);
     let now = qpc_now();
     let one_ms = (qpc_freq / 1000).max(1);
     if tick - now > one_ms {
@@ -330,11 +319,15 @@ fn wait_for_next_tick(qpc_freq: i64, fps: u32, clock_start: i64, next_index: u64
     }
 }
 
-/// The QPC value at which frame index `n` becomes due, from the shifted start.
+/// The QPC value at which frame index `n` becomes due, from the capture's start.
 fn tick_time(clock_start: i64, n: u64, qpc_freq: i64, fps: u32) -> i64 {
     let offset = i128::from(n) * i128::from(qpc_freq) / i128::from(fps);
     (i128::from(clock_start) + offset) as i64
 }
+
+#[cfg(test)]
+#[path = "video_amf_tests.rs"]
+mod amf_tests;
 
 #[cfg(test)]
 mod tests {

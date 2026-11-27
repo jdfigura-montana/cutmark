@@ -11,9 +11,12 @@ use ui_kit::fonts;
 use ui_kit::tokens::{color, radius, space, typography};
 
 use crate::api::ApiServer;
-use crate::config::Settings;
+use crate::config::{REPLAY_LENGTHS_S, Settings, takes_root};
 use crate::engine::bus::Command;
+use crate::engine::stats::{GIB, disk_free_bytes};
 use crate::hotkeys::Hotkeys;
+use crate::platform;
+use crate::takes;
 
 /// The sections of the Settings dialog, in the order the left list shows them (spec "Settings dialog").
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -76,6 +79,8 @@ pub struct ApiUi<'a> {
     pub show_token: &'a mut bool,
     /// The port as typed, applied to the settings when the field is left.
     pub port_edit: &'a mut u16,
+    /// The Stream Deck row's status line.
+    pub stream_deck_status: &'static str,
 }
 
 /// What the dialog's rows changed this frame, for the app to act on.
@@ -252,9 +257,195 @@ fn caption(ui: &mut Ui, text: &str) {
     ui.add(egui::Label::new(egui::RichText::new(text).font(fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY)).selectable(false).wrap());
 }
 
-/// The Recording section: the naming template with its tokens hint and the next-take path,
-/// the countdown length and the prompter switch (spec "Settings dialog").
+/// The path shown in a folder row is middle-ellipsised past this many characters; the full
+/// path is on hover.
+const FOLDER_PATH_CHARS: usize = 52;
+
+/// Height of the first-launch dialog's path row.
+const LAUNCH_PATH_ROW_HEIGHT: f32 = 40.0;
+
+/// Width the first-launch dialog's body wants, clamped to the screen.
+const LAUNCH_BODY_WIDTH: f32 = 480.0;
+
+/// The middle-ellipsised form of `text`: the first and last characters with `\u{2026}` between
+/// when it is longer than `max` characters.
+fn middle_ellipsis(text: &str, max: usize) -> String {
+    let count = text.chars().count();
+    if count <= max {
+        return text.to_owned();
+    }
+    let keep = max.saturating_sub(1);
+    let head = keep / 2;
+    let tail = keep - head;
+    let at = |start: usize, len: usize| text.chars().skip(start).take(len).collect::<String>();
+    format!("{}\u{2026}{}", at(0, head), at(count - tail, tail))
+}
+
+/// The free space on the drive that holds `folder`, or a dash when it could not be read.
+fn free_on_drive(folder: &std::path::Path) -> String {
+    disk_free_bytes(folder).map_or_else(|| "-- free".to_owned(), |bytes| format!("{:.1} GB free", bytes as f64 / GIB as f64))
+}
+
+/// Which output folder a row edits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FolderKind {
+    /// The recordings root.
+    Recordings,
+    /// The replays root.
+    Replays,
+}
+
+/// The Recording section's two output-folder rows (spec "Recorder output folders", Settings):
+/// each shows the full path, middle-ellipsised with the full path on hover, the free space on
+/// its drive and Browse and Open buttons; the replays row adds Use project folder and shows
+/// the inside-each-project path while no replays folder was picked.
+fn folder_rows(ui: &mut Ui, settings: &mut Settings, outcome: &mut Outcome) {
+    ui_kit::inspector_group(ui, |ui| {
+        ui.add_space(space::SCALE_4);
+        folder_row(ui, FolderKind::Recordings, "Save recordings to", settings, outcome);
+        folder_row(ui, FolderKind::Replays, "Save replays to", settings, outcome);
+        ui.add_space(space::SCALE_4);
+    });
+}
+
+/// One output-folder row; `kind` says which setting Browse and Use project folder change.
+fn folder_row(ui: &mut Ui, kind: FolderKind, label: &str, settings: &mut Settings, outcome: &mut Outcome) {
+    let folder = match kind {
+        FolderKind::Recordings => takes_root(settings),
+        FolderKind::Replays => takes::replays_folder(settings),
+    };
+    let shown = match kind {
+        FolderKind::Recordings => folder.display().to_string(),
+        FolderKind::Replays if settings.replays_root.is_some() => folder.display().to_string(),
+        FolderKind::Replays => format!("Inside each project: {}", folder.display()),
+    };
+    let free = free_on_drive(&folder);
+    let replays_set = settings.replays_root.is_some();
+    ui_kit::inspector_row(
+        ui,
+        label,
+        |ui| {
+            // Right to left, so the row reads left to right: the path, the free space, then the buttons.
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if kind == FolderKind::Replays && replays_set {
+                    let use_project = ui.small_button("Use project folder");
+                    if use_project.clicked() {
+                        settings.replays_root = None;
+                        outcome.settings_changed = true;
+                    }
+                    #[cfg(test)]
+                    test_record_control(TestControl::ReplaysUseProject, use_project.rect);
+                }
+                if ui.small_button("Open").clicked() {
+                    platform::open_folder(&folder);
+                }
+                if ui.small_button("Browse").clicked() {
+                    match kind {
+                        FolderKind::Recordings => {
+                            if let Some(picked) = platform::pick_folder("Choose the recordings folder") {
+                                settings.root_folder = Some(picked);
+                                outcome.settings_changed = true;
+                            }
+                        }
+                        FolderKind::Replays => {
+                            if let Some(picked) = platform::pick_folder("Choose the replays folder") {
+                                settings.replays_root = Some(picked);
+                                outcome.settings_changed = true;
+                            }
+                        }
+                    }
+                }
+                ui.label(egui::RichText::new(free).font(fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY));
+                let path = ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(middle_ellipsis(&shown, FOLDER_PATH_CHARS)).font(fonts::mono(typography::VALUE_SIZE)).color(color::TEXT_PRIMARY),
+                    )
+                    .selectable(false)
+                    .truncate(),
+                );
+                path.on_hover_text(folder.display().to_string());
+            });
+        },
+        None,
+    );
+}
+
+/// What the first-launch dialog's buttons did this frame, for the app to act on.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FirstLaunch {
+    /// Continue was pressed: the `folders_confirmed` flag is set and the settings must be saved.
+    pub confirmed: bool,
+    /// Browse picked a new recordings folder and the settings must be sent and saved.
+    pub folder_changed: bool,
+}
+
+/// Draws the first-launch dialog while the recordings folder was never confirmed (spec
+/// "Recorder output folders", UI 3): the question, the default path and Browse and Continue.
+/// Continue sets the `folders_confirmed` flag; Browse picks a folder and writes it into the
+/// settings directly. The dialog stays up until it is answered: Esc and a backdrop click do
+/// not close it.
+pub fn first_launch(ctx: &Context, settings: &mut Settings) -> FirstLaunch {
+    #[cfg(test)]
+    test_clear_controls();
+    let mut outcome = FirstLaunch::default();
+    if settings.folders_confirmed {
+        return outcome;
+    }
+    let screen = ctx.input(|input| input.content_rect());
+    let body_width = LAUNCH_BODY_WIDTH.min((screen.width() - 2.0 * SCREEN_MARGIN).max(0.0));
+    let folder = takes_root(settings);
+    // The dialog is drawn directly on egui::Modal like the Settings dialog (see show's note).
+    let frame = egui::Frame::new()
+        .fill(color::BG_PANEL)
+        .corner_radius(radius::PANEL)
+        .inner_margin(egui::Margin::same(space::SCALE_24 as i8))
+        .stroke(egui::Stroke::new(HAIRLINE_WIDTH, color::STROKE_HAIRLINE));
+    let response = egui::Modal::new(Id::new("recorder-first-launch-dialog")).frame(frame).show(ctx, |ui| {
+        ui.add(egui::Label::new(
+            egui::RichText::new("Where should CutMark save your recordings?").font(fonts::semibold(typography::HEADLINE_SIZE)).color(color::TEXT_PRIMARY),
+        ));
+        ui.add_space(space::SCALE_8);
+        let (path_rect, _) = ui.allocate_exact_size(vec2(body_width, LAUNCH_PATH_ROW_HEIGHT), Sense::hover());
+        let mut path_ui = ui.new_child(UiBuilder::new().max_rect(path_rect).layout(Layout::left_to_right(Align::Center)));
+        let path = path_ui.add(
+            egui::Label::new(
+                egui::RichText::new(middle_ellipsis(&folder.display().to_string(), FOLDER_PATH_CHARS))
+                    .font(fonts::mono(typography::VALUE_SIZE))
+                    .color(color::TEXT_PRIMARY),
+            )
+            .selectable(false)
+            .truncate(),
+        );
+        path.on_hover_text(folder.display().to_string());
+        ui.add_space(space::SCALE_8);
+        let (footer_rect, _) = ui.allocate_exact_size(vec2(body_width, FOOTER_ROW_HEIGHT), Sense::hover());
+        let mut footer_ui = ui.new_child(UiBuilder::new().max_rect(footer_rect).layout(Layout::right_to_left(Align::Center)));
+        // Right to left, so the row reads left to right: Browse, then Continue.
+        let continue_button = ui_kit::primary_button(&mut footer_ui, "Continue");
+        if continue_button.clicked() {
+            settings.folders_confirmed = true;
+            outcome.confirmed = true;
+        }
+        #[cfg(test)]
+        test_record_control(TestControl::FirstLaunchContinue, continue_button.rect);
+        if footer_ui.small_button("Browse").clicked()
+            && let Some(picked) = platform::pick_folder("Choose the recordings folder")
+        {
+            settings.root_folder = Some(picked);
+            outcome.folder_changed = true;
+        }
+    });
+    // Answering is required: Esc and the backdrop click are ignored.
+    let _ = response;
+    outcome
+}
+
+/// The Recording section: the two output-folder rows, the naming template with its tokens hint
+/// and the next-take path, the countdown length, the replay length and the prompter switch
+/// (spec "Settings dialog", "Recorder output folders").
 fn recording_section(ui: &mut Ui, settings: &mut Settings, next_take: &NextTake, outcome: &mut Outcome) {
+    folder_rows(ui, settings, outcome);
+    ui.add_space(space::SCALE_4);
     ui_kit::inspector_group(ui, |ui| {
         ui.add_space(space::SCALE_4);
         ui_kit::inspector_row(
@@ -283,21 +474,39 @@ fn recording_section(ui: &mut Ui, settings: &mut Settings, next_take: &NextTake,
     ui.add_space(space::SCALE_8);
     let before = settings.countdown_secs;
     let before_switch = settings.hide_countdown_when_linked;
+    let before_replay = settings.replay_length_s;
     ui_kit::inspector_group(ui, |ui| {
         ui.add_space(space::SCALE_4);
         ui_kit::inspector_row(
             ui,
             "Countdown",
             |ui| {
-                let _combo = egui::ComboBox::from_id_salt("settings-countdown").selected_text(countdown_label(settings.countdown_secs)).show_ui(ui, |ui| {
+                let _combo = egui::ComboBox::from_id_salt("settings-countdown").selected_text(countdown_job(settings.countdown_secs)).show_ui(ui, |ui| {
                     for secs in COUNTDOWN_CHOICES {
-                        let _choice = ui.selectable_value(&mut settings.countdown_secs, secs, countdown_label(secs));
+                        let _choice = ui.selectable_value(&mut settings.countdown_secs, secs, countdown_job(secs));
                         #[cfg(test)]
                         test_record_control(TestControl::CountdownChoice(secs), _choice.rect);
                     }
                 });
                 #[cfg(test)]
                 test_record_control(TestControl::Countdown, _combo.response.rect);
+            },
+            None,
+        );
+        ui_kit::inspector_row(
+            ui,
+            "Replay length",
+            |ui| {
+                let _combo =
+                    egui::ComboBox::from_id_salt("settings-replay-length").selected_text(replay_length_job(settings.replay_length_s)).show_ui(ui, |ui| {
+                        for secs in REPLAY_LENGTHS_S {
+                            let _choice = ui.selectable_value(&mut settings.replay_length_s, secs, replay_length_job(secs));
+                            #[cfg(test)]
+                            test_record_control(TestControl::ReplayLengthChoice(secs), _choice.rect);
+                        }
+                    });
+                #[cfg(test)]
+                test_record_control(TestControl::ReplayLength, _combo.response.rect);
             },
             None,
         );
@@ -313,7 +522,7 @@ fn recording_section(ui: &mut Ui, settings: &mut Settings, next_take: &NextTake,
         );
         ui.add_space(space::SCALE_4);
     });
-    if settings.countdown_secs != before {
+    if settings.countdown_secs != before || settings.replay_length_s != before_replay {
         outcome.settings_changed = true;
     }
     // The flip is detected by comparing the setting before and after the row.
@@ -322,10 +531,12 @@ fn recording_section(ui: &mut Ui, settings: &mut Settings, next_take: &NextTake,
     }
 }
 
-/// The Control API section: the switch, the port, the listening and clients values and the
-/// token with Show or Hide, Copy and Regenerate (spec "Settings dialog").
+/// The Control API section: the switch, the port, the listening and clients values, the
+/// token with Show or Hide, Copy and Regenerate (spec "Settings dialog") and the Stream Deck
+/// switch with its status line.
 fn api_section(ui: &mut Ui, settings: &mut Settings, api: ApiUi<'_>, outcome: &mut Outcome) {
     let before_enabled = settings.api.enabled;
+    let before_stream_deck = settings.stream_deck;
     let (listening, clients) = match api.server {
         Some(server) => (format!("127.0.0.1:{}", server.port()), server.client_count().to_string()),
         None => ("Not running".to_owned(), "0".to_owned()),
@@ -390,8 +601,23 @@ fn api_section(ui: &mut Ui, settings: &mut Settings, api: ApiUi<'_>, outcome: &m
         }
         ui.add_space(space::SCALE_4);
     });
+    ui.add_space(space::SCALE_8);
+    ui_kit::inspector_group(ui, |ui| {
+        ui.add_space(space::SCALE_4);
+        ui_kit::inspector_row(
+            ui,
+            "Stream Deck",
+            |ui| {
+                let _switch = ui_kit::switch(ui, &mut settings.stream_deck);
+                #[cfg(test)]
+                test_record_control(TestControl::StreamDeck, _switch.rect);
+            },
+            Some(api.stream_deck_status),
+        );
+        ui.add_space(space::SCALE_4);
+    });
     // The flip is detected by comparing the setting before and after the row.
-    if settings.api.enabled != before_enabled {
+    if settings.api.enabled != before_enabled || settings.stream_deck != before_stream_deck {
         outcome.settings_changed = true;
     }
 }
@@ -514,6 +740,16 @@ fn countdown_label(secs: u8) -> String {
     if secs == 0 { "Off".to_owned() } else { format!("{secs} seconds") }
 }
 
+/// [`countdown_label`] as the dropdown draws it, with the number in Martian Mono.
+fn countdown_job(secs: u8) -> egui::text::LayoutJob {
+    crate::data_text::with_data(&countdown_label(secs), &[&secs.to_string()], egui::Color32::PLACEHOLDER)
+}
+
+/// A replay length as the dropdown draws it, with the number in Martian Mono.
+fn replay_length_job(secs: u32) -> egui::text::LayoutJob {
+    crate::data_text::with_data(&format!("{secs} seconds"), &[&secs.to_string()], egui::Color32::PLACEHOLDER)
+}
+
 // The interactive controls the tests record each frame, keyed by the Settings
 // control they belong to; never built outside tests.
 #[cfg(test)]
@@ -527,14 +763,24 @@ enum TestControl {
     Countdown,
     /// One row of the countdown dropdown's popup, by its length in seconds.
     CountdownChoice(u8),
+    /// The Recording section's replay length dropdown button.
+    ReplayLength,
+    /// One row of the replay length dropdown's popup, by its length in seconds.
+    ReplayLengthChoice(u32),
     /// The Recording section's hide-my-countdown switch.
     HideCountdown,
     /// The Control API section's On switch.
     ApiOn,
     /// The Control API section's port value.
     ApiPort,
+    /// The Control API section's Stream Deck switch.
+    StreamDeck,
     /// The Control API section's token Regenerate button.
     Regenerate,
+    /// The Recording section's replays Use project folder button.
+    ReplaysUseProject,
+    /// The first-launch dialog's Continue button.
+    FirstLaunchContinue,
 }
 
 // The control rects the last frame drew, for the headless interaction tests.
@@ -663,7 +909,13 @@ mod tests {
                             ui.painter().layout_no_wrap("Settings".to_owned(), ui_kit::fonts::semibold(typography::HEADLINE_SIZE), color::TEXT_PRIMARY);
                         title_measured.set(Some(galley.size().y));
                     }
-                    let api = ApiUi { server: None, token: Some("0123456789abcdef0123456789abcdef"), show_token: &mut show_token, port_edit: &mut port_edit };
+                    let api = ApiUi {
+                        server: None,
+                        token: Some("0123456789abcdef0123456789abcdef"),
+                        show_token: &mut show_token,
+                        port_edit: &mut port_edit,
+                        stream_deck_status: "Off",
+                    };
                     show(ui.ctx(), &mut dialog, &mut settings, &next_take, &hotkeys, &recent, api);
                 });
                 if frame == 3 {
@@ -806,7 +1058,7 @@ mod tests {
         let mut show_token = false;
         let mut port_edit = 8765u16;
         let mut output = ctx.run_ui(raw.clone(), |ui| {
-            let api = ApiUi { server: None, token: None, show_token: &mut show_token, port_edit: &mut port_edit };
+            let api = ApiUi { server: None, token: None, show_token: &mut show_token, port_edit: &mut port_edit, stream_deck_status: "Off" };
             show(ui.ctx(), dialog, &mut settings, &next_take, &hotkeys, &recent, api);
         });
         output.textures_delta.clear();
@@ -856,7 +1108,7 @@ mod tests {
         let next_take = NextTake::default();
         let mut show_token = false;
         let mut output = ctx.run_ui(raw.clone(), |ui| {
-            let api = ApiUi { server: None, token, show_token: &mut show_token, port_edit };
+            let api = ApiUi { server: None, token, show_token: &mut show_token, port_edit, stream_deck_status: "Off" };
             outcome.set(show(ui.ctx(), dialog, settings, &next_take, &hotkeys, &recent, api));
         });
         output.textures_delta.clear();
@@ -943,6 +1195,28 @@ mod tests {
         assert!(!outcome.get().settings_changed, "the change repeated in the frame after");
     }
 
+    /// Choosing a replay length from the dropdown reports the change and reaches the settings
+    /// field.
+    #[test]
+    fn choosing_a_replay_length_reports_the_change() {
+        let (ctx, raw, outcome) = test_setup();
+        let mut dialog = SettingsDialog { open: true, section: Section::Recording };
+        let mut settings = Settings::default();
+        let mut port_edit = 8765u16;
+        warm_frames(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        let combo = test_control_rect(TestControl::ReplayLength).center();
+        interact_frame(&ctx, &click_at(&raw, combo), &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        interact_frame(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        for secs in REPLAY_LENGTHS_S {
+            let _drawn = test_control_rect(TestControl::ReplayLengthChoice(secs));
+        }
+        let ninety = test_control_rect(TestControl::ReplayLengthChoice(90)).center();
+        assert_eq!(settings.replay_length_s, 60, "the dialog changed the replay length on its own");
+        interact_frame(&ctx, &click_at(&raw, ninety), &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        assert!(outcome.get().settings_changed, "the length choice did not report settings_changed");
+        assert_eq!(settings.replay_length_s, 90, "the length choice did not reach the settings field");
+    }
+
     /// Flipping the Recording section's hide-my-countdown switch reports the change and
     /// reaches the settings field.
     #[test]
@@ -977,6 +1251,23 @@ mod tests {
         assert_eq!(settings.api.enabled, !before, "the switch flip did not reach the settings field");
         interact_frame(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
         assert_eq!(settings.api.enabled, !before, "the flip did not stick");
+    }
+
+    /// The Stream Deck switch is on by default; flipping it reports the change, so the app
+    /// saves it.
+    #[test]
+    fn flipping_the_stream_deck_switch_reports_the_change() {
+        let (ctx, raw, outcome) = test_setup();
+        let mut dialog = SettingsDialog { open: true, section: Section::ControlApi };
+        let mut settings = Settings::default();
+        assert!(settings.stream_deck, "the remote is on by default");
+        let mut port_edit = 8765u16;
+        warm_frames(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        let switch = test_control_rect(TestControl::StreamDeck).center();
+        interact_frame(&ctx, &click_at(&raw, switch), &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        assert!(outcome.get().settings_changed, "the switch flip did not report settings_changed");
+        assert!(!settings.stream_deck, "the switch flip did not reach the settings field");
+        assert!(settings.api.enabled, "the Control API switch is not the Stream Deck switch");
     }
 
     /// Typing a new port and pressing Enter reports the change and reaches the settings field
@@ -1025,5 +1316,64 @@ mod tests {
         assert!(outcome.get().regenerate_token, "the Regenerate click was not reported");
         interact_frame(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, Some(token), &outcome);
         assert!(!outcome.get().regenerate_token, "the Regenerate click repeated in the frame after");
+    }
+
+    /// Clicking the replays row's Use project folder resets the replays root to the default and
+    /// reports the change, without repeating in the frame after.
+    #[test]
+    fn use_project_folder_resets_the_replays_root() {
+        let (ctx, raw, outcome) = test_setup();
+        let mut dialog = SettingsDialog { open: true, section: Section::Recording };
+        let mut settings = Settings { replays_root: Some(std::path::PathBuf::from("D:\\Replays")), ..Settings::default() };
+        let mut port_edit = 8765u16;
+        warm_frames(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        let button = test_control_rect(TestControl::ReplaysUseProject).center();
+        interact_frame(&ctx, &click_at(&raw, button), &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        assert!(outcome.get().settings_changed, "Use project folder did not report settings_changed");
+        assert_eq!(settings.replays_root, None, "Use project folder did not reset the replays root");
+        interact_frame(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        assert!(!outcome.get().settings_changed, "the reset repeated in the frame after");
+    }
+
+    /// The first-launch dialog: Continue sets the folders_confirmed flag, the dialog stops
+    /// drawing afterwards and nothing else closed it.
+    #[test]
+    fn the_first_launch_dialog_confirms_and_then_stays_closed() {
+        let ctx = egui::Context::default();
+        ui_kit::apply(&ctx);
+        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))), ..Default::default() };
+        let mut settings = Settings::default();
+        let frame = |ctx: &Context, raw: &egui::RawInput, settings: &mut Settings| {
+            let mut output = ctx.run_ui(raw.clone(), |ui| {
+                first_launch(ui.ctx(), settings);
+            });
+            output.textures_delta.clear();
+            output
+        };
+        // The modal paints nothing on its very first frame; the controls are clickable from the next one.
+        frame(&ctx, &raw, &mut settings);
+        frame(&ctx, &raw, &mut settings);
+        assert!(!settings.folders_confirmed, "the dialog confirmed itself without a click");
+        let continue_at = test_control_rect(TestControl::FirstLaunchContinue).center();
+        frame(&ctx, &click_at(&raw, continue_at), &mut settings);
+        assert!(settings.folders_confirmed, "Continue did not set the folders_confirmed flag");
+        frame(&ctx, &raw, &mut settings);
+        let confirmed = TEST_CONTROLS.with(|cells| cells.borrow().iter().all(|(control, _)| *control != TestControl::FirstLaunchContinue));
+        assert!(confirmed, "the first-launch dialog drew again after Continue");
+    }
+
+    /// A long path is middle-ellipsised and keeps both ends; a short one passes through.
+    #[test]
+    fn middle_ellipsis_keeps_both_ends_of_a_long_path() {
+        let long = "C:\\Users\\JD\\Videos\\Cutmark\\My Show\\2026-11-27 101500";
+        let shown = middle_ellipsis(long, 24);
+        let shown: Vec<char> = shown.chars().collect();
+        assert_eq!(shown.len(), 24, "the ellipsised path is not the asked length: {shown:?}");
+        let middle = shown.iter().position(|c| *c == '\u{2026}').expect("the ellipsis is there");
+        let long: Vec<char> = long.chars().collect();
+        assert_eq!(shown[..middle], long[..middle], "the head was cut: {:?}", shown.iter().collect::<String>());
+        let tail = long.len() - (shown.len() - middle - 1);
+        assert_eq!(shown[middle + 1..], long[tail..], "the tail was cut: {:?}", shown.iter().collect::<String>());
+        assert_eq!(middle_ellipsis("C:\\Takes", 24), "C:\\Takes", "a short path was changed");
     }
 }

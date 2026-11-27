@@ -11,8 +11,9 @@ use ui_kit::tokens::{color, space, typography};
 use ui_kit::{inspector_group, inspector_row, switch};
 
 use crate::config::{CompositeMode, Profile, WebcamSettings};
+use crate::data_text;
 use crate::preview_ui::Pick;
-use crate::profile_ui::{AmfProbe, iso_codec_text, rate_control_editor, rate_errors};
+use crate::profile_ui::{AmfProbe, Control, Lock, iso_codec_text, rate_control_editor, rate_errors};
 use crate::profiles::ProfileStore;
 use crate::webcam::WebcamHost;
 
@@ -23,16 +24,16 @@ thread_local! {
 
 /// The Camera ISO file group of the Output tool (spec "Setup mode"): whether the raw camera is
 /// saved on its own and how it is encoded. The rows are disabled while the switch is off, and the
-/// group is read-only while recording. While Clean applies the switch is locked on, and the saved
+/// group is read-only while `lock` locks the profile. While Clean applies the switch is locked on, and the saved
 /// switch is left alone so it comes back when Clean goes off. The camera offset lives in the Camera
 /// tool's Sync group.
-pub(crate) fn iso_group(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, recording: bool, profile_name: &str) {
+pub(crate) fn iso_group(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, lock: Lock, profile_name: &str) {
     let Some(settings) = host.settings(store).cloned() else { return };
     let Some(profile) = store.get(profile_name).cloned() else { return };
     let key = (settings.format.width, settings.format.height, profile.fps);
     let (ranges, (codec_text, codec_caption)) = ISO_PROBE.with(|cell| {
         let mut probe = cell.borrow_mut();
-        if !recording {
+        if !lock.locks(Control::Profile) {
             probe.update(ui.ctx(), key);
         }
         (probe.ranges(profile.codec), iso_codec_text(&profile, settings.format.height, &probe))
@@ -42,7 +43,7 @@ pub(crate) fn iso_group(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore
     let mut changed = false;
     inspector_group(ui, |ui| {
         let (mut shown, locked) = iso_switch(&profile, iso);
-        ui.add_enabled_ui(!recording && !locked, |ui| {
+        lock.scope(ui, Control::Profile, !locked, |ui| {
             let state = if shown { "On" } else { "Off" };
             let before = shown;
             inspector_row(
@@ -63,7 +64,7 @@ pub(crate) fn iso_group(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore
         ui.add_space(space::SCALE_4);
         ui.label(RichText::new(caption).small().weak());
         ui.add_space(space::SCALE_4);
-        ui.add_enabled_ui(!recording && shown, |ui| {
+        lock.scope(ui, Control::Profile, shown, |ui| {
             let errors = rate_errors(profile.codec, rate, ranges.as_ref());
             changed |= rate_control_editor(ui, "webcam-iso", &mut rate, ranges.as_ref(), &errors);
             inspector_row(ui, "Codec", |_ui| {}, Some(&codec_text));
@@ -110,7 +111,12 @@ pub(crate) fn fps_text(fps: f64) -> String {
 
 /// How a camera mode is listed in the dropdown.
 pub(crate) fn format_label(format: &CameraFormat) -> String {
-    format!("{} {}x{} @ {} fps", format.subtype, format.width, format.height, fps_text(format.fps()))
+    mode_text(&format.subtype.to_string(), format.width, format.height, format.fps())
+}
+
+/// A camera mode's size, rate and pixel format as separate items, drawn in Martian Mono.
+pub(crate) fn mode_text(subtype: &str, width: u32, height: u32, fps: f64) -> String {
+    format!("{}  {} fps  {subtype}", data_text::size_text(width, height), fps_text(fps))
 }
 
 /// How many whole frames a residual is off by, or none when it is within one frame either way.
@@ -173,6 +179,6 @@ mod tests {
     #[test]
     fn a_mode_is_listed_with_its_format_size_and_rate() {
         let format = CameraFormat { subtype: CameraSubtype::Mjpg, width: 1920, height: 1080, fps_num: 30000, fps_den: 1001 };
-        assert_eq!(format_label(&format), "MJPG 1920x1080 @ 29.97 fps");
+        assert_eq!(format_label(&format), "1920\u{d7}1080  29.97 fps  MJPG");
     }
 }

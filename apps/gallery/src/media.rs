@@ -1,25 +1,37 @@
 //! The Media page: every media widget in one believable mini timeline (spec:
-//! Design Language "Components" rows Transport deck, Meter, Track header,
-//! Clip, Playhead, Marker, Pending cut band). The page owns a fake project:
-//! fixed-seed sine-plus-noise waveforms, a playhead that runs while Play is
-//! on, a fake meter signal that peaks into the clip zone every few seconds,
-//! and the same transport deck again in two small panels for the glass demo.
+//! Design Language "Components" rows Meter, Track header, Clip, Playhead,
+//! Marker, Pending cut band; E3 amendment "1. The notch"). The page owns a
+//! fake project: fixed-seed sine-plus-noise waveforms, a playhead that runs
+//! while Play is on and a fake meter signal that peaks into the clip zone
+//! every few seconds. The timeline is a Play stage, and two smaller stages
+//! show the Record button idle and recording.
+
+use std::cell::RefCell;
 
 use eframe::egui::{self, Pos2, Rect};
 use ui_kit::fonts;
 use ui_kit::icons::{fill, regular};
-use ui_kit::tokens::{color, radius, size, space, typography};
+use ui_kit::tokens::{color, size, space, typography};
 use ui_kit::{
-    ClipKind, ClipLook, MarkerKind, PlayKind, SliderKind, Theme, Toggle, ToggleKind, chip, deck_button, fader, icon_button, level_meter, paint_clip,
-    paint_marquee, paint_pending_band, paint_playhead, paint_ruler, paint_snap_line, paint_track_row, paint_waveform, panel, play_button, segmented, slider,
-    stereo_meter_vertical, timecode, track_header, transport_deck, waveform_color,
+    ClipKind, ClipLook, MarkerKind, PlayKind, PrimaryButton, STAGE_PRIMARY_OVERHANG, STATUS_BAR_GAP_HEIGHT, SliderKind, StageResponse, Theme, Toggle,
+    ToggleKind, bar_button, chip, fader, icon_button, level_meter, paint_clip, paint_marquee, paint_pending_band, paint_playhead, paint_ruler, paint_snap_line,
+    paint_track_row, paint_waveform, panel, segmented, slider, stage_panel, status_bar_with_gap, stereo_meter_vertical, timecode_large, track_header,
+    waveform_color,
 };
 
 /// The F1 context tag for the Media page (spec: S1 Help "Topic files").
 pub const CONTEXT_TAG: &str = "media";
 
-/// Total height of the mock timeline panel.
-const TIMELINE_HEIGHT: f32 = 520.0;
+/// Height of the mock timeline: toolbar, ruler and the four tracks.
+const TIMELINE_HEIGHT: f32 = size::PANEL_TOOLBAR_HEIGHT + size::RULER_HEIGHT + TRACKS.len() as f32 * size::TRACK_AUDIO_DEFAULT;
+/// Height of a stage's bottom bar (spec: E3 amendment "1. The notch").
+const STAGE_BAR_HEIGHT: f32 = 64.0;
+/// Height of the timeline stage: the timeline, its padding and the bar.
+const TIMELINE_STAGE_HEIGHT: f32 = TIMELINE_HEIGHT + 2.0 * space::PANEL_PADDING + STAGE_BAR_HEIGHT;
+/// Height of the two Record stages.
+const RECORD_STAGE_HEIGHT: f32 = 180.0;
+/// The status items under the timeline stage.
+const STAGE_STATUS: [&str; 4] = ["Ready", "48 kHz", "24 bit", "Autosave on"];
 /// Width of the track header column.
 const HEADER_WIDTH: f32 = 220.0;
 /// Width of the demo zoom slider.
@@ -44,16 +56,10 @@ const METER_HEIGHT: f32 = 140.0;
 const METER_WIDTH: f32 = 240.0;
 /// Height of the demo faders.
 const FADER_HEIGHT: f32 = 150.0;
-/// Width of one small glass deck panel.
-const GLASS_PANEL_WIDTH: f32 = 400.0;
-/// Height of the two small glass deck panels.
-const GLASS_PANEL_HEIGHT: f32 = 120.0;
 /// Time the decorative meter signal freezes on under reduced motion.
 const FROZEN_TIME: f64 = 1.35;
 /// The clip zone's lower edge in dBFS: peaks above it latch the clip light.
 const CLIP_ZONE_DB: f32 = -3.0;
-/// The 1 px hairline stroke width (the same rule ui-kit uses).
-const HAIRLINE: f32 = 1.0;
 
 /// The demo timeline's tracks.
 const TRACKS: [&str; 4] = ["Voice", "Game audio", "Music", "SFX"];
@@ -121,11 +127,12 @@ pub struct MediaState {
     ripple: bool,
     /// The zoom slider, 0 to 1.
     zoom: f32,
-    /// True while the deck's Play is on.
+    /// True while the timeline's Play is on.
     playing: bool,
-    /// True while the deck's Loop is on: the playhead wraps at the end.
+    /// True while Loop is on: the playhead wraps at the end.
     looping: bool,
-    /// True while recording; the deck's Record and the recorder panel share it.
+    /// True while recording; the timeline bar's Record and the live Record
+    /// stage share it.
     recorder: bool,
     /// The playhead position in seconds.
     playhead: f64,
@@ -180,12 +187,22 @@ impl Default for MediaState {
     }
 }
 
-/// Draws the whole Media page: the mock timeline panel, then the widget row.
+/// Draws the whole Media page: the timeline stage with its status bar, the two
+/// Record stages, then the widget row.
 pub fn show(ui: &mut egui::Ui, state: &mut MediaState) {
     ui_kit::help::context(ui, CONTEXT_TAG);
     tick(ui, state);
-    let panel_rect = timeline_panel(ui, state);
-    ui_kit::tour::anchor(ui, "panel", panel_rect);
+    // A stage cuts its notch in the themed `bg.ground`, so the page paints it.
+    let ground = Theme::get(ui.ctx()).neutrals.bg_ground;
+    ui.painter().rect_filled(ui.clip_rect(), 0.0, ground);
+    let stage = timeline_stage(ui, state);
+    ui_kit::tour::anchor(ui, "panel", stage.panel_rect);
+    ui_kit::tour::anchor(ui, "transport", stage.bar_rect.union(stage.primary.rect));
+    // Directly under the stage: the button overlaps its empty center.
+    ui.allocate_ui(egui::vec2(ui.available_width(), STATUS_BAR_GAP_HEIGHT), |ui| {
+        status_bar_with_gap(ui, &STAGE_STATUS);
+    });
+    record_stages(ui, state);
     bottom_row(ui, state);
 }
 
@@ -219,73 +236,89 @@ fn tick(ui: &mut egui::Ui, state: &mut MediaState) {
     }
 }
 
-/// The mock audio timeline panel: toolbar row, ruler with markers, four track
-/// rows and the transport deck floating over them. Returns the panel's rect,
-/// so the tour can spotlight it.
-fn timeline_panel(ui: &mut egui::Ui, state: &mut MediaState) -> Rect {
+/// The timeline stage: the mock audio timeline over a bottom bar, with Play in
+/// the notch.
+fn timeline_stage(ui: &mut egui::Ui, state: &mut MediaState) -> StageResponse {
+    let primary = PrimaryButton { kind: PlayKind::Play, active: state.playing, enabled: true };
+    let size = egui::vec2(ui.available_width(), TIMELINE_STAGE_HEIGHT);
+    // The stage's three closures run one after another and share the state.
+    let shared = RefCell::new(&mut *state);
+    let stage = ui
+        .allocate_ui(size, |ui| {
+            stage_panel(
+                ui,
+                egui::Id::new("gallery-media-stage"),
+                primary,
+                |ui| timeline(ui, &mut shared.borrow_mut()),
+                |ui| bar_left(ui, &mut shared.borrow_mut()),
+                |ui| bar_right(ui, &mut shared.borrow_mut()),
+            )
+        })
+        .inner;
+    if stage.clicked() {
+        state.playing = !state.playing;
+    }
+    stage
+}
+
+/// The mock audio timeline: toolbar row, ruler with markers and four track
+/// rows.
+fn timeline(ui: &mut egui::Ui, state: &mut MediaState) {
     let theme = Theme::get(ui.ctx());
-    panel(ui, |ui| {
-        let width = ui.available_width();
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, TIMELINE_HEIGHT), egui::Sense::hover());
-        let painter = ui.painter().clone();
-        let toolbar_rect = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.min.y + size::PANEL_TOOLBAR_HEIGHT));
-        let ruler_rect =
-            Rect::from_min_max(Pos2::new(rect.left() + HEADER_WIDTH, toolbar_rect.bottom()), Pos2::new(rect.max.x, toolbar_rect.bottom() + size::RULER_HEIGHT));
-        let tracks_rect = Rect::from_min_max(
-            Pos2::new(ruler_rect.left(), ruler_rect.bottom()),
-            Pos2::new(ruler_rect.right(), ruler_rect.bottom() + TRACKS.len() as f32 * size::TRACK_AUDIO_DEFAULT),
+    let (rect, _) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
+    let painter = ui.painter().clone();
+    let toolbar_rect = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.min.y + size::PANEL_TOOLBAR_HEIGHT));
+    let ruler_rect =
+        Rect::from_min_max(Pos2::new(rect.left() + HEADER_WIDTH, toolbar_rect.bottom()), Pos2::new(rect.max.x, toolbar_rect.bottom() + size::RULER_HEIGHT));
+    let tracks_rect = Rect::from_min_max(
+        Pos2::new(ruler_rect.left(), ruler_rect.bottom()),
+        Pos2::new(ruler_rect.right(), ruler_rect.bottom() + TRACKS.len() as f32 * size::TRACK_AUDIO_DEFAULT),
+    );
+    show_toolbar(ui, state, toolbar_rect);
+    let ruler = ui.interact(ruler_rect, egui::Id::new("gallery-media-ruler"), egui::Sense::click_and_drag());
+    if ruler.is_pointer_button_down_on()
+        && let Some(pos) = ruler.interact_pointer_pos()
+    {
+        state.playhead = seconds_at(pos.x, tracks_rect);
+    }
+    paint_ruler(&painter, ruler_rect, &ruler_ticks(ruler_rect), &ruler_markers(tracks_rect));
+    for (i, name) in TRACKS.iter().enumerate() {
+        let top = tracks_rect.top() + i as f32 * size::TRACK_AUDIO_DEFAULT;
+        let row = Rect::from_min_max(Pos2::new(tracks_rect.left(), top), Pos2::new(tracks_rect.right(), top + size::TRACK_AUDIO_DEFAULT));
+        paint_track_row(&painter, row, i, state.selected_track == i);
+        let header_rect = Rect::from_min_max(Pos2::new(rect.left(), top), Pos2::new(tracks_rect.left(), row.bottom()));
+        let mut header = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(egui::Id::new(("gallery-media-header", i)))
+                .max_rect(header_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
-        show_toolbar(ui, state, toolbar_rect);
-        let ruler = ui.interact(ruler_rect, egui::Id::new("gallery-media-ruler"), egui::Sense::click_and_drag());
-        let scrubbing = ruler.is_pointer_button_down_on();
-        if scrubbing && let Some(pos) = ruler.interact_pointer_pos() {
-            state.playhead = seconds_at(pos.x, tracks_rect);
+        let selected = state.selected_track == i;
+        let meter = if selected { Some((state.meter_l, state.meter_clipped)) } else { None };
+        let mut toggles = [
+            Toggle { label: "M", on: &mut state.mutes[i], kind: ToggleKind::Normal, always_visible: true },
+            Toggle { label: "S", on: &mut state.solos[i], kind: ToggleKind::Normal, always_visible: true },
+            Toggle { label: "R", on: &mut state.arms[i], kind: ToggleKind::RecordArm, always_visible: true },
+        ];
+        if track_header(&mut header, i + 1, name, selected, &mut toggles, meter).clicked() {
+            state.selected_track = i;
         }
-        paint_ruler(&painter, ruler_rect, &ruler_ticks(ruler_rect), &ruler_markers(tracks_rect));
-        for (i, name) in TRACKS.iter().enumerate() {
-            let top = tracks_rect.top() + i as f32 * size::TRACK_AUDIO_DEFAULT;
-            let row = Rect::from_min_max(Pos2::new(tracks_rect.left(), top), Pos2::new(tracks_rect.right(), top + size::TRACK_AUDIO_DEFAULT));
-            paint_track_row(&painter, row, i, state.selected_track == i);
-            let header_rect = Rect::from_min_max(Pos2::new(rect.left(), top), Pos2::new(tracks_rect.left(), row.bottom()));
-            let mut header = ui.new_child(
-                egui::UiBuilder::new()
-                    .id_salt(egui::Id::new(("gallery-media-header", i)))
-                    .max_rect(header_rect)
-                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        let lanes = painter.with_clip_rect(row);
+        for clip in CLIPS.iter().filter(|clip| clip.track == i) {
+            let clip_rect = Rect::from_min_max(
+                Pos2::new(x_at(clip.from, tracks_rect), row.top() + space::SCALE_4),
+                Pos2::new(x_at(clip.to, tracks_rect), row.bottom() - space::SCALE_4),
             );
-            let selected = state.selected_track == i;
-            let meter = if selected { Some((state.meter_l, state.meter_clipped)) } else { None };
-            let mut toggles = [
-                Toggle { label: "M", on: &mut state.mutes[i], kind: ToggleKind::Normal, always_visible: true },
-                Toggle { label: "S", on: &mut state.solos[i], kind: ToggleKind::Normal, always_visible: true },
-                Toggle { label: "R", on: &mut state.arms[i], kind: ToggleKind::RecordArm, always_visible: true },
-            ];
-            if track_header(&mut header, i + 1, name, selected, &mut toggles, meter).clicked() {
-                state.selected_track = i;
-            }
-            let lanes = painter.with_clip_rect(row);
-            for clip in CLIPS.iter().filter(|clip| clip.track == i) {
-                let clip_rect = Rect::from_min_max(
-                    Pos2::new(x_at(clip.from, tracks_rect), row.top() + space::SCALE_4),
-                    Pos2::new(x_at(clip.to, tracks_rect), row.bottom() - space::SCALE_4),
-                );
-                let mut look = ClipLook::new(clip.label, ClipKind::Audio);
-                look.selected = clip.selected;
-                look.opacity = if clip.ghost { GHOST_OPACITY } else { 1.0 };
-                look.dimmed = state.mutes[clip.track];
-                let content = paint_clip(&lanes, clip_rect, &look, &theme);
-                let count = ((clip_rect.width() / WAVE_PIXELS_PER_PEAK) as usize).clamp(MIN_PEAKS, MAX_PEAKS);
-                paint_waveform(&lanes, content, &wave_peaks(clip.seed, count), waveform_color(look.selected, &theme));
-            }
+            let mut look = ClipLook::new(clip.label, ClipKind::Audio);
+            look.selected = clip.selected;
+            look.opacity = if clip.ghost { GHOST_OPACITY } else { 1.0 };
+            look.dimmed = state.mutes[clip.track];
+            let content = paint_clip(&lanes, clip_rect, &look, &theme);
+            let count = ((clip_rect.width() / WAVE_PIXELS_PER_PEAK) as usize).clamp(MIN_PEAKS, MAX_PEAKS);
+            paint_waveform(&lanes, content, &wave_peaks(clip.seed, count), waveform_color(look.selected, &theme));
         }
-        show_overlays(state, &theme, &painter, ruler_rect, tracks_rect);
-        let deck = transport_deck(ui, rect, egui::Id::new("gallery-media-deck"), scrubbing, |ui| {
-            deck_contents(ui, state);
-        });
-        ui_kit::tour::anchor(ui, "transport", deck.response.rect);
-    })
-    .response
-    .rect
+    }
+    show_overlays(state, &theme, &painter, ruler_rect, tracks_rect);
 }
 
 /// The demo markers at their ruler x positions, for `paint_ruler`.
@@ -316,28 +349,70 @@ fn show_overlays(state: &mut MediaState, theme: &Theme, painter: &egui::Painter,
     paint_playhead(painter, ruler_rect, tracks_rect, x_at(state.playhead, tracks_rect), theme);
 }
 
-/// The deck's buttons in spec order: timecode, back to start, Play, Stop,
-/// Record, Loop, total length.
-fn deck_contents(ui: &mut egui::Ui, state: &mut MediaState) {
+/// The timeline bar's left side: the timecode and Back to start.
+fn bar_left(ui: &mut egui::Ui, state: &mut MediaState) {
     let (main, fraction) = timecode_parts(state.playhead);
-    timecode(ui, &main, &fraction);
-    if deck_button(ui, fill::SKIP_BACK, "Back to start").clicked() {
+    timecode_large(ui, &main, &fraction);
+    if bar_button(ui, fill::SKIP_BACK, "Back to start").clicked() {
         state.playhead = 0.0;
     }
-    if play_button(ui, state.playing, PlayKind::Play).clicked() {
-        state.playing = !state.playing;
-    }
-    if deck_button(ui, fill::STOP, "Stop").clicked() {
+}
+
+/// The timeline bar's right side: Stop, Record, Loop and the total length.
+fn bar_right(ui: &mut egui::Ui, state: &mut MediaState) {
+    if bar_button(ui, fill::STOP, "Stop").clicked() {
         state.playing = false;
     }
-    if deck_button(ui, fill::RECORD, "Record").clicked() {
+    if bar_button(ui, fill::RECORD, "Record").clicked() {
         state.recorder = true;
     }
-    if deck_button(ui, fill::ARROWS_CLOCKWISE, "Loop").clicked() {
+    if bar_button(ui, fill::ARROWS_CLOCKWISE, "Loop").clicked() {
         state.looping = !state.looping;
     }
     ui.add_space(space::SCALE_4);
-    ui.label(egui::RichText::new(PROJECT_LENGTH).font(fonts::mono(typography::VALUE_SIZE)).color(color::TEXT_SECONDARY));
+    readout(ui, PROJECT_LENGTH);
+}
+
+/// A small number readout in a stage bar: Martian Mono in `text.secondary`.
+fn readout(ui: &mut egui::Ui, text: &str) {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
+    ui.label(fonts::tracked(text, fonts::mono(typography::VALUE_SIZE), neutrals.text_secondary, fonts::MONO_LETTER_SPACING_EM));
+}
+
+/// The Record stages, side by side: one live (click its button to record) and
+/// one that always shows the recording state.
+fn record_stages(ui: &mut egui::Ui, state: &mut MediaState) {
+    ui.columns(2, |columns| {
+        if let [live, recording] = columns {
+            if record_stage(live, "gallery-media-record-live", "Live, click to record", state.recorder).clicked() {
+                state.recorder = !state.recorder;
+            }
+            record_stage(recording, "gallery-media-record-active", "Recording", true);
+        }
+    });
+    // A stage does not allocate its button's overhang.
+    ui.add_space(STAGE_PRIMARY_OVERHANG);
+}
+
+/// One Record stage: a title, then the timecode with Add mark and a readout in
+/// the bar.
+fn record_stage(ui: &mut egui::Ui, id: &str, title: &str, recording: bool) -> StageResponse {
+    let primary = PrimaryButton { kind: PlayKind::Record, active: recording, enabled: true };
+    let size = egui::vec2(ui.available_width(), RECORD_STAGE_HEIGHT);
+    ui.allocate_ui(size, |ui| {
+        stage_panel(
+            ui,
+            egui::Id::new(id),
+            primary,
+            |ui| panel_title(ui, title),
+            |ui| {
+                timecode_large(ui, "00:00:00", ".00");
+                bar_button(ui, fill::FLAG, "Add mark");
+            },
+            |ui| readout(ui, "48 kHz"),
+        )
+    })
+    .inner
 }
 
 /// The panel toolbar row: segmented tools and chips on the left, the zoom
@@ -368,16 +443,13 @@ fn ruler_ticks(ruler_rect: egui::Rect) -> Vec<(f32, Option<String>)> {
     ticks
 }
 
-/// The panel row under the timeline: meters, fader, recorder button, menus
-/// and the glass decks.
+/// The panel row under the stages: meters, fader and menus.
 fn bottom_row(ui: &mut egui::Ui, state: &mut MediaState) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = space::WINDOW_GAP;
         meters_panel(ui, state);
         fader_panel(ui, state);
-        recorder_panel(ui, state);
         menus_panel(ui);
-        glass_panel(ui, state);
     });
 }
 
@@ -412,23 +484,6 @@ fn fader_panel(ui: &mut egui::Ui, state: &mut MediaState) {
     });
 }
 
-/// The recorder center button panel: the record capsule idle and recording.
-fn recorder_panel(ui: &mut egui::Ui, state: &mut MediaState) {
-    panel(ui, |ui| {
-        panel_title(ui, "Recorder center button");
-        ui.horizontal(|ui| {
-            caption_cell(ui, "live, click to record", |ui| {
-                if play_button(ui, state.recorder, PlayKind::Record).clicked() {
-                    state.recorder = !state.recorder;
-                }
-            });
-            caption_cell(ui, "recording", |ui| {
-                play_button(ui, true, PlayKind::Record);
-            });
-        });
-    });
-}
-
 /// The menus panel: a menu button opening the glass menu with five rows and
 /// a submenu (egui sizes the 32 px rows).
 fn menus_panel(ui: &mut egui::Ui) {
@@ -449,39 +504,6 @@ fn menus_panel(ui: &mut egui::Ui) {
             });
         });
         caption(ui, "glass popup, 32 px rows, five rows and a submenu");
-    });
-}
-
-/// The glass decks panel: the same deck in two small content panels. Glass is
-/// always on.
-fn glass_panel(ui: &mut egui::Ui, state: &mut MediaState) {
-    panel(ui, |ui| {
-        panel_title(ui, "Glass decks");
-        caption(ui, "glass is always on");
-        let width = ui.available_width().min(2.0 * GLASS_PANEL_WIDTH + space::SCALE_8);
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, GLASS_PANEL_HEIGHT), egui::Sense::hover());
-        let painter = ui.painter().clone();
-        let half = (rect.width() - space::SCALE_8) / 2.0;
-        for n in 0..2u8 {
-            let sub = Rect::from_min_size(Pos2::new(rect.left() + f32::from(n) * (half + space::SCALE_8), rect.top()), egui::vec2(half, rect.height()));
-            painter.rect_filled(sub, radius::GROUP, color::BG_GROUND);
-            painter.rect_stroke(sub, radius::GROUP, egui::Stroke::new(HAIRLINE, color::STROKE_HAIRLINE), egui::StrokeKind::Inside);
-            transport_deck(ui, sub, egui::Id::new(("gallery-media-glass-deck", n)), false, |ui| {
-                let (main, fraction) = timecode_parts(state.playhead);
-                timecode(ui, &main, &fraction);
-                if deck_button(ui, fill::SKIP_BACK, "Back to start").clicked() {
-                    state.playhead = 0.0;
-                }
-                if play_button(ui, state.playing, PlayKind::Play).clicked() {
-                    state.playing = !state.playing;
-                }
-                if deck_button(ui, fill::STOP, "Stop").clicked() {
-                    state.playing = false;
-                }
-                ui.add_space(space::SCALE_4);
-                ui.label(egui::RichText::new(PROJECT_LENGTH).font(fonts::mono(typography::VALUE_SIZE)).color(color::TEXT_SECONDARY));
-            });
-        }
     });
 }
 
@@ -516,7 +538,7 @@ fn seconds_at(x: f32, lanes: egui::Rect) -> f64 {
     f64::from(((x - lanes.left()) / lanes.width()).clamp(0.0, 1.0)) * TIMELINE_SECONDS
 }
 
-/// Splits seconds into the deck timecode: `00:00:45` and `.60`.
+/// Splits seconds into the bar timecode: `00:00:45` and `.60`.
 fn timecode_parts(seconds: f64) -> (String, String) {
     let total_cs = (seconds.max(0.0) * 100.0).round() as u64;
     let total_s = total_cs / 100;

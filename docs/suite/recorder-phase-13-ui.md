@@ -21,7 +21,7 @@ The Recorder's main window is one long scrolling column of every setting. Phase 
 **Non-goals**
 
 - No capture, encode or audio behavior changes.
-- No buttons for features that do not exist yet. "Open in Cutmark Editor" and "Send to Final Cut Pro" from the Review board stay hidden until their milestones ship.
+- No buttons for features that do not exist yet. "Open in CutMark Editor" and "Send to Final Cut Pro" from the Review board stay hidden until their milestones ship.
 - No workspace templates in the Recorder (panel widths are remembered, that is all).
 - No Help topics. Recorder Help is its own phase and uses the S1 Phase 14 engine.
 - No new `ui-kit` widgets unless a step needs one. If one is needed, it goes into `ui-kit` with tokens, never into the Recorder.
@@ -121,7 +121,7 @@ Groups that depend on a switch (key off, mask off, ISO off) show their rows disa
   - File: duration, size, video format, camera ISO format, dropped frames.
   - Marks: list rows; clicking one seeks to it.
   - Actions: Show in folder, Rename (renames every file of the take together), Delete take (moves every file of the take to the Recycle Bin after a confirm dialog that lists the files).
-- Hidden until their milestones: Open in Cutmark Editor, Send to Final Cut Pro.
+- Hidden until their milestones: Open in CutMark Editor, Send to Final Cut Pro.
 
 ## Settings dialog
 
@@ -209,6 +209,6 @@ Each prompt runs only the Recorder's tests and clippy. `scripts\check.ps1` runs 
 1. Every row of the mapping table is in place and works.
 2. The three modes match the boards in layout and look, minus hidden future buttons.
 3. No whole-window scrolling at 1440 x 900 and at 1920 x 1080, at 100% and 150% scaling.
-4. Changing the accent in any Cutmark app recolors the Recorder within a second.
+4. Changing the accent in any CutMark app recolors the Recorder within a second.
 5. Recording, marks, pre-flight, the Control API and the Prompter link behave exactly as before.
 6. Lint passes; test count at least the R1 count; one CI run green at the end.

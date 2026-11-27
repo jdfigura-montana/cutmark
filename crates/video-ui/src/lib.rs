@@ -279,7 +279,7 @@ pub(crate) const EXPORT_SAVE_DIALOGS: [(&str, &str, &str); 7] = [
     ("file.exportFcpxml", "FCPXML", "fcpxml"),
     ("file.exportOtio", "OpenTimelineIO", "otio"),
     ("file.exportAle", "Avid Log Exchange", "ale"),
-    ("file.exportSelectionProject", "Cutmark Video Project", "fcproj"),
+    ("file.exportSelectionProject", "CutMark Video Project", "fcproj"),
 ];
 
 pub struct FilmcraftApp {
@@ -2036,7 +2036,7 @@ impl FilmcraftApp {
     fn error_window(&mut self, ctx: &egui::Context) {
         let Some(msg) = self.ui_error.clone() else { return };
         let mut close = false;
-        egui::Window::new(tl!("Cutmark Video hit an error"))
+        egui::Window::new(tl!("CutMark Video hit an error"))
             .id(egui::Id::new("Cutmark Video hit an error"))
             .collapsible(false)
             .resizable(false)

@@ -65,6 +65,9 @@ fn default_data_dir() -> Option<std::path::PathBuf> {
 /// Reverse-DNS app id: Linux `.desktop` file, hicolor icon name and Wayland app id.
 const APP_ID: &str = "video.cutmark.video";
 
+/// The main window's title, also the name eframe runs the app under.
+const WINDOW_TITLE: &str = "CutMark Video";
+
 /// Print `text` (stdout, or stderr for an error). A Windows release build has no console
 /// (`windows_subsystem = "windows"`), so there it is also shown in a message box: otherwise `--help`
 /// would print nothing and a bad option would quit without a word.
@@ -77,7 +80,7 @@ fn tell(text: &str, error: bool) {
     #[cfg(all(target_os = "windows", not(debug_assertions)))]
     {
         let level = if error { rfd::MessageLevel::Error } else { rfd::MessageLevel::Info };
-        let _ = rfd::MessageDialog::new().set_level(level).set_title("Cutmark Video").set_description(text).show();
+        let _ = rfd::MessageDialog::new().set_level(level).set_title("CutMark Video").set_description(text).show();
     }
 }
 
@@ -103,7 +106,7 @@ fn main() -> eframe::Result {
     };
     let data_root = launch.data_dir.clone().or_else(default_data_dir);
     let log_dir = data_root.as_ref().map(|d| d.join(logging::LOG_DIR));
-    log::info!("Cutmark Video {} ({} {})", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH);
+    log::info!("CutMark Video {} ({} {})", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH);
     // The log file lives next to the crash logs; opened after the arguments, so `--help`,
     // `--version` and usage errors leave no file behind. Records logged until now go in first.
     if let Some(logger) = logger {
@@ -140,7 +143,7 @@ fn main() -> eframe::Result {
         // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
         graphics::apply(&mut options, graphics.mode(), backend_override);
         let app_created = Arc::new(AtomicBool::new(false));
-        let result = eframe::run_native("Cutmark Video", options, app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created)));
+        let result = eframe::run_native(WINDOW_TITLE, options, app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created)));
         let app_created = app_created.load(Ordering::Relaxed);
         match &result {
             // wgpu reported the failure (no adapter, device creation failed) before the app
@@ -160,10 +163,10 @@ fn main() -> eframe::Result {
     // The window could not be created (no usable GPU / graphics driver, no display): say so
     // instead of exiting silently, and keep the reason in the crash log.
     if let Err(e) = &started {
-        let msg = format!("Cutmark Video could not start its window: {e}\n\nUpdating the graphics driver usually fixes this.");
+        let msg = format!("CutMark Video could not start its window: {e}\n\nUpdating the graphics driver usually fixes this.");
         log::error!("{msg}");
         cutmark_video_ui::crash::record(&msg);
-        let _ = rfd::MessageDialog::new().set_title("Cutmark Video").set_description(&msg).set_level(rfd::MessageLevel::Error).show();
+        let _ = rfd::MessageDialog::new().set_title("CutMark Video").set_description(&msg).set_level(rfd::MessageLevel::Error).show();
     }
     started
 }
@@ -172,7 +175,7 @@ fn main() -> eframe::Result {
 fn native_options(agent: bool) -> eframe::NativeOptions {
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Cutmark Video")
+            .with_title(WINDOW_TITLE)
             .with_inner_size([1600.0, 980.0])
             .with_min_inner_size([900.0, 560.0])
             .with_drag_and_drop(true)
@@ -281,7 +284,7 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         }));
         app.hooks.pick_save = Some(Box::new(|name: &str| {
             rfd::FileDialog::new()
-                .add_filter(cutmark_video_ui::i18n::t("Cutmark Video Project"), &file_filters::extensions(&["fcproj"]))
+                .add_filter(cutmark_video_ui::i18n::t("CutMark Video Project"), &file_filters::extensions(&["fcproj"]))
                 .set_file_name(name)
                 .save_file()
                 .map(|p| p.to_string_lossy().to_string())
@@ -330,7 +333,7 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         }));
         app.hooks.pick_open_project = Some(Box::new(|| {
             rfd::FileDialog::new()
-                .add_filter(cutmark_video_ui::i18n::t("Cutmark Video Project"), &file_filters::extensions(&["fcproj"]))
+                .add_filter(cutmark_video_ui::i18n::t("CutMark Video Project"), &file_filters::extensions(&["fcproj"]))
                 .pick_file()
                 .map(|p| p.to_string_lossy().to_string())
         }));
@@ -449,7 +452,7 @@ fn run_dialog_off_thread(dialog: cutmark_video_ui::native_dialogs::FileDialog) -
     use cutmark_video_ui::native_dialogs::FileDialog;
     let t = |s: &str| cutmark_video_ui::i18n::t(s).to_string();
     let media = t("Media");
-    let project = t("Cutmark Video Project");
+    let project = t("CutMark Video Project");
     let project_exts = project_patterns();
     let dialog = prepare_dialog(dialog);
     let (tx, rx) = std::sync::mpsc::channel();
@@ -517,6 +520,13 @@ fn project_patterns() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    /// The product name's casing: a capital C and a capital M.
+    #[test]
+    fn the_main_window_title_starts_with_cutmark() {
+        let title = super::native_options(false).viewport.title;
+        assert!(title.as_deref().is_some_and(|title| title.starts_with("CutMark")), "{title:?}");
+    }
+
     /// Start-up registers the hardware decoders whether or not anything is logged (no logger is
     /// installed here, as in a normal run).
     #[test]

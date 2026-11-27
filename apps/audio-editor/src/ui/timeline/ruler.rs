@@ -201,11 +201,6 @@ fn scrub_state(ctx: &egui::Context) -> ScrubState {
     ctx.data(|d| d.get_temp(egui::Id::new(SCRUB_STATE_KEY)).unwrap_or_default())
 }
 
-/// True while the user drags on the ruler (an audible scrub is active).
-pub fn is_scrubbing(ctx: &egui::Context) -> bool {
-    scrub_state(ctx).active
-}
-
 /// Writes the scrub state back to egui's temp storage.
 fn save_scrub_state(ctx: &egui::Context, state: ScrubState) {
     ctx.data_mut(|d| d.insert_temp(egui::Id::new(SCRUB_STATE_KEY), state));

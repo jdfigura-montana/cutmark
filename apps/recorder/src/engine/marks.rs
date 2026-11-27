@@ -8,7 +8,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use ::marks::{AutoInfo, Mark, MarkType, NewMark, ScriptRef, SessionWriter, Sidecar, Source, SystemClock, WriterInfo};
+use ::marks::{AutoInfo, Clock, Mark, MarkType, NewMark, ScriptRef, SessionWriter, Sidecar, Source, SystemClock, WriterInfo};
 
 use super::clock::MediaClock;
 
@@ -64,8 +64,21 @@ impl TakeMarks {
     ///
     /// When the sidecar cannot be started the take carries on without marks and `warning` says why.
     pub fn begin(dir: &Path, base_name: &str, video_file: &Path, fps: u32, clock: MediaClock, warning: MarksWarning) -> Self {
+        Self::begin_with_wall(dir, base_name, video_file, fps, clock, warning, Box::new(SystemClock))
+    }
+
+    /// Like `begin`, with `wall` giving the wall-clock times the sidecar records, for a take written after the fact.
+    pub(super) fn begin_with_wall(
+        dir: &Path,
+        base_name: &str,
+        video_file: &Path,
+        fps: u32,
+        clock: MediaClock,
+        warning: MarksWarning,
+        wall: Box<dyn Clock>,
+    ) -> Self {
         let info = WriterInfo { app: "cutmark-recorder".to_owned(), version: env!("CARGO_PKG_VERSION").to_owned() };
-        let writer = match SessionWriter::begin(dir, base_name, info, video_file, Box::new(SystemClock)) {
+        let writer = match SessionWriter::begin(dir, base_name, info, video_file, wall) {
             Ok(writer) => Some(writer),
             Err(err) => {
                 log::error!("the marks file could not be started: {err}");
@@ -115,22 +128,21 @@ impl TakeMarks {
     /// Adds a Note with no label at the moment of the press.
     pub fn note(&mut self, press_qpc: i64) {
         let t_ms = self.media_ms(press_qpc);
-        self.add(NewMark { media: Some(0), ..NewMark::point(MarkType::Note, t_ms, Source::Hotkey) });
+        self.add(note_mark(t_ms));
     }
 
     /// Adds a point mark of `category` with an optional label at the moment of the press, stored with `source`.
     pub fn labeled(&mut self, press_qpc: i64, category: MarkType, label: Option<String>, source: Source) {
         let t_ms = self.media_ms(press_qpc);
-        let mut mark = NewMark { media: Some(0), ..NewMark::point(category, t_ms, source) };
-        mark.label = label;
-        self.add(mark);
+        self.add(labeled_mark(t_ms, category, label, source));
     }
 
     /// Adds a Highlight that ends at the press and starts 30 seconds earlier, or at 0.
     pub fn highlight_last(&mut self, press_qpc: i64) {
         let end_ms = self.media_ms(press_qpc);
-        let start_ms = ::marks::snap_to_frame(end_ms.saturating_sub(HIGHLIGHT_SPAN_MS), self.fps, 1);
-        self.add(NewMark { media: Some(0), end_ms: Some(end_ms), ..NewMark::point(MarkType::Highlight, start_ms, Source::Hotkey) });
+        let mut mark = highlight_mark(end_ms);
+        mark.t_ms = ::marks::snap_to_frame(mark.t_ms, self.fps, 1);
+        self.add(mark);
     }
 
     /// Pauses the take's clock and adds a System mark named `recorder.pause`.
@@ -151,6 +163,22 @@ impl TakeMarks {
     pub fn system(&mut self, qpc: i64, kind: &str, label: &str) {
         let t_ms = self.media_ms(qpc);
         self.add_system(kind, label, t_ms);
+    }
+
+    /// Adds the System mark of an app track attaching or detaching, at `t_ms` already on the take's clock.
+    /// On a desktop-except track (`except`), attached means the app is being left out.
+    pub fn app(&mut self, app_name: &str, except: bool, attached: bool, t_ms: u64) {
+        let t_ms = ::marks::snap_to_frame(t_ms, self.fps, 1);
+        let (kind, label) = app_text(app_name, except, attached);
+        self.add_system(kind, &label, t_ms);
+    }
+
+    /// Adds a mark made earlier, its times already in ms on the take's clock, snapped to the take's frame rate.
+    pub(super) fn keep(&mut self, mut mark: NewMark) {
+        mark.media = Some(0);
+        mark.t_ms = ::marks::snap_to_frame(mark.t_ms, self.fps, 1);
+        mark.end_ms = mark.end_ms.map(|end| ::marks::snap_to_frame(end, self.fps, 1));
+        self.add(mark);
     }
 
     /// Ends the take's marks: writes the sidecar with the Markdown and CSV logs, and returns the chapters for the MKV.
@@ -204,11 +232,7 @@ impl TakeMarks {
 
     /// Adds a System mark with the given automatic kind and label.
     fn add_system(&mut self, kind: &str, label: &str, t_ms: u64) {
-        let mut mark = NewMark::point(MarkType::System, t_ms, Source::Auto);
-        mark.media = Some(0);
-        mark.label = Some(label.to_owned());
-        mark.auto = Some(AutoInfo { kind: kind.to_owned(), data: Default::default() });
-        self.add(mark);
+        self.add(system_mark(kind, label, t_ms));
     }
 
     /// Writes one mark, and keeps it for the window's list.
@@ -236,6 +260,43 @@ impl TakeMarks {
         log::error!("marks: {text}");
         self.warning.set(format!("Marks problem: {text}"));
     }
+}
+
+/// A Note with no label, as a silent mark makes it.
+pub(super) fn note_mark(t_ms: u64) -> NewMark {
+    NewMark { media: Some(0), ..NewMark::point(MarkType::Note, t_ms, Source::Hotkey) }
+}
+
+/// A point mark of `category` with an optional label.
+pub(super) fn labeled_mark(t_ms: u64, category: MarkType, label: Option<String>, source: Source) -> NewMark {
+    NewMark { media: Some(0), label, ..NewMark::point(category, t_ms, source) }
+}
+
+/// A Highlight that ends at `end_ms` and starts 30 seconds earlier, or at 0.
+pub(super) fn highlight_mark(end_ms: u64) -> NewMark {
+    let start_ms = end_ms.saturating_sub(HIGHLIGHT_SPAN_MS);
+    NewMark { media: Some(0), end_ms: Some(end_ms), ..NewMark::point(MarkType::Highlight, start_ms, Source::Hotkey) }
+}
+
+/// A System mark with an automatic kind and a label.
+pub(super) fn system_mark(kind: &str, label: &str, t_ms: u64) -> NewMark {
+    let mut mark = NewMark::point(MarkType::System, t_ms, Source::Auto);
+    mark.media = Some(0);
+    mark.label = Some(label.to_owned());
+    mark.auto = Some(AutoInfo { kind: kind.to_owned(), data: Default::default() });
+    mark
+}
+
+/// The automatic kind and the label of an app track attaching or detaching.
+pub(super) fn app_text(app_name: &str, except: bool, attached: bool) -> (&'static str, String) {
+    let kind = if attached { "recorder.app_attached" } else { "recorder.app_detached" };
+    let label = match (except, attached) {
+        (false, true) => format!("App attached: {app_name}"),
+        (false, false) => format!("App detached: {app_name}"),
+        (true, true) => format!("Now excluding {app_name}"),
+        (true, false) => format!("{app_name} closed, capturing all desktop audio"),
+    };
+    (kind, label)
 }
 
 /// The length of a WAV file in ms, read from its format and data chunks; `None` when it cannot be read.

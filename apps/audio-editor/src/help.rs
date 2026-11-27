@@ -28,6 +28,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("getting-started.md", include_str!("../help/getting-started.md")),
     ("projects.md", include_str!("../help/projects.md")),
     ("the-window.md", include_str!("../help/the-window.md")),
+    ("stream-deck.md", include_str!("../help/stream-deck.md")),
     ("recording-a-take.md", include_str!("../help/recording-a-take.md")),
     ("choosing-devices.md", include_str!("../help/choosing-devices.md")),
     ("importing-audio.md", include_str!("../help/importing-audio.md")),
@@ -61,7 +62,7 @@ pub fn book() -> HelpBook {
 pub const CONTEXT_TIMELINE: &str = "timeline";
 /// The F1 context tag for the timeline's track header column.
 pub const CONTEXT_TRACKS: &str = "timeline.tracks";
-/// The F1 context tag for the transport deck.
+/// The F1 context tag for the transport: the bottom bar and the Play button.
 pub const CONTEXT_TRANSPORT: &str = "timeline.transport";
 /// The F1 context tag for the media panel.
 pub const CONTEXT_MEDIA: &str = "media";
@@ -108,7 +109,7 @@ pub const CONTEXT_TAGS: &[&str] = &[
 pub const ANCHOR_MEDIA: &str = "media-panel";
 /// The tour anchor id for the track header column.
 pub const ANCHOR_TRACKS: &str = "track-headers";
-/// The tour anchor id for the transport deck.
+/// The tour anchor id for the bottom bar and the Play button.
 pub const ANCHOR_TRANSPORT: &str = "transport";
 /// The tour anchor id for the timeline panel toolbar.
 pub const ANCHOR_TIMELINE_TOOLBAR: &str = "timeline-toolbar";
@@ -119,7 +120,7 @@ pub const ANCHOR_MENU_BAR: &str = "menu-bar";
 const TOUR_STEPS: [TourStep; 5] = [
     TourStep { target: ANCHOR_MEDIA, title: "Media panel", body: "Import audio files here, then drag them onto a track." },
     TourStep { target: ANCHOR_TRACKS, title: "Tracks", body: "Each track has Mute, Solo and Record arm. Arm a track, then press Record to record onto it." },
-    TourStep { target: ANCHOR_TRANSPORT, title: "Transport", body: "Play, stop and record from here. Drag the bar sideways if it covers something." },
+    TourStep { target: ANCHOR_TRANSPORT, title: "Transport", body: "Play with the round button. Stop and Record are in the bar under the timeline." },
     TourStep {
         target: ANCHOR_TIMELINE_TOOLBAR,
         title: "Timeline toolbar",
@@ -132,19 +133,20 @@ const TOUR_STEPS: [TourStep; 5] = [
 /// "First-run tour").
 pub const TOUR: Tour = Tour { app: "audio-editor", id: "intro", version: 1, steps: &TOUR_STEPS };
 
-/// The third-party notices, then the Inter and JetBrains Mono font licenses the
+/// The third-party notices, then the Instrument Sans and Martian Mono font licenses the
 /// app ships (spec: S1 Help "About box"). The two font OFL texts are the ones
 /// ui-kit embeds, since the app draws with those faces.
 const NOTICES: &str = concat!(
     include_str!("../THIRD-PARTY-NOTICES.txt"),
-    "\n\nInter (SIL Open Font License 1.1)\n\n",
-    include_str!("../../../crates/ui-kit/assets/fonts/OFL-Inter.txt"),
-    "\n\nJetBrains Mono (SIL Open Font License 1.1)\n\n",
-    include_str!("../../../crates/ui-kit/assets/fonts/OFL-JetBrainsMono.txt"),
+    "\n\nInstrument Sans (SIL Open Font License 1.1)\n\n",
+    include_str!("../../../crates/ui-kit/assets/fonts/OFL-InstrumentSans.txt"),
+    "\n\nMartian Mono (SIL Open Font License 1.1)\n\n",
+    include_str!("../../../crates/ui-kit/assets/fonts/OFL-MartianMono.txt"),
 );
 
 /// The About box's content (spec: S1 Help "About box").
-pub const ABOUT: AboutInfo = AboutInfo { app_name: "Cutmark Audio", version: env!("CARGO_PKG_VERSION"), copyright: COPYRIGHT, notices: NOTICES };
+pub const ABOUT: AboutInfo =
+    AboutInfo { app_name: "CutMark Audio", brand: Some(ui_kit::brand::App::Audio), version: env!("CARGO_PKG_VERSION"), copyright: COPYRIGHT, notices: NOTICES };
 
 #[cfg(test)]
 mod tests {
@@ -188,7 +190,8 @@ mod tests {
     /// font license texts.
     #[test]
     fn the_about_box_names_the_app_and_lists_the_licenses() {
-        assert_eq!(ABOUT.app_name, "Cutmark Audio");
+        assert_eq!(ABOUT.app_name, "CutMark Audio");
+        assert_eq!(ABOUT.brand, Some(ui_kit::brand::App::Audio));
         assert_eq!(ABOUT.version, env!("CARGO_PKG_VERSION"));
         assert!(ABOUT.copyright.contains("2026"), "the copyright line names the year");
         assert!(ABOUT.notices.contains("Open Font License"), "the font licenses are embedded");

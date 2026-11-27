@@ -15,7 +15,7 @@ fn shared_bool() -> (Rc<Cell<bool>>, Rc<Cell<bool>>) {
     (cell.clone(), cell)
 }
 
-/// A harness with the ui-kit font set, so the named Inter families the
+/// A harness with the ui-kit font set, so the named Instrument Sans families the
 /// widgets lay text out in are bound. The first pass only installs the
 /// fonts; the widgets are drawn from the second pass on. `selected` feeds
 /// the header's selection state.

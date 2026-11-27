@@ -12,7 +12,7 @@ Today every take is Baked: the camera, its key, crop, border and the background 
 
 1. Baked stays the default and records exactly as today.
 2. Clean gives an untouched screen file plus a raw camera file that line up within one frame (the existing cam offset and sync test still apply).
-3. The `composite` block is complete enough for the Cutmark video editor, and later the Final Cut export, to rebuild the Baked look without guessing.
+3. The `composite` block is complete enough for the CutMark video editor, and later the Final Cut export, to rebuild the Baked look without guessing.
 
 **Non-goals**
 

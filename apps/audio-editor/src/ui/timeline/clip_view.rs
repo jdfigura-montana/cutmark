@@ -172,6 +172,7 @@ pub fn draw(
     muted: bool,
     gain_active: bool,
 ) {
+    let neutral = crate::ui::neutrals(painter.ctx());
     let (vis_start, vis_end) = g.visible_range();
     if clip.end() <= vis_start || clip.start >= vis_end {
         return;
@@ -187,7 +188,7 @@ pub fn draw(
     if rect.width() < metrics::THIN_CLIP_W {
         painter.line_segment(
             [egui::pos2(rect.left(), rect.top()), egui::pos2(rect.left(), rect.bottom())],
-            egui::Stroke::new(metrics::HAIRLINE, dim(color::TEXT_TERTIARY)),
+            egui::Stroke::new(metrics::HAIRLINE, dim(neutral.text_tertiary)),
         );
         return;
     }
@@ -200,7 +201,12 @@ pub fn draw(
     // name is drawn below (it pins and truncates), so the label is empty.
     let theme = ui_kit::Theme::get(painter.ctx());
     let look = ui_kit::ClipLook { selected, dimmed: muted, ..ui_kit::ClipLook::new("", ui_kit::ClipKind::Audio) };
-    let content = ui_kit::paint_clip(painter, rect, &look, &theme);
+    // On the darker lanes an unselected clip is `bg.control` with a
+    // `bg.hover` rim; a selected one keeps the accent look.
+    let mut body_theme = theme;
+    body_theme.neutrals.bg_clip = neutral.bg_control;
+    body_theme.neutrals.stroke_clip = neutral.bg_hover;
+    let content = ui_kit::paint_clip(painter, rect, &look, &body_theme);
     if offline {
         let inset = rect.shrink(metrics::SELECTION_BORDER_W);
         painter.rect_filled(inset, radius::CLIP_AUDIO - metrics::SELECTION_BORDER_W, dim(color::SEM_RECORD.gamma_multiply(metrics::OFFLINE_BODY_ALPHA)));
@@ -221,7 +227,7 @@ pub fn draw(
     // Header text: the name pinned to the visible left edge and the gain
     // pinned to the visible right edge when the clip runs off the lanes, so
     // both stay readable; the name truncates with an ellipsis before the gain.
-    let text_color = dim(color::TEXT_PRIMARY);
+    let text_color = dim(neutral.text_primary);
     let clipped = painter.with_clip_rect(rect);
     let gain_text = format!("{:+.1} dB", clip.gain_db);
     let gain_galley = painter.layout_no_wrap(gain_text, ui_kit::fonts::mono(typography::VALUE_SIZE), text_color);
@@ -241,7 +247,7 @@ pub fn draw(
     // The gain value at the right of the header is the double-click target.
     clipped.galley(egui::pos2(gain_left, header_rect.center().y - gain_galley.size().y * 0.5), gain_galley, text_color);
     if offline {
-        clipped.text(body.center(), egui::Align2::CENTER_CENTER, "Media offline", clip_name_font(), dim(color::TEXT_PRIMARY));
+        clipped.text(body.center(), egui::Align2::CENTER_CENTER, "Media offline", clip_name_font(), dim(neutral.text_primary));
     }
 }
 
@@ -254,6 +260,7 @@ pub fn draw(
 /// on the right, and the live waveform from the writer's peaks in the body.
 /// Narrower than `thin_clip_w` it is a single hairline, like a clip.
 pub fn draw_live(painter: &egui::Painter, status: &RecordStatus<'_>, rate: u32, g: &Geom, track_rect: egui::Rect, wave_scale: f32) {
+    let neutral = crate::ui::neutrals(painter.ctx());
     let (vis_start, vis_end) = g.visible_range();
     let end = status.start.saturating_add(status.frames);
     if end < vis_start || status.start >= vis_end {
@@ -278,7 +285,7 @@ pub fn draw_live(painter: &egui::Painter, status: &RecordStatus<'_>, rate: u32, 
 
     // Header text, pinned to the visible edges like a clip's: "Recording" on
     // the left, the elapsed time on the right.
-    let text_color = color::TEXT_PRIMARY;
+    let text_color = neutral.text_primary;
     let clipped = painter.with_clip_rect(rect);
     let elapsed = painter.layout_no_wrap(samples_to_timecode(status.frames, rate), ui_kit::fonts::mono(metrics::CLIP_GAIN_SIZE), text_color);
     let lane_right = g.lane_left + g.lane_width;
@@ -347,6 +354,7 @@ fn draw_gain_and_fades(
     muted: bool,
     gain_active: bool,
 ) {
+    let neutral = crate::ui::neutrals(painter.ctx());
     let scale = if muted { 0.45 } else { 1.0 };
     let dim = |color: egui::Color32| color.gamma_multiply(scale);
     let clipped = painter.with_clip_rect(body);
@@ -356,16 +364,16 @@ fn draw_gain_and_fades(
     if gy >= body.top() - 0.5 && gy <= body.bottom() + 0.5 {
         let gain_active = hover == Some(Zone::GainLine) || gain_active;
         let stroke = if gain_active {
-            Stroke::new(2.0, dim(color::TEXT_PRIMARY))
+            Stroke::new(2.0, dim(neutral.text_primary))
         } else {
-            Stroke::new(metrics::HAIRLINE, color::TEXT_PRIMARY.gamma_multiply(metrics::GAIN_LINE_IDLE_ALPHA * scale))
+            Stroke::new(metrics::HAIRLINE, neutral.text_primary.gamma_multiply(metrics::GAIN_LINE_IDLE_ALPHA * scale))
         };
         clipped.line_segment([egui::pos2(body.left(), gy), egui::pos2(body.right(), gy)], stroke);
     }
 
     let shade = egui::Stroke::NONE;
-    let shade_fill = dim(color::BG_GROUND.gamma_multiply(metrics::FADE_SHADE_ALPHA));
-    let curve = egui::Stroke::new(1.2, dim(color::TEXT_PRIMARY.gamma_multiply(metrics::GAIN_CURVE_ALPHA)));
+    let shade_fill = dim(neutral.bg_ground.gamma_multiply(metrics::FADE_SHADE_ALPHA));
+    let curve = egui::Stroke::new(1.2, dim(neutral.text_primary.gamma_multiply(metrics::GAIN_CURVE_ALPHA)));
     if clip.fade_in > 0 {
         let fx = (rect.left() + (clip.fade_in as f64 / g.spp.max(f64::EPSILON)) as f32).min(rect.right());
         // Outside the curve: the triangle above the fade-in line.
@@ -390,9 +398,9 @@ fn draw_gain_and_fades(
         // The square always sits on the clip's real top corner.
         let corner_x = if fade_out { rect.right() } else { rect.left() };
         let square = egui::Rect::from_center_size(egui::pos2(corner_x, body.top()), egui::vec2(metrics::FADE_HANDLE_SZ, metrics::FADE_HANDLE_SZ));
-        let fill = if hover == Some(zone) { dim(ui_kit::Theme::get(clipped.ctx()).accent.accent) } else { dim(color::TEXT_PRIMARY) };
+        let fill = if hover == Some(zone) { dim(ui_kit::Theme::get(clipped.ctx()).accent.accent) } else { dim(neutral.text_primary) };
         clipped.rect_filled(square, metrics::CORNER_R, fill);
-        clipped.rect_stroke(square, metrics::CORNER_R, egui::Stroke::new(metrics::HAIRLINE, dim(color::BG_GROUND)), egui::StrokeKind::Inside);
+        clipped.rect_stroke(square, metrics::CORNER_R, egui::Stroke::new(metrics::HAIRLINE, dim(neutral.bg_ground)), egui::StrokeKind::Inside);
     }
 }
 
@@ -522,6 +530,17 @@ mod tests {
     }
 
     #[test]
+    fn a_plain_clip_has_a_1px_bg_hover_rim() {
+        let clip = test_clip(0.0, 0, 0);
+        let mut h = crate::ui::test_util::Headless::new(1280.0, 400.0);
+        let out = h.frame(Vec::new(), |ui| {
+            draw(ui.painter(), &clip, "Take", false, None, &live_geom(), live_lane(), 1.0, false, None, false, false);
+        });
+        let rim = out.rects().into_iter().find(|r| r.stroke.color == color::BG_HOVER).expect("the bg.hover rim");
+        assert_eq!(rim.stroke.width, metrics::HAIRLINE);
+    }
+
+    #[test]
     fn a_muted_track_dims_the_clip_and_a_selected_clip_takes_the_accent() {
         let g = live_geom();
         let lane = live_lane();
@@ -537,8 +556,8 @@ mod tests {
             .map(|r| r.fill)
             .collect::<Vec<_>>()
         };
-        assert!(fills(&mut h, false, false).contains(&color::BG_CLIP), "a plain clip is bg.clip");
-        let dimmed = color::BG_CLIP.gamma_multiply(MUTED_OPACITY);
+        assert!(fills(&mut h, false, false).contains(&color::BG_CONTROL), "a plain clip is bg.control");
+        let dimmed = color::BG_CONTROL.gamma_multiply(MUTED_OPACITY);
         assert!(fills(&mut h, false, true).contains(&dimmed), "a muted track dims the clip to 45%");
         assert!(fills(&mut h, true, false).contains(&theme.accent.tint), "a selected clip is the accent tint");
     }
@@ -595,7 +614,7 @@ mod tests {
         let fills: Vec<_> = out.rects().into_iter().map(|r| r.fill).collect();
         assert!(fills.contains(&live_body), "body {live_body:?}");
         assert!(fills.contains(&live_header), "header {live_header:?}");
-        assert!(fills.contains(&color::BG_CLIP), "the normal clip's ui-kit body");
+        assert!(fills.contains(&color::BG_CONTROL), "the normal clip's ui-kit body");
     }
 
     #[test]

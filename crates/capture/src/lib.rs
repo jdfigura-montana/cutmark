@@ -3,7 +3,8 @@
 //! One shared D3D11 device plus Windows Graphics Capture (WGC) monitor capture.
 //! Frames stay on the GPU as BGRA textures, and every frame is stamped with QPC
 //! on arrival. See the recorder spec: Screen capture, and Sync and reliability
-//! rules, Clock and frame rate.
+//! rules, Clock and frame rate. The input logger records the cursor and mouse on
+//! the same clock; see the input track spec.
 
 mod app_audio;
 #[cfg(windows)]
@@ -18,6 +19,7 @@ mod compose;
 mod convert;
 #[cfg(windows)]
 mod gpu;
+mod input;
 #[cfg(windows)]
 mod monitor;
 #[cfg(windows)]
@@ -28,12 +30,12 @@ mod webcam;
 mod wgc;
 
 #[cfg(not(windows))]
-pub use app_audio::{AppLoopback, list_audio_apps};
+pub use app_audio::{AppLoopback, list_audio_apps, top_level_pids};
 pub use app_audio::{AppTarget, AudioApp, AudioPacket, LoopbackMode};
 #[cfg(windows)]
 pub use app_list::list_audio_apps;
 #[cfg(windows)]
-pub use app_loopback::AppLoopback;
+pub use app_loopback::{AppLoopback, top_level_pids};
 #[cfg(windows)]
 pub use audio::{AudioCapture, AudioDevice, DeviceKind, find_device, list_audio_devices};
 #[cfg(windows)]
@@ -45,6 +47,10 @@ pub use compose::{
 pub use convert::Nv12Converter;
 #[cfg(windows)]
 pub use gpu::{AdapterInfo, Gpu, list_adapters};
+pub use input::{
+    CaptureSource, CursorSample, CursorShape, DisplayInfo, GeometryChange, GeometryEvent, InputEvent, InputLogger, InputOptions, InputStartInfo, Modifiers,
+    MouseAction, MouseButton, MouseEvent, ScreenRect, ShapeFrame,
+};
 #[cfg(windows)]
 pub use monitor::{MonitorInfo, list_monitors};
 #[cfg(windows)]

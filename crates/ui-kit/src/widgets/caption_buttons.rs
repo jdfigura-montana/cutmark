@@ -3,6 +3,7 @@
 
 use egui::{Color32, CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, WidgetInfo, WidgetType, pos2, vec2};
 
+use crate::Theme;
 use crate::chrome;
 use crate::tokens::{color, size};
 
@@ -38,6 +39,7 @@ pub struct CaptionRects {
 /// hover, for the same reason. [`crate::widgets::main_toolbar`] only draws
 /// these buttons when [`chrome::is_custom`] is true.
 pub fn caption_buttons(ui: &mut Ui) -> Option<CaptionRects> {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     if ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false)) {
         return None;
     }
@@ -50,7 +52,7 @@ pub fn caption_buttons(ui: &mut Ui) -> Option<CaptionRects> {
     let close_hovered = response.hovered();
     paint_fill(ui, close, close_hovered, color::CAPTION_CLOSE_HOVER);
     let c = close.center();
-    let stroke = Stroke::new(GLYPH_STROKE, glyph_color(close_hovered, color::CAPTION_CLOSE_GLYPH_HOVER));
+    let stroke = Stroke::new(GLYPH_STROKE, glyph_color(close_hovered, neutrals.text_secondary, color::CAPTION_CLOSE_GLYPH_HOVER));
     ui.painter().line_segment([pos2(c.x - GLYPH_HALF, c.y - GLYPH_HALF), pos2(c.x + GLYPH_HALF, c.y + GLYPH_HALF)], stroke);
     ui.painter().line_segment([pos2(c.x + GLYPH_HALF, c.y - GLYPH_HALF), pos2(c.x - GLYPH_HALF, c.y + GLYPH_HALF)], stroke);
     if response.clicked() {
@@ -63,8 +65,8 @@ pub fn caption_buttons(ui: &mut Ui) -> Option<CaptionRects> {
     // The hover comes from the chrome, which tracks the non-client pointer
     // moves egui never sees (spec "Window chrome": Snap Layouts flyout).
     let max_hovered = chrome::is_maximized_button_hovered(ui.ctx());
-    paint_fill(ui, maximize, max_hovered, color::BG_HOVER);
-    let stroke = Stroke::new(GLYPH_STROKE, glyph_color(max_hovered, color::TEXT_SECONDARY));
+    paint_fill(ui, maximize, max_hovered, neutrals.bg_hover);
+    let stroke = Stroke::new(GLYPH_STROKE, glyph_color(max_hovered, neutrals.text_secondary, neutrals.text_secondary));
     let c = maximize.center();
     if maximized {
         // Restore: two overlapping squares, the back one offset up-right, its
@@ -87,10 +89,12 @@ pub fn caption_buttons(ui: &mut Ui) -> Option<CaptionRects> {
     let (minimize, response) = ui.allocate_exact_size(side, Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Minimize"));
     let min_hovered = response.hovered();
-    paint_fill(ui, minimize, min_hovered, color::BG_HOVER);
+    paint_fill(ui, minimize, min_hovered, neutrals.bg_hover);
     let c = minimize.center();
-    ui.painter()
-        .line_segment([pos2(c.x - GLYPH_HALF, c.y), pos2(c.x + GLYPH_HALF, c.y)], Stroke::new(GLYPH_STROKE, glyph_color(min_hovered, color::TEXT_SECONDARY)));
+    ui.painter().line_segment(
+        [pos2(c.x - GLYPH_HALF, c.y), pos2(c.x + GLYPH_HALF, c.y)],
+        Stroke::new(GLYPH_STROKE, glyph_color(min_hovered, neutrals.text_secondary, neutrals.text_secondary)),
+    );
     if response.clicked() {
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
     }
@@ -106,6 +110,6 @@ fn paint_fill(ui: &mut Ui, rect: Rect, hovered: bool, hover_fill: Color32) {
 }
 
 /// The glyph color: `text.secondary` at rest, `hover_color` on hover.
-fn glyph_color(hovered: bool, hover_color: Color32) -> Color32 {
-    if hovered { hover_color } else { color::TEXT_SECONDARY }
+fn glyph_color(hovered: bool, rest_color: Color32, hover_color: Color32) -> Color32 {
+    if hovered { hover_color } else { rest_color }
 }

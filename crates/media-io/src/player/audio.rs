@@ -4,7 +4,8 @@
 //! the first audio stream, decodes it on an "audio-decode" thread, resamples every frame
 //! with swresample to the caller's rate as interleaved stereo f32 and fills a ring buffer.
 //! The caller drains the ring with [`AudioDecoder::pull`] without taking a lock, so it can
-//! be called straight from an output stream callback.
+//! be called straight from an output stream callback. The first decode or resample error ends
+//! the thread; [`AudioDecoder::take_error`] reports its reason once.
 #![allow(unsafe_code)]
 
 use std::ffi::{CStr, CString, c_int};
@@ -189,6 +190,8 @@ pub struct AudioDecoder {
     stop: Arc<AtomicBool>,
     /// The decode thread, taken and joined by Drop.
     thread: Option<JoinHandle<()>>,
+    /// Why the decode thread gave up, until the caller takes it.
+    failure: Failure,
     /// The output sample rate in hertz.
     rate: u32,
 }
@@ -206,15 +209,28 @@ impl AudioDecoder {
         let control: Arc<Control> = Arc::new((Mutex::new(ControlState { playing: false, pending_seek: None, eof: false }), Condvar::new()));
         let ring = Arc::new(Ring::new());
         let stop = Arc::new(AtomicBool::new(false));
+        let failure = Failure::default();
         let thread = {
             let payload = SendSession(session);
             let (thread_control, thread_ring, thread_stop) = (Arc::clone(&control), Arc::clone(&ring), Arc::clone(&stop));
+            let thread_failure = Arc::clone(&failure);
             std::thread::Builder::new()
                 .name("audio-decode".to_owned())
-                .spawn(move || run(payload, thread_control, thread_ring, thread_stop))
+                .spawn(move || {
+                    if let Err(error) = run(payload, thread_control, thread_ring, thread_stop) {
+                        log::warn!("audio decode stopped: {error}");
+                        *lock(&thread_failure) = Some(error.to_string());
+                    }
+                })
                 .map_err(|_| MediaError::Null("the audio decode thread"))?
         };
-        Ok(Self { ring, control, stop, thread: Some(thread), rate })
+        Ok(Self { ring, control, stop, thread: Some(thread), failure, rate })
+    }
+
+    /// Why decoding stopped for good, if it did; reported once, `None` afterwards. Locks a
+    /// mutex, so it is not for the output stream callback.
+    pub fn take_error(&self) -> Option<String> {
+        lock(&self.failure).take()
     }
 
     /// Resumes decoding into the ring buffer.
@@ -273,6 +289,9 @@ impl Drop for AudioDecoder {
     }
 }
 
+/// The reason the decode thread gave up, shared with the caller.
+type Failure = Arc<Mutex<Option<String>>>;
+
 /// The play state and the pending seek the decode thread reads under its lock.
 struct ControlState {
     /// Whether the thread decodes ahead into the ring or waits.
@@ -301,8 +320,9 @@ fn mark_eof(control: &Control) {
     }
 }
 
-/// The body of the decode thread: waits for play or a seek, decodes and fills the ring.
-fn run(SendSession(mut session): SendSession, control: Arc<Control>, ring: Arc<Ring>, stop: Arc<AtomicBool>) {
+/// The body of the decode thread: waits for play or a seek, decodes and fills the ring. It
+/// returns on stop, or with the first error of the decoder.
+fn run(SendSession(mut session): SendSession, control: Arc<Control>, ring: Arc<Ring>, stop: Arc<AtomicBool>) -> Result<(), MediaError> {
     let mut seek_target: Option<u64> = None;
     loop {
         {
@@ -312,38 +332,30 @@ fn run(SendSession(mut session): SendSession, control: Arc<Control>, ring: Arc<R
                 state = signal.wait(state).unwrap_or_else(PoisonError::into_inner);
             }
             if stop.load(Ordering::Relaxed) {
-                return;
+                return Ok(());
             }
             if let Some(target) = state.pending_seek.take() {
-                match session.seek(target) {
-                    Ok(()) => {
-                        seek_target = Some(target);
-                        state.eof = false;
-                    }
-                    Err(error) => log::warn!("audio decode: the seek to {target} ms failed: {error}"),
-                }
+                session.seek(target)?;
+                seek_target = Some(target);
+                state.eof = false;
             }
         }
         // The caller's ring must be drained before new samples with a new origin are pushed.
         if !ring.wait_flush_ack(&stop) {
-            return;
+            return Ok(());
         }
         if session.input_done {
             mark_eof(&control);
             continue;
         }
-        match session.decode_next() {
-            Ok(Some(batch)) => {
+        match session.decode_next()? {
+            Some(batch) => {
                 if seek_target.is_none_or(|target| batch.pts_ms >= target) {
                     push_batch(&ring, &batch, &stop);
                     seek_target = None;
                 }
             }
-            Ok(None) => mark_eof(&control),
-            Err(error) => {
-                log::warn!("audio decode: {error}");
-                mark_eof(&control);
-            }
+            None => mark_eof(&control),
         }
     }
 }
@@ -357,6 +369,10 @@ struct InSignature {
     rate: u32,
     /// The channel count.
     channels: u32,
+    /// The channel order of the layout, as its AVChannelOrder number.
+    order: u32,
+    /// The channel mask of the layout.
+    mask: u64,
 }
 
 /// The opened decoder, its input file and the resampler one decode thread works with.
@@ -519,10 +535,24 @@ impl Session {
         Ok(Batch { samples, pts_ms })
     }
 
-    /// The swresample context converting this frame's format to stereo f32 at `out_rate`, made
-    /// on first use and rebuilt when the input signature changes.
+    /// The initialized swresample context converting this frame's format to stereo f32 at
+    /// `out_rate`, made on first use and rebuilt when the input signature changes. A frame
+    /// without a channel layout gets the default one for its channel count.
     fn resampler(&mut self, format: ffi::AVSampleFormat, in_rate: u32, channels: u32) -> Result<*mut ffi::SwrContext, MediaError> {
-        let key = InSignature { format, rate: in_rate, channels };
+        // SAFETY: the layout is plain data, and all zeroes is a valid unspecified layout.
+        let mut default_layout: ffi::AVChannelLayout = unsafe { std::mem::zeroed() };
+        // SAFETY: the frame is live and was filled by avcodec_receive_frame.
+        let mut in_layout = unsafe { std::ptr::addr_of!((*self.frame).ch_layout) };
+        // SAFETY: the pointer names the live frame's layout.
+        if unsafe { (*in_layout).order } == ffi::AVChannelOrder::AV_CHANNEL_ORDER_UNSPEC {
+            // SAFETY: the out pointer is valid.
+            unsafe { ffi::av_channel_layout_default(&mut default_layout, channels as c_int) };
+            in_layout = &default_layout;
+        }
+        // SAFETY: the pointer names the frame's layout or the default one, both live; the
+        // union is only read as its bits, to compare signatures.
+        let (order, mask) = unsafe { ((*in_layout).order as u32, (*in_layout).u.mask) };
+        let key = InSignature { format, rate: in_rate, channels, order, mask };
         if self.swr.is_null() || self.in_sig.as_ref() != Some(&key) {
             if !self.swr.is_null() {
                 // SAFETY: the context was made by swr_alloc_set_opts2 and this is its last owner.
@@ -537,7 +567,6 @@ impl Session {
             let mut swr: *mut ffi::SwrContext = std::ptr::null_mut();
             // SAFETY: the context out pointer and both layouts are valid while the call runs.
             let code = unsafe {
-                let in_layout = std::ptr::addr_of!((*self.frame).ch_layout);
                 ffi::swr_alloc_set_opts2(
                     &mut swr,
                     &out_layout,
@@ -555,6 +584,13 @@ impl Session {
             }
             if swr.is_null() {
                 return Err(MediaError::Null("swr_alloc_set_opts2"));
+            }
+            // SAFETY: the context was just allocated with its options set.
+            let code = unsafe { ffi::swr_init(swr) };
+            if code < 0 {
+                // SAFETY: the context is owned here and this is its last owner.
+                unsafe { ffi::swr_free(&mut swr) };
+                return Err(ff_error(code));
             }
             self.swr = swr;
             self.in_sig = Some(key);
@@ -766,6 +802,131 @@ mod tests {
         let mut more = [0.0f32; 480];
         assert_eq!(ring.pull(&mut more), 240);
         assert_eq!(ring.next_pts_ms(48_000), 5_105);
+    }
+
+    /// A temporary file of this test process.
+    fn temp_file(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("cutmark_audio_player_{}_{name}", std::process::id()))
+    }
+
+    /// A 440 Hz tone as interleaved stereo f32, `frames` frames at 48 kHz.
+    fn tone(frames: usize) -> Vec<f32> {
+        (0..frames).flat_map(|index| [(index as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin() * 0.5; 2]).collect()
+    }
+
+    /// Writes two seconds of the tone as AAC in an MKV.
+    fn write_aac_clip(path: &Path) -> Result<(), MediaError> {
+        crate::init()?;
+        let mut encoder = crate::AudioEncoder::open(crate::AudioCodec::Aac { kbps: 192 }, 48_000, 2)?;
+        let mut muxer = crate::Muxer::create(path, crate::Container::Mkv)?;
+        muxer.add_audio(encoder.parameters(), encoder.time_base(), "Mixdown", true)?;
+        muxer.start()?;
+        let mut packets = Vec::new();
+        // The encoder holds only a few frames, so it is drained after every chunk.
+        for chunk in tone(96_000).chunks(2_048) {
+            encoder.send(chunk)?;
+            encoder.receive(&mut |packet| packets.push(packet))?;
+        }
+        encoder.finish(&mut |packet| packets.push(packet))?;
+        for packet in packets {
+            muxer.write(0, &packet)?;
+        }
+        muxer.finish()?;
+        Ok(())
+    }
+
+    /// Writes a plain 16-bit stereo WAV of one and a half seconds, which names no channel layout.
+    fn write_wav(path: &Path) -> std::io::Result<()> {
+        let data: Vec<u8> = tone(72_000).iter().flat_map(|sample| ((sample * 32_767.0) as i16).to_le_bytes()).collect();
+        let mut bytes = b"RIFF".to_vec();
+        bytes.extend((36 + data.len() as u32).to_le_bytes());
+        bytes.extend(b"WAVEfmt ");
+        bytes.extend(16u32.to_le_bytes());
+        for field in [1u16, 2] {
+            bytes.extend(field.to_le_bytes());
+        }
+        for field in [48_000u32, 192_000] {
+            bytes.extend(field.to_le_bytes());
+        }
+        for field in [4u16, 16] {
+            bytes.extend(field.to_le_bytes());
+        }
+        bytes.extend(b"data");
+        bytes.extend((data.len() as u32).to_le_bytes());
+        bytes.extend(data);
+        std::fs::write(path, bytes)
+    }
+
+    /// Pulls until `frames` stereo frames arrived, decoding fails or five seconds pass.
+    fn pull_frames(decoder: &AudioDecoder, frames: usize) -> (Vec<f32>, Option<String>) {
+        let mut samples = Vec::new();
+        let mut chunk = [0.0f32; 2_048];
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while samples.len() < frames * 2 && Instant::now() < deadline {
+            let pulled = decoder.pull(&mut chunk);
+            samples.extend_from_slice(&chunk[..pulled * 2]);
+            if pulled == 0 {
+                if let Some(error) = decoder.take_error() {
+                    return (samples, Some(error));
+                }
+                std::thread::sleep(WAIT);
+            }
+        }
+        (samples, None)
+    }
+
+    #[test]
+    fn an_aac_clip_decodes_a_second_through_the_resampler_also_after_a_seek() -> Result<(), MediaError> {
+        let path = temp_file("aac.mkv");
+        write_aac_clip(&path)?;
+        let decoder = AudioDecoder::open(&path, 44_100)?;
+        decoder.play();
+        let (samples, error) = pull_frames(&decoder, 44_100);
+        assert_eq!(error, None);
+        assert!(samples.len() >= 88_200, "only {} samples arrived", samples.len());
+        assert!(samples.iter().any(|sample| sample.abs() > 0.2), "the tone is audible");
+        // The seek drops the resampler; the next frame builds a new one.
+        decoder.seek(500);
+        let (samples, error) = pull_frames(&decoder, 22_050);
+        assert_eq!(error, None);
+        assert!(samples.len() >= 44_100, "only {} samples arrived after the seek", samples.len());
+        drop(decoder);
+        let _ = std::fs::remove_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn audio_without_a_channel_layout_decodes() -> Result<(), Box<dyn std::error::Error>> {
+        let path = temp_file("plain.wav");
+        write_wav(&path)?;
+        let decoder = AudioDecoder::open(&path, 48_000)?;
+        decoder.play();
+        let (samples, error) = pull_frames(&decoder, 48_000);
+        assert_eq!(error, None);
+        assert!(samples.len() >= 96_000, "only {} samples arrived", samples.len());
+        drop(decoder);
+        let _ = std::fs::remove_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn a_resampler_that_cannot_start_reports_its_error_once() -> Result<(), Box<dyn std::error::Error>> {
+        let path = temp_file("refused.wav");
+        write_wav(&path)?;
+        // No resampler can be initialized for an output rate of zero.
+        let decoder = AudioDecoder::open(&path, 0)?;
+        decoder.play();
+        let (samples, error) = pull_frames(&decoder, 1);
+        assert!(samples.is_empty());
+        assert!(error.is_some(), "the failure is reported");
+        // The thread is gone: a seek and a play bring no second report.
+        decoder.seek(0);
+        decoder.play();
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(decoder.take_error(), None);
+        drop(decoder);
+        let _ = std::fs::remove_file(path);
+        Ok(())
     }
 
     #[test]

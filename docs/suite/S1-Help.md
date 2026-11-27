@@ -6,7 +6,7 @@ Phase 14 of S1 becomes Help. The close-out (version 1.2.0, installer, week of us
 
 ## Overview
 
-People need to learn what every part of Cutmark Audio does without leaving the app. Phase 14 adds three things:
+People need to learn what every part of CutMark Audio does without leaving the app. Phase 14 adds three things:
 
 1. **Help window**: searchable topics, offline, opened from the Help menu or F1, with context help for the area you are in.
 2. **Shortcut sheet**: every keyboard shortcut, generated from the app's real key bindings so it can never go stale.

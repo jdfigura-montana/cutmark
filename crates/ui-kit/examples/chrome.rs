@@ -15,10 +15,11 @@
 //! toolbar text.
 
 use eframe::egui;
-use ui_kit::{Menu, Theme, Title, tokens};
+use ui_kit::{Menu, Title, brand, tokens};
 
-/// The app mark's side (spec rev 3 "Title bar": 18).
-const APP_MARK_SIZE: f32 = 18.0;
+/// The brand art in the title bar. The demo is no app of its own, so it
+/// borrows the blue one.
+const MARK: brand::App = brand::App::Prompter;
 
 /// The demo app: draws the main toolbar and a status line.
 struct ChromeDemo {
@@ -26,20 +27,9 @@ struct ChromeDemo {
     mode: std::rc::Rc<std::cell::Cell<usize>>,
 }
 
-/// Draws the app mark placeholder: an accent circle with a notch cut from its
-/// top right (spec "Open questions" item 1: placeholder until a real logo).
-fn app_mark(ui: &mut egui::Ui) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(APP_MARK_SIZE, APP_MARK_SIZE), egui::Sense::hover());
-    let c = rect.center();
-    let radius = APP_MARK_SIZE / 2.0;
-    let painter = ui.painter();
-    painter.circle_filled(c, radius, Theme::get(ui.ctx()).accent.accent);
-    painter.rect_filled(egui::Rect::from_min_size(egui::pos2(c.x, c.y - radius), egui::vec2(radius, radius)), 0.0, tokens::color::BG_GROUND);
-}
-
 /// Draws the left zone: the app mark, then a File and an Edit menu.
 fn left_zone(ui: &mut egui::Ui) {
-    app_mark(ui);
+    brand::mark(ui, MARK, brand::TITLE_BAR_MARK);
     ui.add_space(tokens::space::SCALE_8);
     let mut menus = [
         Menu::new("File", |ui| {

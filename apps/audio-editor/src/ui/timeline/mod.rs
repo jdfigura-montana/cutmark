@@ -1,7 +1,9 @@
 //! ui::timeline: the central timeline view (ruler, lanes, playhead, zoom, scroll).
 
+use std::cell::RefCell;
+
 use eframe::egui;
-use ui_kit::icons::regular;
+use ui_kit::icons::{fill, regular};
 use ui_kit::tokens::{color, size, space, typography};
 use uuid::Uuid;
 
@@ -9,10 +11,9 @@ use crate::editor::Editor;
 use crate::editor::message::Message;
 use crate::editor::transport::TransportState;
 use crate::ui::widgets::meter;
-use crate::util::time::seconds_to_samples;
+use crate::util::time::{samples_to_timecode, seconds_to_samples};
 
 pub mod clip_view;
-pub mod deck;
 pub mod interaction;
 pub mod lane;
 pub mod ruler;
@@ -44,8 +45,14 @@ pub(crate) mod metrics {
     pub(crate) const CLIP_RADIUS: f32 = 5.0;
     /// Horizontal padding of the clip header text.
     pub(crate) const CLIP_TEXT_PAD: f32 = 4.0;
-    /// Header height below which the header uses the compact layout.
-    pub(crate) const COMPACT_TRACK_H: f32 = 64.0;
+    /// Level where the header meter strip turns from warn to clip.
+    pub(crate) const METER_CLIP_DB: f32 = -3.0;
+    /// Meter floor of the header meter strip, in dBFS.
+    pub(crate) const METER_FLOOR_DB: f32 = -60.0;
+    /// Level where the header meter strip turns from ok to warn.
+    pub(crate) const METER_WARN_DB: f32 = -12.0;
+    /// Height of the meter strip along the bottom of a track header.
+    pub(crate) const METER_STRIP_H: f32 = 4.0;
     /// Small corner radius for filled rects.
     pub(crate) const CORNER_R: f32 = 2.0;
     /// Pointer travel that turns a press into a drag.
@@ -72,6 +79,10 @@ pub(crate) mod metrics {
     pub(crate) const HAIRLINE: f32 = 1.0;
     /// Width of the track header column.
     pub(crate) const HEADER_COL_W: f32 = 208.0;
+    /// Width of the `bg.ground` divider between the header column and the lanes.
+    pub(crate) const COLUMN_GUTTER_W: f32 = 3.0;
+    /// Width of the track number column at the left of each header.
+    pub(crate) const NUMBER_GUTTER_W: f32 = 28.0;
     /// Height of the clip header strip (name + gain row).
     pub(crate) const HEADER_STRIP_H: f32 = 18.0;
     /// Width of the insert line.
@@ -128,6 +139,8 @@ pub(crate) mod metrics {
         #[test]
         fn metrics_hold_the_spec_values() {
             assert_eq!(HEADER_STRIP_H, 18.0);
+            assert_eq!(COLUMN_GUTTER_W, 3.0);
+            assert_eq!(NUMBER_GUTTER_W, 28.0);
             assert_eq!(TRIM_EDGE_W, 6.0);
             assert_eq!(SNAP_PX, 8.0);
             assert_eq!(FADE_HANDLE_SZ, 8.0);
@@ -246,6 +259,10 @@ pub fn tick_step(spp: f64, rate: u32, min_px: f32) -> u64 {
     seconds_to_samples(TICK_STEPS[TICK_STEPS.len() - 1], rate)
 }
 
+/// Id of the stage panel.
+const STAGE_ID: &str = "timeline_stage";
+/// Size of the Record glyph, the same as the other bottom bar glyphs.
+const BAR_GLYPH_SIZE: f32 = 18.0;
 /// Width of the zoom slider in the panel toolbar, in points.
 const ZOOM_SLIDER_W: f32 = 140.0;
 /// Width of the waveform height slider in the panel toolbar, in points.
@@ -287,6 +304,17 @@ fn zoom_readout(spp: f64, fit_spp: f64) -> String {
     }
 }
 
+/// The egui memory key of the zoom readout's text, as last drawn.
+fn zoom_label_id() -> egui::Id {
+    egui::Id::new("timeline_zoom_label")
+}
+
+/// The text the zoom readout showed when it was last drawn; empty before the
+/// timeline was ever drawn.
+pub fn shown_zoom_label(ctx: &egui::Context) -> String {
+    ctx.data(|data| data.get_temp::<String>(zoom_label_id()).unwrap_or_default())
+}
+
 /// Total scrollable span in samples: the larger of project length and visible
 /// width, plus 10 percent extra.
 fn scroll_extent(project_length: u64, visible: u64) -> u64 {
@@ -308,21 +336,199 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction, m
     // UI zoom must not fire here.
     ui.ctx().options_mut(|o| o.zoom_with_keyboard = false);
 
-    // The timeline sits in a ui-kit panel: the panel toolbar row on top, the
-    // ruler, headers and lanes in the rest.
+    // The timeline sits in the ui-kit stage panel: the panel toolbar row on
+    // top, the ruler, headers and lanes under it, and the transport in the
+    // bottom bar with Play in the notch.
     let mut messages = Vec::new();
-    ui_kit::panel(ui, |ui| {
-        // F1 over the panel (its lanes and ruler) opens Working with clips; the
-        // more specific track-header and transport tags win over this one.
-        ui_kit::help::context(ui, crate::help::CONTEXT_TIMELINE);
-        let content_rect = ui.max_rect();
-        let lane_width = ui.available_width() - metrics::HEADER_COL_W;
-        panel_toolbar(ui, editor, lane_width);
-        messages.extend(show_frame(ui, editor, view_menu, meters).into_iter().map(Message::media));
-        // The transport deck floats over the panel's content area.
-        messages.extend(deck::show(ui, editor, content_rect, ruler::is_scrubbing(ui.ctx())));
-    });
+    let mut left = None;
+    let mut right = None;
+    let playing = is_playing(editor);
+    let primary = ui_kit::PrimaryButton { kind: ui_kit::PlayKind::Play, active: playing, enabled: true };
+    // The content and the two bar sides take turns with the editor.
+    let shared = RefCell::new(&mut *editor);
+    let stage = ui_kit::stage_panel(
+        ui,
+        egui::Id::new(STAGE_ID),
+        primary,
+        |ui| {
+            // F1 over the lanes and ruler opens Working with clips; the more
+            // specific track-header tag wins over this one.
+            ui_kit::help::context(ui, crate::help::CONTEXT_TIMELINE);
+            let editor = &mut **shared.borrow_mut();
+            let lane_width = ui.available_width() - metrics::HEADER_COL_W - metrics::COLUMN_GUTTER_W;
+            panel_toolbar(ui, editor, lane_width);
+            messages.extend(show_frame(ui, editor, view_menu, meters).into_iter().map(Message::media));
+        },
+        |ui| left = bar_left(ui, &shared.borrow()),
+        |ui| right = bar_right(ui, &shared.borrow()),
+    );
+    let _ = stage.primary.clone().on_hover_text(if playing { "Pause (P)" } else { "Play (Space)" });
+    let play = stage.clicked().then_some(TransportAction::Play);
+    if let Some(action) = play.or(left).or(right) {
+        messages.extend(run_transport(editor, action));
+    }
+    // F1 over the bottom bar and the Play button opens Playback and the
+    // transport; the tour spotlights the same area.
+    let transport_rect = stage.bar_rect.union(stage.primary.rect);
+    ui_kit::help::context(&ui.new_child(egui::UiBuilder::new().max_rect(transport_rect)), crate::help::CONTEXT_TRANSPORT);
+    ui_kit::tour::anchor(ui, crate::help::ANCHOR_TRANSPORT, transport_rect);
     messages
+}
+
+/// What one transport control asks the editor to do when clicked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransportAction {
+    /// Back to the start.
+    JumpStart,
+    /// Play, or pause while playing.
+    Play,
+    /// Stop playback.
+    Stop,
+    /// Start a take, or end it (keeping it) while one is live.
+    Record,
+    /// Forward to the end.
+    JumpEnd,
+}
+
+/// True while playback runs, so the Play button shows Pause. A take being
+/// recorded does not count.
+fn is_playing(editor: &Editor) -> bool {
+    editor.transport_state() == TransportState::Playing && !editor.is_recording()
+}
+
+/// Runs one transport control; returns the message for the user when a Record
+/// click could not start a take.
+fn run_transport(editor: &mut Editor, action: TransportAction) -> Option<Message> {
+    match action {
+        TransportAction::JumpStart => editor.jump_start(),
+        // Play pauses while playing and plays otherwise; while a take runs it
+        // ends the take (the editor routes it).
+        TransportAction::Play => {
+            if is_playing(editor) {
+                editor.toggle_pause();
+            } else {
+                editor.toggle_play();
+            }
+        }
+        TransportAction::Stop => editor.stop(),
+        // Record starts a take when idle and ends it (keeping it) while
+        // recording; a take that is already being saved ignores clicks.
+        TransportAction::Record => {
+            if editor.take_is_live() {
+                editor.stop_recording();
+            } else if !editor.is_recording()
+                && let Err(error) = editor.start_recording()
+            {
+                return Some(Message::recording(error.to_string()));
+            }
+        }
+        TransportAction::JumpEnd => editor.jump_end(),
+    }
+    None
+}
+
+/// Splits `HH:MM:SS.mmm` into the main part and the `.mmm` fraction.
+fn split_timecode(timecode: &str) -> (&str, &str) {
+    timecode.split_at(timecode.find('.').unwrap_or(timecode.len()))
+}
+
+/// The size of the bar's timecode: large, unless the left side, `column` wide,
+/// has no room for it beside back to start. `large` is the width of the large
+/// timecode.
+fn timecode_size(column: f32, large: f32) -> ui_kit::TimecodeSize {
+    if large + space::SCALE_12 + ui_kit::STAGE_BAR_BUTTON_DIAMETER <= column { ui_kit::TimecodeSize::Large } else { ui_kit::TimecodeSize::Value }
+}
+
+/// What the bar's right side shows, from everything to its narrowest form.
+/// Stop and Record are in every one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RightFit {
+    /// Everything.
+    Full,
+    /// No total length.
+    NoLength,
+    /// No total length and no go to end (the End key and the View menu stay).
+    NoJumpEnd,
+}
+
+/// What fits in the right side, `column` wide. `length` is the width of the
+/// total length.
+fn right_fit(column: f32, length: f32) -> RightFit {
+    let button = ui_kit::STAGE_BAR_BUTTON_DIAMETER;
+    let three_buttons = 3.0 * button + 2.0 * space::SCALE_8;
+    if three_buttons + space::SCALE_8 + space::SCALE_4 + length <= column {
+        RightFit::Full
+    } else if three_buttons <= column {
+        RightFit::NoLength
+    } else {
+        RightFit::NoJumpEnd
+    }
+}
+
+/// The bar's timecode text: the playhead, or the record position while a take
+/// is recorded.
+fn position_text(editor: &Editor) -> String {
+    let position = editor.record_playhead().unwrap_or(editor.view.playhead);
+    samples_to_timecode(position, editor.project.sample_rate)
+}
+
+/// The total length as the bar draws it.
+fn length_job(ui: &egui::Ui, editor: &Editor) -> egui::text::LayoutJob {
+    let length = samples_to_timecode(editor.project_length(), editor.project.sample_rate);
+    let tint = crate::ui::neutrals(ui.ctx()).text_tertiary;
+    ui_kit::fonts::tracked(length, ui_kit::fonts::mono(typography::VALUE_SIZE), tint, ui_kit::fonts::MONO_LETTER_SPACING_EM)
+}
+
+/// The bottom bar's left side: the timecode (the record position while a take
+/// is recorded) and back to start, which is disabled then. A narrow side draws
+/// the timecode smaller ([`timecode_size`]).
+fn bar_left(ui: &mut egui::Ui, editor: &Editor) -> Option<TransportAction> {
+    let timecode = position_text(editor);
+    let (main, fraction) = split_timecode(&timecode);
+    let size = timecode_size(ui.available_width(), ui_kit::timecode_width(ui, main, fraction, ui_kit::TimecodeSize::Large));
+    ui.spacing_mut().item_spacing.x = space::SCALE_12;
+    ui_kit::timecode_sized(ui, main, fraction, size);
+    let back = ui.add_enabled_ui(!editor.is_recording(), |ui| ui_kit::bar_button(ui, fill::SKIP_BACK, "Go to start (Home)")).inner;
+    back.clicked().then_some(TransportAction::JumpStart)
+}
+
+/// The bottom bar's right side: Stop, Record, forward to the end (disabled
+/// while a take is recorded) and the project's total length. A narrow side
+/// leaves out the length first, then go to end ([`right_fit`]).
+fn bar_right(ui: &mut egui::Ui, editor: &Editor) -> Option<TransportAction> {
+    let length = length_job(ui, editor);
+    let fit = right_fit(ui.available_width(), ui.painter().layout_job(length.clone()).size().x);
+    ui.spacing_mut().item_spacing.x = space::SCALE_8;
+    let mut action = None;
+    if ui_kit::bar_button(ui, fill::STOP, "Stop").clicked() {
+        action = Some(TransportAction::Stop);
+    }
+    if record_button(ui, editor.take_is_live()).clicked() {
+        action = Some(TransportAction::Record);
+    }
+    if fit != RightFit::NoJumpEnd {
+        let forward = ui.add_enabled_ui(!editor.is_recording(), |ui| ui_kit::bar_button(ui, fill::SKIP_FORWARD, "Go to end (End)")).inner;
+        if forward.clicked() {
+            action = Some(TransportAction::JumpEnd);
+        }
+    }
+    if fit == RightFit::Full {
+        ui.add_space(space::SCALE_4);
+        ui.add(egui::Label::new(length).extend());
+    }
+    action
+}
+
+/// The Record button: a bottom bar button whose glyph keeps the record color.
+/// It shows Stop while the take is live.
+fn record_button(ui: &mut egui::Ui, live: bool) -> egui::Response {
+    // The ui-kit bar button has no glyph color, so it draws the circle with an
+    // empty glyph and the colored one goes on top.
+    let response = ui_kit::bar_button(ui, "", "Record (Ctrl+R)");
+    let glyph = if live { fill::STOP } else { fill::RECORD };
+    let font = ui_kit::fonts::icon_fill(BAR_GLYPH_SIZE);
+    ui.painter().text(response.rect.center(), egui::Align2::CENTER_CENTER, glyph, font, color::SEM_RECORD);
+    response
 }
 
 /// The panel toolbar row (44 tall): Undo and Redo, a separator and the Ripple
@@ -334,6 +540,7 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction, m
 /// and the R and N keys. Zoom stays live while a take is recorded; the chips
 /// do not.
 fn panel_toolbar(ui: &mut egui::Ui, editor: &mut Editor, lane_width: f32) {
+    let neutral = crate::ui::neutrals(ui.ctx());
     let recording = editor.is_recording();
     let row = egui::vec2(ui.available_width(), size::PANEL_TOOLBAR_HEIGHT);
     let bar = ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -359,13 +566,9 @@ fn panel_toolbar(ui: &mut egui::Ui, editor: &mut Editor, lane_width: f32) {
             }
             let spp = editor.view.samples_per_pixel;
             let (readout, _) = ui.allocate_exact_size(egui::vec2(ZOOM_READOUT_W, size::SEGMENT_HEIGHT), egui::Sense::hover());
-            ui.painter().text(
-                readout.left_center(),
-                egui::Align2::LEFT_CENTER,
-                zoom_readout(spp, zoom_to_fit(content_length(editor), editor.project.sample_rate, lane_width).0),
-                ui_kit::fonts::mono(typography::VALUE_SIZE),
-                color::TEXT_SECONDARY,
-            );
+            let label = zoom_readout(spp, zoom_to_fit(content_length(editor), editor.project.sample_rate, lane_width).0);
+            ui.data_mut(|data| data.insert_temp(zoom_label_id(), label.clone()));
+            ui.painter().text(readout.left_center(), egui::Align2::LEFT_CENTER, label, ui_kit::fonts::mono(typography::VALUE_SIZE), neutral.text_secondary);
             let shown = zoom_to_slider(spp);
             let mut value = shown;
             ui.allocate_ui(egui::vec2(ZOOM_SLIDER_W, size::SEGMENT_HEIGHT), |ui| {
@@ -405,16 +608,18 @@ fn undo_redo_buttons(ui: &mut egui::Ui, editor: &mut Editor) {
 /// A 1 x 20 `stroke.separator.strong` line between groups in the panel
 /// toolbar.
 fn toolbar_separator(ui: &mut egui::Ui) {
+    let neutral = crate::ui::neutrals(ui.ctx());
     let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, TOOLBAR_SEPARATOR_H), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 0.0, color::STROKE_SEPARATOR_STRONG);
+    ui.painter().rect_filled(rect, 0.0, neutral.stroke_separator_strong);
 }
 
 /// A decorative Phosphor icon in `text.secondary` in the panel toolbar (the
 /// waveform and magnifier marks beside their sliders).
 fn toolbar_icon(ui: &mut egui::Ui, glyph: &str) {
+    let neutral = crate::ui::neutrals(ui.ctx());
     let (icon, _) = ui.allocate_exact_size(egui::vec2(size::ICON_BUTTON / 2.0, size::SEGMENT_HEIGHT), egui::Sense::hover());
     let font = ui_kit::fonts::icon_regular(typography::HEADLINE_SIZE);
-    ui.painter().text(icon.center(), egui::Align2::CENTER_CENTER, glyph, font, color::TEXT_SECONDARY);
+    ui.painter().text(icon.center(), egui::Align2::CENTER_CENTER, glyph, font, neutral.text_secondary);
 }
 
 /// The waveform height control on the right of the panel toolbar: a Phosphor
@@ -445,11 +650,12 @@ fn show_frame(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction,
     let avail = ui.available_rect_before_wrap();
     let resp = ui.allocate_rect(avail, egui::Sense::click());
 
-    let lane_left = avail.left() + metrics::HEADER_COL_W;
+    let header_right = avail.left() + metrics::HEADER_COL_W;
+    let lane_left = header_right + metrics::COLUMN_GUTTER_W;
     let lane_right = avail.right();
     let lane_width = lane_right - lane_left;
     let ruler_rect = egui::Rect::from_min_max(egui::pos2(lane_left, avail.top()), egui::pos2(lane_right, avail.top() + size::RULER_HEIGHT));
-    let header_rect = egui::Rect::from_min_max(egui::pos2(avail.left(), ruler_rect.bottom()), egui::pos2(lane_left, avail.bottom()));
+    let header_rect = egui::Rect::from_min_max(egui::pos2(avail.left(), ruler_rect.bottom()), egui::pos2(header_right, avail.bottom()));
     // F1 over the track headers opens Tracks; the tour spotlights the column.
     ui_kit::help::context(&ui.new_child(egui::UiBuilder::new().max_rect(header_rect)), crate::help::CONTEXT_TRACKS);
     ui_kit::tour::anchor(ui, crate::help::ANCHOR_TRACKS, header_rect);
@@ -480,10 +686,7 @@ fn show_frame(ui: &mut egui::Ui, editor: &mut Editor, view_menu: ViewMenuAction,
     // While a take is recorded the mouse only zooms and scrolls: the ruler,
     // the lanes, the clips and the bin drag ignore it (no seek, no scrub, no
     // selection, no edits).
-    // A press on the transport deck belongs to the deck, not to what lies
-    // under it: the pointer handlers skip that frame's press.
-    let deck_press = ui.input(|i| i.pointer.primary_pressed()) && ui.input(|i| i.pointer.latest_pos()).is_some_and(|p| deck::covers(ui.ctx(), p));
-    let recording = editor.is_recording() || deck_press;
+    let recording = editor.is_recording();
     let marker_g = Geom { lane_left, lane_width, spp: editor.view.samples_per_pixel, scroll_x: editor.view.scroll_x };
     let ruler_taken = !recording && ruler::handle_markers(ui, editor, &marker_g, ruler_rect);
     handle_input(ui, editor, lane_left, lane_width, max_scroll_y, &resp);
@@ -658,27 +861,26 @@ fn draw(
     max_scroll_x: u64,
     meters: &mut meter::MeterState,
 ) {
+    let neutral = crate::ui::neutrals(ui.ctx());
     let all = ruler_rect.union(header_rect).union(lane_rect).union(scroll_rect);
     let painter = ui.painter_at(all);
     let view = editor.view.clone();
 
-    // The track area backdrop goes under everything: the header column strip
-    // and the empty area below the Add track row. The unshaded track rows and
-    // the scrollbar strip let the panel's `bg.panel` show through.
-    let tracks_h: f32 = editor.project.tracks.iter().map(|t| t.height).sum();
-    paint_backdrop(&painter, ruler_rect, header_rect, lane_rect, view.scroll_y, tracks_h);
+    // The track area backdrop goes under everything: the two surfaces, the
+    // header column and the lanes.
+    paint_backdrop(&painter, ruler_rect, header_rect, lane_rect.union(scroll_rect));
 
-    // Track lanes: track rows and separators (ui::timeline::lane), with the
+    // Track lanes: selected tint and separators (ui::timeline::lane), with the
     // clips of each track drawn over its lane. A track is selected while the
     // range selection covers it.
     let selected_tracks = range_tracks(editor);
     let lane_painter = ui.painter_at(lane_rect);
     let mut y = lane_rect.top() - view.scroll_y;
-    for (i, track) in editor.project.tracks.iter().enumerate() {
+    for track in &editor.project.tracks {
         let bottom = y + track.height;
         if bottom >= lane_rect.top() && y <= lane_rect.bottom() {
             let track_rect = egui::Rect::from_min_max(egui::pos2(g.lane_left, y), egui::pos2(lane_rect.right(), bottom));
-            lane::draw(&lane_painter, track_rect, i, selected_tracks.contains(&track.id));
+            lane::draw(&lane_painter, track_rect, selected_tracks.contains(&track.id));
             // Clips (no waveforms yet, ui::timeline::clip_view).
             let gain_active = interaction::gain_line_active(ui.ctx());
             for clip in &track.clips {
@@ -709,12 +911,18 @@ fn draw(
     interaction::draw_range(ui, editor, g, lane_rect, view.scroll_y);
 
     // Ruler: ticks, labels, markers and their faint lines.
-    painter.rect_filled(ruler_rect, 0.0, color::BG_PANEL);
+    painter.rect_filled(ruler_rect, 0.0, neutral.bg_panel);
     ruler::draw(&painter, ruler_rect, lane_rect, g, editor.project.sample_rate, editor.project_length(), &editor.project.markers, editor.selected_marker());
     // `stroke.track.header` under the ruler, across the corner cell too.
     let ruler_line =
         egui::Rect::from_min_max(egui::pos2(header_rect.left(), ruler_rect.bottom() - metrics::HAIRLINE), egui::pos2(ruler_rect.right(), ruler_rect.bottom()));
-    painter.rect_filled(ruler_line, 0.0, color::STROKE_TRACK_HEADER);
+    painter.rect_filled(ruler_line, 0.0, neutral.stroke_track_header);
+
+    // The divider between the header column and the lanes, from the top of the
+    // ruler row to the bottom of the track area. After the ruler line, so that
+    // line does not cross it.
+    let gutter = egui::Rect::from_min_max(egui::pos2(header_rect.right(), ruler_rect.top()), egui::pos2(g.lane_left, scroll_rect.bottom()));
+    painter.rect_filled(gutter, 0.0, neutral.bg_ground);
 
     // Range selection: a 3 px accent bar along the ruler bottom across the
     // range (the tint and boundary lines are drawn by ui::timeline::interaction).
@@ -765,35 +973,23 @@ fn draw(
     track_header::show(ui, editor, header_rect, lane_rect, view.scroll_y, &mut meters.tracks);
 }
 
-/// Paints the track area backdrop (spec "Track area"): the header column as
-/// one `bg.track.header` strip from the ruler row's corner cell (labelled
-/// "Tracks") down through the Add track row, with its right-edge divider, and
-/// `bg.track.empty` over the header column and the lanes below the Add track
-/// row. `tracks_h` is the sum of the track heights.
-fn paint_backdrop(painter: &egui::Painter, ruler_rect: egui::Rect, header_rect: egui::Rect, lane_rect: egui::Rect, scroll_y: f32, tracks_h: f32) {
-    let add_bottom = track_header::add_row_rect(header_rect, scroll_y, tracks_h).bottom();
-    if let Some(empty) = empty_area_rect(header_rect, lane_rect, add_bottom) {
-        ui_kit::paint_track_area_empty(painter, empty);
-    }
-    let strip =
-        egui::Rect::from_min_max(egui::pos2(header_rect.left(), ruler_rect.top()), egui::pos2(header_rect.right(), add_bottom.min(header_rect.bottom())));
-    ui_kit::paint_track_header_column(painter, strip);
-    let corner = egui::Rect::from_min_max(strip.left_top(), egui::pos2(header_rect.right(), ruler_rect.bottom()));
+/// Paints the track area backdrop: the header column as `bg.panel` with the
+/// `bg.group` corner cell (labelled "Tracks") beside the ruler, and the lanes
+/// surface (`bg.stage.inner`) over `lanes`. The track headers paint their own
+/// `bg.group` blocks over the column, so it stays `bg.panel` below the last one.
+fn paint_backdrop(painter: &egui::Painter, ruler_rect: egui::Rect, header_rect: egui::Rect, lanes: egui::Rect) {
+    let neutral = crate::ui::neutrals(painter.ctx());
+    painter.rect_filled(lanes, 0.0, neutral.bg_stage_inner);
+    painter.rect_filled(header_rect, 0.0, neutral.bg_panel);
+    let corner = egui::Rect::from_min_max(egui::pos2(header_rect.left(), ruler_rect.top()), egui::pos2(header_rect.right(), ruler_rect.bottom()));
+    painter.rect_filled(corner, 0.0, neutral.bg_group);
     painter.text(
         egui::pos2(corner.left() + space::SCALE_8, corner.center().y),
         egui::Align2::LEFT_CENTER,
         "Tracks",
         ui_kit::fonts::medium(typography::CAPTION_SIZE),
-        color::TEXT_TERTIARY,
+        neutral.text_tertiary,
     );
-}
-
-/// The `bg.track.empty` rect: from the bottom of the Add track row (`add_bottom`)
-/// to the bottom of the lanes, across the header column and the lanes. `None`
-/// when the Add track row reaches the bottom.
-fn empty_area_rect(header_rect: egui::Rect, lane_rect: egui::Rect, add_bottom: f32) -> Option<egui::Rect> {
-    (add_bottom < lane_rect.bottom())
-        .then(|| egui::Rect::from_min_max(egui::pos2(header_rect.left(), add_bottom), egui::pos2(lane_rect.right(), lane_rect.bottom())))
 }
 
 /// Display name and offline flag of a media item, for clip drawing.
@@ -1010,67 +1206,205 @@ mod tests {
         })
     }
 
-    #[test]
-    fn the_empty_area_starts_exactly_at_the_add_track_rows_bottom() {
-        let out = track_area_frame();
-        let rects = out.rects();
-        let empty = rects.iter().find(|r| r.fill == color::BG_TRACK_EMPTY).expect("the empty area below the Add track row").rect;
-        let strip = rects.iter().find(|r| r.fill == color::BG_TRACK_HEADER && r.rect.width() == metrics::HEADER_COL_W).expect("the header column strip").rect;
-        assert_eq!(strip.bottom(), empty.top(), "the header strip ends where the empty area starts");
-        assert_eq!(strip.left(), empty.left(), "the empty area covers the header column");
-        assert!(empty.right() > strip.right() + 100.0, "and the lanes");
-        // The Add track row's own bottom line ends exactly there too, across header and lanes.
-        let line = rects
+    /// The corner cell and the lanes surface of one painted frame.
+    fn surfaces(rects: &[egui::epaint::RectShape]) -> (egui::Rect, egui::Rect) {
+        let corner = rects
             .iter()
-            .find(|r| r.fill == color::STROKE_TRACK && r.rect.width() > strip.width() + 100.0 && r.rect.bottom() == empty.top())
-            .expect("a stroke.track line under the Add track row");
-        assert_eq!(line.rect.height(), metrics::HAIRLINE);
-        let add = out.text_rect("+ Add track").expect("the Add track label");
-        assert!(add.center().y > empty.top() - track_header::ADD_ROW_H && add.center().y < empty.top(), "the label sits in the row above the empty area");
+            .find(|r| r.fill == color::BG_GROUP && r.rect.size() == egui::vec2(metrics::HEADER_COL_W, size::RULER_HEIGHT))
+            .expect("the corner cell");
+        let lanes = rects.iter().filter(|r| r.fill == color::BG_STAGE_INNER).map(|r| r.rect).max_by(|a, b| a.area().total_cmp(&b.area()));
+        (corner.rect, lanes.expect("the lanes surface"))
     }
 
     #[test]
-    fn the_header_column_is_one_strip_with_a_tracks_label_a_divider_and_a_line_under_the_ruler() {
+    fn the_header_column_and_the_lanes_are_two_surfaces() {
         let out = track_area_frame();
         let rects = out.rects();
-        let strip = rects.iter().find(|r| r.fill == color::BG_TRACK_HEADER && r.rect.width() == metrics::HEADER_COL_W).expect("the header column strip").rect;
-        let divider = rects.iter().find(|r| r.fill == color::STROKE_TRACK_HEADER && r.rect.height() == strip.height()).expect("the divider").rect;
-        assert_eq!((divider.right(), divider.width()), (strip.right(), metrics::HAIRLINE), "the divider is on the strip's right edge");
+        let (corner, lanes) = surfaces(&rects);
+        assert_eq!(lanes.left(), corner.right() + metrics::COLUMN_GUTTER_W, "the lanes start past the divider");
+        assert_eq!(lanes.top(), corner.bottom(), "the corner cell is exactly as tall as the ruler");
+        let column = rects
+            .iter()
+            .find(|r| r.fill == color::BG_PANEL && r.rect.left() == corner.left() && r.rect.width() == metrics::HEADER_COL_W && r.rect.top() == corner.bottom())
+            .expect("the bg.panel header column")
+            .rect;
+        assert_eq!(column.bottom(), lanes.bottom(), "the column reaches the bottom of the track area");
+        let blocks = rects.iter().filter(|r| r.fill == color::BG_GROUP && r.rect.width() == metrics::HEADER_COL_W && r.rect.top() >= corner.bottom()).count();
+        assert_eq!(blocks, 3, "one bg.group block per track");
+    }
+
+    #[test]
+    fn the_corner_cell_holds_the_tracks_label_and_the_add_row_sits_under_the_last_track() {
+        let out = track_area_frame();
+        let rects = out.rects();
+        let (corner, _) = surfaces(&rects);
         let label = out.texts().into_iter().find(|t| t.text == "Tracks").expect("the Tracks label");
         assert_eq!(label.color, color::TEXT_TERTIARY);
-        assert!(label.rect.center().y < strip.top() + size::RULER_HEIGHT && strip.contains_rect(label.rect), "the label is in the ruler row's corner cell");
+        assert!(corner.contains_rect(label.rect), "the label is in the corner cell");
         let under_ruler = rects
             .iter()
-            .find(|r| r.fill == color::STROKE_TRACK_HEADER && r.rect.height() == metrics::HAIRLINE && r.rect.left() == strip.left())
+            .find(|r| r.fill == color::STROKE_TRACK_HEADER && r.rect.height() == metrics::HAIRLINE && r.rect.left() == corner.left())
             .expect("stroke.track.header under the ruler")
             .rect;
-        assert_eq!(under_ruler.bottom(), strip.top() + size::RULER_HEIGHT, "the line is the ruler's bottom edge");
-        assert!(under_ruler.width() > strip.width() + 100.0, "and runs over the lanes too");
+        assert_eq!(under_ruler.bottom(), corner.bottom(), "the line is the ruler's bottom edge");
+        assert!(under_ruler.width() > corner.width() + 100.0, "and runs over the lanes too");
+        let tracks_bottom = corner.bottom() + 3.0 * size::TRACK_AUDIO_DEFAULT;
+        let add = out.text_rect("+ Add track").expect("the Add track label");
+        assert!(add.top() > tracks_bottom && add.bottom() < tracks_bottom + track_header::ADD_ROW_H, "under the last track: {add:?}");
+        assert!(add.right() < corner.right(), "in the header column");
+        let line_below = rects.iter().any(|r| r.fill == color::BG_GROUND && r.rect.height() == metrics::HAIRLINE && r.rect.bottom() > tracks_bottom);
+        assert!(!line_below, "no line under the Add track row");
     }
 
     #[test]
-    fn row_separators_are_painted_above_the_lane_fills() {
+    fn every_track_has_one_row_line_across_header_and_lanes() {
         let out = track_area_frame();
         let rects = out.rects();
-        let lane_wide = |r: &egui::epaint::RectShape| r.rect.width() > metrics::HEADER_COL_W + 100.0;
-        let separators: Vec<usize> = rects.iter().enumerate().filter(|(_, r)| r.fill == color::STROKE_TRACK && lane_wide(r)).map(|(i, _)| i).collect();
-        assert_eq!(separators.len(), 3 + 1, "one line per track and one under the Add track row");
-        let fills: Vec<usize> = rects
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| (r.fill == color::BG_TRACK_ALT || r.fill == color::BG_TRACK_SELECTED) && lane_wide(r))
-            .map(|(i, _)| i)
-            .collect();
-        assert!(!fills.is_empty(), "the second track is shaded");
-        for &line in &separators {
-            for &fill in &fills {
-                // Touching edges (the next row's fill starts where this line ends) are not covering.
-                let overlap = rects[fill].rect.intersect(rects[line].rect);
-                if overlap.width() > 0.0 && overlap.height() > 0.0 {
-                    assert!(fill < line, "the lane fill at paint index {fill} covers the separator at {line}: {:?} vs {:?}", rects[fill], rects[line]);
+        let (corner, lanes) = surfaces(&rects);
+        for track in 1..=3 {
+            let bottom = corner.bottom() + track as f32 * size::TRACK_AUDIO_DEFAULT;
+            let lines: Vec<_> = rects
+                .iter()
+                .filter(|r| r.fill == color::BG_GROUND && r.rect.height() == metrics::HAIRLINE && r.rect.bottom() == bottom)
+                .map(|r| r.rect)
+                .collect();
+            assert!(lines.iter().any(|l| l.left() == corner.left() && l.right() == corner.right()), "the header part of line {track}: {lines:?}");
+            assert!(lines.iter().any(|l| l.left() == lanes.left() && l.right() == lanes.right()), "the lane part of line {track}: {lines:?}");
+        }
+    }
+
+    /// The divider is there at full height however many tracks there are: from
+    /// the top of the ruler row to the bottom of the track area.
+    #[test]
+    fn the_gutter_kittest_spans_the_track_area_with_0_1_and_3_tracks() {
+        use std::cell::Cell;
+
+        /// Every painted rect with its clip rect, in paint order, nested shapes
+        /// flattened.
+        fn painted(output: &egui::FullOutput) -> Vec<(egui::Rect, egui::epaint::RectShape)> {
+            let mut rects = Vec::new();
+            for clipped in &output.shapes {
+                let mut stack = vec![&clipped.shape];
+                while let Some(shape) = stack.pop() {
+                    match shape {
+                        egui::Shape::Vec(inner) => stack.extend(inner.iter().rev()),
+                        egui::Shape::Rect(rect) => rects.push((clipped.clip_rect, rect.clone())),
+                        _ => {}
+                    }
                 }
             }
+            rects
         }
+
+        let layouts: [&[&[(u64, u64)]]; 3] = [&[], &[&[(0, 48_000)]], &[&[(0, 48_000)], &[], &[]]];
+        for tracks in layouts {
+            let count = tracks.len();
+            let paths = crate::io::paths::ProjectPaths { root: std::path::PathBuf::from("unused") };
+            let project = crate::model::fixtures::project_with_clips(tracks);
+            let mut editor = Editor::with_project(project, crate::model::project::ViewState::default(), paths);
+            let mut meters = meter::MeterState::default();
+            let first_pass = Cell::new(true);
+            let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1108.0, 700.0)).build_ui(move |ui| {
+                // The first pass installs the ui-kit theme and fonts; egui
+                // applies a font change at the start of the next pass.
+                if first_pass.get() {
+                    first_pass.set(false);
+                    ui_kit::apply(ui.ctx());
+                    return;
+                }
+                show(ui, &mut editor, ViewMenuAction::None, &mut meters);
+            });
+            harness.step();
+            harness.step();
+
+            let painted = painted(harness.output());
+            let rects: Vec<_> = painted.iter().map(|(_, rect)| rect.clone()).collect();
+            let (corner, lanes) = surfaces(&rects);
+            let gutters: Vec<_> = rects.iter().enumerate().filter(|(_, r)| r.fill == color::BG_GROUND && r.rect.width() == metrics::COLUMN_GUTTER_W).collect();
+            assert_eq!(gutters.len(), 1, "one divider with {count} tracks: {gutters:?}");
+            let (painted_at, gutter) = (gutters[0].0, gutters[0].1.rect);
+            assert_eq!((gutter.left(), gutter.right()), (corner.right(), lanes.left()), "between the column and the lanes with {count} tracks");
+            assert_eq!(gutter.top(), corner.top(), "from the top of the ruler row with {count} tracks");
+            assert_eq!(gutter.bottom(), lanes.bottom(), "to the bottom of the track area with {count} tracks");
+            assert!(gutter.height() > 400.0, "far below the last track with {count} tracks: {gutter:?}");
+            // Nothing painted later covers it (row lines are the same color).
+            // The clip rect counts: the playhead head at 0 is cut at the lanes.
+            for (clip, later) in &painted[painted_at + 1..] {
+                let overlap = later.rect.intersect(*clip).intersect(gutter);
+                let covers = later.fill.a() > 0 && later.fill != color::BG_GROUND && overlap.width() > 0.01 && overlap.height() > 0.01;
+                assert!(!covers, "{later:?} covers the divider with {count} tracks");
+            }
+        }
+    }
+
+    #[test]
+    fn the_timecode_splits_before_the_fraction() {
+        assert_eq!(split_timecode("00:01:02.345"), ("00:01:02", ".345"));
+        assert_eq!(split_timecode("00:01:02"), ("00:01:02", ""));
+    }
+
+    /// The bottom bar's items sit on one center line, 32 above the panel's
+    /// bottom edge, and stay inside their side of the notch, idle and while a
+    /// take is recorded. 704 wide is the panel in the smallest window (1100)
+    /// with the Media panel at its default width.
+    #[test]
+    fn the_bar_items_sit_on_one_center_line_clear_of_the_notch() {
+        for recording in [false, true] {
+            let (mut editor, _dir) = crate::ui::test_util::armed_editor(&[&[(0, 144_000)]], "bar");
+            if recording {
+                editor.start_recording().expect("a take");
+            }
+            let mut meters = meter::MeterState::default();
+            let mut rig = crate::ui::test_util::Headless::new(704.0, 600.0);
+            let mut draw = |ui: &mut egui::Ui| {
+                show(ui, &mut editor, ViewMenuAction::None, &mut meters);
+            };
+            let _ = rig.frame(Vec::new(), &mut draw);
+            let out = rig.frame(Vec::new(), &mut draw);
+            // The bar is the panel's last 64; the panel fills the window.
+            let center_y = 600.0 - 32.0;
+            let in_bar = |text: &str| out.texts().into_iter().map(|t| (t.text, t.rect)).find(|(t, r)| t == text && r.center().y > 600.0 - 64.0).map(|(_, r)| r);
+            let record = if recording { fill::STOP } else { fill::RECORD };
+            let timecode = in_bar("00:00:00.000").expect("the timecode");
+            let back = in_bar(fill::SKIP_BACK).expect("back to start");
+            let stop = in_bar(fill::STOP).expect("Stop");
+            let record = out.texts().into_iter().filter(|t| t.text == record).map(|t| t.rect).max_by(|a, b| a.center().x.total_cmp(&b.center().x));
+            let record = record.expect("Record");
+            let forward = in_bar(fill::SKIP_FORWARD).expect("go to end");
+            let length = in_bar("00:00:03.000").expect("the total length");
+            let items = [timecode, back, stop, record, forward, length];
+            for rect in items {
+                assert!((rect.center().y - center_y).abs() <= 1.5, "{rect:?} is off the bar's center line {center_y}");
+            }
+            for pair in items.windows(2) {
+                assert!(pair[0].right() < pair[1].left(), "left to right: {pair:?}");
+            }
+            let notch = (352.0 - 56.0)..=(352.0 + 56.0);
+            assert!(back.right() < *notch.start() && stop.left() > *notch.end(), "the center column is empty: {back:?} {stop:?}");
+            assert!(length.right() <= 704.0 - 8.0, "the length fits its side: {length:?}");
+        }
+    }
+
+    /// The left side shrinks its timecode only when the large one and back to
+    /// start no longer fit it.
+    #[test]
+    fn a_narrow_left_side_shrinks_the_timecode() {
+        // A timecode of 100 and back to start take 152.
+        assert_eq!(timecode_size(152.0, 100.0), ui_kit::TimecodeSize::Large);
+        assert_eq!(timecode_size(151.0, 100.0), ui_kit::TimecodeSize::Value);
+    }
+
+    /// The right side gives up the total length, then go to end, each only
+    /// when it no longer fits that side.
+    #[test]
+    fn a_narrow_right_side_gives_up_the_length_then_go_to_end() {
+        // Three buttons take 136, and 248 with a length of 100.
+        let fit = |column| right_fit(column, 100.0);
+        assert_eq!(fit(248.0), RightFit::Full);
+        assert_eq!(fit(247.0), RightFit::NoLength);
+        assert_eq!(fit(136.0), RightFit::NoLength);
+        assert_eq!(fit(135.0), RightFit::NoJumpEnd);
+        assert_eq!(fit(0.0), RightFit::NoJumpEnd, "Stop and Record have no further step");
     }
 
     #[test]

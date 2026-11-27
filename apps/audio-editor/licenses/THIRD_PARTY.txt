@@ -10,16 +10,16 @@ FFmpeg 9.0.2 libraries (avcodec-63.dll, avdevice-63.dll, avfilter-12.dll,
   and the user may replace them. Build details and the source location are in
   FFmpeg-BUILDINFO.txt (this folder).
 
-Inter (fonts: Inter-Regular.ttf, Inter-Medium.ttf, Inter-SemiBold.ttf)
-  Copyright (c) 2016 The Inter Project Authors
+Instrument Sans (fonts: InstrumentSans-Regular.ttf, InstrumentSans-Medium.ttf,
+  InstrumentSans-SemiBold.ttf)
+  Copyright 2022 The Instrument Sans Project Authors
   Licence: SIL Open Font License 1.1
-  Full text: OFL-Inter.txt (this folder)
+  Full text: OFL-InstrumentSans.txt (this folder)
 
-JetBrains Mono (fonts: JetBrainsMono-Regular.ttf, JetBrainsMono-Medium.ttf,
-  JetBrainsMono-SemiBold.ttf)
-  Copyright 2020 The JetBrains Mono Project Authors
+Martian Mono (fonts: MartianMono-Regular.ttf, MartianMono-Medium.ttf)
+  Copyright 2021 The Martian Mono Project Authors
   Licence: SIL Open Font License 1.1
-  Full text: OFL-JetBrainsMono.txt (this folder)
+  Full text: OFL-MartianMono.txt (this folder)
 
 Phosphor Icons, used through the egui-phosphor crate
   Copyright (c) 2020 Phosphor Icons

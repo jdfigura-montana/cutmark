@@ -1,0 +1,609 @@
+{
+	"Name": "CutMark Creator Suite",
+	"Version": "1.2.0.0",
+	"Author": "CutMark",
+	"Actions": [
+		{
+			"Name": "Play / Stop",
+			"UUID": "com.cutmark.suite.audio.play-pause",
+			"Icon": "imgs/actions/play-stop/icon",
+			"Tooltip": "Play, or stop while playing.",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/play-stop/play",
+					"TitleAlignment": "middle"
+				},
+				{
+					"Image": "imgs/actions/play-stop/stop",
+					"TitleAlignment": "middle"
+				}
+			]
+		},
+		{
+			"Name": "Pause",
+			"UUID": "com.cutmark.suite.audio.pause",
+			"Icon": "imgs/actions/pause/icon",
+			"Tooltip": "Pause playback.",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/pause/key",
+					"TitleAlignment": "middle"
+				}
+			]
+		},
+		{
+			"Name": "Record",
+			"UUID": "com.cutmark.suite.audio.record",
+			"Icon": "imgs/actions/record/icon",
+			"Tooltip": "Start recording. Red while recording, dimmed when recording is not allowed.",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/record/record",
+					"TitleAlignment": "middle"
+				},
+				{
+					"Image": "imgs/actions/record/recording",
+					"TitleAlignment": "middle"
+				}
+			]
+		},
+		{
+			"Name": "Go to start",
+			"UUID": "com.cutmark.suite.audio.jump-start",
+			"Icon": "imgs/actions/jump-start/icon",
+			"Tooltip": "Move the playhead to the start.",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/jump-start/key",
+					"TitleAlignment": "middle"
+				}
+			]
+		},
+		{
+			"Name": "Go to end",
+			"UUID": "com.cutmark.suite.audio.jump-end",
+			"Icon": "imgs/actions/jump-end/icon",
+			"Tooltip": "Move the playhead to the end.",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/jump-end/key",
+					"TitleAlignment": "middle"
+				}
+			]
+		},
+		{
+			"Name": "Add marker",
+			"UUID": "com.cutmark.suite.audio.add-marker",
+			"Icon": "imgs/actions/add-marker/icon",
+			"Tooltip": "Add a marker at the playhead.",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/add-marker/key",
+					"TitleAlignment": "middle"
+				}
+			]
+		},
+		{
+			"Name": "Previous marker",
+			"UUID": "com.cutmark.suite.audio.previous-marker",
+			"Icon": "imgs/actions/prev-marker/icon",
+			"Tooltip": "Move the playhead to the previous marker.",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/prev-marker/key",
+					"TitleAlignment": "middle"
+				}
+			]
+		},
+		{
+			"Name": "Next marker",
+			"UUID": "com.cutmark.suite.audio.next-marker",
+			"Icon": "imgs/actions/next-marker/icon",
+			"Tooltip": "Move the playhead to the next marker.",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/next-marker/key",
+					"TitleAlignment": "middle"
+				}
+			]
+		},
+		{
+			"Name": "Undo",
+			"UUID": "com.cutmark.suite.audio.undo",
+			"Icon": "imgs/actions/undo/icon",
+			"Tooltip": "Undo. Dimmed when not available.",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/undo/key",
+					"TitleAlignment": "middle"
+				}
+			]
+		},
+		{
+			"Name": "Redo",
+			"UUID": "com.cutmark.suite.audio.redo",
+			"Icon": "imgs/actions/redo/icon",
+			"Tooltip": "Redo. Dimmed when not available.",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/redo/key",
+					"TitleAlignment": "middle"
+				}
+			]
+		},
+		{
+			"Name": "Split at playhead",
+			"UUID": "com.cutmark.suite.audio.split-at-playhead",
+			"Icon": "imgs/actions/split/icon",
+			"Tooltip": "Split the clip under the playhead.",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/split/key",
+					"TitleAlignment": "middle"
+				}
+			]
+		},
+		{
+			"Name": "Ripple",
+			"UUID": "com.cutmark.suite.audio.toggle-ripple",
+			"Icon": "imgs/actions/ripple/icon",
+			"Tooltip": "Toggle ripple editing. Lit in the accent blue while on.",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/ripple/key",
+					"TitleAlignment": "middle"
+				},
+				{
+					"Image": "imgs/actions/ripple/key-on",
+					"TitleAlignment": "middle"
+				}
+			]
+		},
+		{
+			"Name": "Snap",
+			"UUID": "com.cutmark.suite.audio.toggle-snap",
+			"Icon": "imgs/actions/snap/icon",
+			"Tooltip": "Toggle snapping. Lit in the accent blue while on.",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/snap/key",
+					"TitleAlignment": "middle"
+				},
+				{
+					"Image": "imgs/actions/snap/key-on",
+					"TitleAlignment": "middle"
+				}
+			]
+		},
+		{
+			"Name": "Save",
+			"UUID": "com.cutmark.suite.audio.save",
+			"Icon": "imgs/actions/save/icon",
+			"Tooltip": "Save the project.",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/save/key",
+					"TitleAlignment": "middle"
+				}
+			]
+		},
+		{
+			"Name": "Track Mute",
+			"UUID": "com.cutmark.suite.audio.track-mute",
+			"Icon": "imgs/actions/track-mute/icon",
+			"Tooltip": "Toggle mute on the chosen track.",
+			"PropertyInspectorPath": "ui/track.html",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/track-mute/key",
+					"TitleAlignment": "middle"
+				},
+				{
+					"Image": "imgs/actions/track-mute/key-on",
+					"TitleAlignment": "middle"
+				}
+			]
+		},
+		{
+			"Name": "Track Solo",
+			"UUID": "com.cutmark.suite.audio.track-solo",
+			"Icon": "imgs/actions/track-solo/icon",
+			"Tooltip": "Toggle solo on the chosen track.",
+			"PropertyInspectorPath": "ui/track.html",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/track-solo/key",
+					"TitleAlignment": "middle"
+				},
+				{
+					"Image": "imgs/actions/track-solo/key-on",
+					"TitleAlignment": "middle"
+				}
+			]
+		},
+		{
+			"Name": "Track Arm",
+			"UUID": "com.cutmark.suite.audio.track-arm",
+			"Icon": "imgs/actions/track-arm/icon",
+			"Tooltip": "Toggle record arm on the chosen track.",
+			"PropertyInspectorPath": "ui/track.html",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/track-arm/key",
+					"TitleAlignment": "middle"
+				},
+				{
+					"Image": "imgs/actions/track-arm/key-on",
+					"TitleAlignment": "middle"
+				}
+			]
+		},
+		{
+			"Name": "Audio command",
+			"UUID": "com.cutmark.suite.audio.command",
+			"Icon": "imgs/actions/audio-command/icon",
+			"Tooltip": "Run any command the audio editor offers.",
+			"PropertyInspectorPath": "ui/audio-command.html",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/audio-command/key",
+					"TitleAlignment": "middle"
+				}
+			]
+		},
+		{
+			"Name": "Zoom",
+			"UUID": "com.cutmark.suite.audio.dial-zoom",
+			"Icon": "imgs/actions/dial-zoom/icon",
+			"Tooltip": "Zoom the timeline: rotate to zoom, press to fit the project.",
+			"Controllers": [
+				"Encoder"
+			],
+			"Encoder": {
+				"layout": "$B1"
+			},
+			"States": [
+				{
+					"Image": "imgs/actions/dial-zoom/key"
+				}
+			]
+		},
+		{
+			"Name": "Jog",
+			"UUID": "com.cutmark.suite.audio.dial-jog",
+			"Icon": "imgs/actions/dial-jog/icon",
+			"Tooltip": "Jog the playhead: rotate to move, press for fine or coarse steps, touch to play or stop.",
+			"Controllers": [
+				"Encoder"
+			],
+			"Encoder": {
+				"layout": "$A1"
+			},
+			"States": [
+				{
+					"Image": "imgs/actions/dial-jog/key"
+				}
+			]
+		},
+		{
+			"Name": "Track volume",
+			"UUID": "com.cutmark.suite.audio.dial-track-volume",
+			"Icon": "imgs/actions/dial-track-volume/icon",
+			"Tooltip": "Set a track's volume: rotate to step, press to mute; the strip dims while the track is muted.",
+			"PropertyInspectorPath": "ui/track.html",
+			"Controllers": [
+				"Encoder"
+			],
+			"Encoder": {
+				"layout": "$B1"
+			},
+			"States": [
+				{
+					"Image": "imgs/actions/dial-track-volume/key"
+				}
+			]
+		},
+		{
+			"Name": "Markers",
+			"UUID": "com.cutmark.suite.audio.dial-markers",
+			"Icon": "imgs/actions/dial-markers/icon",
+			"Tooltip": "Move between markers: rotate for previous / next, press to add one at the playhead.",
+			"Controllers": [
+				"Encoder"
+			],
+			"Encoder": {
+				"layout": "$A1"
+			},
+			"States": [
+				{
+					"Image": "imgs/actions/dial-markers/key"
+				}
+			]
+		},
+		{
+			"Name": "Recorder: Record / Stop",
+			"UUID": "com.cutmark.suite.recorder.start-stop",
+			"Icon": "imgs/actions/recorder-record/icon",
+			"Tooltip": "Start or stop a take. Red with the elapsed time while recording.",
+			"Controllers": [
+				"Keypad"
+			],
+			"DisableAutomaticStates": true,
+			"States": [
+				{
+					"Image": "imgs/actions/recorder-record/key",
+					"TitleAlignment": "bottom"
+				},
+				{
+					"Image": "imgs/actions/recorder-record/key-on",
+					"TitleAlignment": "bottom"
+				}
+			]
+		},
+		{
+			"Name": "Recorder: Pause / Resume",
+			"UUID": "com.cutmark.suite.recorder.pause-resume",
+			"Icon": "imgs/actions/recorder-pause/icon",
+			"Tooltip": "Pause or resume the take. Lit while paused, dimmed while idle.",
+			"Controllers": [
+				"Keypad"
+			],
+			"DisableAutomaticStates": true,
+			"States": [
+				{
+					"Image": "imgs/actions/recorder-pause/key",
+					"TitleAlignment": "bottom"
+				},
+				{
+					"Image": "imgs/actions/recorder-pause/key-on",
+					"TitleAlignment": "bottom",
+					"TitleColor": "#0A0A0B"
+				}
+			]
+		},
+		{
+			"Name": "Recorder: Mark",
+			"UUID": "com.cutmark.suite.recorder.mark",
+			"Icon": "imgs/actions/recorder-mark/icon",
+			"Tooltip": "Add a mark of the chosen category.",
+			"PropertyInspectorPath": "ui/recorder-mark.html",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/recorder-mark/note",
+					"TitleAlignment": "bottom"
+				}
+			]
+		},
+		{
+			"Name": "Recorder: Mark with label",
+			"UUID": "com.cutmark.suite.recorder.mark-label",
+			"Icon": "imgs/actions/recorder-mark-label/icon",
+			"Tooltip": "Add a mark and open the label popup.",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/recorder-mark-label/key",
+					"TitleAlignment": "bottom"
+				}
+			]
+		},
+		{
+			"Name": "Recorder: Highlight last 30 s",
+			"UUID": "com.cutmark.suite.recorder.highlight-last",
+			"Icon": "imgs/actions/recorder-highlight/icon",
+			"Tooltip": "Highlight the last 30 seconds. Dimmed while idle.",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/recorder-highlight/key",
+					"TitleAlignment": "bottom"
+				}
+			]
+		},
+		{
+			"Name": "Recorder: Mute mic",
+			"UUID": "com.cutmark.suite.recorder.mute-mic",
+			"Icon": "imgs/actions/recorder-mute-mic/icon",
+			"Tooltip": "Mute or unmute the mic. Lit while muted.",
+			"Controllers": [
+				"Keypad"
+			],
+			"DisableAutomaticStates": true,
+			"States": [
+				{
+					"Image": "imgs/actions/recorder-mute-mic/key",
+					"TitleAlignment": "bottom"
+				},
+				{
+					"Image": "imgs/actions/recorder-mute-mic/key-on",
+					"TitleAlignment": "bottom",
+					"TitleColor": "#0A0A0B"
+				}
+			]
+		},
+		{
+			"Name": "Recorder: Replay buffer",
+			"UUID": "com.cutmark.suite.recorder.replay-toggle",
+			"Icon": "imgs/actions/recorder-replay/icon",
+			"Tooltip": "Turn the replay buffer on or off. Lit while on.",
+			"Controllers": [
+				"Keypad"
+			],
+			"DisableAutomaticStates": true,
+			"States": [
+				{
+					"Image": "imgs/actions/recorder-replay/key",
+					"TitleAlignment": "bottom"
+				},
+				{
+					"Image": "imgs/actions/recorder-replay/key-on",
+					"TitleAlignment": "bottom",
+					"TitleColor": "#0A0A0B"
+				}
+			]
+		},
+		{
+			"Name": "Recorder: Save replay",
+			"UUID": "com.cutmark.suite.recorder.replay-save",
+			"Icon": "imgs/actions/recorder-save-replay/icon",
+			"Tooltip": "Save the replay. Dimmed while the replay buffer is off.",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/recorder-save-replay/key",
+					"TitleAlignment": "bottom"
+				}
+			]
+		},
+		{
+			"Name": "Recorder: Track mute",
+			"UUID": "com.cutmark.suite.recorder.track-mute",
+			"Icon": "imgs/actions/recorder-track-mute/icon",
+			"Tooltip": "Toggle mute on the chosen track. Lit while muted.",
+			"PropertyInspectorPath": "ui/track.html",
+			"Controllers": [
+				"Keypad"
+			],
+			"DisableAutomaticStates": true,
+			"States": [
+				{
+					"Image": "imgs/actions/recorder-track-mute/key",
+					"TitleAlignment": "bottom"
+				},
+				{
+					"Image": "imgs/actions/recorder-track-mute/key-on",
+					"TitleAlignment": "bottom",
+					"TitleColor": "#0A0A0B"
+				}
+			]
+		},
+		{
+			"Name": "Recorder: Track gain",
+			"UUID": "com.cutmark.suite.recorder.dial-track-gain",
+			"Icon": "imgs/actions/recorder-dial-track-gain/icon",
+			"Tooltip": "Set a track's gain: rotate for 0.5 dB steps, press to mute. The strip shows the live level.",
+			"PropertyInspectorPath": "ui/track.html",
+			"Controllers": [
+				"Encoder"
+			],
+			"Encoder": {
+				"layout": "layouts/recorder-gain.json"
+			},
+			"States": [
+				{
+					"Image": "imgs/actions/recorder-dial-track-gain/key"
+				}
+			]
+		}
+	],
+	"Profiles": [
+		{
+			"Name": "profiles/CutMark Audio MK2",
+			"DeviceType": 0,
+			"DontAutoSwitchWhenInstalled": true
+		},
+		{
+			"Name": "profiles/CutMark Audio Plus",
+			"DeviceType": 7,
+			"DontAutoSwitchWhenInstalled": true
+		},
+		{
+			"Name": "profiles/CutMark Recorder",
+			"DeviceType": 0,
+			"DontAutoSwitchWhenInstalled": true
+		},
+		{
+			"Name": "profiles/CutMark Recorder Plus",
+			"DeviceType": 7,
+			"DontAutoSwitchWhenInstalled": true
+		}
+	],
+	"Category": "CutMark",
+	"CategoryIcon": "imgs/plugin/category-icon",
+	"CodePath": "bin/plugin.js",
+	"Description": "Control CutMark apps from Stream Deck",
+	"Icon": "imgs/plugin/marketplace",
+	"SDKVersion": 2,
+	"Software": {
+		"MinimumVersion": "7.1"
+	},
+	"OS": [
+		{
+			"Platform": "windows",
+			"MinimumVersion": "10"
+		}
+	],
+	"ApplicationsToMonitor": {
+		"windows": [
+			"cutmark-audio.exe",
+			"cutmark-recorder.exe"
+		]
+	},
+	"Nodejs": {
+		"Version": "24"
+	},
+	"UUID": "com.cutmark.suite"
+}

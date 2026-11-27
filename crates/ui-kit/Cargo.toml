@@ -26,6 +26,7 @@ eframe.workspace = true
 egui.workspace = true
 egui-phosphor.workspace = true
 log.workspace = true
+resvg = { version = "0.50.0", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 

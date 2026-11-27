@@ -8,7 +8,7 @@ pub const GITHUB: &str = "https://github.com/jdfigura-montana/filmcraft";
 pub const ISSUES: &str = "https://github.com/jdfigura-montana/filmcraft/issues";
 
 /// (command id, label, url) for every link, in menu order.
-pub const ALL: [(&str, &str, &str); 2] = [("help.github", "Cutmark Video on GitHub", GITHUB), ("help.reportIssue", "Report an Issue…", ISSUES)];
+pub const ALL: [(&str, &str, &str); 2] = [("help.github", "CutMark Video on GitHub", GITHUB), ("help.reportIssue", "Report an Issue…", ISSUES)];
 
 /// A link the web browser couldn't open (`ui.failedLink`): the address and the reason.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -33,7 +33,7 @@ pub fn menu_hint(command: &str) -> Option<String> {
         match command {
             "help.revealLogFiles" => tl!("Saves this session's log and shows it in your file manager."),
             "help.systemCompatibilityReport" => tl!("Shows a report on this computer."),
-            "app.about" => tl!("Shows the version, community links and credits in a Cutmark Video window."),
+            "app.about" => tl!("Shows the version, community links and credits in a CutMark Video window."),
             _ => return None,
         }
         .to_string(),

@@ -1,7 +1,7 @@
 [package]
 name = "cutmark-gallery"
 version.workspace = true
-description = "Cutmark Gallery: every ui-kit component in every state, in the real window chrome."
+description = "CutMark Gallery: every ui-kit component in every state, in the real window chrome."
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true

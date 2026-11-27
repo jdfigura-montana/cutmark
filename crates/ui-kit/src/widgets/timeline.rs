@@ -79,12 +79,12 @@ impl<'a> ClipLook<'a> {
 
 /// The clip body color: `accent.tint` when selected, `bg.clip` otherwise.
 fn clip_body_color(look: &ClipLook, theme: &Theme) -> Color32 {
-    if look.selected { theme.accent.tint } else { color::BG_CLIP }
+    if look.selected { theme.accent.tint } else { theme.neutrals.bg_clip }
 }
 
 /// The clip rim: 2px `accent` when selected, 1px `stroke.clip` otherwise.
 fn clip_rim(look: &ClipLook, theme: &Theme) -> Stroke {
-    if look.selected { Stroke::new(crate::SELECTION_STROKE, theme.accent.accent) } else { Stroke::new(crate::HAIRLINE, color::STROKE_CLIP) }
+    if look.selected { Stroke::new(crate::SELECTION_STROKE, theme.accent.accent) } else { Stroke::new(crate::HAIRLINE, theme.neutrals.stroke_clip) }
 }
 
 /// The clip's overall opacity: `opacity` times 45% when dimmed.
@@ -108,11 +108,11 @@ pub fn paint_clip(painter: &Painter, rect: Rect, look: &ClipLook, theme: &Theme)
     painter.rect_filled(rect, rounding, clip_body_color(look, theme).gamma_multiply(alpha));
     painter.rect_stroke(rect, rounding, faded_stroke(clip_rim(look, theme), alpha), StrokeKind::Inside);
 
-    let label_galley = painter.layout_no_wrap(look.label.to_owned(), fonts::medium(typography::MICRO_SIZE), color::TEXT_PRIMARY.gamma_multiply(alpha));
+    let label_galley = painter.layout_no_wrap(look.label.to_owned(), fonts::medium(typography::MICRO_SIZE), theme.neutrals.text_primary.gamma_multiply(alpha));
     let label_left = rect.left() + space::SCALE_8;
     let label_top = rect.top() + space::SCALE_4;
     let label_height = label_galley.size().y;
-    painter.with_clip_rect(rect).galley(Pos2::new(label_left, label_top), label_galley, color::TEXT_PRIMARY);
+    painter.with_clip_rect(rect).galley(Pos2::new(label_left, label_top), label_galley, theme.neutrals.text_primary);
 
     Rect::from_min_max(
         Pos2::new(rect.left() + space::SCALE_8, label_top + label_height),
@@ -123,7 +123,7 @@ pub fn paint_clip(painter: &Painter, rect: Rect, look: &ClipLook, theme: &Theme)
 /// The waveform color: `accent.content` in a selected clip, `text.tertiary`
 /// otherwise (spec "Clip").
 pub fn waveform_color(selected: bool, theme: &Theme) -> Color32 {
-    if selected { theme.accent.content } else { color::TEXT_TERTIARY }
+    if selected { theme.accent.content } else { theme.neutrals.text_tertiary }
 }
 
 /// Builds the waveform envelope as one filled mesh: two vertices per column
@@ -188,7 +188,8 @@ pub enum MarkerKind {
 }
 
 /// The color of a marker kind (spec "Marker": category color, user ring
-/// `text.tertiary`).
+/// `text.tertiary`). It has no context, so a user marker gets the untinted
+/// fallback here; [`paint_marker`] uses the theme's `text.tertiary`.
 pub fn marker_color(kind: MarkerKind) -> Color32 {
     match kind {
         MarkerKind::Note => color::MARKER_NOTE,
@@ -206,7 +207,8 @@ pub fn paint_marker(painter: &Painter, center: Pos2, kind: MarkerKind) {
     let marker_radius = MARKER_DIAMETER / 2.0;
     match kind {
         MarkerKind::User => {
-            painter.circle_stroke(center, marker_radius, Stroke::new(USER_RING_STROKE, marker_color(kind)));
+            let ring = Theme::get(painter.ctx()).neutrals.text_tertiary;
+            painter.circle_stroke(center, marker_radius, Stroke::new(USER_RING_STROKE, ring));
         }
         _ => {
             painter.circle_filled(center, marker_radius, marker_color(kind));
@@ -244,23 +246,24 @@ pub fn paint_snap_line(painter: &Painter, x: f32, rect: Rect, theme: &Theme) {
 }
 
 /// Paints the timeline ruler: tick lines in `stroke.hairline`, labels in
-/// `type.value` `text.tertiary` in the top half, and the marker dots in a
-/// strip in the bottom half, never on top of a label (spec "Ruler",
-/// "Marker"). Ticks are `(x, label)`; `None` labels draw a shorter minor
-/// tick. Markers are `(x, kind)` on the same x scale as the ticks.
+/// `type.value` `text.tertiary` in the top half with top padding so the taller
+/// mono glyphs are never clipped, and the marker dots in a strip in the bottom
+/// half, never on top of a label (spec "Ruler", "Marker"). Ticks are
+/// `(x, label)`; `None` labels draw a shorter minor tick. Markers are
+/// `(x, kind)` on the same x scale as the ticks.
 pub fn paint_ruler(painter: &Painter, rect: Rect, ticks: &[(f32, Option<String>)], markers: &[(f32, MarkerKind)]) {
+    let neutrals = Theme::get(painter.ctx()).neutrals;
     let clipped = painter.with_clip_rect(rect);
     let label_font = fonts::mono(typography::VALUE_SIZE);
-    let label_height = ticks
-        .iter()
-        .find_map(|(_, label)| label.as_ref())
-        .map_or(0.0, |text| clipped.layout_no_wrap(text.clone(), label_font.clone(), color::TEXT_TERTIARY).size().y);
+    let label_height = ticks.iter().find_map(|(_, label)| label.as_ref()).map_or(0.0, |text| {
+        clipped.layout_job(fonts::tracked(text.clone(), label_font.clone(), neutrals.text_tertiary, fonts::MONO_LETTER_SPACING_EM)).size().y
+    });
     for (x, label) in ticks {
         let tick_top = if label.is_some() { rect.top() } else { rect.center().y };
-        clipped.line_segment([Pos2::new(*x, tick_top), Pos2::new(*x, rect.bottom())], Stroke::new(crate::HAIRLINE, color::STROKE_HAIRLINE));
+        clipped.line_segment([Pos2::new(*x, tick_top), Pos2::new(*x, rect.bottom())], Stroke::new(crate::HAIRLINE, neutrals.stroke_hairline));
         if let Some(text) = label {
-            let galley = clipped.layout_no_wrap(text.clone(), label_font.clone(), color::TEXT_TERTIARY);
-            clipped.galley(Pos2::new(x + space::SCALE_4, rect.top() + space::SCALE_2), galley, color::TEXT_TERTIARY);
+            let galley = clipped.layout_job(fonts::tracked(text.clone(), label_font.clone(), neutrals.text_tertiary, fonts::MONO_LETTER_SPACING_EM));
+            clipped.galley(Pos2::new(x + space::SCALE_4, rect.top() + space::SCALE_4), galley, neutrals.text_tertiary);
         }
     }
     let dot_y = ruler_marker_center(rect, label_height);
@@ -273,7 +276,7 @@ pub fn paint_ruler(painter: &Painter, rect: Rect, ticks: &[(f32, Option<String>)
 /// below the time labels so a dot never sits on top of one, and kept inside
 /// the ruler.
 fn ruler_marker_center(rect: Rect, label_height: f32) -> f32 {
-    let labels_bottom = rect.top() + space::SCALE_2 + label_height;
+    let labels_bottom = rect.top() + space::SCALE_4 + label_height;
     let half = MARKER_DIAMETER / 2.0;
     ((rect.center().y + rect.bottom()) / 2.0).max(labels_bottom + half + space::SCALE_2).min(rect.bottom() - half - 1.0)
 }
@@ -364,13 +367,13 @@ mod tests {
 
     /// The marker dots sit in the bottom half of the ruler, fully below the
     /// time labels, so a dot never sits on top of a label (spec "Ruler",
-    /// "Marker").
+    /// "Marker"). A ruler tall enough for both keeps the dot below the labels.
     #[test]
     fn ruler_marker_dots_sit_below_the_labels() {
-        let rect = Rect::from_min_size(Pos2::ZERO, vec2(600.0, 26.0));
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(600.0, 30.0));
         let label_height = 15.0;
         let y = ruler_marker_center(rect, label_height);
-        let labels_bottom = rect.top() + space::SCALE_2 + label_height;
+        let labels_bottom = rect.top() + space::SCALE_4 + label_height;
         assert!(y - MARKER_DIAMETER / 2.0 >= labels_bottom, "the dot must start below the labels");
         assert!(y > rect.center().y, "the dot strip is in the bottom half");
         assert!(y + MARKER_DIAMETER / 2.0 <= rect.bottom(), "the dot stays inside the ruler");

@@ -1,11 +1,11 @@
-//! The Layout tool's groups: which pictures the composite shows and how the camera looks
+//! The Layout tool's groups: the Screen group (in `screen_ui`), then which pictures the composite shows and how the camera looks
 //! (spec "Setup mode": View, Camera position, Crop, Frame; the Background group is in
 //! `background_ui`).
 //!
 //! The settings live in the active profile in the shared [`ProfileStore`]. A change goes through the store,
 //! which saves it later; the compose thread picks it up on the next frame, so the preview follows live.
-//! The groups are read-only while a take is recording, and the picture-in-picture groups are
-//! disabled while the view is not Picture in picture.
+//! The groups are read-only while the profile is locked (a take or the replay buffer), and the
+//! picture-in-picture groups are disabled while the view is not Picture in picture.
 
 use std::ops::RangeInclusive;
 
@@ -15,7 +15,9 @@ use ui_kit::tokens::space;
 use ui_kit::{inspector_group, inspector_row, segmented, segmented_filled};
 
 use crate::config::{AnchorCorner, LayoutKind, PipConfig, PipShape};
+use crate::profile_ui::{Control, Lock};
 use crate::profiles::ProfileStore;
+use crate::screen_ui::ScreenGroup;
 
 /// The corners in the order the picker lists them.
 const CORNERS: [AnchorCorner; 4] = [AnchorCorner::TopLeft, AnchorCorner::TopRight, AnchorCorner::BottomLeft, AnchorCorner::BottomRight];
@@ -40,8 +42,12 @@ fn corner_label(corner: AnchorCorner) -> &'static str {
     }
 }
 
-/// Draws the Layout tool's groups for the active profile; `recording` makes them read-only.
-pub fn show(ui: &mut Ui, store: &mut ProfileStore, profile_name: &str, recording: bool) {
+/// Draws the Layout tool's groups for the active profile; `lock` makes them read-only.
+pub fn show(ui: &mut Ui, screen: &mut ScreenGroup, store: &mut ProfileStore, profile_name: &str, lock: Lock) {
+    if store.get(profile_name).is_some() {
+        screen.show(ui, store, profile_name, lock);
+        ui.add_space(space::SCALE_8);
+    }
     let Some(profile) = store.get(profile_name) else {
         ui.weak("No profile is active.");
         return;
@@ -52,7 +58,7 @@ pub fn show(ui: &mut Ui, store: &mut ProfileStore, profile_name: &str, recording
     let mut changed = false;
     // View group (spec "Setup mode": Screen only, Picture in picture, Cam only).
     inspector_group(ui, |ui| {
-        ui.add_enabled_ui(!recording, |ui| {
+        lock.scope(ui, Control::Profile, true, |ui| {
             inspector_row(
                 ui,
                 "View",
@@ -63,7 +69,7 @@ pub fn show(ui: &mut Ui, store: &mut ProfileStore, profile_name: &str, recording
             );
         });
     });
-    if recording {
+    if lock.recording {
         ui.add_space(space::SCALE_4);
         ui.weak("The layout is fixed while recording.");
     }
@@ -73,13 +79,13 @@ pub fn show(ui: &mut Ui, store: &mut ProfileStore, profile_name: &str, recording
     }
     ui.add_space(space::SCALE_8);
     // The picture-in-picture groups are disabled while the view is not Picture in picture.
-    camera_position_group(ui, &mut pip, !recording && layout == LayoutKind::Pip, &mut changed);
+    camera_position_group(ui, &mut pip, lock, layout == LayoutKind::Pip, &mut changed);
     ui.add_space(space::SCALE_8);
-    crop_group(ui, &mut pip, !recording && layout == LayoutKind::Pip, &mut changed);
+    crop_group(ui, &mut pip, lock, layout == LayoutKind::Pip, &mut changed);
     ui.add_space(space::SCALE_8);
-    frame_group(ui, &mut pip, !recording && layout == LayoutKind::Pip, &mut changed);
+    frame_group(ui, &mut pip, lock, layout == LayoutKind::Pip, &mut changed);
     ui.add_space(space::SCALE_8);
-    crate::background_ui::show(ui, store, profile_name, recording);
+    crate::background_ui::show(ui, store, profile_name, lock);
     if changed {
         store.edit(profile_name, |profile| {
             profile.layout = layout;
@@ -89,9 +95,9 @@ pub fn show(ui: &mut Ui, store: &mut ProfileStore, profile_name: &str, recording
 }
 
 /// The Camera position group: the corner, offsets and scale of the camera picture (PiP only).
-fn camera_position_group(ui: &mut Ui, pip: &mut PipConfig, enabled: bool, changed: &mut bool) {
+fn camera_position_group(ui: &mut Ui, pip: &mut PipConfig, lock: Lock, enabled: bool, changed: &mut bool) {
     inspector_group(ui, |ui| {
-        ui.add_enabled_ui(enabled, |ui| {
+        lock.scope(ui, Control::Profile, enabled, |ui| {
             inspector_row(
                 ui,
                 "Corner",
@@ -120,9 +126,9 @@ fn camera_position_group(ui: &mut Ui, pip: &mut PipConfig, enabled: bool, change
 }
 
 /// The Crop group: how much of the camera picture is cropped away (PiP only).
-fn crop_group(ui: &mut Ui, pip: &mut PipConfig, enabled: bool, changed: &mut bool) {
+fn crop_group(ui: &mut Ui, pip: &mut PipConfig, lock: Lock, enabled: bool, changed: &mut bool) {
     inspector_group(ui, |ui| {
-        ui.add_enabled_ui(enabled, |ui| {
+        lock.scope(ui, Control::Profile, enabled, |ui| {
             *changed |= slider_row(ui, "Crop left", &mut pip.crop_left_pct, 0.0..=90.0, " %");
             *changed |= slider_row(ui, "Crop right", &mut pip.crop_right_pct, 0.0..=90.0, " %");
             *changed |= slider_row(ui, "Crop top", &mut pip.crop_top_pct, 0.0..=90.0, " %");
@@ -132,9 +138,9 @@ fn crop_group(ui: &mut Ui, pip: &mut PipConfig, enabled: bool, changed: &mut boo
 }
 
 /// The Frame group: shape, corner radius (Rectangle only), border width and color (PiP only).
-fn frame_group(ui: &mut Ui, pip: &mut PipConfig, enabled: bool, changed: &mut bool) {
+fn frame_group(ui: &mut Ui, pip: &mut PipConfig, lock: Lock, enabled: bool, changed: &mut bool) {
     inspector_group(ui, |ui| {
-        ui.add_enabled_ui(enabled, |ui| {
+        lock.scope(ui, Control::Profile, enabled, |ui| {
             inspector_row(
                 ui,
                 "Shape",

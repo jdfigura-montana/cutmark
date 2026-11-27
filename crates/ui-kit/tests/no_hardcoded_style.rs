@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 const OPT_IN: &[&str] = &[
     "crates/ui-kit/src/widgets",
     "crates/ui-kit/src/help",
+    "crates/ui-kit/src/brand.rs",
     "crates/ui-kit/src/shortcuts.rs",
     "crates/ui-kit/src/tour.rs",
     "apps/gallery/src",

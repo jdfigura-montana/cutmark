@@ -14,7 +14,7 @@ fn shared_bool() -> (Rc<Cell<bool>>, Rc<Cell<bool>>) {
     (cell.clone(), cell)
 }
 
-/// A harness with the ui-kit font set, so the named Inter families the
+/// A harness with the ui-kit font set, so the named Instrument Sans families the
 /// widgets lay text out in are bound. The first pass only installs the
 /// fonts (egui applies a font change at the start of the next pass); the
 /// widgets are drawn from the second pass on.
@@ -377,4 +377,49 @@ fn the_bipolar_slider_has_no_fill_at_the_center() {
     });
     harness.run();
     assert_eq!(slider_track_rects(&harness).len(), 1, "only the track is painted at the center");
+}
+
+/// The text shapes of the last frame that read `text`.
+fn texts_reading<'a>(harness: &'a Harness<'static>, text: &str) -> Vec<&'a egui::epaint::TextShape> {
+    harness
+        .output()
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(shape) if shape.galley.text() == text => Some(shape),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A checkable menu item reports its state and draws the check only while on;
+/// every shortcut ends at the same x; a disabled item draws at 40%.
+#[test]
+fn menu_items_draw_the_check_and_align_their_shortcuts() {
+    use egui::accesskit::Toggled;
+    use egui_kittest::kittest::NodeT;
+
+    for on in [false, true] {
+        let harness = new_harness(move |ui| {
+            ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+                ui_kit::menu_check_slot(ui);
+                ui.add(ui_kit::MenuItem::new("Replay buffer").shortcut("Ctrl+Alt+B").checked(on));
+                ui.add_enabled(false, ui_kit::MenuItem::new("Save").shortcut("S"));
+            });
+        });
+        let node = harness.get_by_label("Replay buffer").accesskit_node();
+        assert_eq!(node.toggled() == Some(Toggled::True), on, "reports checked while on");
+        assert_eq!(texts_reading(&harness, ui_kit::icons::regular::CHECK).len(), usize::from(on), "the check mark");
+
+        let right = |text: &str| {
+            let shapes = texts_reading(&harness, text);
+            assert_eq!(shapes.len(), 1, "{text}");
+            shapes[0].pos.x + shapes[0].galley.size().x
+        };
+        assert!((right("Ctrl+Alt+B") - right("S")).abs() < 0.5, "shortcuts share one right edge");
+
+        let left = |text: &str| texts_reading(&harness, text)[0].pos.x;
+        assert!((left("Replay buffer") - left("Save")).abs() < 0.5, "labels line up");
+        assert_eq!(texts_reading(&harness, "Save")[0].fallback_color.a(), 102, "disabled at 40%");
+    }
 }

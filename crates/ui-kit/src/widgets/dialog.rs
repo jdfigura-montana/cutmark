@@ -5,8 +5,9 @@
 use egui::{Align, Context, Id, Layout, Margin, Pos2, Rect, Stroke, Ui, UiBuilder};
 
 use crate::HAIRLINE;
+use crate::Theme;
 use crate::fonts;
-use crate::tokens::{color, radius, space, typography};
+use crate::tokens::{radius, space, typography};
 
 /// The dialog: a modal (egui [`egui::Modal`]) with a `type.headline` title,
 /// `add_body`, and a right-aligned `add_footer` row laid out left to right,
@@ -25,17 +26,18 @@ use crate::tokens::{color, radius, space, typography};
 ///     });
 /// ```
 pub fn dialog(ctx: &Context, id: Id, title: &str, open: &mut bool, add_body: impl FnOnce(&mut Ui), add_footer: impl FnOnce(&mut Ui)) {
+    let neutrals = Theme::get(ctx).neutrals;
     if !*open {
         return;
     }
     // Dialogs are panels: `bg.panel`, `radius.panel`, hairline rim, flat.
     let frame = egui::Frame::new()
-        .fill(color::BG_PANEL)
+        .fill(neutrals.bg_panel)
         .corner_radius(radius::PANEL)
         .inner_margin(Margin::same(space::SCALE_24 as i8))
-        .stroke(Stroke::new(HAIRLINE, color::STROKE_HAIRLINE));
+        .stroke(Stroke::new(HAIRLINE, neutrals.stroke_hairline));
     let response = egui::Modal::new(id).frame(frame).show(ctx, |ui| {
-        ui.add(egui::Label::new(egui::RichText::new(title).font(fonts::semibold(typography::HEADLINE_SIZE)).color(color::TEXT_PRIMARY)));
+        ui.add(egui::Label::new(egui::RichText::new(title).font(fonts::semibold(typography::HEADLINE_SIZE)).color(neutrals.text_primary)));
         ui.add_space(space::SCALE_8);
         add_body(ui);
         ui.add_space(space::SCALE_8);

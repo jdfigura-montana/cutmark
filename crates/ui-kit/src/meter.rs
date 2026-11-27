@@ -2,6 +2,7 @@
 
 use egui::{Color32, CornerRadius, Pos2, Rect, Response, Sense, Ui, vec2};
 
+use crate::Theme;
 use crate::fonts;
 use crate::tokens::{color, typography};
 
@@ -53,12 +54,13 @@ fn band_span(from: f32, to: f32, peak_dbfs: f32) -> (f32, f32) {
 
 /// Draws a level bar from -60 to 0 dBFS (ok to -12, warn to -3, clip above) with a clip light at its right end.
 pub fn level_meter(ui: &mut Ui, peak_dbfs: f32, clipped: bool, width: f32) -> Response {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let width = width.max(HEIGHT + GAP + 1.0);
     let (rect, response) = ui.allocate_exact_size(vec2(width, HEIGHT), Sense::hover());
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         let bar = Rect::from_min_max(rect.min, Pos2::new(rect.max.x - HEIGHT - GAP, rect.max.y));
-        painter.rect_filled(bar, ROUNDING, color::BG_CONTROL);
+        painter.rect_filled(bar, ROUNDING, neutrals.bg_control);
         for (from, to, band_color) in BANDS {
             let (low, high) = band_span(from, to, peak_dbfs);
             if high > low {
@@ -68,7 +70,7 @@ pub fn level_meter(ui: &mut Ui, peak_dbfs: f32, clipped: bool, width: f32) -> Re
             }
         }
         let light = Rect::from_min_size(Pos2::new(rect.max.x - HEIGHT, rect.top()), vec2(HEIGHT, HEIGHT));
-        painter.rect_filled(light, ROUNDING, if clipped { color::SEM_METER_CLIP } else { color::STROKE_HAIRLINE });
+        painter.rect_filled(light, ROUNDING, if clipped { color::SEM_METER_CLIP } else { neutrals.stroke_hairline });
     }
     response
 }
@@ -76,7 +78,8 @@ pub fn level_meter(ui: &mut Ui, peak_dbfs: f32, clipped: bool, width: f32) -> Re
 /// Paints the recessed bar and the ok, warn and clip bands of a vertical bar,
 /// filling from the bottom up to the peak level.
 fn paint_bands_vertical(painter: &egui::Painter, bar: Rect, peak_dbfs: f32) {
-    painter.rect_filled(bar, ROUNDING, color::BG_CONTROL);
+    let neutrals = Theme::get(painter.ctx()).neutrals;
+    painter.rect_filled(bar, ROUNDING, neutrals.bg_control);
     for (from, to, band_color) in BANDS {
         let (low, high) = band_span(from, to, peak_dbfs);
         if high > low {
@@ -91,6 +94,7 @@ fn paint_bands_vertical(painter: &egui::Painter, bar: Rect, peak_dbfs: f32) {
 ///
 /// `height` is the full allocated height including the clip light and the gap.
 pub fn level_meter_vertical(ui: &mut Ui, peak_dbfs: f32, clipped: bool, height: f32) -> Response {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let height = height.max(CLIP_HEIGHT + GAP + HEIGHT);
     let (rect, response) = ui.allocate_exact_size(vec2(HEIGHT, height), Sense::hover());
     if ui.is_rect_visible(rect) {
@@ -98,7 +102,7 @@ pub fn level_meter_vertical(ui: &mut Ui, peak_dbfs: f32, clipped: bool, height: 
         let bar = Rect::from_min_max(Pos2::new(rect.left(), rect.top() + CLIP_HEIGHT + GAP), rect.max);
         paint_bands_vertical(painter, bar, peak_dbfs);
         let light = Rect::from_min_size(rect.min, vec2(HEIGHT, CLIP_HEIGHT));
-        painter.rect_filled(light, ROUNDING, if clipped { color::SEM_METER_CLIP } else { color::STROKE_HAIRLINE });
+        painter.rect_filled(light, ROUNDING, if clipped { color::SEM_METER_CLIP } else { neutrals.stroke_hairline });
     }
     response
 }
@@ -109,10 +113,14 @@ pub fn level_meter_vertical(ui: &mut Ui, peak_dbfs: f32, clipped: bool, height: 
 ///
 /// `height` is the full allocated height including the clip light and the gap.
 pub fn stereo_meter_vertical(ui: &mut Ui, left_dbfs: f32, right_dbfs: f32, clipped: bool, height: f32, show_scale: bool) -> Response {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let bars_width = HEIGHT * 2.0 + STEREO_GAP;
     let scale_gap = if show_scale { SCALE_GAP } else { 0.0 };
-    let label_width =
-        if show_scale { ui.painter().layout_no_wrap("-60".to_owned(), fonts::mono(typography::VALUE_SIZE), color::TEXT_TERTIARY).size().x } else { 0.0 };
+    let label_width = if show_scale {
+        ui.painter().layout_job(fonts::tracked("-60", fonts::mono(typography::VALUE_SIZE), neutrals.text_tertiary, fonts::MONO_LETTER_SPACING_EM)).size().x
+    } else {
+        0.0
+    };
     let height = height.max(CLIP_HEIGHT + GAP + HEIGHT);
     let (rect, response) = ui.allocate_exact_size(vec2(label_width + scale_gap + bars_width, height), Sense::hover());
     if ui.is_rect_visible(rect) {
@@ -124,17 +132,17 @@ pub fn stereo_meter_vertical(ui: &mut Ui, left_dbfs: f32, right_dbfs: f32, clipp
         paint_bands_vertical(painter, left_bar, left_dbfs);
         paint_bands_vertical(painter, right_bar, right_dbfs);
         let light = Rect::from_min_size(Pos2::new(bars_left, rect.top()), vec2(bars_width, CLIP_HEIGHT));
-        painter.rect_filled(light, ROUNDING, if clipped { color::SEM_METER_CLIP } else { color::STROKE_HAIRLINE });
+        painter.rect_filled(light, ROUNDING, if clipped { color::SEM_METER_CLIP } else { neutrals.stroke_hairline });
         if show_scale {
             let font = fonts::mono(typography::VALUE_SIZE);
-            let text_height = painter.layout_no_wrap("-60".to_owned(), font.clone(), color::TEXT_TERTIARY).size().y;
+            let text_height = painter.layout_job(fonts::tracked("-60", font.clone(), neutrals.text_tertiary, fonts::MONO_LETTER_SPACING_EM)).size().y;
             for (db, (center_y, shown)) in SCALE_LABELS.iter().zip(scale_label_centers(bar_top, rect.bottom(), text_height)) {
                 if !shown {
                     continue;
                 }
-                let galley = painter.layout_no_wrap(format!("{db}"), font.clone(), color::TEXT_TERTIARY);
+                let galley = painter.layout_job(fonts::tracked(format!("{db}"), font.clone(), neutrals.text_tertiary, fonts::MONO_LETTER_SPACING_EM));
                 let pos = Pos2::new(bars_left - SCALE_GAP - galley.size().x, center_y - galley.size().y / 2.0);
-                painter.galley(pos, galley, color::TEXT_TERTIARY);
+                painter.galley(pos, galley, neutrals.text_tertiary);
             }
         }
     }

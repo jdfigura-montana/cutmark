@@ -1,6 +1,6 @@
 //! ui::start_screen: the start screen (Design Language rev 3 "Start screen"):
 //! two panels side by side, centered, at most 1120 wide. The left hero panel
-//! holds the app mark, name and version over a decorative waveform band, the
+//! holds the wordmark lockup and version over a decorative waveform band, the
 //! New project and Open project cards and the drop zone; the right panel lists
 //! the recent projects. The window chrome and the title bar above are drawn by
 //! the app (app.rs); the ui-kit status bar sits below.
@@ -17,7 +17,6 @@ use crate::editor::editor::EditorError;
 use crate::editor::{Editor, OpenOutcome, RecentEntry, recent_projects, remove_missing_recent, remove_recent};
 use crate::ui::dialogs;
 use crate::ui::dialogs::new_project::NewProjectDialog;
-use crate::ui::menu;
 use crate::ui::status_bar;
 
 /// Fixed seeds of the two decorative band waveforms (back layer, front layer).
@@ -58,8 +57,10 @@ const START_GAP: f32 = 16.0;
 const START_HEADER_H: f32 = 22.0;
 /// Phosphor icon size in tiles and the drop zone (20).
 const START_ICON_SIZE: f32 = 20.0;
-/// Side of the hero's app mark (44).
-const START_MARK: f32 = 44.0;
+/// Height of the hero's wordmark lockup (40).
+const START_WORDMARK_H: f32 = 40.0;
+/// Height the band leaves clear for the heading, below the hero's padding (44).
+const START_HEADING_H: f32 = 44.0;
 /// Start screen content max width (1120).
 const START_MAX_W: f32 = 1120.0;
 /// Start screen panel height (640).
@@ -68,14 +69,14 @@ const START_PANEL_H: f32 = 640.0;
 const START_PANEL_W: f32 = 420.0;
 /// Gap between the recent rows (2).
 const START_ROW_GAP: f32 = 2.0;
+/// Space between two footer hints (spec E3: separate items 20 apart).
+const FOOTER_HINT_GAP: f32 = 20.0;
 /// Height of one recent row (58).
 const START_ROW_H: f32 = 58.0;
 /// Corner radius of a recent row (10).
 const START_ROW_RADIUS: f32 = 10.0;
 /// Size of the recent row's project tile (40); the action card tile is 44.
 const START_TILE: f32 = 40.0;
-/// Hero app name font size (26).
-const START_TITLE_SIZE: f32 = 26.0;
 /// Size of the per-row remove button (28).
 const START_X_BTN: f32 = 28.0;
 
@@ -151,6 +152,7 @@ impl StartScreen {
 
     /// Draws the start screen; returns the Editor to edit when one opens.
     pub fn show(&mut self, ui: &mut egui::Ui, output_device: Option<&str>) -> Option<Editor> {
+        let neutral = crate::ui::neutrals(ui.ctx());
         let mut opened = None;
         // F1 on the start screen opens Getting started.
         ui_kit::help::context(ui, crate::help::CONTEXT_START);
@@ -174,12 +176,12 @@ impl StartScreen {
         // The 26 px status bar under the panels.
         egui::Panel::bottom("start_status_bar")
             .exact_size(ui_kit::tokens::size::STATUS_BAR_HEIGHT)
-            .frame(egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin { left: 8, ..Default::default() }))
+            .frame(egui::Frame::new().fill(neutral.bg_ground).inner_margin(egui::Margin { left: 8, ..Default::default() }))
             .show(ui, |ui| {
                 status_bar::show_start(ui, output_device);
             });
 
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(neutral.bg_ground)).show(ui, |ui| {
             self.show_panels(ui, &mut opened);
         });
         self.show_recovery_modal(ui, &mut opened);
@@ -271,29 +273,25 @@ impl StartScreen {
         }
     }
 
-    /// The hero panel: app mark, name and version over the waveform band, the
+    /// The hero panel: the wordmark lockup and version over the waveform band, the
     /// New project and Open project cards and the drop zone.
     fn show_hero(&mut self, ui: &mut egui::Ui, rect: Rect, opened: &mut Option<Editor>) {
+        let neutral = crate::ui::neutrals(ui.ctx());
         paint_panel(ui, rect);
         let pad = space::SCALE_24;
         let inner = rect.shrink(pad);
 
         // The decorative band sits behind the heading, under the top edge.
-        let mark_side = START_MARK;
-        let band_top = inner.top() + mark_side + pad;
+        let band_top = inner.top() + START_HEADING_H + pad;
         paint_band(ui, Rect::from_min_size(pos2(rect.left(), band_top), vec2(rect.width(), START_BAND_H)));
 
-        // Heading: mark, then the name over the version.
-        let mark = Rect::from_min_size(inner.min, Vec2::splat(mark_side));
-        menu::paint_app_mark(ui, mark, color::BG_PANEL);
-        let name = ui.painter().layout_no_wrap(crate::app::APP_SHORT_NAME.to_owned(), fonts::semibold(START_TITLE_SIZE), color::TEXT_PRIMARY);
-        let version = ui.painter().layout_no_wrap(format!("v{}", env!("CARGO_PKG_VERSION")), fonts::mono(typography::VALUE_SIZE), color::TEXT_TERTIARY);
-        let block_h = name.size().y + version.size().y;
-        let text_x = mark.right() + space::SCALE_12;
-        let text_y = mark.center().y - block_h / 2.0;
-        let version_y = text_y + name.size().y;
-        ui.painter().galley(pos2(text_x, text_y), name, color::TEXT_PRIMARY);
-        ui.painter().galley(pos2(text_x, version_y), version, color::TEXT_TERTIARY);
+        // Heading: the wordmark lockup (no wider than the panel), the version under it.
+        let aspect = ui_kit::brand::wordmark_aspect(ui, crate::app::BRAND);
+        let wordmark_h = START_WORDMARK_H.min(inner.width() / aspect);
+        let wordmark = Rect::from_min_size(inner.min, vec2(wordmark_h * aspect, wordmark_h));
+        ui_kit::brand::wordmark(&mut ui.new_child(UiBuilder::new().max_rect(wordmark)), crate::app::BRAND, wordmark_h);
+        let version = ui.painter().layout_no_wrap(format!("v{}", env!("CARGO_PKG_VERSION")), fonts::mono(typography::VALUE_SIZE), neutral.text_tertiary);
+        ui.painter().galley(pos2(inner.left(), wordmark.bottom() + space::SCALE_8), version, neutral.text_tertiary);
 
         // Cards and the drop zone, anchored to the bottom of the panel.
         let drop = Rect::from_min_size(pos2(inner.left(), inner.bottom() - START_DROP_H), vec2(inner.width(), START_DROP_H));
@@ -331,17 +329,18 @@ impl StartScreen {
     /// The recent projects panel: title and count, the rows, then the footer
     /// hint line under a hairline.
     fn show_recent(&mut self, ui: &mut egui::Ui, rect: Rect, entries: &[RecentEntry], opened: &mut Option<Editor>) {
+        let neutral = crate::ui::neutrals(ui.ctx());
         paint_panel(ui, rect);
         let pad = space::SCALE_24;
         let inner = rect.shrink(pad);
 
         // Header: title left, "Clear missing" and the count right.
         let header = Rect::from_min_size(inner.min, vec2(inner.width(), START_HEADER_H));
-        let title = ui.painter().layout_no_wrap("Recent projects".to_owned(), fonts::semibold(START_CARD_TITLE_SIZE), color::TEXT_PRIMARY);
-        ui.painter().galley(pos2(header.left(), header.center().y - title.size().y / 2.0), title, color::TEXT_PRIMARY);
-        let count = ui.painter().layout_no_wrap(format!("{} of 10", entries.len()), fonts::mono(typography::VALUE_SIZE), color::TEXT_TERTIARY);
+        let title = ui.painter().layout_no_wrap("Recent projects".to_owned(), fonts::semibold(START_CARD_TITLE_SIZE), neutral.text_primary);
+        ui.painter().galley(pos2(header.left(), header.center().y - title.size().y / 2.0), title, neutral.text_primary);
+        let count = ui.painter().layout_no_wrap(format!("{} of 10", entries.len()), fonts::mono(typography::VALUE_SIZE), neutral.text_tertiary);
         let count_left = header.right() - count.size().x;
-        ui.painter().galley(pos2(count_left, header.center().y - count.size().y / 2.0), count, color::TEXT_TERTIARY);
+        ui.painter().galley(pos2(count_left, header.center().y - count.size().y / 2.0), count, neutral.text_tertiary);
         if entries.iter().any(|e| !e.exists()) {
             let right = count_left - space::SCALE_12;
             if self.clear_missing_link(ui, header, right).clicked() {
@@ -353,17 +352,21 @@ impl StartScreen {
         // Footer: a hairline across the panel and the key hints under it.
         let footer_h = START_HEADER_H * 2.0;
         let line_y = rect.bottom() - footer_h;
-        ui.painter().rect_filled(Rect::from_min_max(pos2(rect.left(), line_y), pos2(rect.right(), line_y + HAIRLINE)), 0.0, color::STROKE_HAIRLINE);
-        let hint = ui.painter().layout_no_wrap(footer_hint(!entries.is_empty()).to_owned(), fonts::medium(typography::CAPTION_SIZE), color::TEXT_TERTIARY);
-        let hint_y = line_y + (footer_h - hint.size().y) / 2.0;
-        ui.painter().galley(pos2(inner.left(), hint_y), hint, color::TEXT_TERTIARY);
+        ui.painter().rect_filled(Rect::from_min_max(pos2(rect.left(), line_y), pos2(rect.right(), line_y + HAIRLINE)), 0.0, neutral.stroke_hairline);
+        let mut hint_x = inner.left();
+        for text in footer_hints(!entries.is_empty()) {
+            let hint = ui.painter().layout_no_wrap((*text).to_owned(), fonts::medium(typography::CAPTION_SIZE), neutral.text_tertiary);
+            let hint_pos = pos2(hint_x, line_y + (footer_h - hint.size().y) / 2.0);
+            hint_x += hint.size().x + FOOTER_HINT_GAP;
+            ui.painter().galley(hint_pos, hint, neutral.text_tertiary);
+        }
 
         // The rows, in a scroll area between the header and the footer.
         let list = Rect::from_min_max(pos2(inner.left(), header.bottom() + space::SCALE_12), pos2(inner.right(), line_y - space::SCALE_8));
         let mut list_ui = ui.new_child(UiBuilder::new().max_rect(list));
         if entries.is_empty() {
-            let text = ui.painter().layout_no_wrap("No recent projects yet".to_owned(), fonts::medium(typography::CAPTION_SIZE), color::TEXT_TERTIARY);
-            ui.painter().galley(pos2(list.left(), list.top()), text, color::TEXT_TERTIARY);
+            let text = ui.painter().layout_no_wrap("No recent projects yet".to_owned(), fonts::medium(typography::CAPTION_SIZE), neutral.text_tertiary);
+            ui.painter().galley(pos2(list.left(), list.top()), text, neutral.text_tertiary);
             return;
         }
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut list_ui, |ui| {
@@ -376,10 +379,11 @@ impl StartScreen {
 
     /// The "Clear missing" text link in the header, right edge at `right`.
     fn clear_missing_link(&self, ui: &egui::Ui, header: Rect, right: f32) -> egui::Response {
-        let galley = ui.painter().layout_no_wrap("Clear missing".to_owned(), fonts::medium(typography::CAPTION_SIZE), color::TEXT_SECONDARY);
+        let neutral = crate::ui::neutrals(ui.ctx());
+        let galley = ui.painter().layout_no_wrap("Clear missing".to_owned(), fonts::medium(typography::CAPTION_SIZE), neutral.text_secondary);
         let rect = Rect::from_min_size(pos2(right - galley.size().x, header.center().y - galley.size().y / 2.0), galley.size());
         let response = ui.interact(rect, ui.id().with("start_clear_missing"), Sense::click());
-        let tint = if response.hovered() { color::TEXT_PRIMARY } else { color::TEXT_SECONDARY };
+        let tint = if response.hovered() { neutral.text_primary } else { neutral.text_secondary };
         ui.painter().galley(rect.min, galley, tint);
         response.on_hover_cursor(egui::CursorIcon::PointingHand)
     }
@@ -389,6 +393,7 @@ impl StartScreen {
     /// on hover or selection, the remove button. Clicking the row opens the
     /// project.
     fn show_row(&mut self, ui: &mut egui::Ui, index: usize, entry: &RecentEntry, opened: &mut Option<Editor>) {
+        let neutral = crate::ui::neutrals(ui.ctx());
         let selected = self.sel == Some(index);
         let exists = entry.exists();
         let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), START_ROW_H), Sense::click());
@@ -410,16 +415,16 @@ impl StartScreen {
             let accent = ui_kit::Theme::get(ui.ctx()).accent;
             let radius = CornerRadius::from(START_ROW_RADIUS);
             if selected {
-                ui.painter().rect_filled(rect, radius, color::BG_ROW_SELECTED);
+                ui.painter().rect_filled(rect, radius, neutral.bg_row_selected);
             } else if hovered {
-                ui.painter().rect_filled(rect, radius, color::BG_GROUP);
+                ui.painter().rect_filled(rect, radius, neutral.bg_group);
             }
             // Tile.
             let tile = Rect::from_center_size(pos2(rect.left() + space::SCALE_10 + START_TILE / 2.0, rect.center().y), Vec2::splat(START_TILE));
             let (tile_fill, glyph_color) = match (selected, exists) {
                 (true, _) => (accent.tint, accent.accent),
-                (false, true) => (color::BG_CONTROL, color::TEXT_TERTIARY),
-                (false, false) => (color::BG_CONTROL, color::TEXT_DISABLED),
+                (false, true) => (neutral.bg_control, neutral.text_tertiary),
+                (false, false) => (neutral.bg_control, neutral.text_disabled),
             };
             ui.painter().rect_filled(tile, CornerRadius::from(radius::GROUP), tile_fill);
             let glyph = ui.painter().layout_no_wrap(ui_kit::icons::regular::WAVEFORM.to_owned(), fonts::icon_regular(START_ICON_SIZE), glyph_color);
@@ -427,7 +432,7 @@ impl StartScreen {
 
             // Date column, right of the text and left of the button slot.
             let (date_text, date_color) = if exists {
-                (format_last_opened(entry.last_opened).unwrap_or_default(), color::TEXT_TERTIARY)
+                (format_last_opened(entry.last_opened).unwrap_or_default(), neutral.text_tertiary)
             } else {
                 ("Missing".to_owned(), color::SEM_RECORD)
             };
@@ -438,24 +443,24 @@ impl StartScreen {
             // Name over the folder path, both limited to the text column.
             let text_left = tile.right() + space::SCALE_12;
             let text_w = (date_left - space::SCALE_12 - text_left).max(0.0);
-            let name_color = if exists { color::TEXT_PRIMARY } else { color::TEXT_TERTIARY };
+            let name_color = if exists { neutral.text_primary } else { neutral.text_tertiary };
             let name = ui.painter().layout_no_wrap(entry.name.clone(), fonts::semibold(typography::BODY_SIZE), name_color);
             let path_font = fonts::mono(typography::MICRO_SIZE);
             let path_text = middle_truncate(ui.painter(), &entry.root.display().to_string(), &path_font, text_w);
-            let path = ui.painter().layout_no_wrap(path_text, path_font, color::TEXT_TERTIARY);
+            let path = ui.painter().layout_no_wrap(path_text, path_font, neutral.text_tertiary);
             let block_h = name.size().y + space::SCALE_2 + path.size().y;
             let name_y = rect.center().y - block_h / 2.0;
             let path_y = name_y + name.size().y + space::SCALE_2;
             let text_clip = Rect::from_min_max(pos2(text_left, rect.top()), pos2(text_left + text_w, rect.bottom()));
             ui.painter().with_clip_rect(text_clip).galley(pos2(text_left, name_y), name, name_color);
-            ui.painter().galley(pos2(text_left, path_y), path, color::TEXT_TERTIARY);
+            ui.painter().galley(pos2(text_left, path_y), path, neutral.text_tertiary);
 
             if let Some(remove) = &remove {
                 let hot = remove.hovered();
                 if hot {
-                    ui.painter().circle_filled(remove_rect.center(), side / 2.0, color::BG_HOVER);
+                    ui.painter().circle_filled(remove_rect.center(), side / 2.0, neutral.bg_hover);
                 }
-                let tint = if hot { color::TEXT_PRIMARY } else { color::TEXT_SECONDARY };
+                let tint = if hot { neutral.text_primary } else { neutral.text_secondary };
                 let x = ui.painter().layout_no_wrap(ui_kit::icons::regular::X.to_owned(), fonts::icon_regular(typography::BODY_SIZE), tint);
                 ui.painter().galley(remove_rect.center() - x.size() / 2.0, x, tint);
             }
@@ -587,17 +592,18 @@ fn valid_drop_hover(hovered: &[egui::HoveredFile]) -> bool {
     hovered.first().and_then(|file| file.path.as_deref()).is_some_and(is_project_path)
 }
 
-/// The footer hint line: only keys that work. Up, Down, Enter and Delete act
-/// on the selected recent row, so they are listed only while rows exist.
-fn footer_hint(has_rows: bool) -> &'static str {
-    if has_rows { "Up and Down select \u{b7} Enter opens \u{b7} Delete removes" } else { "Ctrl+N new project \u{b7} Ctrl+O open project" }
+/// The footer hints: only keys that work. Up, Down, Enter and Delete act on
+/// the selected recent row, so they are listed only while rows exist.
+fn footer_hints(has_rows: bool) -> &'static [&'static str] {
+    if has_rows { &["Up and Down select", "Enter opens", "Delete removes"] } else { &["Ctrl+N new project", "Ctrl+O open project"] }
 }
 
 /// A panel: `bg.panel` fill with a hairline rim, radius `radius.panel`.
 fn paint_panel(ui: &egui::Ui, rect: Rect) {
+    let neutral = crate::ui::neutrals(ui.ctx());
     let rounding = CornerRadius::from(radius::PANEL);
-    ui.painter().rect_filled(rect, rounding, color::BG_PANEL);
-    ui.painter().rect_stroke(rect, rounding, Stroke::new(HAIRLINE, color::STROKE_HAIRLINE), StrokeKind::Inside);
+    ui.painter().rect_filled(rect, rounding, neutral.bg_panel);
+    ui.painter().rect_stroke(rect, rounding, Stroke::new(HAIRLINE, neutral.stroke_hairline), StrokeKind::Inside);
 }
 
 /// One action card's content.
@@ -621,6 +627,7 @@ struct Card<'a> {
 /// `accent.on` text; the other card uses `bg.group` with a hairline rim and
 /// `bg.hover` on hover.
 fn action_card(ui: &mut egui::Ui, rect: Rect, card: &Card<'_>) -> egui::Response {
+    let neutral = crate::ui::neutrals(ui.ctx());
     let response = ui.interact(rect, ui.id().with(card.id), Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, card.title));
     let accent = ui_kit::Theme::get(ui.ctx()).accent;
@@ -635,12 +642,12 @@ fn action_card(ui: &mut egui::Ui, rect: Rect, card: &Card<'_>) -> egui::Response
         };
         (fill, accent.on, accent.on.gamma_multiply(0.7), accent.on.gamma_multiply(0.14), accent.on)
     } else {
-        let fill = if response.hovered() { color::BG_HOVER } else { color::BG_GROUP };
-        (fill, color::TEXT_PRIMARY, color::TEXT_TERTIARY, color::BG_HOVER, color::TEXT_SECONDARY)
+        let fill = if response.hovered() { neutral.bg_hover } else { neutral.bg_group };
+        (fill, neutral.text_primary, neutral.text_tertiary, neutral.bg_hover, neutral.text_secondary)
     };
     ui.painter().rect_filled(rect, rounding, fill);
     if !card.primary {
-        ui.painter().rect_stroke(rect, rounding, Stroke::new(HAIRLINE, color::STROKE_HAIRLINE), StrokeKind::Inside);
+        ui.painter().rect_stroke(rect, rounding, Stroke::new(HAIRLINE, neutral.stroke_hairline), StrokeKind::Inside);
     }
     let tile = Rect::from_min_size(pos2(rect.left() + START_CARD_PAD.x, rect.center().y - START_CARD_TILE / 2.0), Vec2::splat(START_CARD_TILE));
     ui.painter().rect_filled(tile, CornerRadius::from(radius::GROUP), tile_fill);
@@ -670,8 +677,9 @@ fn action_card(ui: &mut egui::Ui, rect: Rect, card: &Card<'_>) -> egui::Response
 /// or the last open error in its place. The rim turns accent while a valid
 /// drop hovers.
 fn paint_drop_zone(ui: &egui::Ui, rect: Rect, hovering: bool, error: Option<&str>) {
+    let neutral = crate::ui::neutrals(ui.ctx());
     let accent = ui_kit::Theme::get(ui.ctx()).accent.accent;
-    let rim = if hovering { accent } else { color::STROKE_SEPARATOR_STRONG };
+    let rim = if hovering { accent } else { neutral.stroke_separator_strong };
     let outline = rounded_rect_path(rect.shrink(START_DROP_STROKE / 2.0), START_DROP_RADIUS);
     ui.painter().extend(egui::Shape::dashed_line(&outline, Stroke::new(START_DROP_STROKE, rim), START_DASH, START_DASH_GAP));
 
@@ -688,7 +696,7 @@ fn paint_drop_zone(ui: &egui::Ui, rect: Rect, hovering: bool, error: Option<&str
         ui.painter().galley(rect.center() - galley.size() / 2.0, galley, color::SEM_RECORD);
         return;
     }
-    let tint = if hovering { color::TEXT_SECONDARY } else { color::TEXT_TERTIARY };
+    let tint = if hovering { neutral.text_secondary } else { neutral.text_tertiary };
     let icon = ui.painter().layout_no_wrap(ui_kit::icons::regular::UPLOAD_SIMPLE.to_owned(), fonts::icon_regular(START_ICON_SIZE), tint);
     let hint = ui.painter().layout_no_wrap("Drop a project folder or project.json here".to_owned(), font, tint);
     let gap = space::SCALE_6;
@@ -751,12 +759,13 @@ fn band_peaks(seed: u32, columns: usize) -> Vec<(f32, f32)> {
 /// opacity and the whole band at 55% again. Painted once per frame; nothing
 /// animates and nothing asks for a repaint.
 fn paint_band(ui: &egui::Ui, rect: Rect) {
+    let neutral = crate::ui::neutrals(ui.ctx());
     let accent = ui_kit::Theme::get(ui.ctx()).accent.accent;
     let layer = START_BAND_ALPHA * START_BAND_ALPHA;
     let columns = (rect.width() / BAND_COLUMN_W).max(2.0) as usize;
     let painter = ui.painter().with_clip_rect(rect);
     let front = rect.shrink2(vec2(0.0, rect.height() * 0.2));
-    ui_kit::widgets::timeline::paint_waveform(&painter, rect, &band_peaks(BAND_SEEDS[0], columns), color::BG_HOVER.gamma_multiply(layer));
+    ui_kit::widgets::timeline::paint_waveform(&painter, rect, &band_peaks(BAND_SEEDS[0], columns), neutral.bg_hover.gamma_multiply(layer));
     ui_kit::widgets::timeline::paint_waveform(&painter, front, &band_peaks(BAND_SEEDS[1], columns), accent.gamma_multiply(layer));
 }
 
@@ -764,7 +773,8 @@ fn paint_band(ui: &egui::Ui, rect: Rect) {
 /// the start and the end of a folder path stay readable. Text that fits is
 /// returned unchanged.
 fn middle_truncate(painter: &egui::Painter, text: &str, font: &egui::FontId, max_width: f32) -> String {
-    let width = |s: &str| painter.layout_no_wrap(s.to_owned(), font.clone(), color::TEXT_TERTIARY).size().x;
+    let neutral = crate::ui::neutrals(painter.ctx());
+    let width = |s: &str| painter.layout_no_wrap(s.to_owned(), font.clone(), neutral.text_tertiary).size().x;
     if width(text) <= max_width {
         return text.to_owned();
     }
@@ -997,10 +1007,14 @@ mod tests {
         let out = rig.frame();
         let version = format!("v{}", env!("CARGO_PKG_VERSION"));
         assert!(out.text_rect(&version).is_some(), "the version from Cargo");
-        let name = out.text_rect(crate::app::APP_SHORT_NAME).expect("the app name");
-        let mark_left = name.left() - space::SCALE_12 - START_MARK;
+        let images = out.images();
+        assert_eq!(images.len(), 1, "the wordmark is the start screen's only image: {images:?}");
+        let wordmark = images[0];
         // 1280 wide: content is 1120 wide, starts at x 80; the hero pads 24.
-        assert!((mark_left - 104.0).abs() <= 1.0, "the mark sits in the hero's padding, at {mark_left}");
+        assert!((wordmark.left() - 104.0).abs() <= 1.0, "the wordmark sits in the hero's padding, at {}", wordmark.left());
+        assert!((wordmark.height() - START_WORDMARK_H).abs() <= 1.0, "{wordmark:?}");
+        assert!(wordmark.right() <= 500.0 - space::SCALE_24, "the wordmark stays inside the hero: {wordmark:?}");
+        assert!(out.text_rect(crate::app::APP_SHORT_NAME).is_none(), "the lockup replaces the name as text");
         let title = out.text_rect("Recent projects").expect("the recent title");
         // Hero 80..500, 16 gap, recent from 516, padding 24.
         assert!((title.left() - 540.0).abs() <= 1.0, "the recent panel starts 16 after the 420 hero, title at {}", title.left());
@@ -1009,17 +1023,28 @@ mod tests {
         }
     }
 
+    /// Every hint is painted on its own, left to right on one line, with the
+    /// item gap between neighbours.
+    fn assert_each_hint_is_its_own_item(out: &crate::ui::test_util::Out, hints: &[&str]) {
+        let rects: Vec<Rect> = hints.iter().map(|hint| out.text_rect(hint).unwrap_or_else(|| panic!("no hint {hint}"))).collect();
+        for pair in rects.windows(2) {
+            assert!((pair[1].left() - pair[0].right() - FOOTER_HINT_GAP).abs() < 1.0, "{pair:?}");
+            assert!((pair[1].center().y - pair[0].center().y).abs() < 1.0, "one line: {pair:?}");
+        }
+    }
+
     #[test]
     fn the_footer_hint_lists_only_keys_that_work() {
         let mut rig = Rig::new(&["alpha"]);
         let _ = rig.frame();
         let out = rig.frame();
-        assert!(out.text_rect(footer_hint(true)).is_some());
-        assert!(footer_hint(true).contains("Delete") && footer_hint(true).contains("Enter"));
-        assert!(!footer_hint(false).contains("Delete") && !footer_hint(false).contains("Enter"), "no row keys while the list is empty");
+        assert_each_hint_is_its_own_item(&out, footer_hints(true));
+        let names = |has_rows: bool, key: &str| footer_hints(has_rows).iter().any(|hint| hint.contains(key));
+        assert!(names(true, "Delete") && names(true, "Enter"));
+        assert!(!names(false, "Delete") && !names(false, "Enter"), "no row keys while the list is empty");
         let mut empty = Rig::new(&[]);
         let _ = empty.frame();
-        assert!(empty.frame().text_rect(footer_hint(false)).is_some());
+        assert_each_hint_is_its_own_item(&empty.frame(), footer_hints(false));
     }
 
     #[test]

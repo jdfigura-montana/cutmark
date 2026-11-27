@@ -17,12 +17,14 @@ pub mod inspector;
 pub mod list_row;
 pub mod main_toolbar;
 pub mod menu_bar;
+pub mod menu_item;
 pub mod panel;
 pub mod primary_button;
 pub mod scroll_thumb;
 pub mod search_field;
 pub mod segmented;
 pub mod slider;
+pub mod stage;
 pub mod status_bar;
 pub mod switch;
 pub mod text_field;
@@ -47,13 +49,18 @@ pub use inspector::{inspector_group, inspector_header, inspector_row};
 pub use list_row::list_row;
 pub use main_toolbar::{MainToolbar, main_toolbar};
 pub use menu_bar::{Menu, MenuBarOutput, menu_bar};
-pub use panel::panel;
+pub use menu_item::{MenuItem, menu_check_slot};
+pub use panel::{panel, side_panel};
 pub use primary_button::primary_button;
 pub use scroll_thumb::scroll_thumb;
 pub use search_field::search_field;
 pub use segmented::{segmented, segmented_filled};
 pub use slider::{SliderKind, slider};
-pub use status_bar::status_bar;
+pub use stage::{
+    PrimaryButton, STAGE_BAR_BUTTON_DIAMETER, STAGE_PRIMARY_OVERHANG, StageResponse, TimecodeSize, bar_button, stage_panel, timecode_large, timecode_sized,
+    timecode_width,
+};
+pub use status_bar::{STATUS_BAR_CENTER_GAP, STATUS_BAR_GAP_HEIGHT, status_bar, status_bar_with_gap};
 pub use switch::switch;
 pub use text_field::text_field;
 pub use timeline::{

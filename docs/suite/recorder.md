@@ -1,4 +1,4 @@
-# Cutmark Recorder: v1.2 Spec
+# CutMark Recorder: v1.2 Spec
 
 Oct 26, 2026 · @JD
 
@@ -14,7 +14,7 @@ Oct 26, 2026 · @JD
 8. One file per take. No rollover.
 9. The build follows the S0 workspace rules (CLAUDE.md, strict lints in new crates, `scripts\check.ps1`, static CRT, Inno Setup installer).
 
-**Changes from v1** (to match the Cutmark Creator Suite overview):
+**Changes from v1** (to match the CutMark Creator Suite overview):
 
 1. Hardware encoding on AMD, Nvidia and Intel, with SVT-AV1 as the software fallback.
 2. Vendor-neutral rate control and profiles.
@@ -25,7 +25,7 @@ Oct 26, 2026 · @JD
 
 ## Overview
 
-The Cutmark Creator Suite's Windows desktop recorder: record only, no streaming, no scenes, no plugins. It records the screen with hardware AV1 on AMD, Nvidia or Intel, a chroma-keyed webcam, multiple audio tracks, and marks that drive editing.
+The CutMark Creator Suite's Windows desktop recorder: record only, no streaming, no scenes, no plugins. It records the screen with hardware AV1 on AMD, Nvidia or Intel, a chroma-keyed webcam, multiple audio tracks, and marks that drive editing.
 
 **Goals**
 
@@ -45,7 +45,7 @@ The Cutmark Creator Suite's Windows desktop recorder: record only, no streaming,
 
 ## Platform and tech stack
 
-Rust on Windows 11, inside the Cutmark workspace. Capture and encoding live in shared crates so TuteTool can reuse them; the app never touches them except through its engine module.
+Rust on Windows 11, inside the CutMark workspace. Capture and encoding live in shared crates so TuteTool can reuse them; the app never touches them except through its engine module.
 
 - **Target:** Windows 11 with any D3D11 GPU. Developed on an RX 7700 XT; tested on Nvidia and Intel per the suite test rig.
 - **Code layout:**
@@ -387,11 +387,20 @@ Nine phases, each ending in a test you can run yourself; each phase becomes one 
 | 8 | Webcam ISO | MF capture, camera control lock, own encoder session, cam offset | Cam file and main video align within 1 frame |
 | 9 | Compositor and key | Chroma key shader, matte view, garbage matte, backgrounds, PiP and cam-only layouts, output scaling | 1440p60 with keyed PiP cam records 30 min with 0 dropped frames on AMD, and 10 min on Nvidia and Intel |
 | 13 | UI restyle (done Nov 24, 2026, tag `recorder-p13`) | `ui-kit` chrome and menu bar, Setup / Record / Review modes, tool strip, Sources panel, Settings dialog, deck, Review with playback, style lint. Spec: docs/suite/recorder-phase-13-ui.md | Done |
+| 9e | Composite mode (done Nov 24, 2026, tag `recorder-p9e`) | Baked or Clean PiP, `composite` block in session.json. Spec: docs/suite/recorder-composite-mode.md | Done |
+| 10 | Per-app audio (done Nov 27, 2026, tag `recorder-p10`) | Track source Device, App or Desktop except an app, through WASAPI process loopback; attach on launch. Spec: docs/suite/recorder-per-app-audio.md | Done |
+| 12 | Replay buffer (done Nov 27, 2026, tag `recorder-p12`) | Buffer on/off and Save replay (Ctrl+Alt+B, Ctrl+Alt+F9), 30 to 120 s, runs during recordings, forced keyframes. Spec: docs/suite/recorder-replay-buffer.md | Done |
+| F | Output folders (done Nov 27, 2026) | Recordings and replays folders in Settings and the File menu, first-launch prompt, folder checks, Review Takes and Replays. Spec: docs/suite/recorder-output-folders.md | Done |
+| I | Installer (done Nov 27, 2026, 0.9.0) | Inno Setup, `apps/recorder/scripts/build-installer.ps1`, installs to Program Files\CutMark\Recorder, Windows 11 only | Done |
+| SD | Stream Deck (done Nov 27, 2026) | cutmark-remote server, Recorder keys, gain dial, two bundled profiles in the suite plugin 1.2.0.0. Spec: docs/suite/recorder-stream-deck.md | Done |
+| 11 | Events sidecar (open; to be merged with the Cursor Track spec) | Cursor, clicks, key chords and focus changes on the marks clock, privacy settings | Open |
+| H | Help (open) | Recorder help topics, shortcut sheet and first-run tour on the S1 Help engine | Open |
+| CD | Capture Device Amendment (open) | Capture cards as a source, overlay layouts, capture ISO | Open |
+| 4b | Other GPUs (open) | NVENC, QSV and SVT-AV1 backends tested, 10 min keyed PiP soak on Nvidia and Intel | Open |
 
 ## Deferred
 
 - Premiere marker export (XML), if you switch editors.
-- Per-application audio capture.
 - 10-bit AV1 and HDR.
 - Recording two monitors at once.
 - Click highlights and keystroke overlays.
@@ -400,6 +409,6 @@ Nine phases, each ending in a test you can run yourself; each phase becomes one 
 
 ## Open questions
 
-- [ ] App name inside the suite ("Cutmark Recorder" for now).
+- [ ] App name inside the suite ("CutMark Recorder" for now).
 - [ ] Confirm LUXEA Pro 8 plays the mixdown stream first and reads MKV chapters.
 - [ ] Confirm the D3D11-to-QSV frame path on real Intel hardware during phase 4.

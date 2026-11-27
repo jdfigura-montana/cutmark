@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use egui::{Color32, CornerRadius, Galley, Key, Pos2, Rect, Response, Sense, Ui, WidgetInfo, WidgetType, vec2};
 
+use crate::Theme;
 use crate::fonts;
-use crate::tokens::{color, radius, space, typography};
+use crate::tokens::{radius, space, typography};
 use crate::widgets::focus_ring;
 
 /// The tool strip cell height (spec "Components": "Tool strip" 52 tall; no
@@ -17,16 +18,19 @@ const CELL_PADDING: f32 = space::SCALE_12;
 const CELL_GAP: f32 = space::SCALE_2;
 /// Gap between a cell's icon and its label (spec "Spacing and sizes": spacing 4).
 const ICON_LABEL_GAP: f32 = space::SCALE_4;
+/// Height of the accent line along the selected cell's bottom edge (spec: E3
+/// amendment, "4. No generic tells").
+const SELECTED_LINE_HEIGHT: f32 = 2.0;
 /// The hover fill is `bg.hover` at half strength (spec row "Tool strip"
 /// hover; not a token, so a named constant).
 const HOVER_STRENGTH: f32 = 0.5;
 
 /// The tool strip: equal-width cells, each a phosphor regular line icon over
 /// a `type.micro` label, 52 tall, `radius.segment` rounding (the 9 standalone
-/// cell radius the list row also uses). The selected cell fills `bg.hover`
-/// and reads `text.primary`; the others read `text.secondary` and fill
-/// `bg.hover` at half strength when hovered. Arrow keys move the selection
-/// when a cell has the keyboard focus.
+/// cell radius the list row also uses). The selected cell fills `bg.control`,
+/// reads `text.primary` and has a 2px accent line along its bottom edge; the
+/// others read `text.secondary` and fill `bg.hover` at half strength when
+/// hovered. Arrow keys move the selection when a cell has the keyboard focus.
 ///
 /// The cells' widget ids derive from their labels, so the labels must be
 /// unique within one strip and two strips with identical labels must not
@@ -42,6 +46,8 @@ const HOVER_STRENGTH: f32 = 0.5;
 /// ]);
 /// ```
 pub fn tool_strip<T: PartialEq + Copy>(ui: &mut Ui, selected: &mut T, items: &[(T, &str /*icon*/, &str /*label*/)]) -> Response {
+    let theme = Theme::get(ui.ctx());
+    let neutrals = theme.neutrals;
     let selected_index = items.iter().position(|(value, _, _)| *value == *selected);
     let icon_font = fonts::icon_regular(typography::HEADLINE_SIZE);
     let label_font = fonts::medium(typography::MICRO_SIZE);
@@ -85,11 +91,15 @@ pub fn tool_strip<T: PartialEq + Copy>(ui: &mut Ui, selected: &mut T, items: &[(
         }
         if ui.is_rect_visible(cell_rect) {
             if is_selected {
-                ui.painter().rect_filled(cell_rect, radius::SEGMENT, color::BG_HOVER);
+                ui.painter().rect_filled(cell_rect, radius::SEGMENT, neutrals.bg_control);
+                // The line is the bottom strip of the cell shape in the
+                // accent, so it follows the rounded corners.
+                let line = Rect::from_min_max(Pos2::new(cell_rect.left(), cell_rect.bottom() - SELECTED_LINE_HEIGHT), cell_rect.max);
+                ui.painter().with_clip_rect(line).rect_filled(cell_rect, radius::SEGMENT, theme.accent.accent);
             } else if hovered {
-                ui.painter().rect_filled(cell_rect, radius::SEGMENT, color::BG_HOVER.gamma_multiply(HOVER_STRENGTH));
+                ui.painter().rect_filled(cell_rect, radius::SEGMENT, neutrals.bg_hover.gamma_multiply(HOVER_STRENGTH));
             }
-            let text = if is_selected { color::TEXT_PRIMARY } else { color::TEXT_SECONDARY };
+            let text = if is_selected { neutrals.text_primary } else { neutrals.text_secondary };
             let content_height = icon_galley.size().y + ICON_LABEL_GAP + label_galley.size().y;
             let content_top = cell_rect.top() + (CELL_HEIGHT - content_height) / 2.0;
             let center_x = cell_rect.center().x;

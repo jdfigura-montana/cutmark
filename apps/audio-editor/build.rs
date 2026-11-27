@@ -8,7 +8,10 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
         let mut res = winresource::WindowsResource::new();
-        res.set_icon("assets/icon/app.ico");
+        let icon = "../../crates/ui-kit/assets/brand/icon-audio.ico";
+        println!("cargo:rerun-if-changed=build.rs");
+        println!("cargo:rerun-if-changed={icon}");
+        res.set_icon(icon);
         res.set("ProductName", "CutMark Audio Editor");
         res.set("FileDescription", "CutMark Audio Editor");
         res.set("FileVersion", &version);

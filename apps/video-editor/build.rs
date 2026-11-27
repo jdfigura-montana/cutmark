@@ -16,9 +16,9 @@ fn main() {
 mod windows {
     pub fn embed_resources() {
         let mut res = winresource::WindowsResource::new();
-        res.set("ProductName", "Cutmark Video")
-            .set("FileDescription", "Cutmark Video video editor")
-            .set("LegalCopyright", "Copyright (c) Cutmark. All rights reserved.")
+        res.set("ProductName", "CutMark Video")
+            .set("FileDescription", "CutMark Video video editor")
+            .set("LegalCopyright", "Copyright (c) CutMark. All rights reserved.")
             .set("OriginalFilename", "cutmark-video.exe")
             .set("InternalName", "cutmark-video");
         if let Err(e) = res.compile() {

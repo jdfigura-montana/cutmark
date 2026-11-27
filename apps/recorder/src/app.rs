@@ -1,6 +1,7 @@
 //! The Recorder window: draws what the engine controller publishes and sends it commands and settings.
 
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -9,8 +10,10 @@ use capture::{AudioDevice, CompositeInput, Preview};
 use ui_kit::tokens::{color, size, space, typography};
 
 use crate::api::{ApiServer, token};
+use crate::bar_ui;
 use crate::compositor::{ComposeConfig, CompositorThread};
 use crate::config::{self, CompositeMode, Mode, ModeState, PanelWidths, Settings};
+use crate::data_text;
 use crate::engine::bus::{BusSender, Command, CommandKind, MarkKind};
 use crate::engine::controller::{Controller, ControllerState, Phase, lock};
 use crate::hotkeys::Hotkeys;
@@ -21,19 +24,22 @@ use crate::platform;
 use crate::playback::Playback;
 use crate::preflight_ui::PreflightSection;
 use crate::preview_ui::PreviewView;
-use crate::profile_ui::{self, ProfileOutcome, ProfileSection};
+use crate::profile_ui::{self, Control, Lock, ProfileOutcome, ProfileSection};
 use crate::profiles::ProfileStore;
 use crate::record_ui;
 use crate::recovery::{self, RecoveryReport};
-use crate::review;
+use crate::remote::{self, Remote};
+use crate::replay_ui::{self, Notice};
+use crate::review::bake::Capturing;
+use crate::review::{self, ReviewTarget, ReviewView};
 use crate::review_ui;
 use crate::settings_ui::{self, ApiUi, NextTake, Section, SettingsDialog};
 use crate::status_ui;
 use crate::tools_ui::{self, Tool};
-use crate::tracks_ui::{self, LiveTrackStats, TracksChanged};
+use crate::tracks_ui::{self, AppSources, LiveTrackStats, TracksChanged};
 
 /// The Recorder's own appearance file folder and default accent.
-pub const APPEARANCE: ui_kit::AppAppearance = ui_kit::AppAppearance::new("recorder", ui_kit::Preset::Teal);
+pub const APPEARANCE: ui_kit::AppAppearance = ui_kit::AppAppearance::RECORDER;
 use crate::tray::{Tray, TrayHandle, TrayState};
 use crate::webcam::WebcamHost;
 use crate::webcam_ui;
@@ -44,8 +50,8 @@ const METER_REFRESH: Duration = Duration::from_millis(33);
 /// How often the window looks for the recovery report until it has arrived.
 const RECOVERY_POLL: Duration = Duration::from_millis(250);
 
-/// Side of the app mark square at the left edge of the title bar.
-const APP_MARK: f32 = 14.0;
+/// How often the replays folder's free space is read while the replay buffer is on.
+const REPLAYS_FREE_REFRESH: Duration = Duration::from_secs(2);
 
 /// The 1px hairline stroke width.
 const HAIRLINE: f32 = 1.0;
@@ -58,7 +64,7 @@ const TOAST_BUTTON_HALF_HEIGHT: f32 = 14.0;
 const HEADER_PAD: f32 = 6.0;
 
 /// Width the center column keeps while the side columns give way (spec "Panels").
-const CENTER_MIN_W: f32 = 480.0;
+const CENTER_MIN_W: f32 = 400.0;
 
 /// Width of a column divider's accent line.
 const DIVIDER_LINE_W: f32 = 2.0;
@@ -80,6 +86,8 @@ pub struct RecorderApp {
     devices: Vec<AudioDevice>,
     /// The level meters of the running take.
     live_tracks: LiveTrackStats,
+    /// What the window keeps about app and desktop-except tracks.
+    app_sources: AppSources,
     /// Whether the track settings changed and are not saved yet.
     settings_dirty: bool,
     /// True when the window could not be excluded from screen capture.
@@ -90,6 +98,8 @@ pub struct RecorderApp {
     seen_settings_rev: u64,
     /// Whether a take was running on the previous frame, to clear the meters when it starts or ends.
     was_active: bool,
+    /// The press time of the newest mark command seen, so each press adds one Review mark.
+    seen_mark_press: i64,
     /// The live preview of the composite, or None while it is off or could not start.
     preview: Option<Preview>,
     /// Draws the preview picture.
@@ -122,6 +132,8 @@ pub struct RecorderApp {
     profile_section: ProfileSection,
     /// The profiles in memory: the one place the Profile and Webcam sections edit, with one debounced save.
     profile_store: ProfileStore,
+    /// The Layout tool's Screen group: the encoder check of the Tutorial preset.
+    screen_group: crate::screen_ui::ScreenGroup,
     /// The size of the captured monitor, which a profile with the Source output size records at.
     source_size: (u32, u32),
     /// The control API server, or None while it is off or could not start.
@@ -140,6 +152,10 @@ pub struct RecorderApp {
     api_port_edit: u16,
     /// Set once the window is closing, so the API is not started again.
     shutting_down: bool,
+    /// The Stream Deck remote control server, or None while it is off or could not start.
+    remote: Option<Remote>,
+    /// Whether the remote was last asked to run, so a refused start is not retried every frame.
+    remote_wanted: bool,
     /// The Pre-flight section: its button and the Keep files choice.
     preflight_section: PreflightSection,
     /// The measured height of the Sources panel's pre-flight card, from the previous frame.
@@ -152,14 +168,28 @@ pub struct RecorderApp {
     running_take: Option<String>,
     /// The Settings dialog: whether it is open and the section its right side shows.
     settings_dialog: SettingsDialog,
-    /// The Review scan: the project's takes grouped by day, newest first.
+    /// Which folder Review lists, remembered while the app runs.
+    review_view: ReviewView,
+    /// The Review scan of that folder: its takes grouped by day, newest first.
     review_days: Vec<review::Day>,
     /// The selected take's name in Review, remembered while the app runs.
     review_selected: Option<String>,
     /// Whether the Review scan must run again before the Review panels draw.
     review_dirty: bool,
-    /// The finished take the stop toast offers a Review action for, until the toast is gone.
-    review_take_pending: Option<String>,
+    /// The take the toast on screen offers a Review action for, until the toast is gone.
+    review_take_pending: Option<ReviewTarget>,
+    /// The file the toast on screen offers Show in folder for, until the toast is gone.
+    show_file_pending: Option<std::path::PathBuf>,
+    /// The toasts not shown yet, oldest first; each waits until the one before it is gone.
+    notices: VecDeque<Notice>,
+    /// Whether a toast was on screen on the previous frame.
+    toast_up: bool,
+    /// The number of the newest replay event already turned into a toast.
+    seen_replay_seq: u64,
+    /// The free space of the replays folder's drive, read every 2 seconds while the buffer is on.
+    replays_free: Option<u64>,
+    /// When the replays free space was last read, so the disk is not queried every frame.
+    replays_free_at: Option<Instant>,
     /// The Review take panel's editing state: the rename field and the delete dialog.
     take_panel: review_ui::TakePanelState,
     /// The Review playback of the selected take, closed when Review is left or a take starts.
@@ -176,6 +206,7 @@ impl RecorderApp {
     /// Applies the suite theme, excludes the window from capture, loads settings, starts the controller, the hotkeys and the tray icon.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         ui_kit::apply_for(&cc.egui_ctx, APPEARANCE);
+        data_text::apply(&cc.egui_ctx);
         let mut settings = config::load_or_init().unwrap_or_else(|err| {
             log::error!("could not load the Recorder settings, using the defaults: {err}");
             Settings::default()
@@ -199,7 +230,7 @@ impl RecorderApp {
         let listener_ctx = cc.egui_ctx.clone();
         let listener = Box::new(move |state: &ControllerState| {
             if let Some(handle) = listener_slot.get() {
-                handle.set_state(tray_state(state.phase));
+                handle.set_state(tray_state(state.phase, state.replay_on));
             }
             listener_ctx.request_repaint();
         });
@@ -238,11 +269,13 @@ impl RecorderApp {
             controller,
             devices,
             live_tracks: LiveTrackStats::default(),
+            app_sources: AppSources::default(),
             settings_dirty: false,
             capture_exclusion_failed,
             was_minimized: false,
             seen_settings_rev: 0,
             was_active: false,
+            seen_mark_press: 0,
             preview: None,
             preview_view: PreviewView::default(),
             preview_enabled: true,
@@ -259,6 +292,7 @@ impl RecorderApp {
             recovery: None,
             profile_section,
             profile_store,
+            screen_group: Default::default(),
             source_size,
             api: None,
             api_token,
@@ -268,16 +302,25 @@ impl RecorderApp {
             api_regenerate: false,
             api_port_edit,
             shutting_down: false,
+            remote: None,
+            remote_wanted: false,
             preflight_section: PreflightSection::default(),
             sources_card_height: 0.0,
             modes,
             was_running: false,
             running_take: None,
             settings_dialog: SettingsDialog::default(),
+            review_view: ReviewView::default(),
             review_days: Vec::new(),
             review_selected: None,
             review_dirty: true,
             review_take_pending: None,
+            show_file_pending: None,
+            notices: VecDeque::new(),
+            toast_up: false,
+            seen_replay_seq: 0,
+            replays_free: None,
+            replays_free_at: None,
             take_panel: review_ui::TakePanelState::default(),
             review_playback: None,
             review_playback_for: None,
@@ -286,7 +329,51 @@ impl RecorderApp {
         };
         app.sync_preview(&cc.egui_ctx);
         app.sync_api(&cc.egui_ctx);
+        app.sync_remote(&cc.egui_ctx);
         app
+    }
+
+    /// Starts or drops the Stream Deck remote so it matches the switch; it is dropped once the
+    /// window is closing.
+    ///
+    /// A start another Recorder already holds is logged and not retried until the switch is
+    /// turned off and on.
+    fn sync_remote(&mut self, ctx: &egui::Context) {
+        let wanted = self.settings.stream_deck && !self.shutting_down;
+        if wanted == self.remote_wanted {
+            return;
+        }
+        self.remote_wanted = wanted;
+        let repaint_ctx = ctx.clone();
+        self.remote = if wanted { Remote::start(Box::new(move || repaint_ctx.request_repaint())) } else { None };
+    }
+
+    /// Runs the waiting Stream Deck commands, then publishes the state.
+    fn poll_remote(&mut self, ctx: &egui::Context) {
+        let Some(remote) = self.remote.take() else { return };
+        let shared = self.controller.shared();
+        let mut state = lock(&shared);
+        // While the window is hidden no frame is drawn, so the mutes the hotkeys changed are
+        // taken in here before a gain change sends the settings back.
+        self.sync_from_controller(&mut state);
+        let bus = self.controller.sender();
+        while let Some(command) = remote.try_recv() {
+            let guards =
+                remote::Guards { phase: state.phase, replay_on: state.replay_on, profile_blocked: self.profile_section.blocked(), settings: &self.settings };
+            match remote::run(&command, &guards, &bus) {
+                Ok(None) => {}
+                Ok(Some(change)) => {
+                    if let Some(track) = self.settings.audio.tracks.get_mut(change.track) {
+                        track.gain_db = change.gain_db;
+                        // The same path the track's gain slider takes.
+                        self.on_tracks_changed(ctx, TracksChanged { settings: true, live: true, ..TracksChanged::default() });
+                    }
+                }
+                Err(refusal) => remote.reply(&command.id, &refusal),
+            }
+        }
+        remote.publish(remote::state_value(&state, &self.settings));
+        self.remote = Some(remote);
     }
 
     /// Makes a new token when asked, then starts, restarts or stops the control API so it matches the switch, the port and the token.
@@ -330,11 +417,19 @@ impl RecorderApp {
     /// and the "Starting is blocked" reason. Returns whether any row was drawn.
     fn banner_strip(&mut self, ui: &mut egui::Ui, state: &ControllerState) -> bool {
         let mut rows: Vec<BannerRow> = Vec::new();
+        let mut folder_error: Option<(String, RefusedFolder)> = None;
         if self.capture_exclusion_failed {
             rows.push(BannerRow::Warn("This window may appear in recordings".to_owned()));
         }
         if let Some(message) = &state.error {
-            rows.push(BannerRow::Error(format!("Recording error: {message}")));
+            // A folder refusal the controller answered a start with is its own banner with a
+            // Choose folder button (spec "Recorder output folders", Checks 1); every other
+            // error stays the plain red recording error.
+            if message.starts_with("Can't save to ") {
+                folder_error = Some((message.clone(), refusal_target(message, &self.settings)));
+            } else {
+                rows.push(BannerRow::Error(format!("Recording error: {message}")));
+            }
         }
         if let Some(notice) = &state.audio_notice {
             rows.push(BannerRow::Warn(notice.clone()));
@@ -360,22 +455,28 @@ impl RecorderApp {
         let recovered: Vec<String> = self.recovery.as_ref().map(|report| report.recovered.clone()).unwrap_or_default();
         let recovery_errors: Vec<String> =
             self.recovery.as_ref().map(|report| report.errors.iter().map(|error| format!("Marks recovery: {error}")).collect()).unwrap_or_default();
-        if rows.is_empty() && recovered.is_empty() && recovery_errors.is_empty() {
+        if rows.is_empty() && folder_error.is_none() && recovered.is_empty() && recovery_errors.is_empty() {
             return false;
         }
         for row in &rows {
             match row {
                 BannerRow::Warn(message) => {
-                    banner_row(ui, color::SEM_METER_WARN, message, None, false);
+                    banner_row(ui, color::SEM_METER_WARN, message, None, None, false);
                 }
                 BannerRow::Error(message) => {
-                    banner_row(ui, color::SEM_RECORD, message, None, false);
+                    banner_row(ui, color::SEM_RECORD, message, None, None, false);
                 }
             }
         }
+        if let Some((message, target)) = &folder_error {
+            let (_, choose, _, _) = banner_row(ui, color::SEM_RECORD, message, Some("Choose folder"), None, false);
+            if choose.is_some_and(|response| response.clicked()) {
+                self.choose_folder(*target);
+            }
+        }
         if !recovered.is_empty() {
-            let (_, details, dismiss) =
-                banner_row(ui, color::SEM_METER_WARN, &format!("Recovered marks for {} take(s)", recovered.len()), Some("Details"), true);
+            let (_, _, details, dismiss) =
+                banner_row(ui, color::SEM_METER_WARN, &format!("Recovered marks for {} take(s)", recovered.len()), None, Some("Details"), true);
             if let Some(details) = details {
                 egui::Popup::menu(&details).show(|ui| {
                     for name in &recovered {
@@ -390,7 +491,7 @@ impl RecorderApp {
         if !recovery_errors.is_empty() {
             let dismissable = recovered.is_empty();
             for message in &recovery_errors {
-                let (_, _, dismiss) = banner_row(ui, color::SEM_METER_WARN, message, None, dismissable);
+                let (_, _, _, dismiss) = banner_row(ui, color::SEM_METER_WARN, message, None, None, dismissable);
                 if dismissable && dismiss.is_some_and(|response| response.clicked()) {
                     self.recovery = None;
                 }
@@ -410,6 +511,42 @@ impl RecorderApp {
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => self.recovery_rx = None,
         }
+    }
+
+    /// Opens the folder picker for the folder a start refusal named and sends the picked folder
+    /// to the controller and the settings file.
+    fn choose_folder(&mut self, target: RefusedFolder) {
+        let title = match target {
+            RefusedFolder::Recordings => "Choose the recordings folder",
+            RefusedFolder::Replays => "Choose the replays folder",
+        };
+        if let Some(folder) = platform::pick_folder(title) {
+            match target {
+                RefusedFolder::Recordings => self.settings.root_folder = Some(folder),
+                RefusedFolder::Replays => self.settings.replays_root = Some(folder),
+            }
+            self.push_settings_if_changed();
+            self.save_settings();
+        }
+    }
+
+    /// The replays folder's free space while the buffer is on and replays go to another drive
+    /// than the recordings, read every 2 seconds (spec "Recorder output folders", status bar).
+    fn replays_free(&mut self, state: &ControllerState) -> Option<u64> {
+        if !state.replay_on {
+            return None;
+        }
+        let recordings = config::takes_root(&self.settings);
+        let replays = crate::takes::replays_folder(&self.settings);
+        if same_drive(&recordings, &replays) {
+            return None;
+        }
+        let now = Instant::now();
+        if self.replays_free_at.is_none_or(|at| now.duration_since(at) >= REPLAYS_FREE_REFRESH) {
+            self.replays_free = crate::engine::stats::free_space(&replays, 0);
+            self.replays_free_at = Some(now);
+        }
+        self.replays_free
     }
 
     /// The size of the composite: the active profile's output size, or the captured monitor's for the Source size.
@@ -473,7 +610,10 @@ impl RecorderApp {
         let Some(thread) = &self.compositor else { return };
         let handle = thread.handle();
         if let Some(profile) = self.profile_store.get(&self.settings.active_profile) {
-            let mut config = ComposeConfig::from_profile(profile, self.source_size, self.preview_monitor, self.preview_cursor);
+            // The preview captures the cursor as the take will. A recording then never starts on a leftover
+            // preview frame that has a cursor the take must not have.
+            let cursor = self.preview_cursor && profile.cursor == crate::config::CursorMode::Show;
+            let mut config = ComposeConfig::from_profile(profile, self.source_size, self.preview_monitor, cursor);
             config.matte = self.key_ui.matte;
             handle.set_config(config);
         }
@@ -521,6 +661,11 @@ impl RecorderApp {
             }
             self.settings_dirty = true;
         }
+        for notice in replay_ui::new_notices(state, &mut self.seen_replay_seq) {
+            // A saved replay is a new take for the Review list.
+            self.review_dirty |= notice.review.is_some();
+            self.notices.push_back(notice);
+        }
         let active = state.phase.has_take();
         if active != self.was_active {
             self.live_tracks.clear();
@@ -532,6 +677,7 @@ impl RecorderApp {
             }
             state.ui_seen_seq = state.stats_seq;
         }
+        self.app_sources.observe(&self.settings.audio.tracks, &state.idle_apps, active.then_some(&self.live_tracks));
     }
 
     /// Gives the controller the settings whenever they differ from what it last got, and marks them to be saved.
@@ -587,17 +733,17 @@ impl RecorderApp {
     /// Follows the controller phase (spec "Mode rules"): a take starting, countdown included,
     /// switches to Record and remembers the mode that was open; the take ending returns to it,
     /// shows the "takeNN saved" toast with its Review action, and flags the Review scan.
-    fn sync_mode(&mut self, state: &ControllerState, ctx: &egui::Context) {
+    fn sync_mode(&mut self, state: &ControllerState) {
         let running = state.phase != Phase::Idle;
         if running && !self.was_running {
             self.modes.start();
         } else if !running && self.was_running {
             self.modes.stop();
             if let Some(base_name) = self.running_take.take() {
-                ui_kit::toast(ctx, format!("{} saved", crate::profile_ui::take_label(&base_name)));
                 // The finished take joins the Review list, and the toast offers to open it there.
                 self.review_dirty = true;
-                self.review_take_pending = Some(base_name);
+                let text = format!("{} saved", crate::profile_ui::take_label(&base_name));
+                self.notices.push_back(Notice { text, review: Some(ReviewTarget { view: ReviewView::Takes, take: base_name }), show: None });
             }
         }
         self.running_take = state.take.as_ref().filter(|_| running).map(|take| take.base_name.clone());
@@ -630,57 +776,107 @@ impl RecorderApp {
         }
     }
 
-    /// Draws the stop toast's Review button beside the toast capsule and opens
+    /// Shows the next waiting toast once no other is on screen, with its Review action.
+    fn show_notices(&mut self, ctx: &egui::Context, running: bool) {
+        if !self.toast_up
+            && let Some(notice) = self.notices.pop_front()
+        {
+            ui_kit::toast(ctx, notice.text);
+            self.review_take_pending = notice.review;
+            self.show_file_pending = notice.show;
+        }
+        let shown = ui_kit::show_toasts(ctx);
+        self.toast_up = shown.is_some();
+        if !self.toast_up && !self.notices.is_empty() {
+            ctx.request_repaint();
+        }
+        self.toast_folder_action(ctx, shown.as_ref());
+        self.toast_review_action(ctx, shown, running);
+    }
+
+    /// Draws a toast's Show in folder button beside the capsule, where a Review button would be; no toast has both.
+    fn toast_folder_action(&mut self, ctx: &egui::Context, shown: Option<&egui::Response>) {
+        let (Some(file), Some(toast)) = (self.show_file_pending.as_deref(), shown) else {
+            // The toast is gone; the action goes with it.
+            if shown.is_none() {
+                self.show_file_pending = None;
+            }
+            return;
+        };
+        egui::Area::new(egui::Id::new("toast-folder-action"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(toast.rect.right() + space::SCALE_8, toast.rect.center().y - TOAST_BUTTON_HALF_HEIGHT))
+            .show(ctx, |ui| {
+                if ui.add(egui::Button::new("Show in folder").small()).clicked() {
+                    platform::show_in_folder(file);
+                }
+            });
+    }
+
+    /// Queues the toast of a bake that ended, whichever mode is on screen, and has Review scan again: the take has
+    /// a new file.
+    fn take_in_bake(&mut self) {
+        if let Some(report) = self.take_panel.poll_bake() {
+            self.review_dirty = true;
+            self.notices.push_back(Notice { text: report.text, review: None, show: report.file });
+        }
+    }
+
+    /// Cancels a running bake when a recording starts or the replay buffer is turned on, and says so.
+    fn cancel_bake_for_capture(&mut self) {
+        let shared = self.controller.shared();
+        let state = lock(&shared);
+        let now = Capturing { take: state.phase != Phase::Idle, replay: state.replay_on };
+        drop(state);
+        if self.take_panel.watch_capture(now) {
+            self.notices.push_back(Notice { text: "Bake cancelled: recording started".to_owned(), review: None, show: None });
+        }
+    }
+
+    /// Starts Bake with cursor on the selected take.
+    fn bake_selected_take(&mut self, ctx: &egui::Context) {
+        let Some(take) = review::find(&self.review_days, self.review_selected.as_deref()) else { return };
+        let wake = ctx.clone();
+        if let Some(report) = self.take_panel.start_bake(take, move || wake.request_repaint()) {
+            self.notices.push_back(Notice { text: report.text, review: None, show: report.file });
+        }
+        // The Actions group was drawn before the bake started.
+        ctx.request_repaint();
+    }
+
+    /// Draws a toast's Review button beside the toast capsule and opens
     /// Review with that take selected when it is clicked; the button lives only
-    /// as long as the toast shows (spec "Mode rules" 2). `ui_kit::toast` carries
+    /// as long as the toast shows (spec "Mode rules" 2). While a take runs the mode
+    /// rules keep Review closed, so the button is disabled. `ui_kit::toast` carries
     /// no action, so the button is drawn in its own area next to the capsule.
-    fn toast_review_action(&mut self, ctx: &egui::Context, shown: Option<egui::Response>) {
+    fn toast_review_action(&mut self, ctx: &egui::Context, shown: Option<egui::Response>, running: bool) {
         let pending = self.review_take_pending.clone();
         match (pending, shown) {
-            (Some(take), Some(toast)) => {
+            (Some(target), Some(toast)) => {
                 let clicked = Cell::new(false);
                 egui::Area::new(egui::Id::new("toast-review-action"))
                     .order(egui::Order::Foreground)
                     .fixed_pos(egui::pos2(toast.rect.right() + space::SCALE_8, toast.rect.center().y - TOAST_BUTTON_HALF_HEIGHT))
                     .show(ctx, |ui| {
-                        if ui.small_button("Review").clicked() {
+                        let button = ui.add_enabled(!running, egui::Button::new("Review").small());
+                        if button.on_disabled_hover_text("Review opens after the recording stops").clicked() {
                             clicked.set(true);
                         }
                     });
                 if clicked.get() {
                     self.review_take_pending = None;
-                    self.review_selected = Some(take);
-                    self.set_mode(false, Mode::Review);
+                    // An open rename field belongs to the take that was selected before.
+                    self.take_panel.close_rename();
+                    target.select(&mut self.review_view, &mut self.review_selected);
+                    // Also when Review is already open, so a take saved there is in the list.
+                    self.review_dirty = true;
+                    self.set_mode(running, Mode::Review);
                 }
             }
             // The toast is gone; the Review action goes with it.
             (_, None) => self.review_take_pending = None,
             _ => {}
         }
-    }
-
-    /// The caption next to the project name: in Review the takes of today and
-    /// their total length, otherwise the profile, its output size and frame
-    /// rate (spec "Title bar").
-    fn title_caption(&self) -> String {
-        if self.modes.mode == Mode::Review {
-            return self.review_caption();
-        }
-        let profile = self.profile_store.get(&self.settings.active_profile);
-        let size = match profile {
-            Some(profile) if !profile.is_source_size() => format!("{}x{}", profile.width, profile.height),
-            _ => format!("Source {}x{}", self.source_size.0 & !1, self.source_size.1 & !1),
-        };
-        let fps = profile.map_or(0, |profile| profile.fps);
-        format!("{} \u{b7} {} \u{b7} {} fps", self.settings.active_profile, size, fps)
-    }
-
-    /// The Review title caption (spec "Title bar"): the takes of today and
-    /// their total length; the length is left out when no sidecar knows it.
-    fn review_caption(&self) -> String {
-        let (count, total_ms, timed) = review::today_summary(&self.review_days);
-        let count_text = if count == 1 { "1 take today".to_owned() } else { format!("{count} takes today") };
-        if timed == 0 { count_text } else { format!("{count_text} \u{b7} {}", review::format_duration(total_ms)) }
     }
 
     /// Draws the 44px title bar (spec "Title bar", rev 3): the app mark and the menus on the
@@ -696,7 +892,10 @@ impl RecorderApp {
         let project_changed = Cell::new(false);
         let open_settings = Cell::new(false);
         let open_appearance = Cell::new(false);
-        let caption = self.title_caption();
+        let change_recordings = Cell::new(false);
+        let open_recordings = Cell::new(false);
+        // The caption is one fact, the profile (docs/suite/Recorder-E3.md, section 5).
+        let caption = self.settings.active_profile.clone();
         let chords = Chords::of(&self.hotkeys);
         let project_folder = project_folder(&self.settings);
         // The pre-flight button is enabled while idle and not already running; the sync test
@@ -704,17 +903,29 @@ impl RecorderApp {
         let idle = state.phase == Phase::Idle && state.preflight.is_none();
         let sync_ready = idle && state.sync_test.is_none() && self.webcam.settings(&self.profile_store).is_some_and(|settings| settings.iso);
         let keep_files = self.preflight_section.keep_files();
+        let replay_on = state.replay_on;
         let mode = self.modes.mode;
+        // In Review the menu's Add mark goes to the selected take, which needs its playback.
+        let can_mark = mode != Mode::Review || self.review_playback.is_some();
+        let review_mark = Cell::new(false);
         let mode_labels = Mode::ALL.map(Mode::label);
         let selected = Cell::new(Mode::ALL.iter().position(|candidate| *candidate == mode).unwrap_or(0));
 
         ui_kit::main_toolbar(
             ui,
             |ui| {
-                app_mark(ui);
+                ui_kit::brand::mark(ui, crate::BRAND, ui_kit::brand::TITLE_BAR_MARK);
                 let file = ui_kit::Menu::new("File", |ui| {
                     if menu_item(ui, "Open project folder", "").clicked() {
-                        open_folder(&project_folder);
+                        platform::open_folder(&project_folder);
+                        ui.close();
+                    }
+                    if menu_item(ui, "Change recordings folder\u{2026}", "").clicked() {
+                        change_recordings.set(true);
+                        ui.close();
+                    }
+                    if menu_item(ui, "Open recordings folder", "").clicked() {
+                        open_recordings.set(true);
                         ui.close();
                     }
                     ui.separator();
@@ -729,6 +940,7 @@ impl RecorderApp {
                     }
                 });
                 let capture = ui_kit::Menu::new("Capture", |ui| {
+                    ui_kit::menu_check_slot(ui);
                     if menu_item(ui, "Start or Stop recording", &chords.start_stop).clicked() {
                         send(&bus, CommandKind::StartStop);
                         ui.close();
@@ -738,10 +950,16 @@ impl RecorderApp {
                         ui.close();
                     }
                     ui.separator();
-                    if menu_item(ui, "Add mark", &chords.mark).clicked() {
-                        send(&bus, CommandKind::Mark(MarkKind::Silent));
-                        ui.close();
-                    }
+                    ui.add_enabled_ui(can_mark, |ui| {
+                        if menu_item(ui, "Add mark", &chords.mark).clicked() {
+                            if mode == Mode::Review {
+                                review_mark.set(true);
+                            } else {
+                                send(&bus, CommandKind::Mark(MarkKind::Silent));
+                            }
+                            ui.close();
+                        }
+                    });
                     if menu_item(ui, "Add mark with label", &chords.mark_label).clicked() {
                         send(&bus, CommandKind::Mark(MarkKind::WithLabel));
                         ui.close();
@@ -749,6 +967,11 @@ impl RecorderApp {
                     if menu_item(ui, "Mute mic", &chords.mute_mic).clicked() {
                         // The mic is assumed to sit on track 0, like the hotkey does.
                         send(&bus, CommandKind::Mute { track: 0 });
+                        ui.close();
+                    }
+                    ui.separator();
+                    if let Some(command) = replay_ui::menu_items(ui, replay_on, &chords) {
+                        send(&bus, command);
                         ui.close();
                     }
                     ui.separator();
@@ -817,6 +1040,10 @@ impl RecorderApp {
             },
         );
 
+        if review_mark.get() {
+            self.add_mark_at_playhead(ui.ctx());
+        }
+
         // The rename popover wrote the project like the old Project field did.
         if project_changed.get() {
             self.settings.project = edited_project.into_inner();
@@ -830,6 +1057,16 @@ impl RecorderApp {
             self.settings_dialog.open = true;
             self.settings_dialog.section = Section::Appearance;
         }
+        if change_recordings.get()
+            && let Some(folder) = platform::pick_folder("Choose the recordings folder")
+        {
+            self.settings.root_folder = Some(folder);
+            self.push_settings_if_changed();
+            self.save_settings();
+        }
+        if open_recordings.get() {
+            platform::open_folder(&config::takes_root(&self.settings));
+        }
 
         // The switch wrote its selection into the cell; report a change through `mode_picked`.
         let picked = Mode::ALL.get(selected.get()).copied().unwrap_or(mode);
@@ -842,44 +1079,17 @@ impl RecorderApp {
     /// left, the Preview in the center and the tool panels column on the right, with the
     /// 8px window padding and gaps.
     fn setup_panels(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
-        egui::CentralPanel::default().frame(window_frame()).show(ui, |ui| {
+        egui::CentralPanel::default().frame(window_frame(ctx)).show(ui, |ui| {
             let [left, center, right] = three_columns(ui.max_rect(), self.settings.panel_widths.get(Mode::Setup));
             let active = state.phase.has_take();
             column(ui, left, |ui| self.sources_panel(ui, state));
             column(ui, right, |ui| self.settings_panel(ui, ctx, state));
-            column(ui, center, |ui| self.preview_panel(ui, state, active));
-            self.resize_dividers(ui, &left, &center, &right, Mode::Setup);
+            stage_column(ui, center, |ui| self.preview_panel(ui, state, active));
+            self.settings_dirty |= resize_dividers(ui, [left, center, right], self.settings.panel_widths.entry(Mode::Setup));
         });
-    }
-
-    /// Handles the two column dividers of a three-column mode: a drag, the arrow keys or a
-    /// double-click writes the new width into the mode's saved widths (spec "Panels").
-    fn resize_dividers(&mut self, ui: &mut egui::Ui, left: &egui::Rect, center: &egui::Rect, right: &egui::Rect, mode: Mode) {
-        let mut widths = self.settings.panel_widths.get(mode);
-        let mut changed = false;
-        if let Some(w) = column_divider(ui, gap_between(left, center), "left", widths.left, DividerSide::Left) {
-            widths.left = w;
-            changed = true;
-        }
-        if let Some(w) = column_divider(ui, gap_between(center, right), "right", widths.right, DividerSide::Right) {
-            widths.right = w;
-            changed = true;
-        }
-        if changed {
-            self.settings.panel_widths.set(mode, widths);
-            self.settings_dirty = true;
-        }
-    }
-
-    /// Handles the Record mode's single divider between the center and the Live panel: a
-    /// drag, the arrow keys or a double-click writes the new width into the mode's saved
-    /// widths (spec "Panels").
-    fn resize_right_divider(&mut self, ui: &mut egui::Ui, center: &egui::Rect, right: &egui::Rect, mode: Mode) {
-        let mut widths = self.settings.panel_widths.get(mode);
-        if let Some(w) = column_divider(ui, gap_between(center, right), "right", widths.right, DividerSide::Right) {
-            widths.right = w;
-            self.settings.panel_widths.set(mode, widths);
-            self.settings_dirty = true;
+        // The idle meters of app tracks move without any other news from the controller.
+        if !state.idle_apps.is_empty() {
+            ctx.request_repaint_after(METER_REFRESH);
         }
     }
 
@@ -912,35 +1122,36 @@ impl RecorderApp {
         group_caption(ui, "Video");
         let fps = self.profile_store.get(&self.settings.active_profile).map(|profile| profile.fps);
         display_source_row(ui, self.source_size, fps);
-        self.camera_source_row(ui);
+        self.camera_source_row(ui, Lock { recording: state.phase.has_take(), replay_on: state.replay_on });
         ui.add_space(space::SCALE_8);
         group_caption(ui, "Audio");
         let live = if state.phase.has_take() { Some(&self.live_tracks) } else { None };
-        tracks_ui::sources_rows(ui, &self.settings.audio, live);
+        tracks_ui::sources_rows(ui, &self.settings.audio, &self.app_sources, live);
     }
 
     /// The camera row of the video group: the camera's name, its format and a status dot;
     /// clicking it opens the Camera tool's Camera and Format pickers as a popover.
-    fn camera_source_row(&mut self, ui: &mut egui::Ui) {
-        let (name, caption, ok) = match self.webcam.settings(&self.profile_store) {
+    fn camera_source_row(&mut self, ui: &mut egui::Ui, lock: Lock) {
+        let (name, values, ok) = match self.webcam.settings(&self.profile_store) {
             Some(settings) => {
                 let present = self.webcam.cameras().iter().any(|camera| camera.id == settings.camera_id);
                 let name = if settings.camera_name.is_empty() { "No camera".to_owned() } else { settings.camera_name.clone() };
-                let caption = format!(
-                    "{} {}x{} @ {} fps",
-                    settings.format.subtype,
-                    settings.format.width,
-                    settings.format.height,
-                    webcam_ui::fps_text(f64::from(settings.format.fps))
-                );
-                (name, caption, present)
+                // The least needed value is last, so it is the one a narrow panel leaves out.
+                let values = vec![
+                    data_text::size_text(settings.format.width, settings.format.height),
+                    format!("{} fps", webcam_ui::fps_text(f64::from(settings.format.fps))),
+                    settings.format.subtype.clone(),
+                ];
+                (name, values, present)
             }
-            None => ("Camera off".to_owned(), String::new(), false),
+            None => ("Camera off".to_owned(), Vec::new(), false),
         };
-        let response = source_row(ui, ui_kit::icons::regular::CAMERA, &name, &caption, ok);
+        let response = source_row(ui, ui_kit::icons::regular::CAMERA, &name, &values, ok);
         egui::Popup::menu(&response).width(320.0).show(|ui| {
-            tools_ui::camera_row(ui, &mut self.webcam, &mut self.profile_store);
-            tools_ui::format_row(ui, &mut self.webcam, &mut self.profile_store);
+            lock.scope(ui, Control::Profile, true, |ui| {
+                tools_ui::camera_row(ui, &mut self.webcam, &mut self.profile_store);
+                tools_ui::format_row(ui, &mut self.webcam, &mut self.profile_store);
+            });
         });
     }
 
@@ -948,6 +1159,7 @@ impl RecorderApp {
     /// vertical ScrollArea (the ui-kit overlay scrollbar comes from ui_kit::apply's global scroll style).
     fn settings_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
         let active = state.phase.has_take();
+        let lock = Lock { recording: active, replay_on: state.replay_on };
         let items = tools_ui::strip_items();
         let mut tool = self.tool;
         let strip = ui_kit::tool_strip(ui, &mut tool, &items);
@@ -960,29 +1172,37 @@ impl RecorderApp {
             self.settings_dirty = true;
         }
         ui.add_space(space::SCALE_8);
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("setup-tool").auto_shrink(false).show(ui, |ui| {
             ui.set_max_width(ui.available_width());
             match self.tool {
                 Tool::Camera => {
-                    tools_ui::camera_panel(ui, &mut self.webcam, &mut self.profile_store, active, state, &self.controller.sender(), &mut self.key_ui);
+                    tools_ui::camera_panel(
+                        ui,
+                        &mut self.webcam,
+                        &mut self.profile_store,
+                        lock.locks(Control::Profile),
+                        state,
+                        &self.controller.sender(),
+                        &mut self.key_ui,
+                    );
                 }
                 Tool::Key => {
                     let picked = webcam_ui::camera_picture(ui, &mut self.webcam, self.key_ui.eyedropper);
                     key_ui::key_panel(ui, &self.webcam, &mut self.profile_store, state, &mut self.key_ui, picked.as_ref());
                 }
-                Tool::Layout => layout_ui::show(ui, &mut self.profile_store, &self.settings.active_profile, active),
+                Tool::Layout => layout_ui::show(ui, &mut self.screen_group, &mut self.profile_store, &self.settings.active_profile, lock),
                 Tool::Output => {
                     let mut outcome = ProfileOutcome::default();
-                    self.profile_section.output_panel(ui, &mut self.profile_store, &mut self.settings, self.source_size, active, &mut outcome);
+                    self.profile_section.output_panel(ui, &mut self.profile_store, &mut self.settings, self.source_size, lock, &mut outcome);
                     self.on_profile_outcome(&outcome);
                     ui.add_space(space::SCALE_8);
-                    profile_ui::composite_group(ui, &mut self.profile_store, &self.settings.active_profile, active);
+                    profile_ui::composite_group(ui, &mut self.profile_store, &self.settings.active_profile, lock);
                     ui.add_space(space::SCALE_8);
-                    webcam_ui::iso_group(ui, &self.webcam, &mut self.profile_store, active, &state.active_profile);
+                    webcam_ui::iso_group(ui, &self.webcam, &mut self.profile_store, lock, &state.active_profile);
                 }
                 Tool::Audio => {
                     let live_tracks = if active { Some(&self.live_tracks) } else { None };
-                    let changed = tracks_ui::audio_panel(ui, &mut self.settings.audio, &self.devices, live_tracks, active);
+                    let changed = tracks_ui::audio_panel(ui, &mut self.settings.audio, &self.devices, &mut self.app_sources, live_tracks, lock);
                     self.push_settings_if_changed();
                     self.on_tracks_changed(ctx, changed);
                     if active {
@@ -999,46 +1219,62 @@ impl RecorderApp {
         self.profile_store.save_when_due(ctx);
     }
 
-    /// The center Preview panel (spec "Setup mode"): the banner strip, the panel toolbar
-    /// (rev 3, 44 tall), today's preview filling the rest of the panel and the transport
-    /// deck over its bottom edge.
+    /// The center Preview stage (spec "Setup mode"): the banner strip, the panel toolbar
+    /// (rev 3, 44 tall) and today's preview filling the rest of the panel, over the take
+    /// controls in the bottom bar.
     fn preview_panel(&mut self, ui: &mut egui::Ui, state: &ControllerState, active: bool) {
-        if self.banner_strip(ui, state) {
+        self.take_stage(ui, state, |app, ui| {
+            if app.banner_strip(ui, state) {
+                ui.add_space(space::SCALE_8);
+            }
+            let mut outcome = ProfileOutcome::default();
+            app.preview_toolbar(ui, Lock { recording: active, replay_on: state.replay_on }, &mut outcome);
             ui.add_space(space::SCALE_8);
-        }
-        let mut outcome = ProfileOutcome::default();
-        self.preview_toolbar(ui, active, &mut outcome);
-        ui.add_space(space::SCALE_8);
-        self.show_preview(ui);
-        self.on_profile_outcome(&outcome);
-        self.show_deck(ui, ui.max_rect(), state);
+            app.show_preview(ui);
+            app.on_profile_outcome(&outcome);
+        });
     }
 
-    /// The transport deck over the preview panel's bottom edge (spec "Setup mode"
-    /// and "Record mode").
-    fn show_deck(&self, ui: &mut egui::Ui, content_rect: egui::Rect, state: &ControllerState) {
+    /// The Setup and Record stage around `add_content`: the bottom bar and the Record button
+    /// in its notch (docs/suite/Recorder-E3.md, sections 2 and 3).
+    fn take_stage(&mut self, ui: &mut egui::Ui, state: &ControllerState, add_content: impl FnOnce(&mut Self, &mut egui::Ui)) {
         let chords = Chords::of(&self.hotkeys);
-        let d = record_ui::Deck {
+        // Only the idle bar shows the next take, so a running take never reads the takes folder.
+        let plan = if state.phase.has_take() { None } else { Some(self.profile_section.next_take(&self.profile_store, &self.settings, state.replay_on)) };
+        let next_take = plan.as_ref().and_then(|plan| plan.label.clone());
+        // The tooltip is the take's folder; while the buffer is on a second line names where
+        // the next replay goes (spec "Recorder output folders", preview toolbar).
+        let mut next_take_path =
+            plan.as_ref().map_or(String::new(), |plan| if plan.folder_path.is_empty() { plan.video_path.clone() } else { plan.folder_path.clone() });
+        if let Some(plan) = &plan
+            && !plan.replay_path.is_empty()
+        {
+            if !next_take_path.is_empty() {
+                next_take_path.push('\n');
+            }
+            next_take_path.push_str("Next replay: ");
+            next_take_path.push_str(&plan.replay_path);
+        }
+        let bar = bar_ui::TakeBar {
             phase: state.phase,
             fps: state.fps,
             frames: state.stats.as_ref().map(|stats| stats.frames),
             countdown_secs: self.settings.countdown_secs,
+            replay_on: state.replay_on,
             chords: &chords,
+            next_take: next_take.as_deref(),
+            next_take_path: &next_take_path,
         };
-        record_ui::deck(ui, content_rect, "recorder-deck", d, &self.controller.sender());
+        let bus = self.controller.sender();
+        bar_ui::take_stage(ui, &bar, &bus, |ui| add_content(self, ui));
     }
 
-    /// The preview panel's toolbar: the Profile caption and picker, a separator, the Preview and
-    /// Matte view chips, and the next take on the right with its full path as the tooltip.
-    fn preview_toolbar(&mut self, ui: &mut egui::Ui, active: bool, outcome: &mut ProfileOutcome) {
+    /// The preview panel's toolbar: the Profile caption and picker, a separator, and the
+    /// Preview and Matte view chips.
+    fn preview_toolbar(&mut self, ui: &mut egui::Ui, lock: Lock, outcome: &mut ProfileOutcome) {
         let key_on = self.webcam.settings(&self.profile_store).is_some_and(|settings| settings.key.enabled);
         let profile = self.profile_store.get(&self.settings.active_profile);
         let clean = profile.is_some_and(|profile| profile.effective_composite_mode() == CompositeMode::Clean);
-        let (take_label, take_path) = self.profile_section.next_take(&self.profile_store, &self.settings);
-        let next_take = match take_label {
-            Some(label) => format!("Next take {label}"),
-            None => "Next take".to_owned(),
-        };
         let row = egui::vec2(ui.available_width(), size::PANEL_TOOLBAR_HEIGHT);
         let inner = ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.add_space(HEADER_PAD);
@@ -1047,7 +1283,7 @@ impl RecorderApp {
                     .selectable(false),
             );
             ui.add_space(space::SCALE_8);
-            ui.add_enabled_ui(!active, |ui| {
+            lock.scope(ui, Control::Profile, true, |ui| {
                 self.profile_section.picker(ui, &mut self.profile_store, &mut self.settings, outcome);
             });
             ui.separator();
@@ -1063,13 +1299,6 @@ impl RecorderApp {
                 let mut on = true;
                 ui_kit::chip(ui, &mut on, "Clean");
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(next_take).font(ui_kit::fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY))
-                        .selectable(false),
-                )
-                .on_hover_text(take_path);
-            });
         });
         let rect = inner.response.rect;
         ui.painter().hline(rect.x_range().expand(space::PANEL_PADDING), rect.bottom(), egui::Stroke::new(HAIRLINE, color::STROKE_HAIRLINE));
@@ -1092,27 +1321,43 @@ impl RecorderApp {
             self.review_dirty = false;
             self.rescan_review();
         }
-        egui::CentralPanel::default().frame(window_frame()).show(ui, |ui| {
+        egui::CentralPanel::default().frame(window_frame(ui.ctx())).show(ui, |ui| {
             let [left, center, right] = three_columns(ui.max_rect(), self.settings.panel_widths.get(Mode::Review));
-            column(ui, left, |ui| match review_ui::takes_panel(ui, &self.review_days, &mut self.review_selected) {
-                review_ui::TakesAction::OpenFolder => open_folder(&project_folder(&self.settings)),
+            column(ui, left, |ui| match review_ui::takes_panel(ui, &mut self.review_view, &self.review_days, &mut self.review_selected) {
+                review_ui::TakesAction::OpenFolder => {
+                    // Created on demand: Explorer opens another folder for a missing path.
+                    let folder = review_folder(&self.settings, self.review_view);
+                    if let Err(err) = std::fs::create_dir_all(&folder) {
+                        log::warn!("could not create {}: {err}", folder.display());
+                    }
+                    platform::open_folder(&folder);
+                }
                 review_ui::TakesAction::Refresh => self.review_dirty = true,
+                review_ui::TakesAction::ViewChanged => {
+                    self.take_panel.close_rename();
+                    // Scanned now, so the other panels never pair the new view with the old list.
+                    self.rescan_review();
+                    ui.ctx().request_repaint();
+                }
                 review_ui::TakesAction::None => {}
             });
-            column(ui, center, |ui| {
-                if self.banner_strip(ui, state) {
-                    ui.add_space(space::SCALE_8);
-                }
-                let action = review_ui::center(
-                    ui,
-                    &self.review_days,
-                    self.review_selected.as_deref(),
-                    self.review_playback.as_mut(),
-                    self.review_playback_error.as_deref(),
-                    &mut self.review_center,
-                );
-                if let review_ui::CenterAction::AddMark(position) = action {
-                    self.add_review_mark(position);
+            stage_column(ui, center, |ui| {
+                let transport = self.review_playback.as_ref().map(review_ui::ReviewTransport::of);
+                let (action, _) = review_ui::stage(ui, transport, |ui| {
+                    if self.banner_strip(ui, state) {
+                        ui.add_space(space::SCALE_8);
+                    }
+                    review_ui::center(
+                        ui,
+                        &self.review_days,
+                        self.review_selected.as_deref(),
+                        self.review_playback.as_mut(),
+                        self.review_playback_error.as_deref(),
+                        &mut self.review_center,
+                    );
+                });
+                if let Some(action) = action {
+                    self.run_review_bar_action(ui.ctx(), action);
                 }
             });
             let recording = state.phase != Phase::Idle;
@@ -1131,10 +1376,19 @@ impl RecorderApp {
                             self.review_center.settle();
                         }
                     }
+                    review_ui::TakeAction::ShowCursor(show) => {
+                        if let Some(playback) = &mut self.review_playback {
+                            playback.set_show_cursor(show);
+                            self.review_center.settle();
+                            // The picture was drawn before the switch changed.
+                            ui.ctx().request_repaint();
+                        }
+                    }
+                    review_ui::TakeAction::Bake => self.bake_selected_take(ui.ctx()),
                     review_ui::TakeAction::None => {}
                 }
             });
-            self.resize_dividers(ui, &left, &center, &right, Mode::Review);
+            self.settings_dirty |= resize_dividers(ui, [left, center, right], self.settings.panel_widths.entry(Mode::Review));
         });
         // The delete confirmation dialog (spec "Review mode"): every file of the
         // take with its size, Cancel and Move to Recycle Bin.
@@ -1143,6 +1397,41 @@ impl RecorderApp {
             if review_ui::delete_dialog(ui.ctx(), take, &mut self.take_panel.confirm_delete) {
                 self.delete_selected_take();
             }
+        }
+    }
+
+    /// Carries out a click on the Review bar or its notch on the selected take's playback.
+    fn run_review_bar_action(&mut self, ctx: &egui::Context, action: review_ui::BarAction) {
+        let take = review::find(&self.review_days, self.review_selected.as_deref());
+        let (Some(playback), Some(take)) = (self.review_playback.as_mut(), take) else { return };
+        let outcome = review_ui::run_bar_action(action, playback, &take.marks, &mut self.review_center);
+        if let review_ui::CenterAction::AddMark(position) = outcome {
+            self.add_review_mark(position);
+        }
+        // The bar was drawn before the click took effect.
+        ctx.request_repaint();
+    }
+
+    /// Adds a mark to the selected take where its playback is; without a playback it does nothing.
+    fn add_mark_at_playhead(&mut self, ctx: &egui::Context) {
+        let Some(position) = self.review_playback.as_ref().map(Playback::position_ms) else { return };
+        self.add_review_mark(position);
+        // The marks were drawn before this one was added.
+        ctx.request_repaint();
+    }
+
+    /// The mark hotkey in Review. It is a global hotkey, so Windows keeps the key from the
+    /// window and sends it to the controller, which ignores a mark while no take runs; the
+    /// window sees the press among the controller's recent commands. It acts only while the
+    /// window has the focus, so a press meant for another program never changes a take, and
+    /// with no dialog over Review.
+    fn review_mark_hotkey(&mut self, ctx: &egui::Context, state: &ControllerState) {
+        // Every frame, so a press made in another mode is never applied later.
+        let pressed = new_mark_press(&state.recent, &mut self.seen_mark_press);
+        let focused = ctx.input(|input| input.viewport().focused) == Some(true);
+        let in_review = self.modes.mode == Mode::Review && state.phase == Phase::Idle;
+        if pressed && focused && in_review && !self.settings_dialog.open && !self.take_panel.confirm_delete {
+            self.add_mark_at_playhead(ctx);
         }
     }
 
@@ -1172,7 +1461,10 @@ impl RecorderApp {
         self.review_playback_error = None;
         let Some(path) = wanted else { return };
         match Playback::open(&path) {
-            Ok(playback) => self.review_playback = Some(playback),
+            Ok(mut playback) => {
+                playback.set_show_cursor(self.take_panel.show_cursor);
+                self.review_playback = Some(playback);
+            }
             Err(err) => {
                 log::warn!("the playback of {} could not open: {err}", path.display());
                 self.review_playback_error = Some(err.to_string());
@@ -1194,10 +1486,10 @@ impl RecorderApp {
         }
     }
 
-    /// Rescans the project folder for takes and keeps the selected take when
-    /// it still exists, falling back to the newest one.
+    /// Rescans the current view's folder for takes and keeps the selected take
+    /// when it still exists, falling back to the newest one.
     fn rescan_review(&mut self) {
-        self.review_days = review::scan(&project_folder(&self.settings));
+        self.review_days = review::scan(&review_folder(&self.settings, self.review_view));
         let names: Vec<String> = self.review_days.iter().flat_map(|day| day.takes.iter().map(|take| take.name.clone())).collect();
         if !names.iter().any(|name| Some(name) == self.review_selected.as_ref()) {
             self.review_selected = names.first().cloned();
@@ -1309,33 +1601,34 @@ impl RecorderApp {
     /// The Record layout (spec "Modes" and "Record mode"): the recording preview in a center
     /// that fills the window and the Live panel on the right; there is no left column.
     fn record_panels(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
-        egui::CentralPanel::default().frame(window_frame()).show(ui, |ui| {
+        egui::CentralPanel::default().frame(window_frame(ctx)).show(ui, |ui| {
             let [center, right] = two_columns(ui.max_rect(), self.settings.panel_widths.get(Mode::Record));
             column(ui, right, |ui| self.live_panel(ui, ctx, state));
-            column(ui, center, |ui| self.record_center(ui, state));
-            self.resize_right_divider(ui, &center, &right, Mode::Record);
+            stage_column(ui, center, |ui| self.record_center(ui, state));
+            self.settings_dirty |= resize_right_divider(ui, [center, right], self.settings.panel_widths.entry(Mode::Record));
         });
     }
 
     /// The Live panel (spec "Record mode"): read-only, so only the meters may
-    /// ask for a repaint while a take runs.
+    /// ask for a repaint, while a take runs or an app track is watched.
     fn live_panel(&self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
         let live = if state.phase.has_take() { Some(&self.live_tracks) } else { None };
-        record_ui::live_panel(ui, state, &self.settings.audio, live);
-        if state.phase.has_take() {
+        record_ui::live_panel(ui, state, &self.settings.audio, &self.app_sources, live);
+        if state.phase.has_take() || !state.idle_apps.is_empty() {
             ctx.request_repaint_after(METER_REFRESH);
         }
     }
 
-    /// The Record mode's center: the banner strip over the recording preview,
-    /// with the deck over its bottom edge.
+    /// The Record mode's center stage: the banner strip over the recording preview, over
+    /// the take controls in the bottom bar.
     fn record_center(&mut self, ui: &mut egui::Ui, state: &ControllerState) {
-        if self.banner_strip(ui, state) {
-            ui.add_space(space::SCALE_8);
-        }
-        let preview = self.preview.as_ref();
-        self.preview_view.show_recording(ui, preview, self.preview_enabled, state.phase == Phase::Paused);
-        self.show_deck(ui, ui.max_rect(), state);
+        self.take_stage(ui, state, |app, ui| {
+            if app.banner_strip(ui, state) {
+                ui.add_space(space::SCALE_8);
+            }
+            let preview = app.preview.as_ref();
+            app.preview_view.show_recording(ui, preview, app.preview_enabled, state.phase == Phase::Paused);
+        });
     }
 }
 
@@ -1351,9 +1644,10 @@ fn apply_capture_exclusion(hwnd: Option<isize>, exclude: bool) -> bool {
     }
 }
 
-/// The tray icon state that matches a controller phase.
-fn tray_state(phase: Phase) -> TrayState {
+/// The tray icon state that matches a controller phase and the replay buffer.
+fn tray_state(phase: Phase, replay_on: bool) -> TrayState {
     match phase {
+        Phase::Idle | Phase::Countdown(_) if replay_on => TrayState::Replay,
         Phase::Idle | Phase::Countdown(_) => TrayState::Idle,
         Phase::Recording => TrayState::Recording,
         Phase::Paused => TrayState::Paused,
@@ -1434,8 +1728,22 @@ fn write_synced(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     file.sync_all()
 }
 
-/// The hotkey chords the Capture menu and the deck tooltips show as their shortcuts; empty
+/// Whether `recent` holds a plain mark command (the mark hotkey's kind) pressed after `seen`,
+/// which moves on to the newest one.
+fn new_mark_press(recent: &VecDeque<Command>, seen: &mut i64) -> bool {
+    let newest = recent.iter().filter(|command| command.kind == CommandKind::Mark(MarkKind::Silent)).map(|command| command.press_qpc).max();
+    match newest {
+        Some(press) if press > *seen => {
+            *seen = press;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The hotkey chords the Capture menu and the bar's tooltips show as their shortcuts; empty
 /// when a chord is not registered.
+#[derive(Default)]
 pub(crate) struct Chords {
     /// The start or stop recording chord.
     pub(crate) start_stop: String,
@@ -1447,6 +1755,10 @@ pub(crate) struct Chords {
     pub(crate) mark_label: String,
     /// The mute mic chord.
     pub(crate) mute_mic: String,
+    /// The replay buffer on or off chord.
+    pub(crate) replay_toggle: String,
+    /// The save replay chord.
+    pub(crate) replay_save: String,
 }
 
 impl Chords {
@@ -1459,15 +1771,9 @@ impl Chords {
             mark: chord("mark"),
             mark_label: chord("mark_label"),
             mute_mic: chord("mute_mic"),
+            replay_toggle: chord("replay_toggle"),
+            replay_save: chord("replay_save"),
         }
-    }
-}
-
-/// The app mark at the left edge of the title bar: a small rounded square in the accent color.
-fn app_mark(ui: &mut egui::Ui) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(APP_MARK, APP_MARK), egui::Sense::hover());
-    if ui.is_rect_visible(rect) {
-        ui.painter().rect_filled(rect, ui_kit::tokens::radius::SEGMENT, ui_kit::tokens::accent::ACCENT);
     }
 }
 
@@ -1496,34 +1802,32 @@ const DOT_DIAMETER: f32 = 8.0;
 /// frame rate it is captured at, and a status dot. There is no display picker today, so the row
 /// is info only (spec "Mapping").
 fn display_source_row(ui: &mut egui::Ui, size: (u32, u32), fps: Option<u32>) {
-    let caption = match fps {
-        Some(fps) if fps > 0 => format!("{}x{} @ {} fps", size.0, size.1, fps),
-        _ => format!("{}x{}", size.0, size.1),
-    };
-    source_row(ui, ui_kit::icons::regular::MONITOR, "Primary monitor", &caption, true);
+    let mut values = vec![data_text::size_text(size.0, size.1)];
+    if let Some(fps) = fps.filter(|fps| *fps > 0) {
+        values.push(format!("{fps} fps"));
+    }
+    source_row(ui, ui_kit::icons::regular::MONITOR, "Primary monitor", &values, true);
 }
 
-/// One source row of the video group: the icon, the name with its detail caption and a status
+/// One source row of the video group: the icon, the name over its values and a status
 /// dot. Returns the row's response so the camera row can open its picker popover on click.
-fn source_row(ui: &mut egui::Ui, icon: &'static str, name: &str, caption: &str, ok: bool) -> egui::Response {
+fn source_row(ui: &mut egui::Ui, icon: &'static str, name: &str, values: &[String], ok: bool) -> egui::Response {
     let row = egui::vec2(ui.available_width(), SOURCE_ROW_HEIGHT);
     let inner = ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.add(
             egui::Label::new(egui::RichText::new(icon).font(ui_kit::fonts::icon_regular(typography::BODY_SIZE)).color(color::TEXT_SECONDARY)).selectable(false),
         );
         ui.add_space(space::SCALE_4);
+        let text_width = (ui.available_width() - DOT_DIAMETER - ui.spacing().item_spacing.x).max(0.0);
         ui.vertical(|ui| {
+            ui.set_max_width(text_width);
             ui.add(
                 egui::Label::new(egui::RichText::new(name).font(ui_kit::fonts::medium(typography::BODY_SIZE)).color(color::TEXT_PRIMARY))
                     .selectable(false)
                     .truncate(),
             );
-            if !caption.is_empty() {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(caption).font(ui_kit::fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY))
-                        .selectable(false)
-                        .truncate(),
-                );
+            if !values.is_empty() {
+                source_values(ui, values, text_width);
             }
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1531,6 +1835,26 @@ fn source_row(ui: &mut egui::Ui, icon: &'static str, name: &str, caption: &str, 
         });
     });
     ui.interact(inner.response.rect, ui.id().with(("source-row", name)), egui::Sense::click())
+}
+
+/// A source row's values as separate items in Martian Mono, `width` wide at most. A value that
+/// does not fit whole is left out, with every value after it.
+fn source_values(ui: &mut egui::Ui, values: &[String], width: f32) {
+    let font = ui_kit::fonts::mono(typography::VALUE_SIZE);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::SCALE_8;
+        let mut used = 0.0;
+        for value in values {
+            let job = ui_kit::fonts::tracked(value, font.clone(), color::TEXT_TERTIARY, ui_kit::fonts::MONO_LETTER_SPACING_EM);
+            let galley = ui.painter().layout_job(job);
+            used += galley.size().x;
+            if used > width {
+                break;
+            }
+            used += space::SCALE_8;
+            ui.add(egui::Label::new(galley).selectable(false));
+        }
+    });
 }
 
 /// The small status dot at a source row's right edge.
@@ -1552,15 +1876,18 @@ enum BannerRow {
     Error(String),
 }
 
-/// One banner row: a colored dot, the message, and the optional Details and Dismiss buttons
-/// on the right, reading left to right. Returns the row, Details and Dismiss responses.
+/// One banner row: a colored dot, the message, and the optional Choose folder, Details and
+/// Dismiss buttons on the right, reading left to right. Returns the row and the button
+/// responses in that order.
 fn banner_row(
     ui: &mut egui::Ui,
     dot: egui::Color32,
     message: &str,
+    choose: Option<&str>,
     details_label: Option<&str>,
     dismiss: bool,
-) -> (egui::Response, Option<egui::Response>, Option<egui::Response>) {
+) -> (egui::Response, Option<egui::Response>, Option<egui::Response>, Option<egui::Response>) {
+    let mut choose_response = None;
     let mut details = None;
     let mut dismiss_response = None;
     let row = ui.horizontal(|ui| {
@@ -1578,15 +1905,34 @@ fn banner_row(
             if let Some(label) = details_label {
                 details = Some(ui.small_button(label));
             }
+            if let Some(label) = choose {
+                choose_response = Some(ui.small_button(label));
+            }
         });
     });
-    (row.response, details, dismiss_response)
+    (row.response, choose_response, details, dismiss_response)
 }
 
 /// The window-body frame all three modes share: the ground fill with the 8px window gap on
-/// every side (spec "Window layout").
-fn window_frame() -> egui::Frame {
-    egui::Frame::new().fill(color::BG_GROUND).inner_margin(egui::Margin::same(space::WINDOW_GAP as i8))
+/// every side (spec "Window layout"). The fill is the theme's tinted ground, the color the
+/// stage cuts its notch in.
+fn window_frame(ctx: &egui::Context) -> egui::Frame {
+    egui::Frame::new().fill(ground(ctx)).inner_margin(egui::Margin::same(space::WINDOW_GAP as i8))
+}
+
+/// The window ground, tinted toward the accent.
+fn ground(ctx: &egui::Context) -> egui::Color32 {
+    ui_kit::Theme::get(ctx).neutrals.bg_ground
+}
+
+/// Where the mode's stage, and so its notch button, is centered in a `window` that wide.
+pub(crate) fn stage_center_x(window: egui::Rect, mode: Mode, widths: PanelWidths) -> f32 {
+    let body = window.shrink(space::WINDOW_GAP);
+    let center = match mode {
+        Mode::Record => two_columns(body, widths)[0],
+        Mode::Setup | Mode::Review => three_columns(body, widths)[1],
+    };
+    center.center().x
 }
 
 /// The three columns inside the window body's content rect: the Sources panel on the left,
@@ -1594,7 +1940,7 @@ fn window_frame() -> egui::Frame {
 /// by the window gap. The widths come from the mode's saved [`PanelWidths`], clamped into
 /// the spec ranges, and when the window cannot keep the center's [`CENTER_MIN_W`] the side
 /// columns give way first (spec "Panels").
-fn three_columns(content: egui::Rect, widths: PanelWidths) -> [egui::Rect; 3] {
+pub(crate) fn three_columns(content: egui::Rect, widths: PanelWidths) -> [egui::Rect; 3] {
     let gap = space::WINDOW_GAP;
     let (left_w, right_w) = fitted_widths(widths.left, widths.right, content.width(), gap);
     let left = egui::Rect::from_min_max(content.left_top(), egui::Pos2::new(content.left() + left_w, content.bottom()));
@@ -1611,7 +1957,7 @@ fn three_columns(content: egui::Rect, widths: PanelWidths) -> [egui::Rect; 3] {
 /// in Record mode (spec "Modes" and "Record mode"). The right width comes from the mode's
 /// saved [`PanelWidths`], clamped into its range and giving way to the center's
 /// [`CENTER_MIN_W`] on a narrow window (spec "Panels").
-fn two_columns(content: egui::Rect, widths: PanelWidths) -> [egui::Rect; 2] {
+pub(crate) fn two_columns(content: egui::Rect, widths: PanelWidths) -> [egui::Rect; 2] {
     let gap = space::WINDOW_GAP;
     let right_w = fitted_right(widths.right, content.width(), gap);
     let right = egui::Rect::from_min_max(egui::Pos2::new((content.right() - right_w).max(content.left()), content.top()), content.right_bottom());
@@ -1661,16 +2007,23 @@ fn gap_between(a: &egui::Rect, b: &egui::Rect) -> egui::Rect {
     egui::Rect::from_min_max(egui::Pos2::new(a.right(), a.top()), egui::Pos2::new(b.left(), a.bottom()))
 }
 
-/// One column of the window body: the [`ui_kit::panel`] drawn exactly in `rect` and clipped to
+/// One column of the window body: the [`ui_kit::side_panel`] drawn exactly in `rect` and clipped to
 /// it, so content wider than the column is clipped and never widens the column (spec "Panels").
 fn column<R>(parent: &mut egui::Ui, rect: egui::Rect, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let mut ui = parent.new_child(egui::UiBuilder::new().max_rect(rect));
     ui.set_clip_rect(rect);
-    ui_kit::panel(&mut ui, |ui| {
+    ui_kit::side_panel(&mut ui, |ui| {
         ui.set_min_size(ui.available_size());
         add_contents(ui)
     })
     .inner
+}
+
+/// The center column, which a stage panel fills.
+fn stage_column<R>(parent: &mut egui::Ui, rect: egui::Rect, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let mut ui = parent.new_child(egui::UiBuilder::new().max_rect(rect));
+    ui.set_clip_rect(rect);
+    add_contents(&mut ui)
 }
 
 /// Which column one divider resizes: the side fixes the drag direction, the width range and
@@ -1709,11 +2062,47 @@ impl DividerSide {
     }
 }
 
+/// Handles the two column dividers of a three-column mode: a drag, the arrow keys or a
+/// double-click writes the new width into the mode's saved `widths` (spec "Panels"). A
+/// divider stops where the stage would get narrower than [`CENTER_MIN_W`]. A change saves
+/// both widths as they are on screen, so a width the window had shrunk does not take the
+/// room back from the column being dragged. Returns whether the widths changed.
+fn resize_dividers(ui: &mut egui::Ui, columns: [egui::Rect; 3], widths: &mut PanelWidths) -> bool {
+    let [left, center, right] = columns;
+    // What the two side columns can share while the stage keeps its minimum.
+    let room = right.right() - left.left() - 2.0 * space::WINDOW_GAP - CENTER_MIN_W;
+    let mut changed = false;
+    if let Some(width) = column_divider(ui, gap_between(&left, &center), "left", left.width(), DividerSide::Left, room - right.width()) {
+        *widths = PanelWidths { left: width, right: right.width() };
+        changed = true;
+    }
+    if let Some(width) = column_divider(ui, gap_between(&center, &right), "right", right.width(), DividerSide::Right, room - left.width()) {
+        *widths = PanelWidths { left: left.width(), right: width };
+        changed = true;
+    }
+    changed
+}
+
+/// Handles the Record mode's single divider between the center and the Live panel, like
+/// [`resize_dividers`]; the unused left width is left as it is.
+fn resize_right_divider(ui: &mut egui::Ui, columns: [egui::Rect; 2], widths: &mut PanelWidths) -> bool {
+    let [center, right] = columns;
+    let room = right.right() - center.left() - space::WINDOW_GAP - CENTER_MIN_W;
+    let Some(width) = column_divider(ui, gap_between(&center, &right), "right", right.width(), DividerSide::Right, room) else {
+        return false;
+    };
+    widths.right = width;
+    true
+}
+
 /// One column divider in the window gap beside a column (spec "Panels"): dragging it resizes
 /// the column, the arrow keys move 16 px when it is focused, and double-clicking restores
 /// the default width. The cursor becomes the resize cursor on hover, and a thin accent line
-/// shows on hover and while dragging. Returns the column's new width when this frame changed it.
-fn column_divider(ui: &mut egui::Ui, rect: egui::Rect, id_salt: &'static str, width: f32, side: DividerSide) -> Option<f32> {
+/// shows on hover and while dragging. `width` is the column's width on screen and `max` the
+/// widest the stage leaves room for. Returns the column's new width when this frame changed it.
+fn column_divider(ui: &mut egui::Ui, rect: egui::Rect, id_salt: &'static str, width: f32, side: DividerSide, max: f32) -> Option<f32> {
+    // The side's own minimum wins over `max` in a window too narrow for both.
+    let limit = |wanted: f32| side.clamp(side.clamp(wanted).min(max));
     let response = ui.interact(rect, egui::Id::new("column_divider").with(id_salt), egui::Sense::click_and_drag());
     if response.clicked() {
         response.request_focus();
@@ -1724,7 +2113,7 @@ fn column_divider(ui: &mut egui::Ui, rect: egui::Rect, id_salt: &'static str, wi
         ui.painter().vline(rect.center().x, rect.y_range(), egui::Stroke::new(DIVIDER_LINE_W, theme.accent.accent));
     }
     if response.double_clicked() {
-        return Some(side.default_width());
+        return Some(limit(side.default_width()));
     }
     let mut moved = 0.0;
     if response.dragged() {
@@ -1738,19 +2127,22 @@ fn column_divider(ui: &mut egui::Ui, rect: egui::Rect, id_salt: &'static str, wi
         };
         moved += side.sign() * step * DIVIDER_KEY_STEP;
     }
-    let new_width = side.clamp(width + moved);
+    if moved == 0.0 {
+        return None;
+    }
+    let new_width = limit(width + moved);
     (new_width != width).then_some(new_width)
 }
 
-/// One menu item: the label in the body font, then the hotkey in the mono value style
-/// (spec "Menus": the items show the existing hotkeys as their shortcuts).
+/// One menu item with its hotkey as the shortcut (spec "Menus": the items show the existing
+/// hotkeys as their shortcuts).
 fn menu_item(ui: &mut egui::Ui, label: &str, chord: &str) -> egui::Response {
-    let mut job = egui::text::LayoutJob::default();
-    job.append(label, 0.0, egui::TextFormat::simple(ui_kit::fonts::medium(typography::BODY_SIZE), color::TEXT_PRIMARY));
-    if !chord.is_empty() {
-        job.append(chord, space::SCALE_12, egui::TextFormat::simple(ui_kit::fonts::mono(typography::VALUE_SIZE), color::TEXT_TERTIARY));
-    }
-    ui.add(egui::Button::new(job))
+    ui.add(ui_kit::MenuItem::new(label).shortcut(chord))
+}
+
+/// [`menu_item`] that draws faded and reports no clicks unless `enabled`.
+pub(crate) fn menu_item_enabled(ui: &mut egui::Ui, enabled: bool, label: &str, chord: &str) -> egui::Response {
+    ui.add_enabled(enabled, ui_kit::MenuItem::new(label).shortcut(chord))
 }
 
 /// Whether Ctrl+, must open the Settings dialog right now: the chord is pressed this frame,
@@ -1774,20 +2166,58 @@ fn project_folder(settings: &Settings) -> std::path::PathBuf {
     config::takes_root(settings).join(name)
 }
 
-/// Opens a folder in Explorer; a failure is logged, not shown.
-fn open_folder(folder: &std::path::Path) {
-    if let Err(err) = std::process::Command::new("explorer").arg(folder).spawn() {
-        log::warn!("could not open {}: {err}", folder.display());
+/// The folder Review lists in `view`, for the current project.
+fn review_folder(settings: &Settings, view: ReviewView) -> std::path::PathBuf {
+    match view {
+        ReviewView::Takes => project_folder(settings),
+        ReviewView::Replays => crate::takes::replays_folder(settings),
+    }
+}
+
+/// The folder a "Can't save to <path>: reason" refusal names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefusedFolder {
+    /// The recordings root: Choose folder opens the recordings picker.
+    Recordings,
+    /// A picked replays root: Choose folder opens the replays picker.
+    Replays,
+}
+
+/// Which configured folder the controller's "Can't save to <path>: reason" refusal names: the
+/// replays folder when one was picked and the refused path is exactly it, the recordings folder
+/// otherwise (a refusal inside a project's Replays folder means the recordings root is bad).
+fn refusal_target(message: &str, settings: &Settings) -> RefusedFolder {
+    let replays = crate::takes::replays_folder(settings);
+    let replays_refused = settings.replays_root.is_some() && message.starts_with(&format!("Can't save to {}:", replays.display()));
+    if replays_refused { RefusedFolder::Replays } else { RefusedFolder::Recordings }
+}
+
+/// Whether two folders sit on the same drive, by their first path component; folders whose
+/// drive cannot be told count as the same.
+fn same_drive(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (a.components().next(), b.components().next()) {
+        (Some(first), Some(second)) => first == second,
+        _ => true,
     }
 }
 
 impl eframe::App for RecorderApp {
+    // The remote runs here, not in `ui`: eframe draws no frame while the window is hidden in
+    // the tray, and the Stream Deck keys must work then too. So must the bake's cancel, for a
+    // recording started by a hotkey or the tray.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.sync_remote(ctx);
+        self.poll_remote(ctx);
+        self.cancel_bake_for_capture();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if ctx.input(|input| input.viewport().close_requested()) {
             // The X button or the tray's Quit: the API closes its connections, then the controller finishes the take's file.
             self.shutting_down = true;
             self.sync_api(&ctx);
+            self.sync_remote(&ctx);
             self.controller.stop();
             self.profile_store.flush();
             if self.settings_dirty {
@@ -1814,15 +2244,20 @@ impl eframe::App for RecorderApp {
         let window_shown = !ctx.input(|input| input.viewport().minimized).unwrap_or(false);
         self.webcam.sync(&mut self.profile_store, &self.settings.active_profile, window_shown);
         self.sync_compositor(window_shown);
+        // Before the mode rules, so the mode is still the one the press was made in.
+        self.review_mark_hotkey(&ctx, &state);
         // The mode rules (spec "Modes"): a take starting or ending moves the mode; ending
         // also queues the "takeNN saved" toast.
-        self.sync_mode(&state, &ctx);
+        self.sync_mode(&state);
 
-        // The 26px status bar (spec "Status bar"): state, disk free, camera note, API clients.
-        egui::Panel::bottom("status-bar").frame(egui::Frame::new().fill(color::BG_GROUND)).show(ui, |ui| {
+        // The status bar (docs/suite/Recorder-E3.md, section 4): state, disk free, camera note, API clients.
+        // The notch button reaches into the status bar, so its text stays clear of it.
+        let notch_x = stage_center_x(ui.max_rect(), self.modes.mode, self.settings.panel_widths.get(self.modes.mode));
+        let replays_free = self.replays_free(&state);
+        egui::Panel::bottom("status-bar").frame(egui::Frame::new().fill(ground(&ctx))).show(ui, |ui| {
             let clients = self.api.as_ref().map(|server| server.client_count());
             let blocked = state.phase == Phase::Idle && self.profile_section.blocked();
-            status_ui::show(ui, &state, clients, blocked);
+            status_ui::show(ui, &state, clients, blocked, crate::engine::cam::info_line().as_deref(), replays_free, notch_x);
         });
 
         // The 44px title bar (spec "Title bar", rev 3); it reports a picked mode through the cell.
@@ -1851,16 +2286,16 @@ impl eframe::App for RecorderApp {
         // The Review keys (spec "Review mode"): play, seek steps and mark jumps.
         self.review_keys(&ctx);
 
-        // The toasts (spec "Mode rules"): one glass capsule at a time; the stop
-        // toast carries a Review action that opens Review on that take.
-        let shown_toast = ui_kit::show_toasts(&ctx);
-        self.toast_review_action(&ctx, shown_toast);
+        self.take_in_bake();
+        // The toasts (spec "Mode rules"): one glass capsule at a time; a saved
+        // take's toast carries a Review action that opens Review on that take.
+        self.show_notices(&ctx, running);
 
         // The Settings dialog (spec "Settings dialog"): File > Settings (Ctrl+,) and
         // View > Appearance open it, Esc closes it.
         let next_take = if self.settings_dialog.open {
-            let (_label, path) = self.profile_section.next_take(&self.profile_store, &self.settings);
-            NextTake { path }
+            let plan = self.profile_section.next_take(&self.profile_store, &self.settings, false);
+            NextTake { path: plan.video_path }
         } else {
             NextTake::default()
         };
@@ -1871,7 +2306,13 @@ impl eframe::App for RecorderApp {
             &next_take,
             &self.hotkeys,
             &state.recent,
-            ApiUi { server: self.api.as_ref(), token: self.api_token.as_deref(), show_token: &mut self.api_show_token, port_edit: &mut self.api_port_edit },
+            ApiUi {
+                server: self.api.as_ref(),
+                token: self.api_token.as_deref(),
+                show_token: &mut self.api_show_token,
+                port_edit: &mut self.api_port_edit,
+                stream_deck_status: remote::status_text(self.remote.as_ref()),
+            },
         );
         if outcome.settings_changed {
             self.push_settings_if_changed();
@@ -1883,11 +2324,21 @@ impl eframe::App for RecorderApp {
         if outcome.regenerate_token {
             self.api_regenerate = true;
         }
+
+        // The first-launch dialog (spec "Recorder output folders", UI 3): stays up until the
+        // recordings folder is answered; the flag and a picked folder are saved.
+        let launch = settings_ui::first_launch(&ctx, &mut self.settings);
+        if launch.confirmed || launch.folder_changed {
+            self.push_settings_if_changed();
+            self.save_settings();
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::rc::Rc;
+
     use super::*;
 
     /// The app saves its accent in its own folder and resets to its own default.
@@ -1895,6 +2346,49 @@ mod tests {
     fn the_app_has_its_own_appearance_identity() {
         assert_eq!(APPEARANCE.id, "recorder");
         assert_eq!(APPEARANCE.default_preset, ui_kit::Preset::Teal);
+    }
+
+    /// A "Can't save to <path>: reason" refusal names the folder whose picker Choose folder
+    /// opens: the recordings root, a picked replays root, or the recordings root when replays
+    /// live inside the project (spec "Recorder output folders", Checks 1).
+    #[test]
+    fn a_folder_refusal_names_the_folder_to_choose_again() {
+        let settings = Settings {
+            root_folder: Some(std::path::PathBuf::from("D:\\Recordings")),
+            replays_root: Some(std::path::PathBuf::from("E:\\Replays")),
+            project: "Show".to_owned(),
+            ..Settings::default()
+        };
+        // The take refusal names the recordings root exactly.
+        assert_eq!(refusal_target("Can't save to D:\\Recordings: the folder is not writable", &settings), RefusedFolder::Recordings);
+        // The replay refusal names the picked replays root with the project under it.
+        assert_eq!(refusal_target("Can't save to E:\\Replays\\Show: the folder is not writable", &settings), RefusedFolder::Replays);
+        // Without a picked replays root, a refusal inside the project's Replays folder is the recordings root.
+        let mut inside = settings;
+        inside.replays_root = None;
+        assert_eq!(refusal_target("Can't save to D:\\Recordings\\Show\\Replays: the folder is not writable", &inside), RefusedFolder::Recordings);
+    }
+
+    #[test]
+    fn the_replays_view_scans_the_replays_folder() -> Result<(), std::io::Error> {
+        let root = std::env::temp_dir().join(format!("cutmark-recorder-test-{}-review-views", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut settings = Settings { root_folder: Some(root.join("Recordings")), replays_root: None, project: "Show".to_owned(), ..Settings::default() };
+        let inside = root.join("Recordings").join("Show");
+        let picked = root.join("Picked");
+        for (folder, name) in [(inside.clone(), "take01"), (inside.join("Replays"), "replay01"), (picked.join("Show"), "replay02")] {
+            std::fs::create_dir_all(folder.join(name))?;
+            std::fs::write(folder.join(name).join(format!("{name}.mkv")), b"video")?;
+        }
+        let names = |settings: &Settings, view| {
+            let days = review::scan(&review_folder(settings, view));
+            days.iter().flat_map(|day| day.takes.iter().map(|take| take.name.clone())).collect::<Vec<_>>()
+        };
+        assert_eq!(names(&settings, ReviewView::Takes), ["take01"], "the replays inside the project are not takes");
+        assert_eq!(names(&settings, ReviewView::Replays), ["replay01"]);
+        settings.replays_root = Some(picked);
+        assert_eq!(names(&settings, ReviewView::Replays), ["replay02"]);
+        std::fs::remove_dir_all(&root)
     }
 
     /// The Setup layout, headless at 1300 x 840: the right settings column ends at the window
@@ -1906,7 +2400,7 @@ mod tests {
         let ctx = egui::Context::default();
         let columns = std::cell::Cell::new((egui::Rect::NOTHING, egui::Rect::NOTHING, egui::Rect::NOTHING));
         let mut output = ctx.run_ui(input, |ui| {
-            egui::CentralPanel::default().frame(window_frame()).show(ui, |ui| {
+            egui::CentralPanel::default().frame(window_frame(ui.ctx())).show(ui, |ui| {
                 let [left, center, right] = three_columns(ui.max_rect(), PanelWidths::default());
                 columns.set((left, center, right));
             });
@@ -1935,29 +2429,29 @@ mod tests {
     }
 
     /// On a window too narrow for the wanted widths, the side columns give way first and the
-    /// center keeps its 480 px minimum; they shrink in proportion to the room each has left
+    /// center keeps its 400 px minimum; they shrink in proportion to the room each has left
     /// down to its minimum (spec "Panels").
     #[test]
     fn the_center_keeps_its_minimum_while_the_side_columns_give_way() {
         let gap = space::WINDOW_GAP;
-        // 270 + 340 + 2 gaps + 480 = 1106 is 56 more than the 1050 the window offers.
-        let (left, right) = fitted_widths(270.0, 340.0, 1050.0, gap);
+        // 270 + 340 + 2 gaps + 400 = 1026 is 26 more than the 1000 the window offers.
+        let (left, right) = fitted_widths(270.0, 340.0, 1000.0, gap);
         let left_room = 270.0 - config::LEFT_PANEL_MIN;
         let right_room = 340.0 - config::RIGHT_PANEL_MIN;
-        assert_eq!(left, 270.0 - 56.0 * left_room / (left_room + right_room), "the left column gives way in proportion");
-        assert_eq!(right, 340.0 - 56.0 * right_room / (left_room + right_room), "the right column gives way in proportion");
-        assert_eq!(left + right + 2.0 * gap + CENTER_MIN_W, 1050.0, "the center keeps its 480 px minimum");
+        assert_eq!(left, 270.0 - 26.0 * left_room / (left_room + right_room), "the left column gives way in proportion");
+        assert_eq!(right, 340.0 - 26.0 * right_room / (left_room + right_room), "the right column gives way in proportion");
+        assert!((left + right + 2.0 * gap + CENTER_MIN_W - 1000.0).abs() < 1e-3, "the center keeps its 400 px minimum");
     }
 
     /// A window narrower than the minimums cannot keep the center's minimum: the side
-    /// columns stay at their minimums and the center goes below 480 px (spec "Panels").
+    /// columns stay at their minimums and the center goes below 400 px (spec "Panels").
     #[test]
     fn a_window_too_narrow_for_the_minimums_leaves_the_center_below_its_minimum() {
         let gap = space::WINDOW_GAP;
         let (left, right) = fitted_widths(270.0, 340.0, 900.0, gap);
         assert_eq!(left, config::LEFT_PANEL_MIN, "the left column stops at its minimum");
         assert_eq!(right, config::RIGHT_PANEL_MIN, "the right column stops at its minimum");
-        assert_eq!(left + right + 2.0 * gap + CENTER_MIN_W, 1016.0, "which is more than the 900 the window offers");
+        assert_eq!(left + right + 2.0 * gap + CENTER_MIN_W, 936.0, "which is more than the 900 the window offers");
         let [left, center, right] = three_columns(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0)), PanelWidths::default());
         assert_eq!(left.width(), config::LEFT_PANEL_MIN);
         assert_eq!(right.width(), config::RIGHT_PANEL_MIN);
@@ -1965,15 +2459,15 @@ mod tests {
     }
 
     /// Record mode has one divider: the Live panel's width clamps into its range and gives
-    /// way to the center's 480 px minimum on a narrow window (spec "Panels").
+    /// way to the center's 400 px minimum on a narrow window (spec "Panels").
     #[test]
     fn the_record_columns_keep_the_center_at_its_minimum_on_a_narrow_window() {
         let gap = space::WINDOW_GAP;
         assert_eq!(fitted_right(340.0, 2000.0, gap), config::RIGHT_PANEL_DEFAULT, "a wide window keeps the saved width");
-        // 340 + gap + 480 = 828 is 28 more than the 800 the window offers.
-        let [center, right] = two_columns(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0)), PanelWidths::default());
+        // 340 + gap + 400 = 748 is 28 more than the 720 the window offers.
+        let [center, right] = two_columns(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(720.0, 600.0)), PanelWidths::default());
         assert_eq!(right.width(), 340.0 - 28.0, "the Live panel gives way to the center");
-        assert_eq!(center.width(), CENTER_MIN_W, "the center keeps its 480 px minimum");
+        assert_eq!(center.width(), CENTER_MIN_W, "the center keeps its 400 px minimum");
     }
 
     /// Ctrl+, opens the Settings dialog only on the press itself, while the dialog is
@@ -2006,5 +2500,132 @@ mod tests {
         assert!(!pressed(true, false, true), "Ctrl+, is ignored while the dialog is already open");
         assert!(!pressed(false, true, true), "Ctrl+, is ignored while a text field has the focus");
         assert!(!pressed(false, false, false), "a bare comma does not open the dialog");
+    }
+
+    /// A harness that draws a three-column mode `width` wide with live dividers over the
+    /// shared `widths`, and reports the columns of the last frame.
+    fn divider_harness(width: f32, widths: Rc<Cell<PanelWidths>>) -> (egui_kittest::Harness<'static>, Rc<Cell<[egui::Rect; 3]>>) {
+        let columns = Rc::new(Cell::new([egui::Rect::NOTHING; 3]));
+        let drawn = Rc::clone(&columns);
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(width, 600.0)).build_ui(move |ui| {
+            // The harness's own panel has a margin; the columns are laid out on the whole window.
+            let window = ui.ctx().content_rect();
+            let mut body = ui.new_child(egui::UiBuilder::new().max_rect(window.shrink(space::WINDOW_GAP)));
+            body.set_clip_rect(window);
+            let mut saved = widths.get();
+            let laid_out = three_columns(body.max_rect(), saved);
+            drawn.set(laid_out);
+            if resize_dividers(&mut body, laid_out, &mut saved) {
+                widths.set(saved);
+            }
+        });
+        harness.run();
+        (harness, columns)
+    }
+
+    /// Drags from `from` by `by` points in a few steps and lets go.
+    fn drag(harness: &mut egui_kittest::Harness<'_>, from: egui::Pos2, by: f32) {
+        harness.hover_at(from);
+        harness.run();
+        harness.drag_at(from);
+        harness.run();
+        let steps = 8_u8;
+        for step in 1..=steps {
+            harness.hover_at(from + egui::vec2(by * f32::from(step) / f32::from(steps), 0.0));
+            harness.run();
+        }
+        harness.drop_at(from + egui::vec2(by, 0.0));
+        harness.run();
+    }
+
+    /// The middle of the divider between two columns.
+    fn divider_at(a: egui::Rect, b: egui::Rect) -> egui::Pos2 {
+        gap_between(&a, &b).center()
+    }
+
+    /// Dragging a divider resizes its column, and the new width comes back after a save and a load.
+    #[test]
+    fn a_divider_drag_resizes_the_column_and_the_width_is_remembered() -> Result<(), Box<dyn std::error::Error>> {
+        let widths = Rc::new(Cell::new(PanelWidths::default()));
+        let (mut harness, columns) = divider_harness(1280.0, Rc::clone(&widths));
+        let [left, center, _] = columns.get();
+        drag(&mut harness, divider_at(left, center), 50.0);
+        let dragged = widths.get();
+        assert!(dragged.left > config::LEFT_PANEL_DEFAULT + 30.0, "the drag widened the left column: {dragged:?}");
+        assert_eq!(columns.get()[0].width(), dragged.left, "the column is drawn at the saved width");
+        assert_eq!(dragged.right, config::RIGHT_PANEL_DEFAULT, "the other column keeps its width");
+
+        let [_, center, right] = columns.get();
+        drag(&mut harness, divider_at(center, right), -50.0);
+        let both = widths.get();
+        assert!(both.right > config::RIGHT_PANEL_DEFAULT + 30.0, "the drag widened the right column: {both:?}");
+        assert_eq!(both.left, dragged.left);
+
+        let mut settings = Settings::default();
+        *settings.panel_widths.entry(Mode::Setup) = both;
+        let loaded: Settings = serde_json::from_str(&serde_json::to_string(&settings)?)?;
+        assert_eq!(loaded.panel_widths.get(Mode::Setup), both);
+        Ok(())
+    }
+
+    /// In the narrowest window, dragging either divider as far as it goes, in either order,
+    /// leaves the stage at least 400 wide, and what is saved is what is drawn.
+    #[test]
+    fn the_stage_keeps_400_in_the_narrowest_window_with_the_dividers_dragged_to_the_maximum() {
+        let widest = PanelWidths { left: config::LEFT_PANEL_MAX, right: config::RIGHT_PANEL_MAX };
+        for (saved, left_first) in [(PanelWidths::default(), true), (PanelWidths::default(), false), (widest, true)] {
+            let widths = Rc::new(Cell::new(saved));
+            let (mut harness, columns) = divider_harness(config::MIN_WINDOW_WIDTH, Rc::clone(&widths));
+            assert!(columns.get()[1].width() >= CENTER_MIN_W - 0.01, "remembered widths are clamped on the first frame");
+            for dragging_left in [left_first, !left_first] {
+                let [left, center, right] = columns.get();
+                if dragging_left {
+                    drag(&mut harness, divider_at(left, center), 600.0);
+                } else {
+                    drag(&mut harness, divider_at(center, right), -600.0);
+                }
+                let [left, center, right] = columns.get();
+                assert!(center.width() >= CENTER_MIN_W - 0.01, "the stage is {} wide", center.width());
+                assert!(left.width() >= config::LEFT_PANEL_MIN && right.width() >= config::RIGHT_PANEL_MIN);
+                let now = widths.get();
+                if now != saved {
+                    assert!((now.left - left.width()).abs() < 0.01 && (now.right - right.width()).abs() < 0.01, "{now:?} is not what is drawn");
+                }
+            }
+        }
+    }
+
+    /// Record mode's stage keeps 400 in the narrowest window with the widest saved panel.
+    #[test]
+    fn the_record_stage_keeps_400_in_the_narrowest_window() {
+        let widths = PanelWidths { left: config::LEFT_PANEL_MAX, right: config::RIGHT_PANEL_MAX };
+        let body = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(config::MIN_WINDOW_WIDTH, 600.0)).shrink(space::WINDOW_GAP);
+        assert!(two_columns(body, widths)[0].width() >= CENTER_MIN_W);
+    }
+
+    /// Each mark press counts once; other commands do not count.
+    #[test]
+    fn the_tray_shows_replay_only_while_nothing_records() {
+        for phase in [Phase::Idle, Phase::Countdown(3)] {
+            assert_eq!((tray_state(phase, true), tray_state(phase, false)), (TrayState::Replay, TrayState::Idle));
+        }
+        for replay_on in [false, true] {
+            assert_eq!((tray_state(Phase::Recording, replay_on), tray_state(Phase::Paused, replay_on)), (TrayState::Recording, TrayState::Paused));
+        }
+    }
+
+    #[test]
+    fn a_mark_press_is_seen_once() {
+        let mut seen = 0;
+        let mut recent = VecDeque::new();
+        assert!(!new_mark_press(&recent, &mut seen));
+        recent.push_back(Command::new(CommandKind::StartStop, 5));
+        recent.push_back(Command::new(CommandKind::Mark(MarkKind::WithLabel), 6));
+        assert!(!new_mark_press(&recent, &mut seen), "only the plain mark counts");
+        recent.push_back(Command::new(CommandKind::Mark(MarkKind::Silent), 10));
+        assert!(new_mark_press(&recent, &mut seen));
+        assert!(!new_mark_press(&recent, &mut seen), "the same press does not count again");
+        recent.push_back(Command::new(CommandKind::Mark(MarkKind::Silent), 11));
+        assert!(new_mark_press(&recent, &mut seen));
     }
 }

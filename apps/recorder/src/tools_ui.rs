@@ -7,14 +7,15 @@
 use std::time::Duration;
 
 use capture::{CameraFormat, ControlInfo};
-use egui::{Button, Color32, ComboBox, DragValue, ProgressBar, Ui};
+use egui::{Align, Align2, Button, Color32, ComboBox, DragValue, Label, Layout, ProgressBar, Rect, RichText, Ui, UiBuilder, pos2};
 use media_io::SyncReport;
 use serde::{Deserialize, Serialize};
 use ui_kit::icons;
-use ui_kit::tokens::{size, space};
-use ui_kit::{SliderKind, icon_button, inspector_group, inspector_row, switch};
+use ui_kit::tokens::{size, space, typography};
+use ui_kit::{SliderKind, Theme, icon_button, inspector_group, inspector_row, switch};
 
 use crate::config::ControlSetting;
+use crate::data_text;
 use crate::engine::bus::{BusSender, Command, CommandKind};
 use crate::engine::controller::{ControllerState, Phase};
 use crate::key_ui::{self, KeyUiState};
@@ -27,6 +28,9 @@ const SYNC_GOOD: Color32 = ui_kit::tokens::color::SEM_SUCCESS;
 
 /// The color of the "Off by N frames" verdict and of a failed sync test (`sem.meter.warn`).
 const SYNC_WARN: Color32 = ui_kit::tokens::color::SEM_METER_WARN;
+
+/// Width of a slider row's value column, in points.
+const VALUE_COLUMN: f32 = 56.0;
 
 /// How often the window redraws while a sync test runs, so its progress moves.
 const SYNC_REPAINT: Duration = Duration::from_millis(100);
@@ -183,21 +187,17 @@ pub(crate) fn camera_row(ui: &mut Ui, host: &mut WebcamHost, store: &mut Profile
 /// Also drawn in the Sources panel's camera popover, under the camera dropdown.
 pub(crate) fn format_row(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore) {
     let Some(settings) = host.settings(store) else { return };
-    let selected = format!(
-        "{} {}x{} @ {} fps",
-        settings.format.subtype,
-        settings.format.width,
-        settings.format.height,
-        webcam_ui::fps_text(f64::from(settings.format.fps))
-    );
+    let selected = webcam_ui::mode_text(&settings.format.subtype, settings.format.width, settings.format.height, f64::from(settings.format.fps));
     let mut picked: Option<CameraFormat> = None;
     inspector_row(
         ui,
         "Format",
         |ui| {
-            ComboBox::from_id_salt("webcam-format").selected_text(selected).width(ui.available_width()).show_ui(ui, |ui| {
+            let selected = RichText::new(selected).monospace();
+            ComboBox::from_id_salt("webcam-format").selected_text(selected).width(ui.available_width()).truncate().show_ui(ui, |ui| {
                 for format in host.formats(store) {
-                    if ui.selectable_label(host.is_current_format(store, format), webcam_ui::format_label(format)).clicked() {
+                    let entry = RichText::new(webcam_ui::format_label(format)).monospace();
+                    if ui.selectable_label(host.is_current_format(store, format), entry).clicked() {
                         picked = Some(*format);
                     }
                 }
@@ -241,6 +241,39 @@ fn image_group(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore) {
     });
 }
 
+/// One inspector row with a slider, laid out in fixed columns so nothing runs into the value: the
+/// value in a [`VALUE_COLUMN`] wide column at the right, the switch in its own column left of it,
+/// and the slider in the rest. `add` gets the slider column and the switch column; the switch
+/// column stays reserved when it is left empty, so the sliders of a group end together.
+pub(crate) fn slider_row(ui: &mut Ui, label: &str, value: &str, add: impl FnOnce(&mut Ui, &mut Ui)) {
+    inspector_row(
+        ui,
+        label,
+        |ui| {
+            let area = ui.max_rect();
+            // With no value of its own, inspector_row ends the control area one gap short of the text inset.
+            let right = area.right() + space::SCALE_8;
+            let value_left = right - VALUE_COLUMN;
+            let switch_right = value_left - space::SCALE_8;
+            let switch_left = switch_right - size::SWITCH_WIDTH;
+            let slider_right = (switch_left - space::SCALE_8).max(area.left());
+            let column = |ui: &mut Ui, left: f32, right: f32| {
+                let rect = Rect::from_min_max(pos2(left, area.top()), pos2(right, area.bottom()));
+                ui.new_child(UiBuilder::new().max_rect(rect).layout(Layout::left_to_right(Align::Center)))
+            };
+            let mut slider_ui = column(ui, area.left(), slider_right);
+            let mut switch_ui = column(ui, switch_left, switch_right);
+            add(&mut slider_ui, &mut switch_ui);
+            let color = Theme::get(ui.ctx()).neutrals.text_primary;
+            let font = ui_kit::fonts::mono(typography::VALUE_SIZE);
+            let galley = ui.painter().layout_job(ui_kit::fonts::tracked(value, font, color, ui_kit::fonts::MONO_LETTER_SPACING_EM));
+            let place = Align2::RIGHT_CENTER.anchor_size(pos2(right, area.center().y), galley.size());
+            ui.painter().galley(place.min, galley, color);
+        },
+        None,
+    );
+}
+
 /// One camera control: its slider (disabled while the camera drives it) with an Auto switch where the camera offers one.
 fn control_row(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore, info: &ControlInfo) {
     let label = info.prop.label().to_owned();
@@ -253,22 +286,17 @@ fn control_row(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore, inf
     let current = info.current.value;
     let prop = info.prop;
     let value_text = format!("{value}");
-    inspector_row(
-        ui,
-        &label,
-        move |ui| {
-            ui.add_enabled_ui(!auto, |ui| {
-                if ui_kit::slider(ui, &mut value, range, SliderKind::Accent).changed() {
-                    let snapped = (min + ((value - min) / step).round() * step).clamp(min, max);
-                    host.set_control(store, prop, ControlSetting::Manual(snapped.round() as i32));
-                }
-            });
-            if auto_capable && switch(ui, &mut auto).changed() {
-                host.set_control(store, prop, if auto { ControlSetting::Auto } else { ControlSetting::Manual(current) });
+    slider_row(ui, &label, &value_text, move |slider_ui, switch_ui| {
+        slider_ui.add_enabled_ui(!auto, |ui| {
+            if ui_kit::slider(ui, &mut value, range, SliderKind::Accent).changed() {
+                let snapped = (min + ((value - min) / step).round() * step).clamp(min, max);
+                host.set_control(store, prop, ControlSetting::Manual(snapped.round() as i32));
             }
-        },
-        Some(&value_text),
-    );
+        });
+        if auto_capable && switch(switch_ui, &mut auto).changed() {
+            host.set_control(store, prop, if auto { ControlSetting::Auto } else { ControlSetting::Manual(current) });
+        }
+    });
 }
 
 /// The Sync group: the camera offset, the sync test with its hint and progress, and the result.
@@ -329,16 +357,22 @@ fn sync_group(ui: &mut Ui, host: &mut WebcamHost, store: &mut ProfileStore, reco
 
 /// The measured offset, the verdict, and the button that saves the opposite offset to the profile.
 fn sync_result(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, report: &SyncReport, profile: &str) {
-    ui.label(format!("Measured offset {:+.0} ms (spread {:.0} ms over {} flashes)", report.median_ms, report.spread_ms, report.offsets_ms.len()));
+    let neutrals = Theme::get(ui.ctx()).neutrals;
+    let median = format!("{:+.0} ms", report.median_ms);
+    let spread = format!("{:.0} ms", report.spread_ms);
+    let flashes = report.offsets_ms.len().to_string();
+    data_line(ui, &format!("Measured offset {median} (spread {spread} over {flashes} flashes)"), &[&median, &spread, &flashes], neutrals.text_primary);
     // The test records with the offset at zero, so what the current offset leaves over is the raw median plus that offset.
     let residual_ms = report.median_ms + f64::from(host.settings(store).map_or(0, |settings| settings.offset_ms));
-    ui.label(format!("Residual with current offset: {residual_ms:+.0} ms"));
+    let residual = format!("{residual_ms:+.0} ms");
+    data_line(ui, &format!("Residual with current offset: {residual}"), &[&residual], neutrals.text_primary);
     match webcam_ui::frames_off(residual_ms, report.main_fps) {
         None => {
             ui.colored_label(SYNC_GOOD, "Within 1 frame");
         }
         Some(frames) => {
-            ui.colored_label(SYNC_WARN, format!("Off by {frames} frame{}", if frames == 1 { "" } else { "s" }));
+            let count = frames.to_string();
+            data_line(ui, &format!("Off by {count} frame{}", if frames == 1 { "" } else { "s" }), &[&count], SYNC_WARN);
         }
     }
     ui.horizontal(|ui| {
@@ -352,15 +386,144 @@ fn sync_result(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, report:
             store.flush();
         }
         if let Some(settings) = host.settings(store) {
-            ui.weak(format!("Camera offset is {} ms", settings.offset_ms));
+            let offset = format!("{} ms", settings.offset_ms);
+            data_line(ui, &format!("Camera offset is {offset}"), &[&offset], neutrals.text_tertiary);
         }
     });
 }
 
+/// One wrapping line of the sync result, with its numbers in Martian Mono.
+fn data_line(ui: &mut Ui, text: &str, data: &[&str], color: Color32) {
+    ui.add(Label::new(data_text::with_data(text, data, color)).wrap());
+}
+
+/// The kittest harness and the overlap checks the row layout tests share.
+#[cfg(test)]
+pub(crate) mod row_checks {
+    use egui::accesskit::Role;
+    use egui::{Rect, Shape, Ui, UiBuilder, pos2, vec2};
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+    use ui_kit::tokens::space;
+
+    /// How far a slider's knob reaches past the ends of its rect.
+    const KNOB_REACH: f32 = 7.0;
+    /// The height of the test window, enough for every row a test draws.
+    const HEIGHT: f32 = 600.0;
+
+    /// One painted text and the part of the window it may show in.
+    pub(crate) struct Painted {
+        pub(crate) text: String,
+        pub(crate) rect: Rect,
+        clip: Rect,
+    }
+
+    /// A harness that draws `draw` in a panel `width` wide, as the app's columns do, with the
+    /// suite's fonts and style.
+    pub(crate) fn panel_harness(width: f32, mut draw: impl FnMut(&mut Ui) + 'static) -> Harness<'static> {
+        let mut first_pass = true;
+        let mut harness = Harness::builder().with_size(vec2(width + 100.0, HEIGHT)).build_ui(move |ui| {
+            // The fonts a style asks for are only there from the next pass on.
+            if std::mem::take(&mut first_pass) {
+                ui_kit::apply(ui.ctx());
+                crate::data_text::apply(ui.ctx());
+                return;
+            }
+            let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(width, HEIGHT));
+            let mut column = ui.new_child(UiBuilder::new().max_rect(rect));
+            column.set_clip_rect(rect);
+            ui_kit::side_panel(&mut column, |ui| {
+                ui.set_min_size(ui.available_size());
+                draw(ui);
+            });
+        });
+        harness.run();
+        harness
+    }
+
+    /// Every text the last frame painted.
+    pub(crate) fn painted(harness: &Harness<'_>) -> Vec<Painted> {
+        fn collect(shape: &Shape, clip: Rect, found: &mut Vec<Painted>) {
+            match shape {
+                Shape::Text(text) if !text.galley.text().is_empty() => {
+                    let rect = Rect::from_min_size(text.pos, text.galley.size());
+                    found.push(Painted { text: text.galley.text().to_owned(), rect, clip });
+                }
+                Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect(shape, clip, found)),
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        for clipped in &harness.output().shapes {
+            collect(&clipped.shape, clipped.clip_rect, &mut found);
+        }
+        found
+    }
+
+    /// The areas the sliders (with their knobs) and the switches cover.
+    pub(crate) fn controls(harness: &Harness<'_>) -> Vec<Rect> {
+        let sliders = harness.query_all_by_role(Role::Slider).map(|node| node.rect().expand2(vec2(KNOB_REACH, 0.0)));
+        sliders.chain(harness.query_all_by_label("Switch").map(|node| node.rect())).collect()
+    }
+
+    /// Fails when a text is clipped or leaves the panel's content, or when any two of the texts
+    /// and controls overlap.
+    pub(crate) fn assert_no_overlap(texts: &[&Painted], controls: &[Rect], panel_width: f32) {
+        // The side panel's padding.
+        let content_right = panel_width - space::PANEL_PADDING;
+        for painted in texts {
+            assert!(painted.clip.expand(0.5).contains_rect(painted.rect), "{:?} is clipped: {:?} in {:?}", painted.text, painted.rect, painted.clip);
+            assert!(
+                painted.rect.left() >= space::PANEL_PADDING && painted.rect.right() <= content_right + 0.5,
+                "{:?} leaves the panel: {:?}",
+                painted.text,
+                painted.rect
+            );
+        }
+        let named: Vec<(&str, Rect)> =
+            texts.iter().map(|painted| (painted.text.as_str(), painted.rect)).chain(controls.iter().map(|rect| ("a control", *rect))).collect();
+        for (index, (name, rect)) in named.iter().enumerate() {
+            for (other_name, other) in &named[index + 1..] {
+                assert!(!rect.shrink(0.25).intersects(other.shrink(0.25)), "{name:?} {rect:?} overlaps {other_name:?} {other:?}");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Tool;
+    use ui_kit::{SliderKind, inspector_group, switch};
+
+    use super::row_checks::{assert_no_overlap, controls, painted, panel_harness};
+    use super::{Tool, slider_row};
+    use crate::config;
     use crate::config::Settings;
+
+    /// The Camera tool's slider rows keep label, slider, Auto switch and value apart at the
+    /// narrowest right panel, with the longest label and the widest values.
+    #[test]
+    fn camera_rows_do_not_overlap_at_the_narrowest_panel() {
+        let harness = panel_harness(config::RIGHT_PANEL_MIN, |ui| {
+            inspector_group(ui, |ui| {
+                // The last row has no Auto switch.
+                for (label, text, auto_capable) in [("Exposure", "-13", true), ("White balance", "10000", true), ("Brightness", "-255", false)] {
+                    slider_row(ui, label, text, |slider_ui, switch_ui| {
+                        let mut value = 1.0;
+                        ui_kit::slider(slider_ui, &mut value, 0.0..=1.0, SliderKind::Accent);
+                        if auto_capable {
+                            let mut auto = false;
+                            switch(switch_ui, &mut auto);
+                        }
+                    });
+                }
+            });
+        });
+        let texts = painted(&harness);
+        let controls = controls(&harness);
+        assert_eq!((texts.len(), controls.len()), (6, 5));
+        assert_no_overlap(&texts.iter().collect::<Vec<_>>(), &controls, config::RIGHT_PANEL_MIN);
+        assert!(controls.iter().all(|rect| rect.width() >= 40.0), "every slider keeps a usable width: {controls:?}");
+    }
 
     #[test]
     fn tool_selection_persists_through_a_settings_save_and_load() {

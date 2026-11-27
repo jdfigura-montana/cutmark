@@ -3,7 +3,7 @@ id: the-window
 title: The window
 section: Basics
 order: 30
-keywords: window, layout, panels, menu bar, status bar, timeline, transport, media bin, master, interface, screen
+keywords: window, layout, panels, menu bar, status bar, bottom bar, play button, timeline, transport, media bin, master, interface, screen
 context:
 ---
 
@@ -19,7 +19,7 @@ The **Media** panel lists the audio files in your project. Drag a file from the 
 
 ## Timeline
 
-The timeline shows your tracks and clips. The ruler runs along the top. The transport deck at the bottom center has **Go to start**, **Play**, **Stop**, **Record**, and **Go to end**. The timeline toolbar has **Undo**, **Redo**, **Ripple**, and **Snap** on the left and the waveform and zoom controls on the right.
+The timeline shows your tracks and clips. The ruler runs along the top. The round **Play** button sits in the notch at the bottom edge. The bottom bar beside it has the timecode and **Go to start** on the left, and **Stop**, **Record**, **Go to end** and the project length on the right. The timeline toolbar has **Undo**, **Redo**, **Ripple**, and **Snap** on the left and the waveform and zoom controls on the right.
 
 ## Master panel
 

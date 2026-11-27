@@ -14,7 +14,7 @@ fn shared_value(start: f32) -> (Rc<Cell<f32>>, Rc<Cell<f32>>) {
     (cell.clone(), cell)
 }
 
-/// A harness with the ui-kit font set, so the named Inter families the
+/// A harness with the ui-kit font set, so the named Instrument Sans families the
 /// widgets lay text out in are bound. The first pass only installs the
 /// fonts (egui applies a font change at the start of the next pass); the
 /// widgets are drawn from the second pass on.

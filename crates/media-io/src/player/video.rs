@@ -3,9 +3,9 @@
 //! [`VideoDecoder::open`] tries D3D11VA on its own D3D11 device and falls back to
 //! software decoding the way `bgvideo` does. Every decoded frame is moved into
 //! system memory when needed, scaled with swscale to RGBA at most `max_width`
-//! wide and queued for the caller, who pulls frames with [`VideoDecoder::frame_at`]
-//! as its own clock advances. The queue holds a few frames, so memory stays flat
-//! on long takes.
+//! wide, in the stream's colour standard (BT.709 for untagged HD), and queued for
+//! the caller, who pulls frames with [`VideoDecoder::frame_at`] as its own clock
+//! advances. The queue holds a few frames, so memory stays flat on long takes.
 #![allow(unsafe_code)]
 
 use std::collections::VecDeque;
@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use ffmpeg_next::ffi;
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
@@ -26,8 +27,14 @@ use crate::hw::{MediaError, ff_error};
 /// How many scaled frames the queue holds while the caller has not taken them.
 const QUEUE_LEN: usize = 8;
 
+/// How long Drop waits for the decode thread to end before it leaves the thread behind.
+const JOIN_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// The swscale flag set: bilinear, a good middle ground for downscaling.
 const SWS_BILINEAR: c_int = 2;
+
+/// The smallest picture that counts as HD: 720 lines, or this wide when the picture is cropped to a cinema shape.
+const HD_SIZE: (u32, u32) = (1280, 720);
 
 /// The AVERROR code for EAGAIN, which the decoder returns when it wants to hand out a frame first.
 const AVERROR_EAGAIN: c_int = -11;
@@ -71,7 +78,7 @@ pub struct VideoDecoder {
     shown: Arc<Mutex<Option<RgbaFrame>>>,
     /// Set by Drop to end the decode thread.
     stop: Arc<AtomicBool>,
-    /// The decode thread, taken and joined by Drop.
+    /// The decode thread, taken by Drop and joined within `JOIN_TIMEOUT`.
     thread: Option<JoinHandle<()>>,
     /// The length of the file in milliseconds, from its headers.
     duration_ms: u64,
@@ -149,9 +156,14 @@ impl VideoDecoder {
     /// The newest decoded frame with a presentation time at or before `clock_ms`, dropping the
     /// older ones; frames past the clock stay queued. `None` means nothing decoded yet.
     pub fn frame_at(&self, clock_ms: u64) -> Option<RgbaFrame> {
-        let (queue_lock, _) = &*self.queue;
+        let (queue_lock, space) = &*self.queue;
         let mut queue = lock(queue_lock);
+        let queued = queue.len();
         let best = newest_at_or_before(&mut queue, lock(&self.shown).take(), clock_ms);
+        if queue.len() < queued {
+            // The decode thread sleeps on a full queue until it hears there is room.
+            space.notify_all();
+        }
         *lock(&self.shown) = best.clone();
         best
     }
@@ -169,15 +181,39 @@ impl VideoDecoder {
 
 impl Drop for VideoDecoder {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        let (_, control_signal) = &*self.control;
-        control_signal.notify_all();
-        let (_, queue_signal) = &*self.queue;
-        queue_signal.notify_all();
+        // The thread checks `stop` under the lock it then waits on. Setting the flag and
+        // notifying under that lock means the wake-up cannot fall between check and wait.
+        {
+            let (state_lock, signal) = &*self.control;
+            let _state = lock(state_lock);
+            self.stop.store(true, Ordering::Relaxed);
+            signal.notify_all();
+        }
+        // The flag is set before this lock is taken, so a full queue's waiter either sees it
+        // or is already waiting. One lock at a time, so `push_frame`'s lock order holds.
+        {
+            let (queue_lock, space) = &*self.queue;
+            let _queued = lock(queue_lock);
+            space.notify_all();
+        }
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            join_within(thread, JOIN_TIMEOUT);
         }
     }
+}
+
+/// Joins `thread` if it ends within `timeout`; otherwise logs it and leaves it detached, which
+/// is safe because the thread owns everything it uses.
+fn join_within(thread: JoinHandle<()>, timeout: Duration) {
+    let started = Instant::now();
+    while !thread.is_finished() {
+        if started.elapsed() >= timeout {
+            log::warn!("video decode: the thread did not end within {timeout:?} and was left behind");
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let _ = thread.join();
 }
 
 /// Locks a mutex, carrying on with the data if a thread panicked while holding it.
@@ -229,7 +265,7 @@ fn mark_eof(control: &Control) {
 fn run(SendSession(mut session): SendSession, control: Arc<Control>, queue: Arc<Queue>, stop: Arc<AtomicBool>) {
     let mut seek_target: Option<u64> = None;
     loop {
-        {
+        let requested = {
             let (state_lock, signal) = &*control;
             let mut state = lock(state_lock);
             while !stop.load(Ordering::Relaxed) && state.pending_seek.is_none() && seek_target.is_none() && (!state.playing || state.eof) {
@@ -238,14 +274,16 @@ fn run(SendSession(mut session): SendSession, control: Arc<Control>, queue: Arc<
             if stop.load(Ordering::Relaxed) {
                 return;
             }
-            if let Some(target) = state.pending_seek.take() {
-                match session.seek(target) {
-                    Ok(()) => {
-                        seek_target = Some(target);
-                        state.eof = false;
-                    }
-                    Err(error) => log::warn!("video decode: the seek to {target} ms failed: {error}"),
+            state.pending_seek.take()
+        };
+        // The seek runs unlocked, so a slow one never holds up Drop or the caller.
+        if let Some(target) = requested {
+            match session.seek(target) {
+                Ok(()) => {
+                    seek_target = Some(target);
+                    lock(&control.0).eof = false;
                 }
+                Err(error) => log::warn!("video decode: the seek to {target} ms failed: {error}"),
             }
         }
         if session.input_done {
@@ -406,6 +444,8 @@ struct Session {
     sws: *mut ffi::SwsContext,
     /// The source format and size the sws context was built for.
     sws_src: Option<(ffi::AVPixelFormat, u32, u32)>,
+    /// The colorspace tag of the stream, often unspecified.
+    colorspace: ffi::AVColorSpace,
     /// Whether end of input was read and the decoder was flushed.
     input_done: bool,
     /// The length of the file in milliseconds, from its headers.
@@ -601,10 +641,49 @@ impl Session {
             if sws.is_null() {
                 return Err(MediaError::Null("sws_getContext"));
             }
+            set_colour_standard(sws, colour_standard(self.colorspace, src_w, src_h));
             self.sws = sws;
             self.sws_src = Some(key);
         }
         Ok(self.sws)
+    }
+}
+
+/// The swscale colour standard of a picture: the one its stream is tagged with, and without a tag BT.709 for HD and
+/// larger and BT.601 below, as other players assume.
+fn colour_standard(tag: ffi::AVColorSpace, width: u32, height: u32) -> c_int {
+    use ffi::AVColorSpace as Tag;
+    match tag {
+        Tag::AVCOL_SPC_BT709 => ffi::SWS_CS_ITU709,
+        Tag::AVCOL_SPC_BT470BG | Tag::AVCOL_SPC_SMPTE170M => ffi::SWS_CS_ITU601,
+        Tag::AVCOL_SPC_FCC => ffi::SWS_CS_FCC,
+        Tag::AVCOL_SPC_SMPTE240M => ffi::SWS_CS_SMPTE240M,
+        Tag::AVCOL_SPC_BT2020_NCL | Tag::AVCOL_SPC_BT2020_CL => ffi::SWS_CS_BT2020,
+        _ if width >= HD_SIZE.0 || height >= HD_SIZE.1 => ffi::SWS_CS_ITU709,
+        _ => ffi::SWS_CS_ITU601,
+    }
+}
+
+/// Sets the matrix a scale context reads YUV with; swscale's default is BT.601. The ranges and the picture controls
+/// stay as swscale chose them for the pixel formats. A context with no YUV side refuses, and has no matrix to set.
+fn set_colour_standard(sws: *mut ffi::SwsContext, standard: c_int) {
+    let (mut source, mut target): (*mut c_int, *mut c_int) = (std::ptr::null_mut(), std::ptr::null_mut());
+    let (mut source_range, mut target_range, mut brightness, mut contrast, mut saturation): (c_int, c_int, c_int, c_int, c_int) = (0, 0, 0, 0, 0);
+    // SAFETY: the context is live and every out pointer is valid.
+    let read = unsafe {
+        ffi::sws_getColorspaceDetails(sws, &mut source, &mut source_range, &mut target, &mut target_range, &mut brightness, &mut contrast, &mut saturation)
+    };
+    if read < 0 {
+        return;
+    }
+    // SAFETY: the target table points into the live context, so it is copied before the context is written to.
+    let target = unsafe { *target.cast::<[c_int; 4]>() };
+    // SAFETY: the context is live; the coefficient table of the standard is static and only read.
+    let set = unsafe {
+        ffi::sws_setColorspaceDetails(sws, ffi::sws_getCoefficients(standard), source_range, target.as_ptr(), target_range, brightness, contrast, saturation)
+    };
+    if set < 0 {
+        log::warn!("video decode: swscale refused colour standard {standard}");
     }
 }
 
@@ -641,7 +720,8 @@ fn open_session_rest(fmt: *mut ffi::AVFormatContext, max_width: u32, device: Opt
         return Err(MediaError::Null("the video stream has no codec parameters"));
     }
     // SAFETY: the codec parameters are live.
-    let (codec_id, width, height) = unsafe { ((*codecpar).codec_id, (*codecpar).width.max(0) as u32, (*codecpar).height.max(0) as u32) };
+    let (codec_id, width, height, colorspace) =
+        unsafe { ((*codecpar).codec_id, (*codecpar).width.max(0) as u32, (*codecpar).height.max(0) as u32, (*codecpar).color_space) };
     if width == 0 || height == 0 {
         return Err(MediaError::Null("the video stream has no size"));
     }
@@ -673,6 +753,7 @@ fn open_session_rest(fmt: *mut ffi::AVFormatContext, max_width: u32, device: Opt
         sw_frame: std::ptr::null_mut(),
         sws: std::ptr::null_mut(),
         sws_src: None,
+        colorspace,
         input_done: false,
         duration_ms,
         hardware,
@@ -722,10 +803,10 @@ fn pts_to_ms(pts: i64, time_base: (u32, u32)) -> u64 {
 mod tests {
     use std::collections::VecDeque;
     use std::path::{Path, PathBuf};
-    use std::sync::OnceLock;
+    use std::sync::{Arc, OnceLock};
     use std::time::{Duration, Instant};
 
-    use super::{RgbaFrame, VideoDecoder, newest_at_or_before};
+    use super::{JOIN_TIMEOUT, QUEUE_LEN, RgbaFrame, Session, VideoDecoder, colour_standard, ffi, lock, newest_at_or_before};
     use crate::amf::AmfEncoder;
     use crate::encode::{Codec, Encoder, EncoderConfig, Preset, RateControl};
     use crate::hw::{D3d11Device, D3d11FramePool, HwFrame};
@@ -849,6 +930,180 @@ mod tests {
         assert_eq!(frame.width, 1280);
         assert_eq!(frame.height, 720);
         assert_eq!(frame.data.len(), usize::try_from(frame.width).unwrap_or(0) * usize::try_from(frame.height).unwrap_or(0) * 4);
+        Ok(())
+    }
+
+    /// Writes a 640x368 AV1 60 fps MP4 laid out like a replay clip: the video starts at zero
+    /// and the AAC audio one AAC frame (the encoder's priming) before it.
+    fn encode_replay_like_clip(path: &Path, frames: u32) -> Result<(), Box<dyn std::error::Error>> {
+        crate::init()?;
+        let device = super::create_device().ok_or(crate::MediaError::Null("D3D11CreateDevice"))?;
+        let hw_device = D3d11Device::from_device(&device)?;
+        let pool = D3d11FramePool::new(&hw_device, 640, 368, 8)?;
+        let config = EncoderConfig {
+            codec: Codec::Av1,
+            width: 640,
+            height: 368,
+            fps_num: 60,
+            fps_den: 1,
+            rate_control: RateControl::ConstantQp { qp_i: 28, qp_p: 30 },
+            preset: Preset::Speed,
+            keyframe_secs: 2.0,
+        };
+        let mut video = AmfEncoder::open(&config, &pool)?;
+        let mut audio = crate::AudioEncoder::open(crate::AudioCodec::Aac { kbps: 192 }, 48_000, 2)?;
+        let mut muxer = Muxer::create(path, Container::Mp4)?;
+        muxer.add_video(video.parameters(), video.time_base(), (60, 1))?;
+        muxer.add_audio(audio.parameters(), audio.time_base(), "Mixdown", true)?;
+        muxer.start()?;
+
+        // As long as the video: 800 stereo samples of silence per video frame.
+        let silence = vec![0.0f32; frames as usize * 800 * 2];
+        let mut packets = Vec::new();
+        for chunk in silence.chunks(2_048) {
+            audio.send(chunk)?;
+            audio.receive(&mut |packet| packets.push(packet))?;
+        }
+        audio.finish(&mut |packet| packets.push(packet))?;
+        assert_eq!(packets.first().and_then(|packet| packet.pts()), Some(-1_024), "the audio starts one AAC frame early");
+        for packet in packets {
+            muxer.write(1, &packet)?;
+        }
+
+        let mut packets = Vec::new();
+        for index in 0..frames {
+            let mut frame = HwFrame::from_pool(&pool)?;
+            frame.set_pts(i64::from(index));
+            video.send(frame)?;
+            video.receive(&mut |packet| packets.push(packet))?;
+            for packet in packets.drain(..) {
+                muxer.write(0, &packet)?;
+            }
+        }
+        video.finish(&mut |packet| packets.push(packet))?;
+        for packet in packets {
+            muxer.write(0, &packet)?;
+        }
+        muxer.finish()?;
+        Ok(())
+    }
+
+    #[test]
+    fn playing_a_replay_like_mp4_gives_a_new_frame_every_frame_period() -> Result<(), Box<dyn std::error::Error>> {
+        let path = std::env::temp_dir().join(format!("cutmark_player_test_{}__replay.mp4", std::process::id()));
+        // Five and a half seconds, so five seconds of clock stay inside the file.
+        if let Err(error) = encode_replay_like_clip(&path, 330) {
+            eprintln!("skipped: {error}");
+            return Ok(());
+        }
+        let decoder = VideoDecoder::open(&path, 640)?;
+        decoder.play();
+        // The decoder runs ahead of the clock until the queue is full, which is where it stalled.
+        std::thread::sleep(Duration::from_millis(500));
+        for index in 0..300u64 {
+            let clock = index * 1000 / 60;
+            let waiting = Instant::now();
+            loop {
+                let pts = decoder.frame_at(clock).map(|frame| frame.pts_ms);
+                if pts == Some(clock) {
+                    break;
+                }
+                assert!(waiting.elapsed() < Duration::from_secs(2), "stalled at frame {index}: clock {clock} ms, frame {pts:?}");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        drop(decoder);
+        let _ = std::fs::remove_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn dropping_a_decoder_with_a_full_queue_returns_promptly() -> Result<(), Box<dyn std::error::Error>> {
+        let clip = match test_clip() {
+            Ok(clip) => clip,
+            Err(reason) => {
+                eprintln!("skipped: {reason}");
+                return Ok(());
+            }
+        };
+        let decoder = VideoDecoder::open(clip, 640)?;
+        decoder.play();
+        let filling = Instant::now();
+        while lock(&decoder.queue.0).len() < QUEUE_LEN {
+            assert!(filling.elapsed() < Duration::from_secs(10), "the queue never filled");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        // Time for the thread to decode one more frame and go to sleep on the full queue.
+        std::thread::sleep(Duration::from_millis(200));
+        let queue = Arc::clone(&decoder.queue);
+        let started = Instant::now();
+        drop(decoder);
+        let elapsed = started.elapsed();
+        assert!(elapsed < JOIN_TIMEOUT / 2, "drop took {elapsed:?}");
+        // The thread let go of its share of the queue, so it ended and was not left behind.
+        assert_eq!(Arc::strong_count(&queue), 1);
+        Ok(())
+    }
+
+    /// A session with no file or decoder behind it, enough to make a scale context.
+    fn bare_session(width: u32, height: u32, colorspace: ffi::AVColorSpace) -> Session {
+        Session {
+            fmt: std::ptr::null_mut(),
+            codec: std::ptr::null_mut(),
+            stream_index: 0,
+            time_base: (1, 1000),
+            width,
+            height,
+            out_size: (1280, 720),
+            packet: std::ptr::null_mut(),
+            frame: std::ptr::null_mut(),
+            sw_frame: std::ptr::null_mut(),
+            sws: std::ptr::null_mut(),
+            sws_src: None,
+            colorspace,
+            input_done: false,
+            duration_ms: 0,
+            hardware: false,
+            _hw: None,
+        }
+    }
+
+    /// The coefficients a scale context reads YUV with.
+    fn source_matrix(sws: *mut ffi::SwsContext) -> Option<[i32; 4]> {
+        let (mut source, mut target) = (std::ptr::null_mut::<i32>(), std::ptr::null_mut::<i32>());
+        let mut values = [0i32; 5];
+        let [source_range, target_range, brightness, contrast, saturation] = &mut values;
+        // SAFETY: the context is live and every out pointer is valid.
+        let read = unsafe { ffi::sws_getColorspaceDetails(sws, &mut source, source_range, &mut target, target_range, brightness, contrast, saturation) };
+        // SAFETY: on success the pointer is the context's table of four coefficients.
+        (read >= 0).then(|| unsafe { *source.cast::<[i32; 4]>() })
+    }
+
+    /// The coefficients of one of swscale's colour standards.
+    fn matrix_of(standard: i32) -> [i32; 4] {
+        // SAFETY: the table is static and holds at least four coefficients.
+        unsafe { *ffi::sws_getCoefficients(standard).cast::<[i32; 4]>() }
+    }
+
+    #[test]
+    fn the_scaler_reads_an_untagged_1080p_stream_as_bt709() -> Result<(), Box<dyn std::error::Error>> {
+        crate::init()?;
+        let untagged = ffi::AVColorSpace::AVCOL_SPC_UNSPECIFIED;
+        let (bt709, bt601) = (matrix_of(ffi::SWS_CS_ITU709), matrix_of(ffi::SWS_CS_ITU601));
+        assert_ne!(bt709, bt601);
+        for (width, height, tag, expected) in [
+            (1920, 1080, untagged, bt709),
+            (640, 480, untagged, bt601),
+            // A tag wins over the size.
+            (1920, 1080, ffi::AVColorSpace::AVCOL_SPC_SMPTE170M, bt601),
+            (640, 480, ffi::AVColorSpace::AVCOL_SPC_BT709, bt709),
+        ] {
+            let mut session = bare_session(width, height, tag);
+            let sws = session.scale_context(ffi::AVPixelFormat::AV_PIX_FMT_NV12, width, height)?;
+            assert_eq!(source_matrix(sws), Some(expected), "{width}x{height} {tag:?}");
+        }
+        // A cropped cinema picture is HD by its width.
+        assert_eq!(colour_standard(untagged, 1280, 544), ffi::SWS_CS_ITU709);
         Ok(())
     }
 

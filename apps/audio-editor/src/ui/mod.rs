@@ -11,6 +11,13 @@ pub mod test_util;
 pub mod timeline;
 pub mod widgets;
 
+/// The surfaces, strokes and text colors tinted toward the current accent
+/// (Design Language E3, "Tinted neutrals"). The fixed `color` tokens hold only
+/// the default accent's values, so the ui reads neutrals through this.
+pub(crate) fn neutrals(ctx: &eframe::egui::Context) -> ui_kit::Neutrals {
+    ui_kit::Theme::get(ctx).neutrals
+}
+
 #[cfg(test)]
 mod tests {
     use eframe::egui;
@@ -46,7 +53,7 @@ mod tests {
         // must NOT resolve: this proves the probe is not blind.
         let mut bare = ui_kit::fonts::definitions();
         for keys in bare.families.values_mut() {
-            keys.retain(|key| key.starts_with("Inter-") || key.starts_with("JetBrainsMono-") || key == "Ubuntu-Light" || key == "NotoSans-Regular");
+            keys.retain(|key| key.starts_with("InstrumentSans-") || key.starts_with("MartianMono-") || key == "Ubuntu-Light" || key == "NotoSans-Regular");
         }
         let mut bare_fonts = Fonts::new(TextOptions::default(), bare);
         for (name, icon) in [

@@ -307,7 +307,7 @@ fn schema_version_99_is_refused_with_the_newer_version_message() {
     let mut doc = example();
     doc["schema_version"] = json!(99);
     let error = load_value(&doc).unwrap_err();
-    assert_eq!(error.to_string(), "This marks file was made by a newer Cutmark (1.2.0). Update to open it.");
+    assert_eq!(error.to_string(), "This marks file was made by a newer CutMark (1.2.0). Update to open it.");
     assert!(matches!(error, LoadError::NewerVersion { found: 99, writer_version: Some(ref version) } if version == "1.2.0"));
 }
 
@@ -317,7 +317,7 @@ fn newer_version_without_a_writer_version_says_unknown_version() {
     doc["schema_version"] = json!(2);
     doc["session"].as_object_mut().unwrap().remove("writer");
     let error = load_value(&doc).unwrap_err();
-    assert_eq!(error.to_string(), "This marks file was made by a newer Cutmark (unknown version). Update to open it.");
+    assert_eq!(error.to_string(), "This marks file was made by a newer CutMark (unknown version). Update to open it.");
     assert!(matches!(error, LoadError::NewerVersion { found: 2, writer_version: None }));
 }
 

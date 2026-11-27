@@ -5,6 +5,7 @@
 //! S1 Help "Shortcut sheet", "First-run tour").
 
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
+use ui_kit::brand;
 use ui_kit::help::{self, HelpBook, HelpState};
 use ui_kit::icons::regular;
 use ui_kit::shortcuts::{Shortcut, ShortcutTable};
@@ -21,8 +22,9 @@ const UI_KIT_VERSION: &str = "0.1.0";
 /// The gallery's own appearance file folder and default accent.
 pub const APPEARANCE: ui_kit::AppAppearance = ui_kit::AppAppearance::new("gallery", ui_kit::Preset::Blue);
 
-/// The app mark's side (spec rev 3 "Title bar": 18).
-const APP_MARK_SIZE: f32 = 18.0;
+/// The brand art in the title bar. The gallery has none of its own, so it
+/// borrows the blue one, which matches its default accent.
+const MARK: brand::App = brand::App::Prompter;
 
 /// The pages of the toolbar segmented control.
 const PAGES: &[&str] = &["Core", "Media"];
@@ -30,11 +32,11 @@ const PAGES: &[&str] = &["Core", "Media"];
 /// The Media page's index: the page where all three tour targets exist.
 const MEDIA_PAGE: usize = 1;
 
-/// The demo tour's steps: the toolbar, a panel and the transport deck.
+/// The demo tour's steps: the toolbar, a panel and the transport button.
 const TOUR_STEPS: [TourStep; 3] = [
     TourStep { target: "toolbar", title: "The title bar", body: "The menus, the page switch and the actions all live here." },
     TourStep { target: "panel", title: "A panel", body: "Each panel groups the widgets for one job." },
-    TourStep { target: "transport", title: "The transport deck", body: "Play, stop and record from the deck over the timeline." },
+    TourStep { target: "transport", title: "The transport button", body: "Play sits in the notch under the timeline, with the other controls beside it." },
 ];
 
 /// The gallery's demo tour. Its seen flag marks it shown once (spec: S1 Help
@@ -43,10 +45,11 @@ const TOUR: Tour = Tour { app: "gallery", id: "gallery-tour", version: 1, steps:
 
 /// The About box's content.
 const ABOUT: AboutInfo = AboutInfo {
-    app_name: "Cutmark Gallery",
+    app_name: "CutMark Gallery",
+    brand: None,
     version: env!("CARGO_PKG_VERSION"),
-    copyright: "Copyright 2026 Cutmark. All rights reserved.",
-    notices: "Inter and JetBrains Mono are licensed under the SIL Open Font License 1.1.\n\
+    copyright: "Copyright 2026 CutMark. All rights reserved.",
+    notices: "Instrument Sans and Martian Mono are licensed under the SIL Open Font License 1.1.\n\
               Phosphor Icons and the egui-phosphor crate are licensed under MIT or Apache-2.0.\n\
               egui, eframe and epaint are licensed under MIT or Apache-2.0.\n\n\
               The font license files ship with the app.",
@@ -313,7 +316,7 @@ impl Gallery {
     }
 }
 
-/// The left zone: the app mark placeholder, then the menu bar with File, View
+/// The left zone: the app mark, then the menu bar with File, View
 /// and Help menus of sample items. The shortcut text comes from the one sample
 /// table, so the menus and the generated page can never drift apart.
 #[allow(clippy::too_many_arguments)]
@@ -327,7 +330,7 @@ fn left_zone(
     open_about: &std::cell::Cell<bool>,
     shortcuts: &ShortcutTable,
 ) {
-    app_mark(ui);
+    brand::mark(ui, MARK, brand::TITLE_BAR_MARK);
     ui.add_space(space::SCALE_8);
     let toast_key = shortcuts.text(ui.ctx(), "file.toast");
     let keyboard_key = shortcuts.text(ui.ctx(), "help.keyboard");
@@ -376,17 +379,6 @@ fn left_zone(
         }),
     ];
     ui_kit::menu_bar(ui, &mut menus);
-}
-
-/// Draws the app mark placeholder: an accent circle with a notch cut from its
-/// top right (spec "Open questions" item 1: placeholder until a real logo).
-fn app_mark(ui: &mut egui::Ui) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(APP_MARK_SIZE, APP_MARK_SIZE), egui::Sense::hover());
-    let c = rect.center();
-    let radius = APP_MARK_SIZE / 2.0;
-    let painter = ui.painter();
-    painter.circle_filled(c, radius, Theme::get(ui.ctx()).accent.accent);
-    painter.rect_filled(egui::Rect::from_min_size(egui::pos2(c.x, c.y - radius), egui::vec2(radius, radius)), 0.0, color::BG_GROUND);
 }
 
 /// The sample dialog's footer: Cancel, then the primary Close at the bottom

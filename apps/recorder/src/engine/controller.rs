@@ -13,14 +13,17 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
+use super::app_monitor::{AppMonitor, IdleAppTrack, SILENCE_DBFS, WatchedTrack};
 use super::bus::{Bus, BusSender, Command, CommandKind, MarkKind};
 use super::cam::CamSummary;
-use super::marks::{MarksWarning, RecentMark, TakeMarks};
+use super::marks::{self, MarksWarning, RecentMark, TakeMarks};
 use super::preflight::{self, PreflightReport};
+use super::replay::ReplayTake;
+use super::replay_save::{self, ReplayWriter, SaveJob, SaveMerge};
 use super::script::{PositionMsg, ScriptMsg, ScriptSnapshot, TakeScript};
-use super::session::{RecordingSession, SessionConfig, StatsSnapshot, Summary, TrackSpec};
+use super::session::{AppSpec, EngineError, RecordingSession, SessionConfig, StatsSnapshot, Summary, TrackSpec, take_title};
 use super::stats::{self, GIB, StatsTracker, TakeStats};
-use crate::config::{AudioCodecChoice, CompositeMode, Profile, Settings, TrackKind};
+use crate::config::{AudioCodecChoice, CompositeMode, Profile, Settings, TrackKind, TrackSettings, takes_root};
 use crate::countdown::CountdownHandle;
 use crate::label_popup::PopupHandle;
 use crate::profiles;
@@ -74,6 +77,9 @@ const WARNING_LOG_LIMIT: usize = 32;
 
 /// The time between two numbers of the countdown.
 const COUNTDOWN_STEP: Duration = Duration::from_secs(1);
+
+/// How many replay events the state keeps.
+const REPLAY_EVENT_LIMIT: usize = 32;
 
 /// How much media a pre-flight records before it stops itself, in milliseconds.
 const PREFLIGHT_MEDIA_MS: u64 = 5000;
@@ -183,11 +189,59 @@ pub struct WarningNote {
     pub message: String,
 }
 
+/// A replay that was saved as a take.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplaySaved {
+    /// The path of the take's video file.
+    pub take_path: PathBuf,
+    /// The take's name.
+    pub name: String,
+}
+
+/// The replay buffer that has just turned on is expected to take more than 25% of the free physical memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReplayRamWarning {
+    /// What the full buffer is expected to take, in bytes.
+    pub need_bytes: u64,
+    /// The physical memory that was free, in bytes.
+    pub free_bytes: u64,
+}
+
+/// Something the replay buffer has to tell the window and the control API.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplayEvent {
+    /// A toast about the input track, which shares the queue of the replay's toasts.
+    InputTrack(String),
+    /// A save finished.
+    Saved(ReplaySaved),
+    /// A save wrote no take; the text says why.
+    SaveFailed(String),
+    /// The buffer turned on although it is large for the free memory.
+    RamWarning(ReplayRamWarning),
+}
+
+/// One replay event with its number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayNote {
+    /// The number of the event, counting from 1.
+    pub seq: u64,
+    /// What happened.
+    pub event: ReplayEvent,
+}
+
 /// Everything the window draws, published by the controller thread.
 #[derive(Default)]
 pub struct ControllerState {
     /// Idle, counting down, recording or paused.
     pub phase: Phase,
+    /// Whether the replay buffer is on, which it can be in any phase.
+    pub replay_on: bool,
+    /// The running buffer's length in seconds; while it is off, the length the settings ask for.
+    pub replay_length_s: u32,
+    /// The replay events raised most recently, newest last.
+    pub replay_events: VecDeque<ReplayNote>,
+    /// How many replay events were raised so far; the newest note carries this number.
+    pub replay_event_seq: u64,
     /// The paths of the running take.
     pub take: Option<TakePaths>,
     /// Frames per second of the running take, for the elapsed clock.
@@ -216,6 +270,10 @@ pub struct ControllerState {
     pub track_muted: Vec<bool>,
     /// The name of each track in the settings, in settings order.
     pub track_names: Vec<String>,
+    /// What each track in the settings records, in settings order.
+    pub track_kinds: Vec<TrackKind>,
+    /// Whether each track in the settings is recorded, in settings order.
+    pub track_enabled: Vec<bool>,
     /// Counts the changes the controller made to the settings, so the window can copy them.
     pub settings_rev: u64,
     /// The commands handled most recently, oldest first.
@@ -232,6 +290,8 @@ pub struct ControllerState {
     pub take_stats: Option<TakeStats>,
     /// Free space on the volume the next take goes to, read every 2 seconds while idle.
     pub idle_free_bytes: Option<u64>,
+    /// The enabled app and desktop-except tracks as watched while no take runs; empty during one.
+    pub idle_apps: Vec<IdleAppTrack>,
     /// The warning banners of the running or last take, oldest first.
     pub banners: Vec<String>,
     /// The warnings raised most recently, newest last.
@@ -252,6 +312,17 @@ pub struct ControllerState {
     pub sync_result: Option<Result<media_io::SyncReport, String>>,
     /// How far the rewrite of the last take's MP4 or MOV files has got, or none while no rewrite runs; the phase stays idle.
     pub finalizing: Option<FinalizeProgress>,
+}
+
+impl ControllerState {
+    /// Numbers a replay event and keeps it with the recent ones.
+    pub(crate) fn push_replay_event(&mut self, event: ReplayEvent) {
+        self.replay_event_seq += 1;
+        if self.replay_events.len() >= REPLAY_EVENT_LIMIT {
+            self.replay_events.pop_front();
+        }
+        self.replay_events.push_back(ReplayNote { seq: self.replay_event_seq, event });
+    }
 }
 
 /// A function the controller calls with the state after every change, while it holds the state lock.
@@ -445,8 +516,11 @@ impl Controller {
         let shared = Arc::new(Mutex::new(ControllerState {
             fps: 60,
             active_profile: settings.active_profile.clone(),
+            replay_length_s: length_secs(settings.replay_length()),
             track_muted: settings.audio.tracks.iter().map(|track| track.muted).collect(),
             track_names: settings.audio.tracks.iter().map(|track| track.name.clone()).collect(),
+            track_kinds: settings.audio.tracks.iter().map(|track| track.kind.clone()).collect(),
+            track_enabled: settings.audio.tracks.iter().map(|track| track.enabled).collect(),
             ..ControllerState::default()
         }));
         let listeners = Arc::new(Listeners::default());
@@ -465,6 +539,9 @@ impl Controller {
             tags: tags.clone(),
             settings,
             active: None,
+            session: RecordingSession::default(),
+            replay_writer: None,
+            save_merge: SaveMerge::default(),
             popup,
             deferred: VecDeque::new(),
             last_idle_check: None,
@@ -472,6 +549,7 @@ impl Controller {
             overlay,
             flash: SyncFlashHandle::start(),
             measuring: None,
+            app_monitor: None,
         };
         let handle = match std::thread::Builder::new().name("controller".to_owned()).spawn(move || worker.run()) {
             Ok(handle) => Some(handle),
@@ -539,7 +617,6 @@ pub fn lock(shared: &Mutex<ControllerState>) -> MutexGuard<'_, ControllerState> 
 
 /// A take that is running or paused.
 struct ActiveTake {
-    session: RecordingSession,
     /// The take's last marks error, read after every mark and at stop.
     marks_warning: MarksWarning,
     /// The take's script files and the script line being read.
@@ -577,6 +654,8 @@ struct SyncRun {
 struct PreflightRun {
     folder: PathBuf,
     keep_files: bool,
+    /// For each session track, the name of the app it records or leaves out; None for a device track.
+    apps: Vec<Option<String>>,
     /// When the session had started, for the wall-clock limit.
     began: Instant,
 }
@@ -611,6 +690,12 @@ struct Worker {
     tags: ApiTags,
     settings: Settings,
     active: Option<ActiveTake>,
+    /// The capture, with the active take on it, the replay buffer, or both.
+    session: RecordingSession,
+    /// The thread that writes saved replays, started by the first save.
+    replay_writer: Option<ReplayWriter>,
+    /// Merges two saves pressed right after each other.
+    save_merge: SaveMerge,
     popup: PopupHandle,
     /// Commands that were taken off the bus while a stop collected the popup's mark; handled before new ones.
     deferred: VecDeque<Command>,
@@ -624,6 +709,8 @@ struct Worker {
     flash: SyncFlashHandle,
     /// Receives the sync test's report from the thread that measures it.
     measuring: Option<Receiver<Result<media_io::SyncReport, String>>>,
+    /// Watches the app and desktop-except tracks while no take runs.
+    app_monitor: Option<AppMonitor>,
 }
 
 /// The callback the countdown overlay calls on Esc: it queues a start/stop command that carries the Escape intent.
@@ -710,7 +797,13 @@ fn countdown_verdict(counting: bool, kind: &CommandKind, intent: Option<&ApiInte
         | CommandKind::SetProfile(_)
         | CommandKind::Preflight { .. }
         | CommandKind::SyncTest => Verdict::Ignore,
-        CommandKind::Mute { .. } | CommandKind::GetStatus => Verdict::Pass,
+        // The buffer comes and goes by itself; a take that follows the countdown joins its capture.
+        CommandKind::Mute { .. }
+        | CommandKind::GetStatus
+        | CommandKind::ReplayStart
+        | CommandKind::ReplayStop
+        | CommandKind::ReplaySave
+        | CommandKind::ReplayToggle => Verdict::Pass,
     }
 }
 
@@ -719,7 +812,7 @@ impl Worker {
     fn run(mut self) {
         while self.drain_control() {
             self.drain_script();
-            let wait = if self.active.is_some() || self.countdown.is_some() { ACTIVE_POLL } else { IDLE_POLL };
+            let wait = if self.active.is_some() || self.countdown.is_some() || self.session.replay_on() { ACTIVE_POLL } else { IDLE_POLL };
             if let Some(command) = self.deferred.pop_front().or_else(|| self.bus.recv_timeout(wait)) {
                 self.handle(command);
             }
@@ -731,25 +824,54 @@ impl Worker {
             } else {
                 self.poll_stats();
             }
+            self.poll_replay();
+            self.poll_saves();
+            self.poll_input_track();
             self.poll_measuring();
             self.poll_idle_disk();
+            self.poll_idle_apps();
         }
         self.cancel_countdown();
         self.stop_take();
+        self.replay_stop();
+        self.finish_saves();
     }
 
     /// Applies the queued settings; false once the stop request came or the app dropped its handles.
     fn drain_control(&mut self) -> bool {
         let profile_before = self.settings.active_profile.clone();
+        let held_tracks = self.session.replay_on().then(|| self.settings.audio.tracks.clone());
         let (keep_running, changed) = apply_control(&self.control, &mut self.settings);
+        if let Some(held) = held_tracks
+            && keep_track_list(&held, &mut self.settings.audio.tracks)
+        {
+            log::warn!("tracks cannot be added, removed, enabled or disabled while the replay buffer is on");
+            self.publish_settings();
+        }
         if self.settings.active_profile != profile_before {
-            // The idle check then reads the new profile's composite mode right away.
-            self.last_idle_check = None;
+            if self.session.replay_on() {
+                log::warn!("the profile cannot change while the replay buffer is on");
+                self.settings.active_profile = profile_before;
+                self.publish_settings();
+            } else {
+                // The idle check then reads the new profile's composite mode right away.
+                self.last_idle_check = None;
+            }
         }
         if changed {
             self.forward_live_controls();
             let names: Vec<String> = self.settings.audio.tracks.iter().map(|track| track.name.clone()).collect();
-            self.update_quietly(|state| state.track_names = names);
+            let kinds = self.settings.audio.tracks.iter().map(|track| track.kind.clone()).collect();
+            let enabled = self.settings.audio.tracks.iter().map(|track| track.enabled).collect();
+            let replay_length_s = length_secs(self.settings.replay_length());
+            self.update_quietly(|state| {
+                if !state.replay_on {
+                    state.replay_length_s = replay_length_s;
+                }
+                state.track_names = names;
+                state.track_kinds = kinds;
+                state.track_enabled = enabled;
+            });
         }
         keep_running
     }
@@ -777,9 +899,9 @@ impl Worker {
         if active.preflight.is_some() || active.sync.is_some() {
             return;
         }
-        let ms = active.session.marks_mut().map_or(0, |marks| marks.clock_ms(position.qpc));
+        let ms = self.session.marks_mut().map_or(0, |marks| marks.clock_ms(position.qpc));
         let result = active.script.position(self.snapshots.get(&position.script_id), position, ms);
-        if let (Some((line, label)), Some(marks)) = (active.script.current(), active.session.marks_mut()) {
+        if let (Some((line, label)), Some(marks)) = (active.script.current(), self.session.marks_mut()) {
             marks.set_script(line, label);
         }
         if let Err(err) = result {
@@ -864,6 +986,11 @@ impl Worker {
             CommandKind::SetProfile(name) => self.set_profile(name),
             CommandKind::Preflight { keep_files } => self.start_preflight(*keep_files),
             CommandKind::SyncTest => self.start_sync(),
+            CommandKind::ReplayStart => self.replay_start(),
+            CommandKind::ReplayStop => self.replay_stop(),
+            CommandKind::ReplaySave => self.replay_save(press),
+            CommandKind::ReplayToggle if self.session.replay_on() => self.replay_stop(),
+            CommandKind::ReplayToggle => self.replay_start(),
             CommandKind::Mark(kind) => self.add_mark(*kind, press),
             CommandKind::LabeledMark { category, label } => {
                 let source = if intent == Some(ApiIntent::Mark) { ::marks::Source::Api } else { ::marks::Source::Hotkey };
@@ -950,30 +1077,40 @@ impl Worker {
         }
     }
 
-    /// Picks the take folder, builds the session config from the active profile and starts the session.
+    /// Picks the take folder, builds the session config from the active profile and starts the take. While the replay
+    /// buffer is on, the take joins its capture, so the capture's profile and tracks are the take's.
     fn start_take_inner(&mut self) -> Result<(), StartError> {
-        let profile = profiles::find(&self.settings.active_profile).unwrap_or_else(Profile::tutorial_av1_1440p60);
+        // The recordings folder must be writable, or the take is refused with the reason.
+        let root = takes_root(&self.settings);
+        takes::check_folder(&root).map_err(|err| StartError::Take(format!("Can't save to {}: {err}", root.display())))?;
+        let held = self.session.capture_config().map(|cfg| (cfg.profile.clone(), cfg.tracks.clone()));
+        let (profile, tracks, missing) = match held {
+            Some((profile, tracks)) => {
+                let missing = tracks.iter().filter(|track| track.device.is_none() && track.app.is_none()).map(|track| track.name.clone()).collect();
+                (profile, tracks, missing)
+            }
+            None => {
+                let profile = profiles::find(&self.settings.active_profile).unwrap_or_else(Profile::tutorial_av1_1440p60);
+                let (tracks, missing) = track_specs(&self.settings);
+                (profile, tracks, missing)
+            }
+        };
         let take = takes::next_take_for(&self.settings, chrono::Local::now(), profile.container).map_err(|err| StartError::Take(err.to_string()))?;
         let fps = profile.fps;
         let composite_mode = profile.effective_composite_mode();
-        let (tracks, missing) = track_specs(&self.settings);
-        if !missing.is_empty() {
-            log::warn!("recording without these audio devices: {}", missing.join(", "));
-            let notice = format!("Audio device not found for {}. Recording anyway; those tracks stay silent until the device returns.", missing.join(", "));
-            self.update(|state| state.audio_notice = Some(notice));
-        }
+        self.notice_missing_devices(&missing);
         let take_folder = take.video_file.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
         let base_name = take.video_file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let script = TakeScript::new(&take_folder, &base_name, chrono::Local::now());
         let started = Instant::now();
         let tracker = StatsTracker::new(take_folder.clone(), started);
         let cfg = self.session_config(profile, take.video_file.clone(), take_folder, base_name, tracks);
-        let session =
-            RecordingSession::start(cfg).map_err(|err| StartError::Session { file: take.video_file.display().to_string(), reason: err.to_string() })?;
-        let marks_warning = session.marks_warning();
-        let cam_notice = session.cam_notice().map(str::to_owned);
+        self.session.start(cfg).map_err(|err| StartError::Session { file: take.video_file.display().to_string(), reason: err.to_string() })?;
+        let marks_warning = self.session.marks_warning();
+        let cam_notice = self.session.cam_notice().map(str::to_owned);
+        // A take that joins the buffer's capture takes the live gains and mutes with it.
+        self.forward_live_controls();
         self.active = Some(ActiveTake {
-            session,
             marks_warning,
             script,
             paused: false,
@@ -1001,6 +1138,154 @@ impl Worker {
         // A sidecar that could not be started leaves its reason for the banner.
         self.with_marks(|_| {});
         Ok(())
+    }
+
+    /// Shows the yellow banner for audio devices that were not found.
+    fn notice_missing_devices(&self, missing: &[String]) {
+        if !missing.is_empty() {
+            log::warn!("recording without these audio devices: {}", missing.join(", "));
+            let notice = format!("Audio device not found for {}. Recording anyway; those tracks stay silent until the device returns.", missing.join(", "));
+            self.update(|state| state.audio_notice = Some(notice));
+        }
+    }
+
+    /// Turns the replay buffer on, on the running take's capture or on a new one; on failure shows a red banner.
+    fn replay_start(&mut self) {
+        if self.session.replay_on() {
+            log::info!("replay start ignored: the buffer is already on");
+            return;
+        }
+        // The replays folder must be writable, or the buffer does not start: the first save would go nowhere.
+        let folder = takes::replays_folder(&self.settings);
+        if let Err(err) = takes::check_folder(&folder) {
+            let reason = format!("Can't save to {}: {err}", folder.display());
+            log::error!("could not start the replay buffer: {reason}");
+            self.update(|state| state.error = Some(reason));
+            return;
+        }
+        let profile = profiles::find(&self.settings.active_profile).unwrap_or_else(Profile::tutorial_av1_1440p60);
+        let (tracks, missing) = track_specs(&self.settings);
+        // A new capture writes no files of its own, so its config names none.
+        let cfg = self.session_config(profile, PathBuf::new(), PathBuf::new(), String::new(), tracks);
+        let joins_take = self.session.capture_config().is_some();
+        let length = self.settings.replay_length();
+        match self.session.replay_start(move || cfg, length) {
+            Ok(()) => {
+                if !joins_take {
+                    self.notice_missing_devices(&missing);
+                }
+                self.forward_live_controls();
+                self.update(|state| {
+                    state.replay_on = true;
+                    state.replay_length_s = length_secs(length);
+                    state.error = None;
+                });
+                self.check_replay_ram(length);
+            }
+            Err(err) => {
+                log::error!("could not start the replay buffer: {err}");
+                self.update(|state| state.error = Some(format!("The replay buffer could not start: {err}")));
+            }
+        }
+    }
+
+    /// Turns the replay buffer off. A running take goes on; without one the capture stops.
+    fn replay_stop(&mut self) {
+        if !self.session.replay_on() {
+            return;
+        }
+        self.session.replay_stop();
+        // A save from the next buffer holds other footage, so it is never merged with one from this buffer.
+        self.save_merge = SaveMerge::default();
+        self.last_idle_check = None;
+        let replay_length_s = length_secs(self.settings.replay_length());
+        self.update(|state| {
+            state.replay_on = false;
+            state.replay_length_s = replay_length_s;
+        });
+    }
+
+    /// Raises the RAM warning when the buffer that has just turned on is large for the free memory; it stays on.
+    fn check_replay_ram(&self, length: Duration) {
+        let Some(cfg) = self.session.capture_config() else { return };
+        let need_bytes = replay_save::ram_estimate(cfg, length);
+        let Some(free_bytes) = replay_save::free_physical_memory() else {
+            log::warn!("the free memory could not be read, so the replay buffer's size was not checked");
+            return;
+        };
+        log::info!("the replay buffer is expected to take {need_bytes} bytes, with {free_bytes} free");
+        if replay_save::over_ram_limit(need_bytes, free_bytes) {
+            log::warn!("the replay buffer is expected to take more than 25% of the free memory");
+            self.update(|state| state.push_replay_event(ReplayEvent::RamWarning(ReplayRamWarning { need_bytes, free_bytes })));
+        }
+    }
+
+    /// Queues what the buffer holds at the press for the writer thread. The buffer and a running take are untouched.
+    fn replay_save(&mut self, press_qpc: i64) {
+        if !self.session.replay_on() {
+            log::info!("replay save ignored: the buffer is off");
+            return;
+        }
+        if self.save_merge.merges(press_qpc, capture::qpc_frequency()) {
+            log::info!("replay save merged with the one just before it");
+            return;
+        }
+        // App events still waiting for their marks belong in this clip.
+        if self.session.apply_app_events() {
+            self.with_marks(|_| {});
+        }
+        match self.queue_save(press_qpc) {
+            Ok(()) => self.save_merge.saved(press_qpc),
+            Err(err) => self.report_replay(&Err(err)),
+        }
+    }
+
+    /// Snapshots the buffer and hands it to the writer thread, which is started if none runs.
+    fn queue_save(&mut self, press_qpc: i64) -> Result<(), EngineError> {
+        let (snapshot, cfg) = self.session.replay_snapshot(press_qpc).ok_or_else(|| EngineError::Failed("the buffer holds no video yet".to_owned()))?;
+        let job = SaveJob { snapshot, cfg, settings: self.settings.clone(), pressed_at: chrono::Local::now() };
+        let writer = match self.replay_writer.take() {
+            Some(writer) => writer,
+            None => ReplayWriter::start(replay_save::write_job).map_err(|err| EngineError::Failed(format!("the replay writer could not start: {err}")))?,
+        };
+        // A writer that has ended is dropped here, so the next save starts a new one.
+        if !writer.push(job) {
+            return Err(EngineError::Failed("the replay writer has stopped".to_owned()));
+        }
+        self.replay_writer = Some(writer);
+        Ok(())
+    }
+
+    /// Raises a toast for everything the input track has to say.
+    fn poll_input_track(&mut self) {
+        for notice in self.session.take_input_notices() {
+            self.update(|state| state.push_replay_event(ReplayEvent::InputTrack(notice)));
+        }
+    }
+
+    /// Reports every save the writer thread has finished.
+    fn poll_saves(&mut self) {
+        while let Some(saved) = self.replay_writer.as_ref().and_then(ReplayWriter::try_result) {
+            self.report_replay(&saved);
+        }
+    }
+
+    /// Waits for the saves that are still queued, so closing the app loses none of them.
+    fn finish_saves(&mut self) {
+        for saved in self.replay_writer.take().map(ReplayWriter::finish).unwrap_or_default() {
+            self.report_replay(&saved);
+        }
+    }
+
+    /// Turns the buffer off when its capture failed while no take was there to report it.
+    fn poll_replay(&mut self) {
+        if !self.session.buffer_died() {
+            return;
+        }
+        let reason = self.session.stats().last_error.unwrap_or_else(|| "the capture ended".to_owned());
+        log::error!("the replay buffer's capture failed: {reason}");
+        self.replay_stop();
+        self.update(|state| state.error = Some(format!("The replay buffer stopped: {reason}")));
     }
 
     /// Builds the session config for a take or a pre-flight from the settings and the profile.
@@ -1033,6 +1318,11 @@ impl Worker {
             log::info!("pre-flight ignored: a take is running");
             return;
         }
+        if self.session.replay_on() {
+            log::info!("pre-flight ignored: the replay buffer is on");
+            self.update(|state| state.error = Some("The pre-flight cannot run while the replay buffer is on.".to_owned()));
+            return;
+        }
         self.update(|state| {
             state.error = None;
             state.preflight_result = None;
@@ -1059,20 +1349,17 @@ impl Worker {
         if !missing.is_empty() {
             log::warn!("pre-flight without these audio devices: {}", missing.join(", "));
         }
+        let apps = tracks.iter().map(|track| track.app.as_ref().map(|app| app.app_name.clone())).collect();
         let script = TakeScript::new(&folder, &base_name, now);
         let started = Instant::now();
         let tracker = StatsTracker::new(folder.clone(), started);
         let cfg = self.session_config(profile, output_file.clone(), folder.clone(), base_name, tracks);
-        let session = match RecordingSession::start(cfg) {
-            Ok(session) => session,
-            Err(err) => {
-                remove_folder(&folder);
-                return Err(StartError::Session { file: output_file.display().to_string(), reason: err.to_string() });
-            }
-        };
-        let marks_warning = session.marks_warning();
+        if let Err(err) = self.session.start(cfg) {
+            remove_folder(&folder);
+            return Err(StartError::Session { file: output_file.display().to_string(), reason: err.to_string() });
+        }
+        let marks_warning = self.session.marks_warning();
         self.active = Some(ActiveTake {
-            session,
             marks_warning,
             script,
             paused: false,
@@ -1082,7 +1369,7 @@ impl Worker {
             fps,
             tracker,
             monitor: Monitor::default(),
-            preflight: Some(PreflightRun { folder, keep_files, began: Instant::now() }),
+            preflight: Some(PreflightRun { folder, keep_files, apps, began: Instant::now() }),
             sync: None,
         });
         self.update(|state| state.preflight = Some(PreflightProgress { status: preflight::RUNNING, progress: 0.0 }));
@@ -1093,7 +1380,7 @@ impl Worker {
     fn poll_preflight(&mut self) {
         let Some(active) = &self.active else { return };
         let Some(run) = &active.preflight else { return };
-        let media_ms = active.session.stats().frames.saturating_mul(1000) / u64::from(active.fps.max(1));
+        let media_ms = self.session.stats().frames.saturating_mul(1000) / u64::from(active.fps.max(1));
         if media_ms >= PREFLIGHT_MEDIA_MS || run.began.elapsed() >= PREFLIGHT_TIMEOUT {
             self.finish_preflight();
             return;
@@ -1110,9 +1397,27 @@ impl Worker {
         let Some(active) = self.active.take() else { return };
         let Some(run) = active.preflight else { return };
         let fps = active.fps;
+        // The apps still not running at the end are read before the session goes.
+        let waiting = preflight::waiting_apps(&run.apps, &self.session.stats().tracks);
         // The report is built from the summary before the folder goes.
-        let (stopped, cam) = active.session.stop_with_cam();
-        let report = stopped.map(|summary| preflight::judge_with_cam(&summary, cam.as_ref(), fps));
+        let (stopped, cam) = self.session.stop_with_cam();
+        // Both output folders are checked as their own rows, whatever the test take found.
+        let folders = [("Recordings folder", takes_root(&self.settings)), ("Replays folder", takes::replays_folder(&self.settings))];
+        let folder_checks: Vec<preflight::FolderCheck> = folders
+            .into_iter()
+            .map(|(label, folder)| preflight::FolderCheck {
+                label: label.to_owned(),
+                path: folder.display().to_string(),
+                not_writable: takes::check_folder(&folder).err().map(|err| err.to_string()),
+                free_bytes: stats::free_space(&folder, 0),
+            })
+            .collect();
+        let report = stopped.map(|summary| {
+            let mut report = preflight::judge_with_cam(&summary, cam.as_ref(), &waiting, fps);
+            report.lines.extend(preflight::folder_lines(&folder_checks));
+            report.overall = report.lines.iter().map(|line| line.status).max().unwrap_or(preflight::Status::Pass);
+            report
+        });
         let keep = run.keep_files && report.is_ok();
         if !keep {
             remove_folder(&run.folder);
@@ -1145,7 +1450,7 @@ impl Worker {
         }
         let Some(active) = self.active.take() else { return };
         let Some(run) = active.preflight else { return };
-        if let Err(err) = active.session.stop() {
+        if let Err(err) = self.session.stop() {
             log::warn!("the cancelled pre-flight did not stop cleanly: {err}");
         }
         remove_folder(&run.folder);
@@ -1163,6 +1468,11 @@ impl Worker {
     fn start_sync(&mut self) {
         if self.active.is_some() || self.countdown.is_some() || self.measuring.is_some() {
             log::info!("sync test ignored: a take, a countdown or a measurement is running");
+            return;
+        }
+        if self.session.replay_on() {
+            log::info!("sync test ignored: the replay buffer is on");
+            self.update(|state| state.error = Some("The sync test cannot run while the replay buffer is on.".to_owned()));
             return;
         }
         self.update(|state| {
@@ -1200,23 +1510,19 @@ impl Worker {
         let started = Instant::now();
         let tracker = StatsTracker::new(folder.clone(), started);
         let cfg = self.session_config(profile, output_file.clone(), folder.clone(), base_name, tracks);
-        let session = match RecordingSession::start(cfg) {
-            Ok(session) => session,
-            Err(err) => {
-                remove_folder(&folder);
-                return Err(StartError::Session { file: output_file.display().to_string(), reason: err.to_string() });
-            }
-        };
-        if let Some(notice) = session.cam_notice().map(str::to_owned) {
-            if let Err(err) = session.stop() {
+        if let Err(err) = self.session.start(cfg) {
+            remove_folder(&folder);
+            return Err(StartError::Session { file: output_file.display().to_string(), reason: err.to_string() });
+        }
+        if let Some(notice) = self.session.cam_notice().map(str::to_owned) {
+            if let Err(err) = self.session.stop() {
                 log::warn!("the sync test did not stop cleanly: {err}");
             }
             remove_folder(&folder);
             return Err(StartError::Take(notice));
         }
-        let marks_warning = session.marks_warning();
+        let marks_warning = self.session.marks_warning();
         self.active = Some(ActiveTake {
-            session,
             marks_warning,
             script,
             paused: false,
@@ -1242,7 +1548,7 @@ impl Worker {
             run.flashed += 1;
             self.flash.flash(SYNC_FLASH_MS);
         }
-        let media_ms = active.session.stats().frames.saturating_mul(1000) / u64::from(active.fps.max(1));
+        let media_ms = self.session.stats().frames.saturating_mul(1000) / u64::from(active.fps.max(1));
         if media_ms >= SYNC_MEDIA_MS || run.began.elapsed() >= SYNC_TIMEOUT {
             self.finish_sync();
             return;
@@ -1258,7 +1564,7 @@ impl Worker {
         }
         let Some(active) = self.active.take() else { return };
         let Some(run) = active.sync else { return };
-        let stopped = active.session.stop();
+        let stopped = self.session.stop();
         self.last_idle_check = None;
         let failure = match (stopped, find_cam_file(&run.folder, &run.main_file)) {
             (Err(err), _) => Some(format!("The sync test failed on stop: {err}")),
@@ -1311,7 +1617,7 @@ impl Worker {
         }
         let Some(active) = self.active.take() else { return };
         let Some(run) = active.sync else { return };
-        if let Err(err) = active.session.stop() {
+        if let Err(err) = self.session.stop() {
             log::warn!("the cancelled sync test did not stop cleanly: {err}");
         }
         remove_folder(&run.folder);
@@ -1338,7 +1644,7 @@ impl Worker {
         let marks_warning = active.marks_warning.clone();
         let video_file = lock(&self.shared).take.as_ref().map(|take| take.video_file.clone());
         // The counters as the take ends, for the recordingStopped event; the session's own summary comes later.
-        let last = active.session.stats();
+        let last = self.session.stats();
         self.update(|state| {
             let fps = u64::from(state.fps.max(1));
             state.last_take = state.take.as_ref().map(|take| LastTake {
@@ -1355,7 +1661,16 @@ impl Worker {
         });
         // The free space is read again right away, so the idle status bar shows what the take left.
         self.last_idle_check = None;
-        let (stopped, cam) = active.session.stop_with_cam();
+        let (stopped, cam) = self.session.stop_with_cam();
+        // A capture that had died takes the replay buffer with it.
+        let replay_on = self.session.replay_on();
+        let replay_length_s = length_secs(self.settings.replay_length());
+        self.update_quietly(|state| {
+            state.replay_on = replay_on;
+            if !replay_on {
+                state.replay_length_s = replay_length_s;
+            }
+        });
         let cam_file = cam.as_ref().map(|cam| cam.file.clone());
         // Finishing the marks happens inside stop and may leave a warning.
         if let Some(text) = marks_warning.take() {
@@ -1430,7 +1745,7 @@ impl Worker {
         if active.paused {
             return;
         }
-        active.session.pause();
+        self.session.pause(press_qpc);
         active.paused = true;
         self.with_marks(|marks| marks.pause(press_qpc));
         self.update(|state| state.phase = Phase::Paused);
@@ -1442,31 +1757,38 @@ impl Worker {
         if !active.paused {
             return;
         }
-        active.session.resume();
+        self.session.resume(press_qpc);
         active.paused = false;
         self.with_marks(|marks| marks.resume(press_qpc));
         self.update(|state| state.phase = Phase::Recording);
     }
 
-    /// Adds a mark of the given kind to the running take; with no take it is ignored.
+    /// Adds a mark of the given kind to the running take and to the replay buffer; with neither it is ignored.
     fn add_mark(&mut self, kind: MarkKind, press_qpc: i64) {
-        if self.active.is_none() {
-            log::info!("mark {kind:?} ignored: no take is running");
+        if self.active.is_none() && !self.session.replay_on() {
+            log::info!("mark {kind:?} ignored: no take is running and the replay buffer is off");
             return;
         }
         match kind {
-            MarkKind::Silent => self.with_marks(|marks| marks.note(press_qpc)),
+            MarkKind::Silent => {
+                self.session.buffer_mark(press_qpc, marks::note_mark);
+                self.with_marks(|marks| marks.note(press_qpc));
+            }
             MarkKind::WithLabel => self.popup.open(press_qpc),
-            MarkKind::HighlightLast => self.with_marks(|marks| marks.highlight_last(press_qpc)),
+            MarkKind::HighlightLast => {
+                self.session.buffer_mark(press_qpc, marks::highlight_mark);
+                self.with_marks(|marks| marks.highlight_last(press_qpc));
+            }
         }
     }
 
-    /// Adds the popup's labeled point mark to the running take; with no take it is ignored.
+    /// Adds the popup's labeled point mark to the running take and to the replay buffer; with neither it is ignored.
     fn add_labeled(&mut self, category: ::marks::MarkType, label: Option<String>, press_qpc: i64, source: ::marks::Source) {
-        if self.active.is_none() {
-            log::info!("labeled mark ignored: no take is running");
+        if self.active.is_none() && !self.session.replay_on() {
+            log::info!("labeled mark ignored: no take is running and the replay buffer is off");
             return;
         }
+        self.session.buffer_mark(press_qpc, |t_ms| marks::labeled_mark(t_ms, category, label.clone(), source));
         self.with_marks(|marks| marks.labeled(press_qpc, category, label, source));
     }
 
@@ -1488,11 +1810,11 @@ impl Worker {
     /// Changes the running take's marks, then publishes their count, list and any warning.
     fn with_marks(&mut self, change: impl FnOnce(&mut TakeMarks)) {
         let Some(active) = &mut self.active else { return };
-        if let Some(marks) = active.session.marks_mut() {
+        if let Some(marks) = self.session.marks_mut() {
             change(marks);
         }
         let warning = active.marks_warning.take();
-        let (count, recent) = match active.session.marks_mut() {
+        let (count, recent) = match self.session.marks_mut() {
             Some(marks) => (marks.count(), marks.recent().clone()),
             None => (0, VecDeque::new()),
         };
@@ -1532,6 +1854,10 @@ impl Worker {
             log::warn!("the profile cannot change while a take is running");
             return;
         }
+        if self.session.replay_on() {
+            log::warn!("the profile cannot change while the replay buffer is on");
+            return;
+        }
         if profiles::find(name).is_none() {
             log::warn!("there is no profile named {name}");
             return;
@@ -1546,28 +1872,35 @@ impl Worker {
         let profile = self.settings.active_profile.clone();
         let muted: Vec<bool> = self.settings.audio.tracks.iter().map(|track| track.muted).collect();
         let names: Vec<String> = self.settings.audio.tracks.iter().map(|track| track.name.clone()).collect();
+        let kinds = self.settings.audio.tracks.iter().map(|track| track.kind.clone()).collect();
+        let enabled = self.settings.audio.tracks.iter().map(|track| track.enabled).collect();
         self.update(|state| {
             state.active_profile = profile;
+            state.track_kinds = kinds;
+            state.track_enabled = enabled;
             state.track_muted = muted;
             state.track_names = names;
             state.settings_rev += 1;
         });
     }
 
-    /// Sends every track's gain and mute from the settings to the running take.
+    /// Sends every track's gain and mute from the settings to the running capture.
     fn forward_live_controls(&self) {
-        let Some(active) = &self.active else { return };
-        // A take only has the enabled tracks, in settings order.
+        // A capture only has the enabled tracks, in settings order.
         for (index, track) in self.settings.audio.tracks.iter().filter(|track| track.enabled).enumerate() {
-            active.session.set_track_gain_db(index, track.gain_db);
-            active.session.set_track_muted(index, track.muted);
+            self.session.set_track_gain_db(index, track.gain_db);
+            self.session.set_track_muted(index, track.muted);
         }
     }
 
     /// Samples the running take's counters, works out the bitrate, and publishes both.
     fn poll_stats(&mut self) {
+        // App tracks that attached or detached since the last poll get their marks now.
+        if self.session.apply_app_events() {
+            self.with_marks(|_| {});
+        }
         let Some(active) = &mut self.active else { return };
-        let mut stats = active.session.stats();
+        let mut stats = self.session.stats();
         let now = Instant::now();
         match active.last_poll {
             Some((then, bytes_then)) => {
@@ -1584,7 +1917,7 @@ impl Worker {
             }
         }
         let mbps = active.last_mbps;
-        let counters = active.session.counters();
+        let counters = self.session.counters();
         let sample = active.tracker.due(now).then(|| active.tracker.sample(now, &stats, counters, active.fps));
         let mut alerts = match &sample {
             Some(sample) => {
@@ -1621,6 +1954,7 @@ impl Worker {
             log::warn!("warning {}: {}", alert.code, alert.message);
             if let Some((kind, label)) = &alert.mark {
                 let qpc = capture::qpc_now();
+                self.session.buffer_mark(qpc, |t_ms| marks::system_mark(kind, label, t_ms));
                 self.with_marks(|marks| marks.system(qpc, kind, label));
             }
             if alert.sound {
@@ -1646,6 +1980,55 @@ impl Worker {
         }
     }
 
+    /// Tells what became of a replay save: the saved event for a written take, and the warnings, which the app shows
+    /// as banners and the control API sends as warning events.
+    fn report_replay(&mut self, saved: &Result<ReplayTake, EngineError>) {
+        if let Ok(take) = saved {
+            if let Some(warning) = &take.marks_warning {
+                log::warn!("replay marks: {warning}");
+            }
+            let take_path = take.summary.file.clone();
+            let name = take_title(&take_path);
+            log::info!("replay saved: {}", take_path.display());
+            self.update(|state| state.push_replay_event(ReplayEvent::Saved(ReplaySaved { take_path, name })));
+        }
+        if let Err(err) = saved {
+            let reason = err.to_string();
+            self.update(|state| state.push_replay_event(ReplayEvent::SaveFailed(reason)));
+        }
+        self.raise(replay_alerts(saved));
+    }
+
+    /// While no take runs, watches the enabled app and desktop-except tracks, so their state and meters are
+    /// current before one. A pre-flight or sync test is not a take. The take's own links replace the watch.
+    fn poll_idle_apps(&mut self) {
+        let in_take = self.active.as_ref().is_some_and(|active| active.preflight.is_none() && active.sync.is_none());
+        let watched = if in_take { Vec::new() } else { watched_tracks(&self.settings) };
+        if watched.is_empty() {
+            self.app_monitor = None;
+        } else if self.app_monitor.as_ref().is_none_or(|monitor| monitor.watched() != watched.as_slice()) {
+            self.app_monitor = Some(AppMonitor::start(watched));
+        }
+        let mut tracks = self.app_monitor.as_ref().map(AppMonitor::read).unwrap_or_default();
+        // The meters show the track as it would be recorded.
+        for track in &mut tracks {
+            if let Some(settings) = self.settings.audio.tracks.get(track.index) {
+                track.peak_dbfs = if settings.muted { SILENCE_DBFS } else { (track.peak_dbfs + settings.gain_db).max(SILENCE_DBFS) };
+            }
+        }
+        let (changed, attach_changed) = {
+            let state = lock(&self.shared);
+            let attach = |tracks: &[IdleAppTrack]| tracks.iter().map(|track| (track.index, track.attached)).collect::<Vec<_>>();
+            (state.idle_apps != tracks, attach(&state.idle_apps) != attach(&tracks))
+        };
+        // An attach or detach is news for the listeners and the window; a meter level alone is not.
+        if attach_changed {
+            self.update(|state| state.idle_apps = tracks);
+        } else if changed {
+            self.update_quietly(|state| state.idle_apps = tracks);
+        }
+    }
+
     /// While no take runs, reads the free space on the volume the next take goes to every couple of seconds,
     /// and the active profile's composite mode, since profile edits reach its file without a message.
     fn poll_idle_disk(&mut self) {
@@ -1657,7 +2040,7 @@ impl Worker {
             return;
         }
         self.last_idle_check = Some(now);
-        let free = stats::free_space(&crate::config::takes_root(&self.settings), 0);
+        let free = stats::free_space(&takes_root(&self.settings), 0);
         if lock(&self.shared).idle_free_bytes != free {
             self.update(|state| state.idle_free_bytes = free);
         }
@@ -1667,6 +2050,11 @@ impl Worker {
             self.update(|state| state.composite_mode = composite_mode);
         }
     }
+}
+
+/// A replay length in whole seconds.
+fn length_secs(length: Duration) -> u32 {
+    u32::try_from(length.as_secs()).unwrap_or(u32::MAX)
 }
 
 /// A warning the monitor found, and what to do about it.
@@ -1684,6 +2072,16 @@ struct Alert {
     mark: Option<(&'static str, String)>,
     /// Whether the take is stopped cleanly.
     stop: bool,
+}
+
+/// The warnings of one replay save: `replay_failed` when no take was written, and `replay_finalize` for each MP4 or
+/// MOV file of a saved take that could not be finalized. A clean save has none.
+fn replay_alerts(saved: &Result<ReplayTake, EngineError>) -> Vec<Alert> {
+    let alert = |code, message| Alert { code, message, banner: true, sound: false, mark: None, stop: false };
+    match saved {
+        Ok(take) => take.finalize_warnings.iter().map(|warning| alert("replay_finalize", warning.clone())).collect(),
+        Err(err) => vec![alert("replay_failed", format!("The replay could not be saved: {err}"))],
+    }
 }
 
 /// Fires once when a condition starts and fires again only after the condition has cleared.
@@ -1880,13 +2278,71 @@ fn find_cam_file(folder: &Path, main_file: &Path) -> Option<PathBuf> {
     })
 }
 
+/// The app an app or desktop-except track names; None for a device track.
+fn app_spec(kind: &TrackKind) -> Option<AppSpec> {
+    let (exe, app_name, except) = match kind {
+        TrackKind::App { exe, app_name } => (exe, app_name, false),
+        TrackKind::DesktopExcept { exe, app_name } => (exe, app_name, true),
+        TrackKind::Input | TrackKind::Output => return None,
+    };
+    Some(AppSpec { exe: capture::AppTarget::new(exe).exe().to_owned(), app_name: app_name.clone(), except })
+}
+
+/// The enabled app and desktop-except tracks, for the idle watch.
+fn watched_tracks(settings: &Settings) -> Vec<WatchedTrack> {
+    let enabled = settings.audio.tracks.iter().enumerate().filter(|(_, track)| track.enabled);
+    enabled.filter_map(|(index, track)| app_spec(&track.kind).map(|app| WatchedTrack { index, app })).collect()
+}
+
+/// What a track records, which with its name tells one track from another.
+fn track_source(track: &TrackSettings) -> (&TrackKind, &str, &str) {
+    (&track.kind, &track.device_id, &track.device_name)
+}
+
+/// Whether two entries are the same track, whatever its gain, mute and other settings.
+fn same_track(a: &TrackSettings, b: &TrackSettings) -> bool {
+    a.name == b.name && track_source(a) == track_source(b)
+}
+
+/// While the replay buffer is on, its capture's tracks are the settings' enabled tracks by position, so no track may be
+/// added, removed, enabled, disabled or moved; one that is only renamed or given another source stays in its place.
+/// When `tracks` breaks that, `held`, the list from before the change, is put back with the new gain and mute of each
+/// track that is still listed, and the result is true.
+fn keep_track_list(held: &[TrackSettings], tracks: &mut Vec<TrackSettings>) -> bool {
+    let in_place = held.len() == tracks.len()
+        && held.iter().zip(tracks.iter()).all(|(old, new)| {
+            let edited = (old.name == new.name || track_source(old) == track_source(new)) && !held.iter().any(|other| same_track(other, new));
+            old.enabled == new.enabled && (same_track(old, new) || edited)
+        });
+    if in_place {
+        return false;
+    }
+    let kept = held
+        .iter()
+        .enumerate()
+        .map(|(index, old)| {
+            let mut track = old.clone();
+            // Of tracks that look alike, the first stays the first.
+            let nth = held.iter().take(index).filter(|other| same_track(other, old)).count();
+            if let Some(new) = tracks.iter().filter(|new| same_track(new, old)).nth(nth) {
+                (track.gain_db, track.muted) = (new.gain_db, new.muted);
+            }
+            track
+        })
+        .collect();
+    *tracks = kept;
+    true
+}
+
 /// Builds a spec for every enabled track in the settings, resolving each device, and names the tracks whose device is missing.
 fn track_specs(settings: &Settings) -> (Vec<TrackSpec>, Vec<String>) {
     let mut specs = Vec::new();
     let mut missing = Vec::new();
     for track in settings.audio.tracks.iter().filter(|track| track.enabled) {
-        let device = capture::find_device(&track.device_id, &track.device_name);
-        if device.is_none() {
+        let app = app_spec(&track.kind);
+        // An app or desktop-except track has no device of its own, and an app that is not running is not a missing device.
+        let device = if app.is_some() { None } else { capture::find_device(&track.device_id, &track.device_name) };
+        if device.is_none() && app.is_none() {
             missing.push(if track.device_name.is_empty() { track.name.clone() } else { format!("{} ({})", track.name, track.device_name) });
         }
         specs.push(TrackSpec {
@@ -1898,6 +2354,7 @@ fn track_specs(settings: &Settings) -> (Vec<TrackSpec>, Vec<String>) {
             muted: track.muted,
             offset_ms: track.offset_ms,
             in_mixdown: track.in_mixdown,
+            app,
         });
     }
     (specs, missing)
@@ -1911,6 +2368,11 @@ fn audio_codec(choice: AudioCodecChoice) -> media_io::AudioCodec {
     }
 }
 
+/// The hand test of the replay buffer with the real capture.
+#[cfg(test)]
+#[path = "replay_hand_tests.rs"]
+mod replay_hand_tests;
+
 #[cfg(test)]
 mod tests {
     use std::error::Error;
@@ -1919,6 +2381,63 @@ mod tests {
 
     use super::*;
     use crate::config::Container;
+
+    #[test]
+    fn tracks_cannot_be_added_removed_switched_or_moved_while_the_replay_buffer_is_on() {
+        let track = |name: &str, device: &str| TrackSettings { name: name.to_owned(), device_id: device.to_owned(), ..TrackSettings::default() };
+        let held = vec![track("Desktop", "a"), track("Mic", "b")];
+        // The list the controller keeps when it refuses a change, or none when it takes the change.
+        let refused = |mut tracks: Vec<TrackSettings>| keep_track_list(&held, &mut tracks).then_some(tracks);
+
+        assert_eq!(refused(vec![held[0].clone(), held[1].clone(), track("Game", "c")]), Some(held.clone()), "added");
+        assert_eq!(refused(vec![held[1].clone()]), Some(held.clone()), "removed");
+        assert_eq!(refused(vec![held[1].clone(), held[0].clone()]), Some(held.clone()), "moved");
+        assert_eq!(refused(vec![held[0].clone(), track("Game", "c")]), Some(held.clone()), "replaced");
+        let mut disabled = held.clone();
+        disabled[0].enabled = false;
+        assert_eq!(refused(disabled), Some(held.clone()), "disabled");
+        let mut off = held.clone();
+        off[1].enabled = false;
+        let mut enabled = held.clone();
+        assert!(keep_track_list(&off, &mut enabled), "enabled");
+        assert_eq!(enabled, off);
+
+        // Gain and mute stay live, also on a track that is left after a refused removal.
+        let mut louder = held.clone();
+        (louder[1].gain_db, louder[1].muted) = (6.0, true);
+        assert_eq!(refused(louder.clone()), None);
+        assert_eq!(refused(vec![louder[1].clone()]), Some(louder.clone()));
+        // A rename or another source leaves every track in its place.
+        assert_eq!(refused(vec![track("Speakers", "a"), held[1].clone()]), None);
+        assert_eq!(refused(vec![held[0].clone(), track("Mic", "c")]), None);
+    }
+
+    #[test]
+    fn a_failed_or_half_finished_replay_save_is_a_warning_and_a_clean_one_is_not() {
+        let summary = Summary {
+            file: PathBuf::from("take07.mp4"),
+            frames: 0,
+            duplicated: 0,
+            dropped: 0,
+            bytes_written: 0,
+            packets: Vec::new(),
+            duration_ms: 0,
+            average_mbps: 0.0,
+            wav_files: Vec::new(),
+            encode_avg_ms: 0.0,
+            encode_p95_ms: 0.0,
+            track_peaks: Vec::new(),
+        };
+        let mut saved = Ok(ReplayTake { summary, cam: None, cam_notice: None, finalize_warnings: Vec::new(), marks_warning: None });
+        assert!(replay_alerts(&saved).is_empty());
+        if let Ok(take) = &mut saved {
+            take.finalize_warnings.push("take07.mp4 could not be finished".to_owned());
+        }
+        let told = |alerts: Vec<Alert>| alerts.into_iter().map(|alert| (alert.code, alert.message, alert.banner, alert.stop)).collect::<Vec<_>>();
+        assert_eq!(told(replay_alerts(&saved)), [("replay_finalize", "take07.mp4 could not be finished".to_owned(), true, false)]);
+        let failed = Err(EngineError::Failed("the disk is full".to_owned()));
+        assert_eq!(told(replay_alerts(&failed)), [("replay_failed", "The replay could not be saved: the disk is full".to_owned(), true, false)]);
+    }
 
     fn secs(seconds: f64) -> Duration {
         Duration::from_secs_f64(seconds)

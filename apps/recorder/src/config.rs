@@ -3,6 +3,7 @@
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use capture::{AudioDevice, CaptureError, ControlProp, DeviceKind};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -66,14 +67,29 @@ impl Default for ApiSettings {
     }
 }
 
-/// Whether a track's device captures sound or renders it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// What a track records: a capture device, a render device, one app's audio, or the desktop without one app.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrackKind {
     /// A capture device such as a microphone.
     Input,
     /// A render device, captured through loopback.
     Output,
+    /// One app and its child processes, captured through process loopback. The track's device fields are unused.
+    App {
+        /// The executable's file name in lowercase, for example `discord.exe`.
+        exe: String,
+        /// The app's name for display.
+        app_name: String,
+    },
+    /// All desktop audio except one app and its child processes; the default output as it is while the app
+    /// is not running. The track's device fields are unused.
+    DesktopExcept {
+        /// The executable's file name in lowercase, for example `spotify.exe`.
+        exe: String,
+        /// The app's name for display.
+        app_name: String,
+    },
 }
 
 impl From<DeviceKind> for TrackKind {
@@ -265,6 +281,10 @@ impl ModeState {
 pub struct Settings {
     /// Folder that recordings go into, once the user has picked one.
     pub root_folder: Option<PathBuf>,
+    /// Folder that replays go into, or none to save them inside each project.
+    pub replays_root: Option<PathBuf>,
+    /// Whether the first-launch dialog about the recordings folder has been answered.
+    pub folders_confirmed: bool,
     /// Name of the profile in use.
     pub active_profile: String,
     /// The project name: the folder under the root that holds the project's takes.
@@ -276,8 +296,12 @@ pub struct Settings {
     /// Hide the Recorder's countdown while a prompter is linked and shows its own.
     #[serde(alias = "hide_countdown_when_prompter_linked")]
     pub hide_countdown_when_linked: bool,
+    /// How much the replay buffer keeps, in seconds: one of [`REPLAY_LENGTHS_S`]. Read when the buffer turns on.
+    pub replay_length_s: u32,
     /// The local control API.
     pub api: ApiSettings,
+    /// Whether the Stream Deck remote control server runs.
+    pub stream_deck: bool,
     /// The audio tracks, the WAV sidecar switch and the audio codec.
     pub audio: AudioSettings,
     /// Whether the main window is hidden from screen captures; the label popup is always hidden.
@@ -292,6 +316,23 @@ pub struct Settings {
     #[serde(default)]
     pub shipped_written: Vec<String>,
 }
+
+/// The replay lengths the settings offer, in seconds.
+pub const REPLAY_LENGTHS_S: [u32; 4] = [30, 60, 90, 120];
+
+/// The replay length until the user picks one, in seconds.
+const DEFAULT_REPLAY_LENGTH_S: u32 = 60;
+
+impl Settings {
+    /// How much the replay buffer keeps: the length setting, or the default for a length that is not offered.
+    pub fn replay_length(&self) -> Duration {
+        let seconds = if REPLAY_LENGTHS_S.contains(&self.replay_length_s) { self.replay_length_s } else { DEFAULT_REPLAY_LENGTH_S };
+        Duration::from_secs(u64::from(seconds))
+    }
+}
+
+/// The narrowest the Recorder's window may be, in points; wider than the suite's own minimum.
+pub const MIN_WINDOW_WIDTH: f32 = 960.0;
 
 /// The narrowest the left column may be (spec "Panels").
 pub const LEFT_PANEL_MIN: f32 = 220.0;
@@ -347,12 +388,21 @@ impl ModeWidths {
         }
     }
 
-    /// Overwrites the widths of `mode`.
-    pub fn set(&mut self, mode: Mode, widths: PanelWidths) {
+    /// The saved widths of `mode`, to change in place.
+    pub fn entry(&mut self, mode: Mode) -> &mut PanelWidths {
         match mode {
-            Mode::Setup => self.setup = widths,
-            Mode::Record => self.record = widths,
-            Mode::Review => self.review = widths,
+            Mode::Setup => &mut self.setup,
+            Mode::Record => &mut self.record,
+            Mode::Review => &mut self.review,
+        }
+    }
+
+    /// Clamps every mode's widths into the columns' ranges, as they are loaded. What a window
+    /// has room for is up to the layout, which keeps the stage's minimum at any window width.
+    fn clamp_to_ranges(&mut self) {
+        for widths in [&mut self.setup, &mut self.record, &mut self.review] {
+            widths.left = widths.left.clamp(LEFT_PANEL_MIN, LEFT_PANEL_MAX);
+            widths.right = widths.right.clamp(RIGHT_PANEL_MIN, RIGHT_PANEL_MAX);
         }
     }
 }
@@ -378,12 +428,16 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             root_folder: None,
+            replays_root: None,
+            folders_confirmed: false,
             active_profile: DEFAULT_PROFILE.to_owned(),
             project: DEFAULT_PROJECT.to_owned(),
             naming_template: DEFAULT_NAMING_TEMPLATE.to_owned(),
             countdown_secs: 0,
             hide_countdown_when_linked: true,
+            replay_length_s: DEFAULT_REPLAY_LENGTH_S,
             api: ApiSettings::default(),
+            stream_deck: true,
             audio: AudioSettings::default(),
             hide_from_capture: true,
             mode: Mode::default(),
@@ -915,6 +969,32 @@ pub struct Profile {
     /// follows [`Profile::effective_composite_mode`], not this field alone.
     #[serde(default)]
     pub composite_mode: CompositeMode,
+    /// What happens to the mouse cursor; profile files without one show it.
+    pub cursor: CursorMode,
+    /// With Track: whether mouse buttons and the wheel are logged.
+    pub record_clicks: bool,
+    /// With Track: whether keyboard shortcuts are logged. Opt-in.
+    pub record_keys: bool,
+    /// With Track: whether foreground app changes are logged.
+    pub record_apps: bool,
+}
+
+/// What a recording does with the mouse cursor (input track spec, Settings).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CursorMode {
+    /// Burned into the video.
+    #[default]
+    Show,
+    /// Left out of the video.
+    Hide,
+    /// Left out of the video and written to the take's events file.
+    Track,
+}
+
+/// The default of the switches that start on.
+fn on() -> bool {
+    true
 }
 
 /// The shape of a profile file, so the old `cam_only_bg` key can be read and migrated.
@@ -946,6 +1026,14 @@ struct ProfileFile {
     cam_only_bg: Option<[u8; 3]>,
     #[serde(default)]
     composite_mode: CompositeMode,
+    #[serde(default)]
+    cursor: CursorMode,
+    #[serde(default = "on")]
+    record_clicks: bool,
+    #[serde(default)]
+    record_keys: bool,
+    #[serde(default = "on")]
+    record_apps: bool,
 }
 
 impl<'de> Deserialize<'de> for Profile {
@@ -969,6 +1057,10 @@ impl<'de> Deserialize<'de> for Profile {
             background: file.background,
             cam_only_bg: None,
             composite_mode: file.composite_mode,
+            cursor: file.cursor,
+            record_clicks: file.record_clicks,
+            record_keys: file.record_keys,
+            record_apps: file.record_apps,
         };
         // An old profile's Cam only colour moves into the new background block, so nothing is lost.
         if let Some(bg) = file.cam_only_bg {
@@ -999,6 +1091,10 @@ impl Profile {
             background: BackgroundConfig::default(),
             cam_only_bg: None,
             composite_mode: CompositeMode::Baked,
+            cursor: CursorMode::Show,
+            record_clicks: true,
+            record_keys: false,
+            record_apps: true,
         }
     }
 
@@ -1022,6 +1118,10 @@ impl Profile {
             background: BackgroundConfig::default(),
             cam_only_bg: None,
             composite_mode: CompositeMode::Baked,
+            cursor: CursorMode::Show,
+            record_clicks: true,
+            record_keys: false,
+            record_apps: true,
         }
     }
 
@@ -1045,6 +1145,10 @@ impl Profile {
             background: BackgroundConfig { kind: BackgroundKind::Color, ..BackgroundConfig::default() },
             cam_only_bg: None,
             composite_mode: CompositeMode::Baked,
+            cursor: CursorMode::Show,
+            record_clicks: true,
+            record_keys: false,
+            record_apps: true,
         }
     }
 
@@ -1127,6 +1231,12 @@ fn load_settings(path: &Path) -> Result<(Settings, bool), ConfigError> {
             Ok(match serde_json::from_str::<Settings>(text) {
                 Ok(mut settings) => {
                     settings.audio.normalize();
+                    settings.panel_widths.clamp_to_ranges();
+                    let offered = u32::try_from(settings.replay_length().as_secs()).unwrap_or(DEFAULT_REPLAY_LENGTH_S);
+                    if settings.replay_length_s != offered {
+                        log::warn!("a replay length of {} s is not offered, using {offered} s", settings.replay_length_s);
+                        settings.replay_length_s = offered;
+                    }
                     (settings, true)
                 }
                 Err(err) => {
@@ -1236,9 +1346,9 @@ mod mode_tests {
     fn the_panel_widths_are_persisted_per_mode_with_the_settings() -> Result<(), Box<dyn std::error::Error>> {
         let mut settings = Settings::default();
         assert_eq!(settings.panel_widths.setup, PanelWidths::default(), "a fresh install uses the default widths");
-        settings.panel_widths.set(Mode::Setup, PanelWidths { left: 300.0, right: 420.0 });
-        settings.panel_widths.set(Mode::Record, PanelWidths { left: 220.0, right: 320.0 });
-        settings.panel_widths.set(Mode::Review, PanelWidths { left: 260.0, right: 340.0 });
+        *settings.panel_widths.entry(Mode::Setup) = PanelWidths { left: 300.0, right: 420.0 };
+        *settings.panel_widths.entry(Mode::Record) = PanelWidths { left: 220.0, right: 320.0 };
+        *settings.panel_widths.entry(Mode::Review) = PanelWidths { left: 260.0, right: 340.0 };
         let text = serde_json::to_string(&settings)?;
         let back: Settings = serde_json::from_str(&text)?;
         assert_eq!(back.panel_widths.get(Mode::Setup), PanelWidths { left: 300.0, right: 420.0 });
@@ -1408,6 +1518,44 @@ mod tests {
     }
 
     #[test]
+    fn the_replay_length_round_trips_and_only_offered_lengths_are_kept() -> Result<(), Box<dyn Error>> {
+        let dir = fresh_dir("replay-length")?;
+        let path = dir.join("settings.json");
+        assert_eq!(Settings::default().replay_length(), Duration::from_secs(60));
+        for seconds in REPLAY_LENGTHS_S {
+            write_json(&path, &Settings { replay_length_s: seconds, ..Settings::default() })?;
+            let (loaded, _) = load_settings(&path)?;
+            assert_eq!((loaded.replay_length_s, loaded.replay_length()), (seconds, Duration::from_secs(u64::from(seconds))));
+        }
+        for text in [r#"{}"#, r#"{ "replay_length_s": 45 }"#, r#"{ "replay_length_s": 0 }"#] {
+            fs::write(&path, text)?;
+            assert_eq!(load_settings(&path)?.0.replay_length_s, 60, "{text}");
+        }
+        fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn the_folder_settings_round_trip_and_old_files_load_with_the_defaults() -> Result<(), Box<dyn Error>> {
+        let dir = fresh_dir("folders")?;
+        let path = dir.join("settings.json");
+        // An old settings file without the folder keys loads with the defaults and keeps its other values.
+        fs::write(&path, r#"{ "countdown_secs": 3 }"#)?;
+        let (old, _) = load_settings(&path)?;
+        assert_eq!(old.root_folder, None);
+        assert_eq!(old.replays_root, None);
+        assert!(!old.folders_confirmed);
+        assert_eq!(old.countdown_secs, 3);
+        // Both folders set and confirmed round-trip through a save and a load.
+        let settings =
+            Settings { root_folder: Some(dir.join("recordings")), replays_root: Some(dir.join("replays")), folders_confirmed: true, ..Settings::default() };
+        write_json(&path, &settings)?;
+        assert_eq!(load_settings(&path)?.0, settings);
+        fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
     fn a_profile_file_without_a_container_loads_as_mkv() -> Result<(), Box<dyn Error>> {
         let mut value = serde_json::to_value(Profile::premiere_hevc_1080p60())?;
         value.as_object_mut().ok_or("a profile is a JSON object")?.remove("container");
@@ -1498,6 +1646,37 @@ mod tests {
         assert_eq!(track.kind, TrackKind::Output);
         assert!(track.enabled);
         assert_eq!(track.gain_db, 0.0);
+        Ok(())
+    }
+
+    #[test]
+    fn an_app_track_round_trips_and_device_kinds_keep_their_saved_names() -> Result<(), Box<dyn Error>> {
+        let kind = TrackKind::App { exe: "discord.exe".to_owned(), app_name: "Discord".to_owned() };
+        let track = TrackSettings { name: "Discord".to_owned(), kind, ..TrackSettings::default() };
+        let audio = AudioSettings { tracks: vec![track], ..AudioSettings::default() };
+        let text = serde_json::to_string(&audio)?;
+        assert_eq!(serde_json::from_str::<AudioSettings>(&text)?, audio);
+        assert!(text.contains(r#""kind":{"app":{"exe":"discord.exe","app_name":"Discord"}}"#), "{text}");
+        let except = TrackKind::DesktopExcept { exe: "spotify.exe".to_owned(), app_name: "Spotify".to_owned() };
+        let text = serde_json::to_string(&except)?;
+        assert_eq!(text, r#"{"desktop_except":{"exe":"spotify.exe","app_name":"Spotify"}}"#);
+        assert_eq!(serde_json::from_str::<TrackKind>(&text)?, except);
+        assert_eq!(serde_json::to_string(&TrackKind::Input)?, "\"input\"");
+        assert_eq!(serde_json::to_string(&TrackKind::Output)?, "\"output\"");
+        Ok(())
+    }
+
+    #[test]
+    fn loaded_panel_widths_are_clamped_into_their_ranges() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = fresh_dir("panel-width-clamp")?;
+        let path = dir.join("settings.json");
+        let mut settings = Settings::default();
+        *settings.panel_widths.entry(Mode::Setup) = PanelWidths { left: 5000.0, right: 10.0 };
+        fs::write(&path, serde_json::to_string(&settings)?)?;
+        let (loaded, _) = load_settings(&path)?;
+        assert_eq!(loaded.panel_widths.get(Mode::Setup), PanelWidths { left: LEFT_PANEL_MAX, right: RIGHT_PANEL_MIN });
+        assert_eq!(loaded.panel_widths.get(Mode::Record), PanelWidths::default());
+        fs::remove_dir_all(&dir)?;
         Ok(())
     }
 
@@ -1728,6 +1907,25 @@ mod layout_tests {
         assert!(!settings.key.enabled);
         let text = serde_json::to_string(&WebcamSettings { key: KeyConfig { enabled: true, ..KeyConfig::default() }, ..WebcamSettings::default() })?;
         assert!(serde_json::from_str::<WebcamSettings>(&text)?.key.enabled);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+
+    #[test]
+    fn a_profile_from_before_the_cursor_settings_shows_the_cursor() -> Result<(), serde_json::Error> {
+        let mut old = serde_json::to_value(Profile::tutorial_av1_1440p60())?;
+        if let Some(fields) = old.as_object_mut() {
+            for key in ["cursor", "record_clicks", "record_keys", "record_apps"] {
+                assert!(fields.remove(key).is_some(), "{key} is saved");
+            }
+        }
+        let profile: Profile = serde_json::from_value(old)?;
+        assert_eq!(profile.cursor, CursorMode::Show);
+        assert_eq!((profile.record_clicks, profile.record_keys, profile.record_apps), (true, false, true));
         Ok(())
     }
 }

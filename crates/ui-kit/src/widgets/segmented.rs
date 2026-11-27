@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use egui::{Color32, Galley, Id, Key, Pos2, Rect, Response, Sense, Ui, WidgetInfo, WidgetType, vec2};
 
+use crate::Theme;
 use crate::fonts;
 use crate::tokens::{color, radius, size, space, typography};
 use crate::widgets::focus_ring;
@@ -72,6 +73,7 @@ fn segmented_impl(
     cell_widths: &[f32],
     tooltips: &[&str],
 ) -> Response {
+    let neutrals = Theme::get(ui.ctx()).neutrals;
     let id_salt = id_salt.into();
     let height = size::SEGMENT_HEIGHT;
     let total_width: f32 = cell_widths.iter().sum::<f32>() + 2.0 * TRACK_PADDING;
@@ -79,7 +81,7 @@ fn segmented_impl(
     track.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, "Segmented control"));
 
     if ui.is_rect_visible(rect) {
-        ui.painter().rect_filled(rect, radius::CONTROL, color::BG_CONTROL);
+        ui.painter().rect_filled(rect, radius::CONTROL, neutrals.bg_control);
     }
 
     let mut x = rect.left() + TRACK_PADDING;
@@ -112,9 +114,9 @@ fn segmented_impl(
                 // The 1px shadow: the glass shadow color, offset 1px down
                 // under the selected segment (spec "Segmented control").
                 ui.painter().rect_filled(segment_rect.translate(vec2(0.0, SEGMENT_SHADOW_OFFSET)), radius::SEGMENT, color::GLASS_SHADOW);
-                ui.painter().rect_filled(segment_rect, radius::SEGMENT, color::BG_SELECTED);
+                ui.painter().rect_filled(segment_rect, radius::SEGMENT, neutrals.bg_selected);
             }
-            let text = if is_selected { color::TEXT_PRIMARY } else { color::TEXT_SECONDARY };
+            let text = if is_selected { neutrals.text_primary } else { neutrals.text_secondary };
             ui.painter().galley(segment_rect.center() - galley.size() / 2.0, galley.clone(), text);
         }
     }

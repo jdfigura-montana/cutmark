@@ -6,8 +6,9 @@ use std::collections::VecDeque;
 
 use egui::{Align2, Context, Id, Margin, Order, vec2};
 
+use crate::Theme;
 use crate::fonts;
-use crate::tokens::{color, space, typography};
+use crate::tokens::{space, typography};
 use crate::widgets::{capsule_radius, glass};
 
 /// Seconds a toast stays on screen (spec "Toasts": 4 second auto-dismiss).
@@ -64,6 +65,7 @@ fn now(ctx: &Context) -> f64 {
 /// expires it after [`TOAST_SECONDS`] so the next queued toast shows. One at
 /// a time. Returns the response of the toast shown this frame, if any.
 pub fn show_toasts(ctx: &Context) -> Option<egui::Response> {
+    let neutrals = Theme::get(ctx).neutrals;
     let now = now(ctx);
     // Expire the front toast once its four seconds are up, so the next one shows.
     ctx.data_mut(|data| {
@@ -91,7 +93,7 @@ pub fn show_toasts(ctx: &Context) -> Option<egui::Response> {
     let front = ctx.data(|data| data.get_temp::<Toasts>(queue_id()).and_then(|toasts| toasts.items.front().cloned()));
     front.map(|(serial, text)| {
         let font = fonts::medium(typography::BODY_SIZE);
-        let job = egui::text::LayoutJob::simple(text, font, color::TEXT_PRIMARY, f32::INFINITY);
+        let job = egui::text::LayoutJob::simple(text, font, neutrals.text_primary, f32::INFINITY);
         let galley = ctx.fonts_mut(|fonts| fonts.layout_job(job));
         let pad_x = space::SCALE_12;
         let pad_y = space::SCALE_8;

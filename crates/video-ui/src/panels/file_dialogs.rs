@@ -53,9 +53,9 @@ pub fn show_recovery(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             let name = c["projectName"].as_str().unwrap_or(tl!("Untitled"));
             let when = c["savedAt"].as_str().unwrap_or("");
             let why = if c["cleanExit"].as_bool() == Some(true) {
-                tlf!("Cutmark Video was closed while “{name}” had unsaved changes.", name)
+                tlf!("CutMark Video was closed while “{name}” had unsaved changes.", name)
             } else {
-                tlf!("Cutmark Video quit unexpectedly while “{name}” had unsaved changes.", name)
+                tlf!("CutMark Video quit unexpectedly while “{name}” had unsaved changes.", name)
             };
             ui.label(RichText::new(why).size(13.5).color(t.text));
             ui.add_space(4.0);

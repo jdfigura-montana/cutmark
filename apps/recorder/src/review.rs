@@ -4,10 +4,11 @@
 //! A take is the main media file (mkv, mp4, mov) plus every file that shares
 //! its stem: the camera ISO file (`_cam`), the track WAV files (`_t*_*.wav`),
 //! the marks sidecar and the derived `_marks` files, session.json and the
-//! `_script` files. The start time comes from the marks sidecar's
+//! `_script` files, the input track (`.events`) and the baked copy (`.baked.mp4`). The start time comes from the marks sidecar's
 //! session start when there is one, and from the video file's modified time
-//! otherwise. The duration comes from the sidecar's recording length, with
-//! media-io's header probe as the fallback when the sidecar has none.
+//! otherwise. The duration is what media-io's header probe reads from the main
+//! file, with the sidecar's length for that file as the fallback. The video
+//! formats come from the same probe.
 //!
 //! The rename and delete actions (spec "Review mode", the right panel's
 //! Actions group) live here too: renaming moves every file of a take to a new
@@ -16,19 +17,27 @@
 //! hands the files to the Recycle Bin through the `trash` crate. Adding a mark
 //! writes a Note to the sidecar through the marks crate and regenerates the
 //! derived `_marks` files from the marks exports.
+//!
+//! What Review shows of a take's input track is summed up here too; writing the
+//! copy with the cursor burned in is [`bake`].
+
+pub mod bake;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local, NaiveDate, Utc};
-use media_io::player::probe::probe;
+use media_io::player::probe::{VideoInfo, probe};
 use serde::Deserialize;
 
 use crate::config::CompositeMode;
 
 /// The file extensions that make a file group a take (spec "Review mode").
 const MEDIA_EXTENSIONS: [&str; 3] = ["mkv", "mp4", "mov"];
+
+/// The extension of a take's input track.
+const EVENTS_EXTENSION: &str = "events";
 
 /// The end of the marks sidecar's file name, after the take's stem.
 const MARKS_SUFFIX: &str = ".marks.json";
@@ -38,10 +47,13 @@ const SESSION_SUFFIX: &str = "_session.json";
 
 /// File-name suffixes whose stem is the take's stem; a plain `file_stem`
 /// would keep the `.marks` or `_marks` part and split a take's files apart.
-const SIDECAR_SUFFIXES: [&str; 6] = [MARKS_SUFFIX, "_marks.md", "_marks.csv", SESSION_SUFFIX, "_script.md", "_script.csv"];
+const SIDECAR_SUFFIXES: [&str; 7] = [MARKS_SUFFIX, "_marks.md", "_marks.csv", SESSION_SUFFIX, "_script.md", "_script.csv", BAKED_SUFFIX];
 
 /// What the camera file's stem adds to the take's stem.
 const CAM_SUFFIX: &str = "_cam";
+
+/// The end of the name of the take's copy with the cursor burned in. It is a media file, but never a take of its own.
+const BAKED_SUFFIX: &str = ".baked.mp4";
 
 /// One file of a take.
 pub struct TakeFile {
@@ -58,7 +70,7 @@ pub struct Take {
     pub name: String,
     /// When the take started: the sidecar's session start, else the media file's modified time.
     pub start: DateTime<Local>,
-    /// The recording length from the sidecar, in milliseconds; None without a sidecar.
+    /// The main file's length in milliseconds (see [`take_duration`]); None when nothing says.
     pub duration_ms: Option<u64>,
     /// The size of every file of the take together, in bytes.
     pub total_size: u64,
@@ -68,6 +80,12 @@ pub struct Take {
     pub video: PathBuf,
     /// The camera ISO file, when the take has one.
     pub iso: Option<PathBuf>,
+    /// The input track, `{stem}.events`, when the take has one.
+    pub events: Option<PathBuf>,
+    /// The main file's video format (see [`format_video`]); None when the probe cannot read it.
+    pub video_format: Option<String>,
+    /// The camera ISO file's video format; None without one or when the probe cannot read it.
+    pub iso_format: Option<String>,
     /// The marks from the sidecar, in timeline order; empty without a sidecar.
     pub marks: Vec<marks::Mark>,
     /// The composite mode from the take's session.json; Baked without a composite block.
@@ -82,15 +100,42 @@ pub struct Day {
     pub takes: Vec<Take>,
 }
 
-/// Scans the project folder for takes and returns its days, newest first.
+/// Which of the project's two take folders Review lists.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReviewView {
+    /// The normal takes.
+    #[default]
+    Takes,
+    /// The saved replays.
+    Replays,
+}
+
+/// What a toast's Review button opens: a take, in the view that lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewTarget {
+    /// The view that lists the take.
+    pub view: ReviewView,
+    /// The take's name.
+    pub take: String,
+}
+
+impl ReviewTarget {
+    /// Switches Review to the target's view and selects its take.
+    pub fn select(self, view: &mut ReviewView, selected: &mut Option<String>) {
+        *view = self.view;
+        *selected = Some(self.take);
+    }
+}
+
+/// Scans a takes folder (the project folder or its replays folder) and returns its days, newest first.
 ///
 /// The folder is read one level deep: a take lives in its own folder under
-/// the project folder, and stray media files directly in the project folder
-/// count too. Unreadable entries are logged and skipped.
-pub fn scan(project_folder: &Path) -> Vec<Day> {
+/// the scanned folder, and stray media files directly in it count too.
+/// Unreadable entries are logged and skipped.
+pub fn scan(folder: &Path) -> Vec<Day> {
     let mut groups: HashMap<String, Vec<TakeFile>> = HashMap::new();
-    collect_folder(project_folder, &mut groups);
-    if let Ok(entries) = fs::read_dir(project_folder) {
+    collect_folder(folder, &mut groups);
+    if let Ok(entries) = fs::read_dir(folder) {
         for entry in entries.flatten() {
             if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
                 collect_folder(&entry.path(), &mut groups);
@@ -108,29 +153,41 @@ pub fn find<'a>(days: &'a [Day], selected: Option<&str>) -> Option<&'a Take> {
     days.iter().flat_map(|day| &day.takes).find(|take| take.name == selected)
 }
 
-/// The takes of today with their total length: the count, the summed duration
-/// in milliseconds, and how many of the takes had a duration at all.
-pub fn today_summary(days: &[Day]) -> (usize, u64, usize) {
-    let today = Local::now().date_naive();
-    let mut count = 0;
-    let mut total_ms = 0;
-    let mut timed = 0;
-    for take in days.iter().flat_map(|day| &day.takes) {
-        if take.start.date_naive() == today {
-            count += 1;
-            if let Some(duration) = take.duration_ms {
-                total_ms += duration;
-                timed += 1;
-            }
-        }
-    }
-    (count, total_ms, timed)
-}
-
 /// Formats a length in milliseconds as HH:MM:SS.
 pub fn format_duration(ms: u64) -> String {
     let seconds = ms / 1000;
     format!("{:02}:{:02}:{:02}", seconds / 3600, seconds / 60 % 60, seconds % 60)
+}
+
+/// The length of a take, in milliseconds: what the probe of the main file
+/// `video` says, else the sidecar's length for that file. A zero counts as no
+/// answer. The takes list, the File group and the playback all ask here.
+pub fn take_duration(video: &Path, probed_ms: Option<u64>, sidecar: Option<&marks::Sidecar>) -> Option<u64> {
+    let recorded = || {
+        let sidecar = sidecar?;
+        let index = media_index(sidecar, video);
+        sidecar.media.iter().find(|entry| entry.index == index).map(|entry| entry.duration_ms)
+    };
+    probed_ms.filter(|ms| *ms > 0).or_else(|| recorded().filter(|ms| *ms > 0))
+}
+
+/// What sits between the parts of a video format. The task for these rows asks for the dot,
+/// so this one line is let through the Recorder's middle dot check.
+const FORMAT_SEPARATOR: &str = " \u{b7} "; // allow: spaced middle dot
+
+/// A video stream as the File group shows it: "AV1 · 2560×1440 · 60 fps". The
+/// frame rate keeps up to two decimals and is left out when the file has none.
+pub fn format_video(video: &VideoInfo) -> String {
+    let codec = match video.codec.as_str() {
+        "h264" => "H.264".to_owned(),
+        other => other.to_uppercase(),
+    };
+    let mut parts = vec![codec, format!("{}\u{d7}{}", video.width, video.height)];
+    if video.fps > 0.0 {
+        let fps = format!("{:.2}", video.fps);
+        parts.push(format!("{} fps", fps.trim_end_matches('0').trim_end_matches('.')));
+    }
+    parts.join(FORMAT_SEPARATOR)
 }
 
 /// Formats a size in bytes in the largest unit that keeps one decimal digit.
@@ -356,19 +413,52 @@ fn build_take(name: String, mut files: Vec<TakeFile>) -> Option<Take> {
     let iso = media_with_stem(&format!("{name}{CAM_SUFFIX}"));
     let modified = fs::metadata(&video).and_then(|meta| meta.modified()).ok()?;
     let sidecar = load_sidecar(&video);
-    // The sidecar's recording length wins; when it has none (or says zero),
-    // media-io's header probe reads the length from the file itself.
-    let duration_ms = match sidecar.as_ref().map(|sidecar| sidecar.media.iter().map(|media| media.duration_ms).sum::<u64>()) {
-        Some(total) if total > 0 => Some(total),
-        _ => probe(&video).ok().map(|info| info.duration_ms),
-    };
+    let info = probe(&video).ok();
+    let duration_ms = take_duration(&video, info.as_ref().map(|info| info.duration_ms), sidecar.as_ref());
+    let video_format = info.and_then(|info| info.video).map(|stream| format_video(&stream));
+    let iso_format = iso.as_deref().and_then(|path| probe(path).ok()).and_then(|info| info.video).map(|stream| format_video(&stream));
     let marks = sidecar.as_ref().map(|sidecar| sidecar.marks.clone()).unwrap_or_default();
     let start = match &sidecar {
         Some(sidecar) => sidecar.session.started_at.with_timezone(&Local),
         None => DateTime::<Utc>::from(modified).with_timezone(&Local),
     };
     let composite = load_composite_mode(&video.with_file_name(format!("{name}{SESSION_SUFFIX}")));
-    Some(Take { name, start, duration_ms, total_size: files.iter().map(|file| file.size).sum(), files, video, iso, marks, composite })
+    let total_size = files.iter().map(|file| file.size).sum();
+    let events_path = video.with_extension(EVENTS_EXTENSION);
+    let events = files.iter().any(|file| file.path == events_path).then_some(events_path);
+    Some(Take { name, start, duration_ms, total_size, files, video, iso, events, video_format, iso_format, marks, composite })
+}
+
+/// What the File group says about a take's input track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrackSummary {
+    /// Mouse buttons that went down; None when clicks were not recorded.
+    pub clicks: Option<usize>,
+    /// Keyboard shortcuts; None when they were not recorded.
+    pub shortcuts: Option<usize>,
+    /// Changes of the app in front during the take; None when they were not recorded.
+    pub app_switches: Option<usize>,
+    /// False when the file has no `TAIL` chunk: the recording or its logger ended early.
+    pub complete: bool,
+}
+
+impl TrackSummary {
+    /// Sums up a track.
+    pub fn of(track: &events::EventsReader) -> Self {
+        let streams = track.header().streams;
+        Self {
+            clicks: streams.clicks.then(|| track.clicks().count()),
+            shortcuts: streams.keys.then(|| track.chords().len()),
+            // The app in front when the take began is stated at time zero; it is no switch.
+            app_switches: streams.apps.then(|| track.apps().iter().filter(|app| app.time_us > 0).count()),
+            complete: track.is_complete(),
+        }
+    }
+}
+
+/// Loads a take's input track, logging why when it cannot be read.
+pub fn load_track(path: &Path) -> Option<events::EventsReader> {
+    events::EventsReader::open(path).map_err(|err| log::warn!("could not read {}: {err}", path.display())).ok()
 }
 
 /// The `composite.mode` of a take's session.json; Baked when the file or the block is missing or
@@ -383,7 +473,7 @@ fn load_composite_mode(session_file: &Path) -> CompositeMode {
 
 /// Loads the sidecar of `video`, logging problems; None when there is none or
 /// it cannot be read.
-fn load_sidecar(video: &Path) -> Option<marks::Sidecar> {
+pub fn load_sidecar(video: &Path) -> Option<marks::Sidecar> {
     let sidecar_path = marks::discover(video)?;
     match marks::load(&sidecar_path) {
         Ok((sidecar, warnings)) => {
@@ -696,6 +786,67 @@ mod tests {
     }
 
     #[test]
+    fn the_events_file_and_the_baked_copy_belong_to_their_take() {
+        let videos: HashSet<String> = ["take01", "take01.baked"].map(str::to_owned).into();
+        for name in ["take01.mp4", "take01.events", "take01.baked.mp4"] {
+            assert_eq!(take_stem(name, &videos), "take01", "{name}");
+        }
+    }
+
+    /// A take knows its own events file, and a bake's unfinished temp file never makes or joins a take.
+    #[test]
+    fn a_take_finds_its_events_file() -> Result<(), Box<dyn std::error::Error>> {
+        let root = fresh_dir("review-events")?;
+        for name in ["with.mkv", "with.events", "with.baked.mp4.tmp", "without.mkv"] {
+            fs::write(root.join(name), b"data")?;
+        }
+        let days = scan(&root);
+        let take = |name| find(&days, Some(name)).ok_or("the take is missing");
+        assert_eq!(take("with")?.events, Some(root.join("with.events")));
+        assert_eq!(take("with")?.files.len(), 2);
+        assert_eq!(take("without")?.events, None);
+        assert_eq!(days.iter().map(|day| day.takes.len()).sum::<usize>(), 2);
+        fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    /// The counts leave out the app that was in front from the start and say so for a stream that was off, and a
+    /// track without its tail is incomplete.
+    #[test]
+    fn the_input_track_is_summed_up() -> Result<(), Box<dyn std::error::Error>> {
+        use events::{AppSwitch, CaptureSource, EventsReader, EventsWriter, Header, InputEvent, MouseAction, MouseButton, MouseEvent, ScreenRect, Streams};
+
+        let header = Header {
+            qpc_frequency: 1_000_000,
+            first_frame_qpc: 0,
+            source: CaptureSource::Monitor(ScreenRect::default()),
+            displays: Vec::new(),
+            cursor_size: 32,
+            streams: Streams { cursor: true, clicks: true, keys: false, apps: true },
+        };
+        let click = |qpc, action| InputEvent::Mouse(MouseEvent { qpc, x: 0, y: 0, action });
+        let app = |qpc, exe: &str| InputEvent::App(AppSwitch { qpc, exe: exe.to_owned(), display_name: exe.to_owned() });
+        let mut writer = EventsWriter::new(Vec::new(), &header)?;
+        for event in [
+            app(0, "one.exe"),
+            app(500, "two.exe"),
+            click(10, MouseAction::Down(MouseButton::Left)),
+            click(20, MouseAction::Up(MouseButton::Left)),
+            click(30, MouseAction::Down(MouseButton::Right)),
+            click(40, MouseAction::Wheel(120)),
+        ] {
+            writer.push(event)?;
+        }
+        writer.flush_second()?;
+        let cut_short = writer.get_ref().clone();
+        let whole = writer.finish(1_000)?;
+        let expected = TrackSummary { clicks: Some(2), shortcuts: None, app_switches: Some(1), complete: true };
+        assert_eq!(TrackSummary::of(&EventsReader::from_bytes(&whole)?), expected);
+        assert_eq!(TrackSummary::of(&EventsReader::from_bytes(&cut_short)?), TrackSummary { complete: false, ..expected });
+        Ok(())
+    }
+
+    #[test]
     fn groups_without_a_media_file_are_not_takes() -> Result<(), Box<dyn std::error::Error>> {
         let root = fresh_dir("review-no-media")?;
         let project = root.join("Show");
@@ -707,29 +858,33 @@ mod tests {
         Ok(())
     }
 
-    /// A take for the summary tests, with only the fields they read.
-    fn take_named(name: &str, start: DateTime<Local>, duration_ms: Option<u64>) -> Take {
-        Take {
-            name: name.to_owned(),
-            start,
-            duration_ms,
-            total_size: 0,
-            files: Vec::new(),
-            video: PathBuf::new(),
-            iso: None,
-            marks: Vec::new(),
-            composite: CompositeMode::Baked,
-        }
+    #[test]
+    fn video_formats_are_built_from_the_probe() {
+        let format = |codec: &str, width, height, fps| format_video(&VideoInfo { codec: codec.to_owned(), width, height, fps });
+        let joined = |parts: &[&str]| parts.join(FORMAT_SEPARATOR);
+        assert_eq!(FORMAT_SEPARATOR.trim(), "\u{b7}");
+        assert_eq!(format("av1", 2560, 1440, 60.0), joined(&["AV1", "2560\u{d7}1440", "60 fps"]));
+        assert_eq!(format("h264", 1920, 1080, 30_000.0 / 1_001.0), joined(&["H.264", "1920\u{d7}1080", "29.97 fps"]));
+        assert_eq!(format("hevc", 1280, 720, 12.5), joined(&["HEVC", "1280\u{d7}720", "12.5 fps"]));
+        assert_eq!(format("av1", 640, 368, 0.0), joined(&["AV1", "640\u{d7}368"]), "no frame rate, no fps part");
     }
 
+    /// The probe of the main file wins; the sidecar answers only when the probe cannot, and
+    /// only with the main file's own entry, never the entries added up.
     #[test]
-    fn the_today_summary_counts_todays_takes_and_their_length() {
-        let yesterday = Local::now() - chrono::Duration::days(1);
-        let days = vec![
-            Day { date: yesterday.date_naive(), takes: vec![take_named("old", yesterday, Some(60_000))] },
-            Day { date: Local::now().date_naive(), takes: vec![take_named("a", Local::now(), Some(30_000)), take_named("b", Local::now(), None)] },
-        ];
-        assert_eq!(today_summary(&days), (2, 30_000, 1));
+    fn the_duration_comes_from_the_probe_before_the_sidecar() -> Result<(), Box<dyn std::error::Error>> {
+        let mut sidecar: marks::Sidecar = serde_json::from_str(&sidecar_json_media("2026-11-20T12:00:00.000Z", 11_000, 0, "take.mkv"))?;
+        let mut camera = sidecar.media[0].clone();
+        camera.index = 1;
+        camera.path = "take_cam.mkv".to_owned();
+        camera.duration_ms = 36_000;
+        sidecar.media.push(camera);
+        let video = Path::new("take.mkv");
+        assert_eq!(take_duration(video, Some(47_000), Some(&sidecar)), Some(47_000));
+        assert_eq!(take_duration(video, None, Some(&sidecar)), Some(11_000));
+        assert_eq!(take_duration(video, Some(0), Some(&sidecar)), Some(11_000), "a probe without a length is no answer");
+        assert_eq!(take_duration(video, None, None), None);
+        Ok(())
     }
 
     #[test]
@@ -841,7 +996,7 @@ mod tests {
         assert!(check_take_name("com1", &existing).is_err(), "a reserved device name is refused");
     }
 
-    /// The deck's previous and next mark jump at every edge: no marks at all,
+    /// The previous and next mark jump at every edge: no marks at all,
     /// before, on and past each end, with the wrap-around the functions define.
     #[test]
     fn next_and_previous_mark_select_at_the_edges() {
