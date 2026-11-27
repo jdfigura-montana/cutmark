@@ -33,6 +33,9 @@ mod review_ui;
 mod screen_ui;
 mod settings_ui;
 mod status_ui;
+// Nothing calls Studio's logic yet.
+#[allow(dead_code)]
+mod studio;
 mod sync_flash;
 mod takes;
 mod tools_ui;

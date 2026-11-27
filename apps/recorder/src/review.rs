@@ -4,7 +4,8 @@
 //! A take is the main media file (mkv, mp4, mov) plus every file that shares
 //! its stem: the camera ISO file (`_cam`), the track WAV files (`_t*_*.wav`),
 //! the marks sidecar and the derived `_marks` files, session.json and the
-//! `_script` files, the input track (`.events`) and the baked copy (`.baked.mp4`). The start time comes from the marks sidecar's
+//! `_script` files, the input track (`.events`), the baked copy (`.baked.mp4`) and Studio's settings and export
+//! (`.studio.json`, `.studio.mp4`). The start time comes from the marks sidecar's
 //! session start when there is one, and from the video file's modified time
 //! otherwise. The duration is what media-io's header probe reads from the main
 //! file, with the sidecar's length for that file as the fallback. The video
@@ -32,6 +33,7 @@ use media_io::player::probe::{VideoInfo, probe};
 use serde::Deserialize;
 
 use crate::config::CompositeMode;
+use crate::studio::settings::{EXPORT_SUFFIX as STUDIO_EXPORT_SUFFIX, SETTINGS_SUFFIX as STUDIO_SETTINGS_SUFFIX};
 
 /// The file extensions that make a file group a take (spec "Review mode").
 const MEDIA_EXTENSIONS: [&str; 3] = ["mkv", "mp4", "mov"];
@@ -47,7 +49,8 @@ const SESSION_SUFFIX: &str = "_session.json";
 
 /// File-name suffixes whose stem is the take's stem; a plain `file_stem`
 /// would keep the `.marks` or `_marks` part and split a take's files apart.
-const SIDECAR_SUFFIXES: [&str; 7] = [MARKS_SUFFIX, "_marks.md", "_marks.csv", SESSION_SUFFIX, "_script.md", "_script.csv", BAKED_SUFFIX];
+const SIDECAR_SUFFIXES: [&str; 9] =
+    [MARKS_SUFFIX, "_marks.md", "_marks.csv", SESSION_SUFFIX, "_script.md", "_script.csv", BAKED_SUFFIX, STUDIO_SETTINGS_SUFFIX, STUDIO_EXPORT_SUFFIX];
 
 /// What the camera file's stem adds to the take's stem.
 const CAM_SUFFIX: &str = "_cam";
@@ -315,7 +318,7 @@ fn media_index(sidecar: &marks::Sidecar, video: &Path) -> usize {
 
 /// Writes `bytes` to `path` through a temp file in the same folder that is
 /// renamed over it (the atomic-write rule), removing the temp file on failure.
-fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
     let temp = path.with_file_name(format!("{name}.tmp"));
     let written = fs::write(&temp, bytes).and_then(|()| fs::rename(&temp, path));
@@ -791,6 +794,19 @@ mod tests {
         for name in ["take01.mp4", "take01.events", "take01.baked.mp4"] {
             assert_eq!(take_stem(name, &videos), "take01", "{name}");
         }
+    }
+
+    #[test]
+    fn studios_files_belong_to_their_take_and_its_export_is_never_a_take() -> Result<(), Box<dyn std::error::Error>> {
+        let root = fresh_dir("review-studio")?;
+        for name in ["take01.mkv", "take01.studio.json", "take01.studio.mp4", "gone.studio.mp4"] {
+            fs::write(root.join(name), b"data")?;
+        }
+        let days = scan(&root);
+        let takes: Vec<(&str, usize)> = days.iter().flat_map(|day| &day.takes).map(|take| (take.name.as_str(), take.files.len())).collect();
+        assert_eq!(takes, [("take01", 3)]);
+        fs::remove_dir_all(&root)?;
+        Ok(())
     }
 
     /// A take knows its own events file, and a bake's unfinished temp file never makes or joins a take.
