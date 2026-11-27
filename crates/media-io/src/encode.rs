@@ -316,6 +316,8 @@ impl EncodedPacket {
 pub trait Encoder: Send {
     /// Feeds one hardware frame to the encoder; the frame is consumed.
     fn send(&mut self, frame: HwFrame) -> Result<(), MediaError>;
+    /// Makes the next frame sent come out as a keyframe: an IDR frame for HEVC and H.264, a key frame for AV1.
+    fn force_keyframe(&mut self);
     /// Hands every ready packet to the callback and returns once the encoder has none left.
     fn receive(&mut self, out: &mut dyn FnMut(EncodedPacket)) -> Result<(), MediaError>;
     /// Signals end of stream and drains every remaining packet.

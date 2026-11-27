@@ -20,6 +20,9 @@ use crate::hw::{D3d11Device, D3d11FramePool, HwFrame, ff_error};
 /// call reaches both the generic codec options and the private AMF ones.
 const SEARCH_CHILDREN: c_int = 1;
 
+/// The private AMF option that makes a forced I picture an IDR frame.
+const FORCED_IDR: &str = "forced_idr";
+
 /// The codecs the AMF probe covers, in display order.
 const PROBE_CODECS: [Codec; 3] = [Codec::Av1, Codec::Hevc, Codec::H264];
 
@@ -31,6 +34,8 @@ pub struct AmfEncoder {
     time_base: (i32, i32),
     /// Whether end of stream has been sent.
     finished: bool,
+    /// Whether the next frame sent must come out as a keyframe.
+    key_requested: bool,
     /// The applied options as read back from the opened encoder.
     read_back: Vec<(String, String)>,
 }
@@ -146,8 +151,11 @@ impl AmfEncoder {
         video.set_frame_rate(Some(Rational::new(frame_rate_num(cfg), frame_rate_den(cfg))));
         video.set_format(Pixel::from(ffi::AVPixelFormat::AV_PIX_FMT_D3D11));
         apply_options(context_ptr, priv_data, name, &options)?;
+        // Without this a frame marked as an I picture is not an IDR frame, so a file could not start on it.
+        // It changes nothing for the encoder's own keyframes.
+        apply_options(context_ptr, priv_data, name, &[(FORCED_IDR.to_string(), "1".to_string())])?;
         let encoder = video.open().map_err(MediaError::Init)?;
-        let mut opened = Self { encoder, time_base: (time_base_num(cfg), time_base_den(cfg)), finished: false, read_back: Vec::new() };
+        let mut opened = Self { encoder, time_base: (time_base_num(cfg), time_base_den(cfg)), finished: false, key_requested: false, read_back: Vec::new() };
         opened.read_back = read_back_options(opened.context_ptr(), name, &options)?;
         log::info!("AMF {name}: codec header of {} bytes after open (0 means the muxer reads it from the first packet)", opened.header_bytes());
         Ok(opened)
@@ -202,13 +210,24 @@ impl AmfEncoder {
 impl Encoder for AmfEncoder {
     #[allow(unsafe_code)]
     fn send(&mut self, frame: HwFrame) -> Result<(), MediaError> {
+        if self.key_requested {
+            // SAFETY: the frame is live and exclusively owned here; pict_type is plain data.
+            // The AMF wrappers read it per frame and, with forced_idr set, ask for an IDR or AV1 key frame.
+            unsafe { (*frame.frame_ptr()).pict_type = ffi::AVPictureType::AV_PICTURE_TYPE_I };
+        }
         // SAFETY: the encoder context and the frame are live; avcodec_send_frame
         // takes only a reference during the call, and the frame is dropped after.
         let code = unsafe { ffi::avcodec_send_frame(self.context_ptr(), frame.frame_ptr()) };
         if code < 0 {
             return Err(ff_error(code));
         }
+        // Only a frame the encoder took uses the request up.
+        self.key_requested = false;
         Ok(())
+    }
+
+    fn force_keyframe(&mut self) {
+        self.key_requested = true;
     }
 
     fn receive(&mut self, out: &mut dyn FnMut(EncodedPacket)) -> Result<(), MediaError> {
@@ -907,6 +926,47 @@ mod tests {
     use super::*;
 
     const ALL_CODECS: [Codec; 3] = [Codec::Av1, Codec::Hevc, Codec::H264];
+
+    /// Whether an Annex B HEVC access unit holds an IDR slice (NAL type 19 or 20).
+    fn has_hevc_idr(data: &[u8]) -> bool {
+        data.windows(4).any(|bytes| bytes[..3] == [0, 0, 1] && matches!((bytes[3] >> 1) & 0x3f, 19 | 20))
+    }
+
+    #[test]
+    #[ignore = "needs a real AMD GPU; run by hand"]
+    fn real_amf_encodes_a_forced_keyframe_mid_stream() {
+        const FRAMES: i64 = 60;
+        const FORCED: i64 = 31;
+        let probe_device = ProbeDevice::create().expect("a D3D11 device");
+        let hw_device = D3d11Device::from_device(&probe_device.device).expect("a hardware device context");
+        for codec in [Codec::Av1, Codec::Hevc] {
+            let pool = D3d11FramePool::new(&hw_device, 640, 384, 8).expect("a frame pool");
+            // A 10 s keyframe interval, so the only keyframes in one second of frames are the first and the forced one.
+            let cfg = EncoderConfig { codec, width: 640, height: 384, keyframe_secs: 10.0, ..EncoderConfig::default() };
+            let mut encoder = AmfEncoder::open(&cfg, &pool).expect("the encoder opens");
+            // Each packet in output order: its pts, its keyframe flag and whether it holds an HEVC IDR slice.
+            let mut packets = Vec::new();
+            let mut collect = |packet: EncodedPacket| packets.push((packet.pts().unwrap_or(-1), packet.is_key(), packet.data().is_some_and(has_hevc_idr)));
+            for pts in 0..FRAMES {
+                if pts == FORCED {
+                    encoder.force_keyframe();
+                }
+                let mut frame = HwFrame::from_pool(&pool).expect("a frame");
+                frame.set_pts(pts);
+                encoder.send(frame).expect("the frame is taken");
+                encoder.receive(&mut collect).expect("packets arrive");
+            }
+            encoder.finish(&mut collect).expect("the encoder drains");
+            let next = packets.iter().find(|packet| packet.0 >= FORCED).expect("a packet at the forced frame");
+            println!("{codec:?}: first packet from the forced frame (pts, key, hevc idr) = {next:?}");
+            assert_eq!((next.0, next.1), (FORCED, true), "{codec:?}");
+            let keys: Vec<i64> = packets.iter().filter(|packet| packet.1).map(|packet| packet.0).collect();
+            assert_eq!(keys, vec![0, FORCED], "{codec:?}: one request gives one keyframe");
+            if codec == Codec::Hevc {
+                assert!(next.2, "the forced HEVC frame is an IDR");
+            }
+        }
+    }
 
     /// Fake option ranges shaped like each encoder's real table.
     fn fake_ranges(codec: Codec) -> OptionRanges {
