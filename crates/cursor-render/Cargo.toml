@@ -1,0 +1,23 @@
+[package]
+name = "cursor-render"
+description = "Cutmark cursor renderer: draws the cursor from an input track onto a video frame. Used by Review, Bake and later the video editor."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# Strict lint set (S0 spec, Lints). Same as crates/events.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[dependencies]
+events = { version = "0.1.0", path = "../events" }
+media-io = { version = "0.1.0", path = "../media-io" }

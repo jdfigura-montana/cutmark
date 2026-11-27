@@ -21,6 +21,9 @@ mod writer;
 mod tests;
 
 pub use reader::{CursorState, EventsTrack, Timed};
+
+/// The reading side of an events file, under the name its users know it by.
+pub type EventsReader = EventsTrack;
 pub use types::{
     AppSwitch, CaptureSource, Chord, Counts, CursorSample, CursorShape, DisplayInfo, GeometryChange, GeometryEvent, Header, InputEvent, Modifiers, MouseAction,
     MouseButton, MouseEvent, ScreenRect, ShapeFrame, Streams, Tail,
