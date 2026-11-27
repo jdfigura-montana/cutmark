@@ -22,6 +22,17 @@ import {
 	UndoKey,
 } from "./actions/keys";
 import { CommandKeyAction } from "./actions/command-key";
+import {
+	RecorderHighlightKey,
+	RecorderMarkKey,
+	RecorderMarkLabelKey,
+	RecorderMuteMicKey,
+	RecorderPauseKey,
+	RecorderRecordKey,
+	RecorderReplayKey,
+	RecorderSaveReplayKey,
+	RecorderTrackMuteKey,
+} from "./actions/recorder-keys";
 import { JogDial, MarkersDial, TrackVolumeDial, ZoomDial } from "./actions/dials";
 import { DialBase } from "./actions/dial";
 
@@ -57,17 +68,35 @@ for (const key of keys) key.use(connection);
 const dials: DialBase[] = [new JogDial(), new ZoomDial(), new TrackVolumeDial(), new MarkersDial()];
 for (const dial of dials) dial.use(connection);
 
-// Follow the monitored audio editor: reconnect on launch, drop the socket on quit.
+// The Recorder's connection and its keys (spec: recorder-stream-deck "Plugin: Recorder keys").
+const recorder = new AppConnection("recorder", "cutmark-recorder.exe");
+const recorderKeys: CommandKeyAction[] = [
+	new RecorderRecordKey(),
+	new RecorderPauseKey(),
+	new RecorderMarkKey(),
+	new RecorderMarkLabelKey(),
+	new RecorderHighlightKey(),
+	new RecorderMuteMicKey(),
+	new RecorderReplayKey(),
+	new RecorderSaveReplayKey(),
+	new RecorderTrackMuteKey(),
+];
+for (const key of recorderKeys) key.use(recorder);
+
+// Follow the monitored apps: reconnect on launch, drop the socket on quit.
 streamDeck.system.onApplicationDidLaunch((ev) => {
 	if (ev.application.includes("cutmark-audio")) connection.appLaunched();
+	if (ev.application.includes("cutmark-recorder")) recorder.appLaunched();
 });
 streamDeck.system.onApplicationDidTerminate((ev) => {
 	if (ev.application.includes("cutmark-audio")) connection.appTerminated();
+	if (ev.application.includes("cutmark-recorder")) recorder.appTerminated();
 });
 
-for (const action of [...keys, ...dials]) streamDeck.actions.registerAction(action);
+for (const action of [...keys, ...dials, ...recorderKeys]) streamDeck.actions.registerAction(action);
 
-// The app may already run when the plugin starts.
+// The apps may already run when the plugin starts.
 connection.beginConnecting();
+recorder.beginConnecting();
 
 streamDeck.connect();
