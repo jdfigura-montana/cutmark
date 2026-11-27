@@ -8,6 +8,7 @@ use egui::text_edit::TextEditState;
 use egui::{Event, Key, Modifiers};
 
 use crate::caret::Doc;
+use crate::copy;
 use crate::editor::add_undo_point;
 use crate::formatting::Change;
 use crate::slash::{self, Menu};
@@ -117,6 +118,12 @@ impl Keys {
             if stopped {
                 return true;
             }
+            // A copy moves nothing, so it does not count as a key that scrolls to the caret.
+            if matches!(event, Event::Copy) && !raw && !field.selection().is_empty() {
+                let markup = cache.get(field.text);
+                copy::put(ui.ctx(), &Doc::new(field.text, &markup), field.selection());
+                return false;
+            }
             let Some(changed) = self.one(ui, id, &mut field, event, cache, raw) else {
                 stopped = changes_if_left(event);
                 return true;
@@ -174,7 +181,7 @@ impl Keys {
             }
             Event::Paste(pasted) if !raw && !pasted.is_empty() => Some(typing::insert(&doc(), selection, pasted, self.carry.as_ref())),
             Event::Cut if !raw && !selection.is_empty() => {
-                ui.ctx().copy_text(field.text[selection.clone()].to_owned());
+                copy::put(ui.ctx(), &doc(), selection.clone());
                 Some(typing::replace(&doc(), selection, ""))
             }
             Event::Key { key: Key::Enter, pressed: true, modifiers, .. } if !modifiers.command && !modifiers.ctrl => {

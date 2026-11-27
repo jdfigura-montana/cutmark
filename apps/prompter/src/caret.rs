@@ -26,8 +26,10 @@ pub struct Doc<'a> {
     pub hidden: Vec<bool>,
     /// For each line, the first and last place the caret may be on it.
     pub bounds: Vec<(usize, usize)>,
-    /// The lines that are the underline of a heading, which the caret is never on.
+    /// The lines that are the underline of a heading.
     pub underline: Vec<bool>,
+    /// The lines the caret is never on: those, horizontal rules and code fences.
+    pub skipped: Vec<bool>,
 }
 
 impl<'a> Doc<'a> {
@@ -43,13 +45,33 @@ impl<'a> Doc<'a> {
         }
         let mut bounds: Vec<(usize, usize)> = lines.iter().map(|line| (line.start, line.end)).collect();
         let mut underline = vec![false; lines.len()];
+        let mut skipped = vec![false; lines.len()];
         for (range, edge) in &markup.edges {
             let line = lines::at(&lines, range.start);
             match edge {
+                // One line break shows between the lines around a skipped one.
+                Edge::Rule => {
+                    skipped[line] = true;
+                    // The break after the rule is the one that shows. On the last line, it
+                    // is the one ahead.
+                    if line > 0 && line + 1 < lines.len() {
+                        hidden[lines[line - 1].end..lines[line].start].fill(true);
+                    }
+                }
+                // As with an underline, the break ahead of a fence goes unseen. A first
+                // line has none, so the one after it does.
+                Edge::FenceOpen | Edge::FenceClose => {
+                    skipped[line] = true;
+                    let unseen = match line.checked_sub(1) {
+                        Some(above) => lines[above].end..lines[line].end,
+                        None => lines[line].start..lines.get(1).map_or(lines[line].end, |next| next.start),
+                    };
+                    hidden[unseen].fill(true);
+                }
                 Edge::Prefix => bounds[line].0 = bounds[line].0.max(range.end),
                 Edge::Suffix => bounds[line].1 = bounds[line].1.min(range.start),
                 Edge::Underline if line > 0 => {
-                    underline[line] = true;
+                    (underline[line], skipped[line]) = (true, true);
                     // The line break ahead of it goes unseen too, so that one break shows.
                     hidden[lines[line - 1].end..lines[line].end].fill(true);
                 }
@@ -59,7 +81,7 @@ impl<'a> Doc<'a> {
         for bound in &mut bounds {
             bound.1 = bound.1.max(bound.0);
         }
-        Self { text, markup, lines, hidden, bounds, underline }
+        Self { text, markup, lines, hidden, bounds, underline, skipped }
     }
 
     pub fn line_of(&self, at: usize) -> usize {
@@ -69,10 +91,14 @@ impl<'a> Doc<'a> {
     /// The nearest place to `at` that the caret may be.
     pub fn rest(&self, at: usize, bias: Bias) -> usize {
         let line = self.line_of(at);
-        if self.underline[line] {
-            return match (bias, self.bounds.get(line + 1)) {
-                (Bias::Forward, Some(&(start, _))) => self.rest(start, bias),
-                _ => self.rest(self.bounds[line - 1].1, Bias::Back),
+        if self.skipped[line] {
+            let before = (0..line).rev().find(|&line| !self.skipped[line]);
+            let after = (line + 1..self.lines.len()).find(|&line| !self.skipped[line]);
+            return match (bias, before, after) {
+                (Bias::Forward, _, Some(after)) | (Bias::Back, None, Some(after)) => self.rest(self.bounds[after].0, bias),
+                (_, Some(before), _) => self.rest(self.bounds[before].1, Bias::Back),
+                // There is no other line to be on.
+                (_, None, None) => self.bounds[line].1,
             };
         }
         let (start, end) = self.bounds[line];

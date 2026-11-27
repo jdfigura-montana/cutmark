@@ -28,6 +28,8 @@ const CHIP_PAD: f32 = space::SCALE_4;
 const CHIP_REACH: f32 = 1.0;
 /// The weight of an underline and a strikethrough.
 const TEXT_LINE: f32 = 1.0;
+/// The weight of a horizontal rule.
+const RULE_WEIGHT: f32 = 1.0;
 /// The least width wrapped rows keep, however deep their hanging indent is.
 const MIN_WRAP: f32 = 4.0 * typography::BODY_SIZE;
 /// How strongly each cue type's color fills its chip.
@@ -253,7 +255,7 @@ fn hanging(ui: &egui::Ui, mut job: LayoutJob, content: usize) -> Arc<Galley> {
 pub struct Decorations {
     /// Cue chips, which go under the text.
     pub behind: Vec<Shape>,
-    /// Bullets, numbers and quote bars.
+    /// Bullets, numbers, quote bars and horizontal rules.
     pub front: Vec<Shape>,
 }
 
@@ -285,6 +287,11 @@ pub fn decorations(ui: &egui::Ui, markup: &Markup, galley: &egui::Galley, at: Ve
             if markup.quote_lines.binary_search(&line).is_ok() {
                 let bar = Rect::from_min_size(pos2(at.x - GUTTER, rect.top()), vec2(QUOTE_BAR, rect.height()));
                 drawn.front.push(Shape::rect_filled(bar, 0.0, color::TEXT_TERTIARY));
+            }
+            if line_begins && !shown && markup.rule_lines.binary_search(&line).is_ok() {
+                // Where the middle of a line of text would be, across the whole column.
+                let y = rect.top() + ui.fonts_mut(|fonts| fonts.row_height(&body_font())) / 2.0;
+                drawn.front.push(Shape::hline(at.x..=at.x + galley.job.wrap.max_width, y, Stroke::new(RULE_WEIGHT, color::STROKE_HAIRLINE)));
             }
             if line_begins && !shown {
                 let first = markup.items.partition_point(|item| item.line < line);

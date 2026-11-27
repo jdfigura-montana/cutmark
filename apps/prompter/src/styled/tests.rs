@@ -216,6 +216,33 @@ fn every_row_of_a_quote_gets_a_bar_whether_or_not_its_marker_shows() {
 }
 
 #[test]
+fn a_hidden_rule_is_drawn_as_a_hairline_across_the_column() {
+    let text = "a\n\n---\nb";
+    let lines = |reveal| {
+        with_ui(|ui| {
+            let markup = Markup::parse(text);
+            let galley = layout(ui, &markup, layout_job(ui, text, &markup, reveal, &[], 600.0));
+            let row = galley.rows[2].rect();
+            let drawn = decorations(ui, &markup, &galley, vec2(GUTTER, 0.0), reveal);
+            let lines = drawn.front.into_iter().filter_map(|shape| match shape {
+                Shape::LineSegment { points, stroke } => Some((points, stroke, row)),
+                _ => None,
+            });
+            lines.collect::<Vec<_>>()
+        })
+    };
+    let drawn = lines(HIDDEN);
+    assert_eq!(drawn.len(), 1);
+    let (points, stroke, row) = drawn[0];
+    assert_eq!(stroke.color, color::STROKE_HAIRLINE);
+    assert_eq!((points[0].x, points[1].x), (GUTTER, GUTTER + 600.0));
+    assert!(points[0].y == points[1].y && row.y_range().contains(points[0].y), "{points:?} in {row:?}");
+    assert_eq!(seen(&format_at(&job(text, HIDDEN), 3)), Seen::Hidden);
+    // With the dashes showing, no line stands in for them.
+    assert!(lines(ALL).is_empty());
+}
+
+#[test]
 fn each_cue_gets_a_chip_tinted_by_its_type() {
     let chips = drawn("[[note: a]] x [[pause]]\n\n[[mark: b]]\n\n[[end]]", HIDDEN, 600.0).chips;
     let fills: Vec<Color32> = chips.iter().map(|(_, fill)| *fill).collect();

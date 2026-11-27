@@ -37,6 +37,11 @@ impl Clipboard for FakeClipboard {
         *self.0.borrow_mut() = Board { html: None, text: Some(text.to_owned()) };
         Ok(())
     }
+
+    fn write_rich(&self, text: &str, html: &str) -> prompter_platform::Result<()> {
+        *self.0.borrow_mut() = Board { html: Some(html.to_owned()), text: Some(text.to_owned()) };
+        Ok(())
+    }
 }
 
 /// A file as egui reports one that was dropped.
@@ -292,6 +297,10 @@ impl Library {
 
     fn copied(&self) -> String {
         self.clipboard.read_text().unwrap_or_default()
+    }
+
+    fn copied_html(&self) -> Option<String> {
+        self.clipboard.read_html()
     }
 
     /// A file outside the library, to drag in.
@@ -1458,7 +1467,7 @@ fn a_drag_selects_the_real_text_under_it() {
     assert_eq!(selection(&library), (from, to));
     // The window reports Ctrl+C as a copy.
     library.step(vec![Event::Copy]);
-    assert_eq!(library.copied(), TWO_LINES[from..to]);
+    assert_eq!(library.copied(), "**rst** line\n\n**se**");
 }
 
 /// Clicks `times` in a row at `at`, with a frame or more between the events, as a hand
@@ -2179,7 +2188,49 @@ fn a_cut_leaves_no_hidden_marker_without_its_pair() {
     library.step(vec![Event::Cut]);
     library.settle();
     assert_eq!(library.script(), "a **bo**");
-    assert_eq!(library.copied(), "ld** c");
+    assert_eq!(library.copied(), "**ld** c");
+    assert_eq!(library.copied_html().as_deref(), Some("<strong>ld</strong> c"));
+}
+
+#[test]
+fn a_copy_closes_the_markers_it_cuts_through_and_has_html() {
+    let mut library = Library::with_script("a **word** z");
+    select_in_editor(&mut library, 5, 8);
+    library.step(vec![Event::Copy]);
+    assert_eq!(library.copied(), "**ord**");
+    assert_eq!(library.copied_html().as_deref(), Some("<strong>ord</strong>"));
+    assert_eq!(library.script(), "a **word** z");
+}
+
+#[test]
+fn with_show_markdown_a_copy_is_just_the_characters_selected() {
+    let mut library = Library::with_script("a **word** z");
+    library.pick("View", Item::ShowMarkdown);
+    select_in_editor(&mut library, 5, 8);
+    library.step(vec![Event::Copy]);
+    assert_eq!(library.copied(), "ord");
+    assert_eq!(library.copied_html(), None);
+}
+
+#[test]
+fn the_arrows_get_past_a_horizontal_rule_both_ways() {
+    let mut library = Library::with_script("one\n\n---\n\ntwo");
+    caret_to(&mut library, 4);
+    // The empty line above the rule, then the one below it, then back.
+    assert_eq!(presses(&mut library, Modifiers::NONE, Key::ArrowDown, 1), [9]);
+    assert_eq!(presses(&mut library, Modifiers::NONE, Key::ArrowUp, 1), [4]);
+    assert_eq!(presses(&mut library, Modifiers::NONE, Key::ArrowRight, 2), [9, 10]);
+    assert_eq!(presses(&mut library, Modifiers::NONE, Key::ArrowLeft, 2), [9, 4]);
+}
+
+#[test]
+fn three_dashes_typed_make_a_rule_and_leave_the_caret_under_it() {
+    let mut library = Library::with_script("");
+    for _ in 0..3 {
+        library.type_text("-");
+    }
+    library.type_text("after");
+    assert_eq!(library.script(), "---\nafter");
 }
 
 #[test]

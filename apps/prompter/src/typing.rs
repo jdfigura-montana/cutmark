@@ -4,7 +4,7 @@
 
 use std::ops::Range;
 
-use crate::caret::Doc;
+use crate::caret::{Bias, Doc};
 use crate::formatting::{self, Action, BlockStyle, Change, ListKind};
 use crate::lines::{self, Kind, Line};
 use crate::markup::{Edge, Inline, Markup};
@@ -62,7 +62,38 @@ pub fn insert(doc: &Doc<'_>, selection: Range<usize>, insert: &str, carry: Optio
 /// that text a heading and itself vanish, so it gets an empty line above it.
 pub fn type_text(doc: &Doc<'_>, selection: Range<usize>, typed: &str, carry: Option<&Carry>) -> Typed {
     let done = insert(doc, selection, typed, carry);
-    if typed.contains(['-', '=']) { no_new_underline(doc.markup, done) } else { done }
+    let done = if typed.contains(['-', '=']) { no_new_underline(doc.markup, done) } else { done };
+    if matches!(typed, "-" | "`" | "~") { past_hidden_line(done, typed) } else { done }
+}
+
+/// Typing the last mark of a `---` rule, or of a code block's closing fence, hides the line
+/// the caret is on. The caret goes to an empty line under it, which is made if there is none.
+/// A rule of `*` or `_` keeps the caret, as it may be the start of bold or italic.
+fn past_hidden_line(mut done: Typed, typed: &str) -> Typed {
+    let caret = done.change.selection.start;
+    let markup = Markup::parse(&done.change.text);
+    let rows = lines::parse(&done.change.text);
+    let at = lines::at(&rows, caret);
+    let row = &rows[at];
+    let dashes = typed == "-"
+        && markup.rule_lines.binary_search(&at).is_ok()
+        && caret == row.end
+        && done.change.text[row.indent_end..row.end].bytes().all(|byte| byte == b'-' || byte == b' ');
+    if !dashes && !markup.fences.iter().any(|fence| fence.close.end == caret) {
+        return done;
+    }
+    let below = rows.get(at + 1).filter(|below| below.kind == Kind::Blank && below.quote == row.quote);
+    let to = match below {
+        Some(below) => below.end,
+        None => {
+            let put = format!("\n{}", &done.change.text[row.start..row.quote_end]);
+            done.change.text.insert_str(row.end, &put);
+            row.end + put.len()
+        }
+    };
+    done.change.selection = to..to;
+    done.carry = None;
+    done
 }
 
 /// The places of the lines that are a heading's underline.
@@ -94,11 +125,22 @@ fn no_new_underline(before: &Markup, mut done: Typed) -> Typed {
     done
 }
 
-/// The opening and closing markers of each formatted span and cue. Formatting has a kind.
-fn spans(markup: &Markup) -> Vec<(Option<Inline>, Range<usize>, Range<usize>)> {
-    let formats = markup.spans.iter().map(|span| (Some(span.kind), span.open.clone(), span.close.clone()));
-    let cues = markup.cues.iter().map(|cue| (None, cue.range.start..cue.range.start + 2, cue.range.end - 2..cue.range.end));
-    formats.chain(cues).collect()
+/// What a pair of hidden markers is around.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Held {
+    Format(Inline),
+    /// Inline code.
+    Code,
+    /// A link or a cue.
+    Whole,
+}
+
+/// The opening and closing markers of each formatted span, inline code, link and cue.
+fn spans(markup: &Markup) -> Vec<(Held, Range<usize>, Range<usize>)> {
+    let formats = markup.spans.iter().map(|span| (Held::Format(span.kind), span.open.clone(), span.close.clone()));
+    let wraps = markup.wraps.iter().map(|wrap| (if wrap.code { Held::Code } else { Held::Whole }, wrap.open.clone(), wrap.close.clone()));
+    let cues = markup.cues.iter().map(|cue| (Held::Whole, cue.range.start..cue.range.start + 2, cue.range.end - 2..cue.range.end));
+    formats.chain(wraps).chain(cues).collect()
 }
 
 /// Puts `insert` where `selection` is, deleting what can be seen of it.
@@ -122,6 +164,8 @@ pub fn replace(doc: &Doc<'_>, selection: Range<usize>, insert: &str) -> Typed {
         }
         join_lines(doc, &selection, &mut gone, &mut added);
     }
+    remove_rules(doc, &selection, &mut gone);
+    keep_fences(doc, insert.is_empty(), &mut gone);
 
     // A heading with an underline cannot be left with no text.
     for line in (1..doc.lines.len()).filter(|&line| doc.underline[line]) {
@@ -144,12 +188,14 @@ pub fn replace(doc: &Doc<'_>, selection: Range<usize>, insert: &str) -> Typed {
         }
     }
     // Two of a kind that now touch become one.
-    for (kind, _, close) in spans.iter().filter(|(kind, ..)| a < b && kind.is_some()) {
+    for (kind, _, close) in spans.iter().filter(|(kind, ..)| a < b && *kind != Held::Whole) {
         for (other, open, _) in &spans {
             let between = close.end..open.start;
             let typed_between = !insert.is_empty() && (close.end..=open.start).contains(&a);
             let touch = close.end < open.start && between.clone().all(|at| gone[at]);
-            if other == kind && touch && !typed_between && !close.is_empty() && !gone[close.start] && !gone[open.start] {
+            // Code joins only code with as many backticks.
+            let alike = other == kind && (*kind != Held::Code || text[close.clone()] == text[open.clone()]);
+            if alike && touch && !typed_between && !close.is_empty() && !gone[close.start] && !gone[open.start] {
                 gone[close.clone()].fill(true);
                 gone[open.clone()].fill(true);
             }
@@ -178,10 +224,14 @@ pub fn replace(doc: &Doc<'_>, selection: Range<usize>, insert: &str) -> Typed {
         }
     }
 
+    keep_rules(doc, &gone, &mut new, &mut moved, &mut caret);
+
     // The formatting that is left, innermost first.
     let mut left: Vec<(Range<usize>, Range<usize>)> = spans
         .iter()
-        .filter(|(kind, open, close)| kind.is_some_and(|kind| kind != Inline::Underline) && !gone[open.start] && !close.is_empty() && !gone[close.start])
+        .filter(|(kind, open, close)| {
+            matches!(kind, Held::Format(kind) if *kind != Inline::Underline) && !gone[open.start] && !close.is_empty() && !gone[close.start]
+        })
         .map(|(_, open, close)| (moved[open.start]..moved[open.start] + open.len(), moved[close.start]..moved[close.start] + close.len()))
         .collect();
     left.sort_by_key(|(open, close)| close.start.saturating_sub(open.end));
@@ -192,14 +242,108 @@ pub fn replace(doc: &Doc<'_>, selection: Range<usize>, insert: &str) -> Typed {
     done
 }
 
+/// The lines with a horizontal rule.
+fn rules<'a>(doc: &'a Doc<'_>) -> impl DoubleEndedIterator<Item = usize> + 'a {
+    doc.markup.rule_lines.iter().copied()
+}
+
+/// The line break that shows for the rule on `line`: the one after it, or on the last line,
+/// the one ahead.
+fn rule_break(doc: &Doc<'_>, line: usize) -> Range<usize> {
+    let own = &doc.lines[line];
+    match doc.lines.get(line + 1) {
+        Some(next) => own.end..next.start,
+        None => line.checked_sub(1).map_or(own.end..own.end, |above| doc.lines[above].end..own.start),
+    }
+}
+
+/// A rule goes as one, with the line break that shows for it, when that break is deleted or
+/// the selection runs over the rule.
+fn remove_rules(doc: &Doc<'_>, selection: &Range<usize>, gone: &mut [bool]) {
+    for line in rules(doc) {
+        let (own, shown) = (&doc.lines[line], rule_break(doc, line));
+        let broken = selection.start < shown.end && shown.start < selection.end;
+        if broken || (!selection.is_empty() && selection.contains(&own.start)) {
+            gone[own.start.min(shown.start)..own.end.max(shown.end)].fill(true);
+        }
+    }
+}
+
+/// A rule of dashes that has come to be right under text would make that text a heading. It is
+/// written with asterisks, which cannot.
+fn keep_rules(doc: &Doc<'_>, gone: &[bool], new: &mut String, moved: &mut [usize], caret: &mut usize) {
+    let kept: Vec<Range<usize>> =
+        doc.markup.edges.iter().filter(|(range, edge)| *edge == Edge::Rule && !gone[range.start]).map(|(range, _)| range.clone()).collect();
+    if kept.is_empty() {
+        return;
+    }
+    let markup = Markup::parse(new);
+    let made: Vec<usize> = underlines(&markup).collect();
+    // From the last, so that the places ahead stay put.
+    for rule in kept.iter().rev() {
+        let at = moved[rule.start];
+        if !made.contains(&at) {
+            continue;
+        }
+        let (old, put) = (rule.len(), "***");
+        new.replace_range(at..at + old, put);
+        for place in moved.iter_mut().chain(std::iter::once(&mut *caret)) {
+            if *place >= at + old {
+                *place = *place - old + put.len();
+            }
+        }
+    }
+}
+
+/// True for a line with nothing on it but quote marks.
+fn is_empty_line(doc: &Doc<'_>, line: usize) -> bool {
+    doc.lines[line].kind == Kind::Blank
+}
+
+/// The lines of a code block's fences.
+fn fence_lines<'a>(doc: &'a Doc<'_>) -> impl Iterator<Item = (usize, usize)> + 'a {
+    doc.markup.fences.iter().map(|fence| (doc.line_of(fence.open.start), doc.line_of(fence.close.start)))
+}
+
+/// Both fences of a code block go once all its code is deleted. Until then both stay, each on
+/// a line of its own.
+fn keep_fences(doc: &Doc<'_>, deleting: bool, gone: &mut [bool]) {
+    for (first, last) in fence_lines(doc) {
+        let (open, close) = (&doc.lines[first], &doc.lines[last]);
+        let (code, closing) = (doc.lines[first + 1].start, doc.lines[last - 1].end);
+        let mut seen = doc.visible(code..closing).peekable();
+        if deleting && seen.peek().is_some() && seen.all(|found| gone[found.start]) {
+            gone[open.start..code].fill(true);
+            gone[closing..close.end].fill(true);
+        } else {
+            gone[open.start..code].fill(false);
+            gone[closing..close.end].fill(false);
+            // The breaks outside the block stay if text is left to run into a fence.
+            let kept = |gone: &[bool], line: &Line| (line.content..line.content_end).any(|at| !gone[at]);
+            if first > 0 && kept(gone, &doc.lines[first - 1]) {
+                gone[doc.lines[first - 1].end..open.start].fill(false);
+            }
+            if let Some(below) = doc.lines.get(last + 1).filter(|below| kept(gone, below)) {
+                gone[close.end..below.start].fill(false);
+            }
+        }
+    }
+}
+
 /// Moves a caret that a deletion has left ahead of its line's marks to the text after them.
 fn past_marks(done: &mut Typed) {
     let markup = Markup::parse(&done.change.text);
     let doc = Doc::new(&done.change.text, &markup);
     let caret = done.change.selection.start;
-    let start = doc.bounds[doc.line_of(caret)].0;
-    if caret < start {
-        done.change.selection = start..start;
+    let line = doc.line_of(caret);
+    let start = doc.bounds[line].0;
+    let to = match () {
+        // On a line it cannot be on, it goes back to the text ahead.
+        () if doc.skipped[line] => doc.rest(caret, Bias::Back),
+        () => caret.max(start),
+    };
+    if to != caret {
+        done.change.selection = to..to;
     }
 }
 
@@ -210,6 +354,27 @@ fn join_lines(doc: &Doc<'_>, selection: &Range<usize>, gone: &mut [bool], added:
     for at in breaks {
         let above = doc.line_of(at);
         let below = above + 1;
+        // A rule goes whole instead.
+        if rules(doc).any(|line| rule_break(doc, line).contains(&at)) {
+            continue;
+        }
+        // The break that shows by a fence is the one after it. Nothing can share the fence's
+        // line, so all that can go there is an empty line on the far side of the break.
+        if fence_lines(doc).any(|(first, _)| first == above) {
+            gone[at] = false;
+            if let Some(prior) = above.checked_sub(1).filter(|&prior| is_empty_line(doc, prior)) {
+                gone[doc.lines[prior].start..doc.lines[above].start].fill(true);
+            }
+            continue;
+        }
+        if fence_lines(doc).any(|(_, last)| last == above) {
+            if is_empty_line(doc, below) {
+                gone[at..doc.lines[below].end].fill(true);
+            } else {
+                gone[at] = false;
+            }
+            continue;
+        }
         gone[doc.lines[below].start..doc.bounds[below].0].fill(true);
         if doc.underline[above] {
             // The heading takes the other form, which text can follow on its line.
@@ -241,7 +406,7 @@ fn cut(text: &mut String, range: Range<usize>, positions: &mut [&mut usize]) {
 
 /// Moves the blanks at the ends of formatted text outside its markers, and drops markers
 /// with nothing but blanks between them.
-fn tidy(mut text: String, mut caret: usize, mut spans: Vec<(Range<usize>, Range<usize>)>) -> Typed {
+pub(crate) fn tidy(mut text: String, mut caret: usize, mut spans: Vec<(Range<usize>, Range<usize>)>) -> Typed {
     // The closing markers moved from behind the caret.
     let mut carried: Option<Range<usize>> = None;
     for index in 0..spans.len() {
@@ -336,6 +501,20 @@ pub fn keep_apart(mut change: Change) -> Change {
     change
 }
 
+/// Takes away the fences of a code block whose only line, `line`, is empty.
+fn remove_empty_block(doc: &Doc<'_>, line: usize) -> Option<Typed> {
+    let (first, last) = fence_lines(doc).find(|&(first, last)| first + 1 == line && line + 1 == last)?;
+    let own = &doc.lines[line];
+    if doc.text[own.content..own.content_end.max(own.content)].trim() != "" {
+        return None;
+    }
+    let start = doc.lines[first].start;
+    let mut new = doc.text.to_owned();
+    new.replace_range(own.end..doc.lines[last].end, "");
+    new.replace_range(start..own.start, "");
+    Some(caret_at(new, start + own.end - own.start))
+}
+
 /// Backspace, or with `word` Ctrl+Backspace. `None` if it does nothing.
 pub fn backspace(doc: &Doc<'_>, selection: Range<usize>, word: bool, carry: Option<&Carry>) -> Option<Typed> {
     if !selection.is_empty() {
@@ -353,6 +532,16 @@ pub fn backspace(doc: &Doc<'_>, selection: Range<usize>, word: bool, carry: Opti
         }
         let carry = Carry { text: new.clone(), caret, close: carry.close.clone() };
         return Some(Typed { carry: Some(carry), ..caret_at(new, caret) });
+    }
+    // Only a rule of "*" or "_" just typed has the caret on it. Its last mark comes off.
+    let line = doc.line_of(caret);
+    if rules(doc).any(|rule| rule == line) && caret > doc.lines[line].start {
+        let mut new = doc.text.to_owned();
+        new.remove(caret - 1);
+        return Some(caret_at(new, caret - 1));
+    }
+    if let Some(done) = remove_empty_block(doc, line) {
+        return Some(done);
     }
     if at_block_start(doc, caret) {
         return unformat(doc, caret);
@@ -409,8 +598,8 @@ fn broken_at(doc: &Doc<'_>, selection: Range<usize>) -> Typed {
     while let Some((_, open, _)) = spans.iter().find(|(_, open, _)| open.end == at) {
         at = open.start;
     }
-    if let Some(cue) = doc.markup.cues.iter().find(|cue| cue.range.start < at && at < cue.range.end) {
-        at = cue.range.end;
+    if let Some((_, _, close)) = spans.iter().find(|(held, open, close)| matches!(held, Held::Code | Held::Whole) && open.start < at && at < close.end) {
+        at = close.end;
     }
 
     let underlined = doc.underline.get(line + 1) == Some(&true);
@@ -455,7 +644,7 @@ fn broken_at(doc: &Doc<'_>, selection: Range<usize>) -> Typed {
     let blanks = |c: char| c == ' ' || c == '\t';
     let head = text[..at].trim_end_matches(blanks).len().max(start.min(at));
     let tail = at + text[at..].len() - text[at..].trim_start_matches(blanks).len();
-    let mut around: Vec<_> = spans.iter().filter(|(kind, open, close)| kind.is_some() && open.end < at && at < close.start).collect();
+    let mut around: Vec<_> = spans.iter().filter(|(kind, open, close)| matches!(kind, Held::Format(_)) && open.end < at && at < close.start).collect();
     around.sort_by_key(|(_, open, _)| open.start);
     let closes: String = around.iter().rev().map(|(_, _, close)| &text[close.clone()]).collect();
     let opens: String = around.iter().map(|(_, open, _)| &text[open.clone()]).collect();

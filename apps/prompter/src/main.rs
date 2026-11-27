@@ -6,6 +6,7 @@ mod app;
 mod autosave;
 mod caret;
 mod clipboard;
+mod copy;
 mod dialogs;
 mod drag;
 mod editor;

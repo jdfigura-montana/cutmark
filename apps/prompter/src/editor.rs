@@ -484,9 +484,14 @@ impl Editor {
         let markup = self.look.cache.get(text);
         let doc = Doc::new(text, &markup);
         let index = |byte: usize| CharIndex(text[..byte].chars().count());
+        // Without the pointer, a caret that has moved down is the Down arrow's.
+        let onward = pointer.is_none() && self.placed.is_some_and(|placed| placed.primary.index < range.primary.index);
         let place = |cursor: CCursor, pointer: Option<egui::Pos2>| {
-            let bias = if picked && cursor.index == first.index { Bias::Forward } else { Bias::Back };
-            let rest = doc.rest(byte_of(text, cursor.index), bias);
+            let byte = byte_of(text, cursor.index);
+            // It goes on past a line it cannot be on, or it could never get by.
+            let past = onward && doc.skipped[doc.line_of(byte)];
+            let bias = if past || (picked && cursor.index == first.index) { Bias::Forward } else { Bias::Back };
+            let rest = doc.rest(byte, bias);
             let (before, after) = doc.cluster(rest);
             let byte = match pointer {
                 Some(pointer) if before < after => {
@@ -613,6 +618,10 @@ mod tests {
         }
 
         fn write_text(&self, _text: &str) -> prompter_platform::Result<()> {
+            Ok(())
+        }
+
+        fn write_rich(&self, _text: &str, _html: &str) -> prompter_platform::Result<()> {
             Ok(())
         }
     }

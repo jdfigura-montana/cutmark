@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 
 use prompter_core::script::{self, BlockKind, Cue};
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
 /// A list item's bullet. An ordered item has its number instead.
 pub const BULLET: &str = "\u{2022}";
@@ -72,6 +72,27 @@ pub enum Edge {
     Suffix,
     /// The `===` or `---` under a heading's text.
     Underline,
+    /// A horizontal rule. A line is drawn in its place.
+    Rule,
+    /// The first and last line of a fenced code block.
+    FenceOpen,
+    FenceClose,
+}
+
+/// Inline code or a link, with the syntax around its text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Wrap {
+    pub open: Range<usize>,
+    pub close: Range<usize>,
+    pub code: bool,
+}
+
+/// The two fences of a closed code block with at least one line between them. Any other fence
+/// is not hidden: it may still be being typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fence {
+    pub open: Range<usize>,
+    pub close: Range<usize>,
 }
 
 /// A kind of formatting inside a line.
@@ -118,6 +139,12 @@ pub struct Markup {
     pub spans: Vec<InlineSpan>,
     /// Inline code, links and images, which formatting goes around and never into.
     pub solid: Vec<Range<usize>>,
+    /// In no set order.
+    pub wraps: Vec<Wrap>,
+    /// In order.
+    pub fences: Vec<Fence>,
+    /// The 0-based lines with a horizontal rule, in order.
+    pub rule_lines: Vec<usize>,
     /// Each list item's and quote's line with the byte where its text starts, after the
     /// markers. Its wrapped rows line up there. In order.
     pub hangs: Vec<(usize, usize)>,
@@ -175,6 +202,11 @@ struct Scan<'a> {
     cues: Vec<(Range<usize>, CueKind)>,
     spans: Vec<InlineSpan>,
     solid: Vec<Range<usize>>,
+    wraps: Vec<Wrap>,
+    fences: Vec<Fence>,
+    rule_lines: Vec<usize>,
+    /// Each open link, with where the last of its text ends so far.
+    links: Vec<(Range<usize>, Option<usize>)>,
     /// By line.
     hangs: BTreeMap<usize, usize>,
     edges: Vec<(Range<usize>, Edge)>,
@@ -208,6 +240,10 @@ impl<'a> Scan<'a> {
             cues: Vec::new(),
             spans: Vec::new(),
             solid: Vec::new(),
+            wraps: Vec::new(),
+            fences: Vec::new(),
+            rule_lines: Vec::new(),
+            links: Vec::new(),
             hangs: BTreeMap::new(),
             edges: Vec::new(),
             open_underlines: Vec::new(),
@@ -224,6 +260,11 @@ impl<'a> Scan<'a> {
     }
 
     fn event(&mut self, event: Event<'_>, range: Range<usize>) {
+        if !matches!(event, Event::End(_)) {
+            for (_, text_end) in &mut self.links {
+                *text_end = Some(text_end.map_or(range.end, |end| end.max(range.end)));
+            }
+        }
         match event {
             Event::Start(tag) => self.start(tag, range),
             Event::End(tag) => self.end(tag),
@@ -236,12 +277,16 @@ impl<'a> Scan<'a> {
                 // The text starts after the backticks.
                 let inside = self.text[range.clone()].find(&*text).unwrap_or(0);
                 self.collect(&text, range.start + inside, true);
+                self.inline_code(range.clone());
                 self.solid.push(range);
             }
             Event::InlineHtml(html) => self.inline_html(&html, range),
             Event::SoftBreak => self.collect(" ", range.start, false),
             Event::HardBreak => self.collect("\n", range.start, false),
-            Event::Rule => self.end_block(),
+            Event::Rule => {
+                self.end_block();
+                self.rule(range);
+            }
             _ => {}
         }
     }
@@ -251,7 +296,12 @@ impl<'a> Scan<'a> {
             Tag::Strong => self.emphasis(range, Inline::Bold),
             Tag::Emphasis => self.emphasis(range, Inline::Italic),
             Tag::Strikethrough => self.emphasis(range, Inline::Strike),
-            Tag::Link { .. } | Tag::Image { .. } => self.solid.push(range),
+            Tag::Link { .. } => {
+                // Pushed after the event was counted, so that a link is not its own text.
+                self.links.push((range.clone(), None));
+                self.solid.push(range);
+            }
+            Tag::Image { .. } => self.solid.push(range),
             other => {
                 // Every other tag starts a block.
                 self.end_block();
@@ -263,7 +313,12 @@ impl<'a> Scan<'a> {
                         self.quotes += 1;
                         self.quote(range);
                     }
-                    Tag::CodeBlock(_) => self.code_block = true,
+                    Tag::CodeBlock(kind) => {
+                        self.code_block = true;
+                        if matches!(kind, CodeBlockKind::Fenced(_)) {
+                            self.fence(range);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -271,6 +326,9 @@ impl<'a> Scan<'a> {
     }
 
     fn end(&mut self, tag: TagEnd) {
+        if tag == TagEnd::Link {
+            self.link();
+        }
         if matches!(tag, TagEnd::Strong | TagEnd::Emphasis | TagEnd::Strikethrough | TagEnd::Link | TagEnd::Image) {
             return;
         }
@@ -388,6 +446,72 @@ impl<'a> Scan<'a> {
                 self.edge(range.start + split + 1 + at..end, Edge::Underline);
             }
         }
+    }
+
+    /// Hides the backticks, and the one space inside each end that is not part of the code.
+    fn inline_code(&mut self, range: Range<usize>) {
+        let source = &self.text[range.clone()];
+        let ticks = source.len() - source.trim_start_matches('`').len();
+        if ticks == 0 || source.len() <= 2 * ticks {
+            return;
+        }
+        let inner = &source[ticks..source.len() - ticks];
+        let padded = inner.starts_with(' ') && inner.ends_with(' ') && !inner.trim_matches(' ').is_empty();
+        let width = ticks + usize::from(padded);
+        self.wrap(range.start..range.start + width, range.end - width..range.end, true);
+    }
+
+    /// Hides everything of the link just ended but its text. A link with no text is left as
+    /// written, or nothing of it would show.
+    fn link(&mut self) {
+        let Some((range, Some(text_end))) = self.links.pop() else {
+            return;
+        };
+        let close = match self.text.as_bytes().get(range.start) {
+            // A link in angle brackets is its own address.
+            Some(b'<') => Some(range.end - 1),
+            Some(b'[') => self.text[text_end.min(range.end)..range.end].find(']').map(|at| text_end + at),
+            _ => None,
+        };
+        if let Some(close) = close.filter(|&close| close > range.start) {
+            self.wrap(range.start..range.start + 1, close..range.end, false);
+        }
+    }
+
+    fn wrap(&mut self, open: Range<usize>, close: Range<usize>, code: bool) {
+        self.add(open.clone(), MARKER);
+        self.add(close.clone(), MARKER);
+        self.wraps.push(Wrap { open, close, code });
+    }
+
+    fn rule(&mut self, range: Range<usize>) {
+        let end = range.start + self.text[range.clone()].trim_end().len();
+        let start = self.after_blanks(range.start);
+        self.rule_lines.push(self.line_of(start));
+        self.edge(start..end, Edge::Rule);
+    }
+
+    fn fence(&mut self, range: Range<usize>) {
+        let start = self.after_blanks(range.start);
+        let end = range.start + self.text[range].trim_end().len();
+        let Some(mark @ (b'`' | b'~')) = self.text.as_bytes().get(start).copied() else {
+            return;
+        };
+        let marks = |text: &str| text.bytes().take_while(|&byte| byte == mark).count();
+        let (first, last) = (self.line_of(start), self.line_of(end.saturating_sub(1).max(start)));
+        if last < first + 2 {
+            return;
+        }
+        // The last line, without any quote marks and indent. Unclosed, it is code.
+        let closing = self.text[self.line_starts[last]..end].trim_start_matches([' ', '\t', '>']);
+        if closing.len() < marks(&self.text[start..]) || marks(closing) != closing.len() {
+            return;
+        }
+        let open = start..self.line_end(first);
+        let close = end - closing.len()..end;
+        self.edge(open.clone(), Edge::FenceOpen);
+        self.edge(close.clone(), Edge::FenceClose);
+        self.fences.push(Fence { open, close });
     }
 
     fn item(&mut self, from: usize) {
@@ -557,13 +681,14 @@ impl<'a> Scan<'a> {
         self.quote_lines.dedup();
         let hangs = self.hangs.into_iter().collect();
         let (items, quote_lines, spans, solid, edges, said) = (self.items, self.quote_lines, self.spans, self.solid, self.edges, self.said);
-        Markup { runs, items, quote_lines, cues, spans, solid, hangs, edges, said }
+        let (wraps, fences, rule_lines) = (self.wraps, self.fences, self.rule_lines);
+        Markup { runs, items, quote_lines, cues, spans, solid, wraps, fences, rule_lines, hangs, edges, said }
     }
 }
 
 /// `Some(true)` for `<u>`, `Some(false)` for `</u>` and `None` for any other HTML. The same
 /// rule as prompter-core's.
-fn underline_tag(html: &str) -> Option<bool> {
+pub(crate) fn underline_tag(html: &str) -> Option<bool> {
     let name = html.strip_prefix('<')?.strip_suffix('>')?.trim_end();
     let (name, opens) = name.strip_prefix('/').map_or((name, true), |name| (name, false));
     name.eq_ignore_ascii_case("u").then_some(opens)
@@ -664,7 +789,8 @@ mod tests {
         assert_eq!(styled("***both***", |style| style.bold && style.italic), "both");
         // Across lines, with each end on its own.
         assert_eq!(markers("**one\ntwo**"), ["**", "**"]);
-        assert_eq!(markers("2 * 3 = 6, snake_case, `**code**`, **open"), Vec::<&str>::new());
+        // In code, only the backticks are syntax.
+        assert_eq!(markers("2 * 3 = 6, snake_case, `**code**`, **open"), ["`", "`"]);
     }
 
     #[test]
@@ -708,7 +834,36 @@ mod tests {
         assert_eq!(items, expected.map(|(line, depth, label)| (line, depth, label.to_owned())));
         // A rule is not a list.
         assert!(Markup::parse("---\n\n***").items.is_empty());
-        assert_eq!(markers("---\n\n***"), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn horizontal_rules_are_markers_on_their_lines() {
+        let text = "---\n\n***\ntext\n\n___  \n\n> - - -";
+        assert_eq!(markers(text), ["---", "***", "___", "> - - -"]);
+        assert_eq!(Markup::parse(text).rule_lines, [0, 2, 5, 7]);
+        // A heading's underline and dashes in code are not rules.
+        assert!(Markup::parse("Title\n---\n\n`---`\n\n```\n---\n```").rule_lines.is_empty());
+    }
+
+    #[test]
+    fn only_a_links_text_shows() {
+        let text = "a [b **c**](http://x.y/z \"t]\") d <http://e.f> [g][h]\n\n[h]: http://h";
+        assert_eq!(markers(text), ["[", "**", "**](http://x.y/z \"t]\")", "<", ">", "[", "][h]"]);
+        assert_eq!(styled("[**b**](u)", |style| style.bold), "b");
+        // With no text, nothing would show. Images and bare brackets are left as written.
+        assert_eq!(markers("[](u) ![alt](a.png) [not a link]"), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn code_hides_its_backticks_and_fences_and_keeps_plain_text() {
+        let text = "a `b` c ``d ` e`` f ` g `\n\n```rust\nlet **x**;\n```\n\n~~~\ny\n~~~~";
+        assert_eq!(markers(text), ["`", "`", "``", "``", "` ", " `", "```rust", "```", "~~~", "~~~~"]);
+        assert!(Markup::parse(text).runs.iter().filter(|run| !run.style.marker).all(|run| run.style == Style::default()));
+        // A fence still being typed, or with no line between, shows.
+        for open in ["```", "```\ncode", "```\n```", "````\ncode\n```"] {
+            assert_eq!(markers(open), Vec::<&str>::new(), "{open:?}");
+        }
+        assert_eq!(markers("> ```\n> a\n> ```"), ["> ```", "> ", "> ```"]);
     }
 
     #[test]
@@ -719,7 +874,7 @@ mod tests {
         assert_eq!(markers("> - item\n>   more"), ["> - ", "> "]);
         assert_eq!(markers("- > in a list\n  > again"), ["- > ", "> "]);
         // A ">" that is code is not a marker.
-        assert_eq!(markers("> ```\n> > code\n> ```"), ["> ", "> ", "> "]);
+        assert_eq!(markers("> ```\n> > code\n> ```"), ["> ```", "> ", "> ```"]);
         assert_eq!(markers("> a\r\n> b\r\n"), ["> ", "> "]);
     }
 

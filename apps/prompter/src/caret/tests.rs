@@ -57,6 +57,28 @@ fn the_caret_goes_from_a_lines_text_to_the_text_of_the_next() {
 }
 
 #[test]
+fn a_rule_is_stepped_over_with_one_line_break() {
+    assert_eq!(walk("a\n***", 1, |doc, at| doc.right(at)), [] as [usize; 0]);
+    assert_eq!(walk("a\n***\nb", 1, |doc, at| doc.right(at)), [6, 7]);
+    assert_eq!(walk("a\n***\nb", 7, |doc, at| doc.left(at)), [6, 1, 0]);
+    // First and last in the script.
+    assert_eq!(walk("---\nb", 5, |doc, at| doc.left(at)), [4]);
+    assert_eq!(walk("a\n\n---", 1, |doc, at| doc.right(at)), [2]);
+    doc("a\n\n***\n\nb", |doc| assert_eq!((doc.rest(4, Bias::Back), doc.rest(4, Bias::Forward)), (2, 7)));
+    // Two together, and a script that is only a rule.
+    assert_eq!(walk("a\n***\n***\nb", 1, |doc, at| doc.right(at)), [10, 11]);
+    doc("***", |doc| assert_eq!(doc.rest(0, Bias::Back), 3));
+}
+
+#[test]
+fn code_fences_links_and_backticks_are_stepped_over() {
+    let text = "a\n```\nb\n```\nc";
+    assert_eq!(walk(text, 1, |doc, at| doc.right(at)), [6, 7, 12, 13]);
+    assert_eq!(walk(text, 13, |doc, at| doc.left(at)), [12, 7, 6, 1, 0]);
+    assert_eq!(walk("[a](url) `b`", 0, |doc, at| doc.right(at)), [2, 9, 11, 12]);
+}
+
+#[test]
 fn a_headings_underline_is_stepped_over_with_one_line_break() {
     let text = "Title\n===\nbody";
     assert_eq!(walk(text, 4, |doc, at| doc.right(at)), [5, 10, 11, 12, 13, 14]);

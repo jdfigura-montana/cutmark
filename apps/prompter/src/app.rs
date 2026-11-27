@@ -12,6 +12,7 @@ use prompter_platform::view::{NativeWindow, ViewStatus, ViewWindow};
 use ui_kit::tokens::{color, radius, size, space, typography};
 
 use crate::clipboard::{Clipboard, MenuClipboard, SystemClipboard};
+use crate::copy;
 use crate::dialogs::{Dialog, Naming};
 use crate::editor::{self, Editor, PasteKeys};
 use crate::file_drop;
@@ -593,7 +594,11 @@ impl PrompterApp {
             });
         });
         for text in copied {
-            if let Err(error) = self.clipboard.write_text(&text) {
+            let written = match copy::take_html(ctx, &text) {
+                Some(html) => self.clipboard.write_rich(&text, &html),
+                None => self.clipboard.write_text(&text),
+            };
+            if let Err(error) = written {
                 log::error!("the clipboard could not be written: {error}");
                 toast(ctx, "The text could not be copied to the clipboard.");
             }

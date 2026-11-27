@@ -8,7 +8,7 @@
 ## Done
 - Phase 1 (V4 passed): DX12, Floating view, white fix, Library shell. Minimum 900 x 480.
 - Phase 2 (pending JD's check): C1 to C5.
-- Phase 3: E1 to E4 core, platform; E5 wiring, file drop; E6 tabs, folders; E7 drags, menus; E8, E8b styled editor; E9a underline, strike; E9b layout, toolbar, Format menu; E9c hidden markers, "/" menu; E9d stats bar.
+- Phase 3: E1 to E4 core, platform; E5 wiring, file drop; E6 tabs, folders; E7 drags, menus; E8, E8b styled editor; E9a underline, strike; E9b layout, toolbar, Format menu; E9c hidden markers, "/" menu; E9d stats bar; E9e rules, links, code, balanced copy.
 
 ## Platform (E1)
 - ViewWindow::cursor_position (JD approved): winit has no pointer position in a file drag.
@@ -31,28 +31,29 @@
 ## App
 - Screenshots and the diagnostics line: CUTMARK_PROMPTER_SHOW_IN_CAPTURE=1.
 - Caret at first text and focus on a tab's first showing only.
-- E9c: caret.rs, typing.rs; keys.rs takes editing keys before TextEdit; egui's moves are snapped. IME is not marker-aware.
+- E9c: keys.rs takes editing keys before TextEdit; egui's moves are snapped. IME is not marker-aware.
 - No key may make a setext underline (an empty item under text parses as one).
 - Open: a letter typed after "**word.**" or editing "[[pause]]" shows the marks; Enter in a quote adds no ">".
-- Ctrl+Shift+X arrives as Event::Cut.
+- E9e: a "---" that would underline text becomes "***". Unclosed fences and images show raw.
+- Open: write_rich drops copy.rs's HTML until prompter-platform writes CF_HTML. Then in-app Ctrl+V reads it first, losing links and code.
 - markup.rs uses pulldown-cmark (JD approved); keep options and cue rules in step with script.rs. Show Markdown is in editor.txt.
 - Typing, 10,301 words (release, headless): 1.9 ms median, 2.3 p95.
 - Data folder: BaseDirs config_dir + Cutmark\prompter (not ProjectDirs).
 - Autosave runs in App::logic. A failed save retries every 500 ms, one toast; on close it cancels the close once.
-- egui-winit sends Ctrl+V as Event::Paste, no key press; with no clipboard text, only V's release. editor::PasteKeys pastes on it.
+- egui-winit sends Ctrl+V as Event::Paste only; with no clipboard text, only V's release (editor::PasteKeys).
 - Tabs: serial keys egui state. LRU order not stored: restored tabs count left to right, active last.
 - Esc clears egui focus before the frame, so find.rs notes focus after each frame.
-- Preview follows the cursor's block only (tall: from its top). Not remembered. About 208 px of text at default size.
-- Panel: Unfiled first (even empty, if folders exist), then store order. Drag starts at 4 px (egui clicks to 6). No folder moves while filtering; no edge scroll.
-- E9d: selection stats count Markup.said with core's WordIndex. fonts.rs puts Inter behind ui-kit's icon families (egui warned: no "◻" or "?"); fix belongs in ui-kit.
-- Read time is fixed at 150 wpm; no pace setting yet.
+- Preview follows the cursor's block only. Not remembered.
+- Panel: Unfiled first, then store order. Drag starts at 4 px. No folder moves while filtering; no edge scroll.
+- E9d: fonts.rs puts Inter behind ui-kit's icon families (egui warned: no "◻" or "?"); fix belongs in ui-kit.
+- Read time: fixed 150 wpm.
 - Open: Unfiled's collapse is not saved. Live tabs can still close (see Notes).
 - Not timed on long scripts: Find, preview, Snapshots, paste.
 
 ## Next
 - E8 to E9c by hand: click, drag, double-click, IME, format keys (non-US layout too), toolbar and "/" menu look.
 - JD's Phase 2 check; E5: second launch focuses the first window; paste from Google Docs, Word, browser.
-- By hand: E6, E7 drags, wheel, Shift+F10; Explorer drop (also scaled); Word, Google Docs, LibreOffice imports; HTML-only Ctrl+V; relaunch, preview, Snapshots, dialogs, menus, empty and image Paste, Ctrl+Shift+F, autosave; see-through, flash on open (not ruled out), other monitor or DPI, lock and sleep, minimized scroll, OBS capture.
+- By hand: E9e rule look, Up and Down by rules and fences; E6, E7 drags, wheel, Shift+F10; Explorer drop (also scaled); Word, Google Docs, LibreOffice imports; HTML-only Ctrl+V; relaunch, preview, Snapshots, dialogs, menus, empty and image Paste, Ctrl+Shift+F, autosave; see-through, flash on open (not ruled out), other monitor or DPI, lock and sleep, minimized scroll, OBS capture.
 - Open: most shortcuts outside Edit and Format missing; About notices by hand.
 ## White layer
 - After a show the view's GDI surface is white under the DirectComposition visual (painter unknown), only over the area then present.

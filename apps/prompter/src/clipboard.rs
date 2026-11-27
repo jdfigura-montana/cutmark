@@ -8,6 +8,8 @@ pub trait Clipboard {
     fn read_html(&self) -> Option<String>;
     fn read_text(&self) -> Option<String>;
     fn write_text(&self, text: &str) -> prompter_platform::Result<()>;
+    /// Puts `text` on the clipboard, with `html` for programs that keep formatting.
+    fn write_rich(&self, text: &str, html: &str) -> prompter_platform::Result<()>;
 }
 
 /// The Windows clipboard.
@@ -23,6 +25,11 @@ impl Clipboard for SystemClipboard {
     }
 
     fn write_text(&self, text: &str) -> prompter_platform::Result<()> {
+        system::write_text(text)
+    }
+
+    /// prompter-platform cannot write HTML yet, so only the text reaches the clipboard.
+    fn write_rich(&self, text: &str, _html: &str) -> prompter_platform::Result<()> {
         system::write_text(text)
     }
 }

@@ -127,6 +127,68 @@ fn a_dash_typed_under_text_does_not_turn_that_text_into_a_heading() {
 }
 
 #[test]
+fn a_rule_or_closing_fence_typed_leaves_the_caret_under_it() {
+    for (typed, wanted) in [("---", "---\n|"), ("```\ncode\n```", "```\ncode\n```\n|"), ("~~~\ncode\n~~~", "~~~\ncode\n~~~\n|")] {
+        let mut page = Page::new("|");
+        // A line break typed as text, as Enter in a paragraph makes it.
+        assert_eq!(page.type_text(typed), wanted, "{typed:?}");
+    }
+    // An empty line under it is used, and asterisks may be the start of bold.
+    assert_eq!(Page::new("--|\n\nb").type_text("-"), "---\n|\nb");
+    assert_eq!(Page::new("|").type_text("***a***"), "***a***|");
+    assert_eq!(Page::new("***|").backspace(), "**|");
+}
+
+#[test]
+fn deleting_the_break_a_rule_shows_takes_the_whole_rule() {
+    let back = |text| after(text, |doc, selection| backspace(doc, selection, false, None));
+    let forward = |text| after(text, |doc, selection| delete(doc, selection, false));
+    assert_eq!(back("a\n\n---\n|b"), "a\n\n|b");
+    assert_eq!(back("---\n|b"), "|b");
+    assert_eq!(forward("a\n|\n***\nb"), "a\n|\nb");
+    assert_eq!(forward("a|\n***\nb"), "a|\nb");
+    // The last line's rule shows the break ahead of it.
+    assert_eq!(forward("a\n|\n---"), "a\n|");
+    // A selection over a rule takes it.
+    assert_eq!(after("a|\n\n---\n\n|b", |doc, selection| Some(replace(doc, selection, ""))), "a|\nb");
+}
+
+#[test]
+fn a_rule_never_turns_into_the_underline_of_the_text_above() {
+    // The empty line between them goes, or gets text.
+    assert_eq!(after("a\n|\n---\nb", |doc, selection| backspace(doc, selection, false, None)), "a|\n***\nb");
+    assert_eq!(Page::new("a\n\n|\n---").type_text("x"), "a\n\nx|\n***");
+}
+
+#[test]
+fn a_code_blocks_fences_stay_until_all_its_code_goes() {
+    let back = |text| after(text, |doc, selection| backspace(doc, selection, false, None));
+    let forward = |text| after(text, |doc, selection| delete(doc, selection, false));
+    // Text cannot join a fence's line, and an empty line next to one can go.
+    assert_eq!(back("a\n```\n|code\n```"), "a|\n```\ncode\n```");
+    assert_eq!(forward("```\ncode|\n```\nb"), "```\ncode|\n```\nb");
+    assert_eq!(back("```\ncode\n```\n|"), "```\ncode|\n```");
+    assert_eq!(back("\n```\n|code\n```"), "```\n|code\n```");
+    assert_eq!(back("a\n```\nx|\n```\nb"), "a\n|\nb");
+    assert_eq!(back("a\n```\n|\n```\nb"), "a\n|\nb");
+    // A selection from outside leaves the block whole.
+    assert_eq!(after("pa|ra\n```\nco|de\n```", |doc, selection| Some(replace(doc, selection, ""))), "pa|\n```\nde\n```");
+}
+
+#[test]
+fn links_and_inline_code_go_only_with_all_their_text() {
+    let back = |text| after(text, |doc, selection| backspace(doc, selection, false, None));
+    assert_eq!(back("a [bc](u)| d"), "a [b|](u) d");
+    assert_eq!(back("a [b|](u) d"), "a | d");
+    assert_eq!(back("a `b`| d"), "a | d");
+    assert_eq!(back("a <http://x.y>| d"), "a <http://x.|> d");
+    // Code that comes to touch becomes one. Links do not.
+    assert_eq!(back("`a` |`b`"), "`a|b`");
+    assert_eq!(back("[a](u) |[b](v)"), "[a](u)|[b](v)");
+    assert_eq!(entered("a [b|c](u) d"), "a [bc](u)\n| d");
+}
+
+#[test]
 fn backspace_deletes_what_can_be_seen_and_no_hidden_marker() {
     let key = |text| after(text, |doc, selection| backspace(doc, selection, false, None));
     // After the closing marker, the last letter goes, not an asterisk.
