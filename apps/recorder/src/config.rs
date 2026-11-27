@@ -969,6 +969,32 @@ pub struct Profile {
     /// follows [`Profile::effective_composite_mode`], not this field alone.
     #[serde(default)]
     pub composite_mode: CompositeMode,
+    /// What happens to the mouse cursor; profile files without one show it.
+    pub cursor: CursorMode,
+    /// With Track: whether mouse buttons and the wheel are logged.
+    pub record_clicks: bool,
+    /// With Track: whether keyboard shortcuts are logged. Opt-in.
+    pub record_keys: bool,
+    /// With Track: whether foreground app changes are logged.
+    pub record_apps: bool,
+}
+
+/// What a recording does with the mouse cursor (input track spec, Settings).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CursorMode {
+    /// Burned into the video.
+    #[default]
+    Show,
+    /// Left out of the video.
+    Hide,
+    /// Left out of the video and written to the take's events file.
+    Track,
+}
+
+/// The default of the switches that start on.
+fn on() -> bool {
+    true
 }
 
 /// The shape of a profile file, so the old `cam_only_bg` key can be read and migrated.
@@ -1000,6 +1026,14 @@ struct ProfileFile {
     cam_only_bg: Option<[u8; 3]>,
     #[serde(default)]
     composite_mode: CompositeMode,
+    #[serde(default)]
+    cursor: CursorMode,
+    #[serde(default = "on")]
+    record_clicks: bool,
+    #[serde(default)]
+    record_keys: bool,
+    #[serde(default = "on")]
+    record_apps: bool,
 }
 
 impl<'de> Deserialize<'de> for Profile {
@@ -1023,6 +1057,10 @@ impl<'de> Deserialize<'de> for Profile {
             background: file.background,
             cam_only_bg: None,
             composite_mode: file.composite_mode,
+            cursor: file.cursor,
+            record_clicks: file.record_clicks,
+            record_keys: file.record_keys,
+            record_apps: file.record_apps,
         };
         // An old profile's Cam only colour moves into the new background block, so nothing is lost.
         if let Some(bg) = file.cam_only_bg {
@@ -1053,6 +1091,10 @@ impl Profile {
             background: BackgroundConfig::default(),
             cam_only_bg: None,
             composite_mode: CompositeMode::Baked,
+            cursor: CursorMode::Show,
+            record_clicks: true,
+            record_keys: false,
+            record_apps: true,
         }
     }
 
@@ -1076,6 +1118,10 @@ impl Profile {
             background: BackgroundConfig::default(),
             cam_only_bg: None,
             composite_mode: CompositeMode::Baked,
+            cursor: CursorMode::Show,
+            record_clicks: true,
+            record_keys: false,
+            record_apps: true,
         }
     }
 
@@ -1099,6 +1145,10 @@ impl Profile {
             background: BackgroundConfig { kind: BackgroundKind::Color, ..BackgroundConfig::default() },
             cam_only_bg: None,
             composite_mode: CompositeMode::Baked,
+            cursor: CursorMode::Show,
+            record_clicks: true,
+            record_keys: false,
+            record_apps: true,
         }
     }
 
@@ -1857,6 +1907,25 @@ mod layout_tests {
         assert!(!settings.key.enabled);
         let text = serde_json::to_string(&WebcamSettings { key: KeyConfig { enabled: true, ..KeyConfig::default() }, ..WebcamSettings::default() })?;
         assert!(serde_json::from_str::<WebcamSettings>(&text)?.key.enabled);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+
+    #[test]
+    fn a_profile_from_before_the_cursor_settings_shows_the_cursor() -> Result<(), serde_json::Error> {
+        let mut old = serde_json::to_value(Profile::tutorial_av1_1440p60())?;
+        if let Some(fields) = old.as_object_mut() {
+            for key in ["cursor", "record_clicks", "record_keys", "record_apps"] {
+                assert!(fields.remove(key).is_some(), "{key} is saved");
+            }
+        }
+        let profile: Profile = serde_json::from_value(old)?;
+        assert_eq!(profile.cursor, CursorMode::Show);
+        assert_eq!((profile.record_clicks, profile.record_keys, profile.record_apps), (true, false, true));
         Ok(())
     }
 }

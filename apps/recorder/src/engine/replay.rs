@@ -20,6 +20,7 @@ use super::audio::{OUT_CHANNELS, OUT_RATE, SidecarWav};
 use super::cam::{self, CamSummary};
 use super::clock::MediaClock;
 use super::composite::CompositeBlock;
+use super::input_track::{self, EventsClip};
 use super::marks::{MarksWarning, TakeMarks};
 use super::session::{AudioStreamSpec, EngineError, SessionConfig, SessionFile, Stats, Summary, VideoSetup, build_muxer, file_name, finish_marks};
 use super::sink::{CamFileEnd, PacketSink};
@@ -430,6 +431,7 @@ impl ReplayRings {
             pcm_to,
             pcm: self.pcm.iter().map(|pcm| pcm.clip(pcm_from, pcm_to)).collect(),
             marks: self.marks.clip(start_ms, now_ms),
+            input: None,
         })
     }
 }
@@ -527,9 +529,18 @@ pub(super) struct ReplaySnapshot {
     pcm: Vec<Vec<PcmBlock>>,
     /// The kept marks, timed from the clip's start.
     marks: Vec<NewMark>,
+    /// The clip's part of the input track, when the cursor is tracked.
+    pub(super) input: Option<EventsClip>,
 }
 
 impl ReplaySnapshot {
+    /// The clip's video as a QPC range, on a buffer clock whose 0 is at `clock_qpc`.
+    pub(super) fn qpc_span(&self, clock_qpc: i64, frequency: i64) -> (i64, i64) {
+        let ticks = |us: i64| (i128::from(us) * i128::from(frequency) / 1_000_000) as i64;
+        let from = clock_qpc.saturating_add(ticks(self.start_us));
+        (from, from.saturating_add(ticks(i64::try_from(self.duration_ms).unwrap_or(0).saturating_mul(1000))))
+    }
+
     /// Where the clip starts on the buffer's clock.
     #[cfg(test)]
     pub(super) fn start_us(&self) -> i64 {
@@ -586,6 +597,13 @@ pub(super) fn write_replay(mut snapshot: ReplaySnapshot, cfg: &SessionConfig, ta
         None => (None, None),
     };
     let (cam, cam_start_offset_ms) = cam.map_or((None, None), |(summary, offset)| (Some(summary), Some(offset)));
+
+    // An events file that cannot be written never fails the save either.
+    if let Some(input) = snapshot.input.take()
+        && let Err(err) = input.write(&input_track::events_path(&take.folder, &take.base_name))
+    {
+        log::warn!("the replay's input track could not be written: {err}");
+    }
 
     let mut session_file = SessionFile::begin(&cfg);
     session_file.set_replay(started_at.with_timezone(&chrono::Local), snapshot.length);

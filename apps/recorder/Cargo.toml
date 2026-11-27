@@ -33,6 +33,7 @@ directories = "6.0.0"
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }
 egui.workspace = true
 env_logger = "0.11.11"
+events = { version = "0.1.0", path = "../../crates/events" }
 ffmpeg-next.workspace = true
 global-hotkey = "0.10.0"
 hound = { workspace = true }

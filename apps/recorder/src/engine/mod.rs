@@ -33,6 +33,8 @@ pub mod composite;
 pub mod controller;
 
 /// The marks of one take: the sidecar writer, the Markdown and CSV logs and the MKV chapters.
+mod input_track;
+
 pub mod marks;
 
 /// The constant frame rate pacer: QPC time to exact frame indexes, pure logic.

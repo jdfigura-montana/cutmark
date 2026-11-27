@@ -1,6 +1,7 @@
 # Progress
 
 ## Done
+- Recorder Phase 11 I4 (2026-11-27): cursor settings, Tutorial preset, input logger with takes and the replay buffer, file group, failure toasts. 427 recorder tests and clippy passed; check.ps1, release build and a real recording not run. Details in activeContext.md.
 - Recorder Phase 11 I3 (2026-11-27): crates/events, the input track file writer and reader. 17 tests and clippy passed; check.ps1 not run. Details in activeContext.md.
 - Recorder Stream Deck SD4 (2026-11-27): two Recorder profiles, dial bar fix, countdown number, plugin 1.2.0.0 packed. Also fixed two action ids in the audio MK2 profile. npm run build, check.ps1 and the recorder release build passed; no profile import or device run. Details in activeContext.md.
 - Recorder Stream Deck SD3 (2026-11-27): track gain dial, final icons, plugin 1.1.0.0, packed. npm run build and streamdeck pack passed; icons not looked at, no device run. Details in activeContext.md.

@@ -59,6 +59,11 @@ impl<C: SharedCapture> Sharing<C> {
         self.capture.as_ref()
     }
 
+    /// The running capture, to change it.
+    pub(super) fn capture_mut(&mut self) -> Option<&mut C> {
+        self.capture.as_mut()
+    }
+
     /// The running take.
     pub(super) fn take(&self) -> Option<&C::Take> {
         self.take.as_ref()

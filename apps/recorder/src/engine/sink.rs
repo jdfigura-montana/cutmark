@@ -279,17 +279,20 @@ impl CaptureOutput {
         Ok(routing.gate.frame_qpc(frame))
     }
 
-    /// Pauses the take; the capture goes on.
-    pub(super) fn pause(&self, press_qpc: i64) {
-        lock(&self.routing).gate.close(press_qpc);
+    /// Pauses the take; the capture goes on. Returns the QPC time of the first frame the take no longer holds.
+    pub(super) fn pause(&self, press_qpc: i64) -> Option<i64> {
+        let mut routing = lock(&self.routing);
+        routing.gate.close(press_qpc);
+        routing.gate.end_qpc()
     }
 
-    /// Resumes the take on a forced keyframe.
-    pub(super) fn resume(&self, press_qpc: i64) {
+    /// Resumes the take on a forced keyframe, and returns the QPC time of the frame it goes on at.
+    pub(super) fn resume(&self, press_qpc: i64) -> Option<i64> {
         let mut routing = lock(&self.routing);
-        if routing.take.is_some() {
-            routing.gate.open(press_qpc);
-        }
+        routing.take.is_some().then(|| {
+            let frame = routing.gate.open(press_qpc);
+            routing.gate.frame_qpc(frame)
+        })
     }
 
     /// See [`TakeGate::video_frame`].

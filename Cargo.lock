@@ -1513,6 +1513,7 @@ dependencies = [
  "egui",
  "egui_kittest",
  "env_logger",
+ "events",
  "ffmpeg-next",
  "global-hotkey",
  "hound",

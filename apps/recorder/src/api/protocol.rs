@@ -353,7 +353,7 @@ pub fn replay_saved_events(state: &ControllerState, after: u64) -> Vec<(u64, Str
         .filter(|note| note.seq > after)
         .filter_map(|note| match &note.event {
             ReplayEvent::Saved(saved) => Some((note.seq, event(EventKind::ReplaySaved, json!({ "take": saved.take_path.display().to_string() })))),
-            ReplayEvent::SaveFailed(_) | ReplayEvent::RamWarning(_) => None,
+            ReplayEvent::SaveFailed(_) | ReplayEvent::RamWarning(_) | ReplayEvent::InputTrack(_) => None,
         })
         .collect()
 }

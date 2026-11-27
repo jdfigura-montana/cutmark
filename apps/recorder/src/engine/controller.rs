@@ -210,6 +210,8 @@ pub struct ReplayRamWarning {
 /// Something the replay buffer has to tell the window and the control API.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplayEvent {
+    /// A toast about the input track, which shares the queue of the replay's toasts.
+    InputTrack(String),
     /// A save finished.
     Saved(ReplaySaved),
     /// A save wrote no take; the text says why.
@@ -824,6 +826,7 @@ impl Worker {
             }
             self.poll_replay();
             self.poll_saves();
+            self.poll_input_track();
             self.poll_measuring();
             self.poll_idle_disk();
             self.poll_idle_apps();
@@ -1251,6 +1254,13 @@ impl Worker {
         }
         self.replay_writer = Some(writer);
         Ok(())
+    }
+
+    /// Raises a toast for everything the input track has to say.
+    fn poll_input_track(&mut self) {
+        for notice in self.session.take_input_notices() {
+            self.update(|state| state.push_replay_event(ReplayEvent::InputTrack(notice)));
+        }
     }
 
     /// Reports every save the writer thread has finished.

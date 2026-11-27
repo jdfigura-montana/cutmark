@@ -30,6 +30,7 @@ mod remote;
 mod replay_ui;
 mod review;
 mod review_ui;
+mod screen_ui;
 mod settings_ui;
 mod status_ui;
 mod sync_flash;

@@ -20,6 +20,7 @@ use super::cam::{self, CamCounters, CamSnapshot, CamSummary};
 use super::capture_part::{Capture, CaptureStreams, PreparedCapture};
 use super::clock::MediaClock;
 use super::composite::CompositeBlock;
+use super::input_track::{self, InputTrack};
 use super::marks::{self, MarksWarning, MkvChapter, TakeMarks, wav_length_ms};
 use super::replay::{CamStream, ReplayRings, ReplaySnapshot, RingSink};
 use super::share::{SharedCapture, Sharing};
@@ -734,6 +735,12 @@ pub(super) struct LiveCapture {
     camera_size: Option<(u32, u32)>,
     /// The replay buffer, while it is on.
     rings: Option<Arc<RingSink>>,
+    /// The input logger of a capture whose profile tracks the cursor.
+    input: Option<InputTrack>,
+    /// Why the cursor is burned in although the profile tracks it.
+    input_failure: Option<String>,
+    /// Toasts about the input track that the controller has not picked up.
+    input_notices: Vec<String>,
 }
 
 /// A capture ready to start, with what a [`LiveCapture`] keeps of it.
@@ -741,6 +748,8 @@ struct Opened {
     prepared: PreparedCapture,
     cfg: SessionConfig,
     camera_size: Option<(u32, u32)>,
+    input: Option<InputTrack>,
+    input_failure: Option<String>,
 }
 
 impl Opened {
@@ -755,9 +764,17 @@ impl Opened {
         // The composite block needs the camera's size as it is at the start.
         let camera_size = crate::webcam::shared().map(|share| share.capture.format()).map(|format| (format.width, format.height));
         let stats = Arc::new(Stats::new(&cfg.tracks));
+        // The logger starts before the encoders open: if it cannot, the capture still draws the cursor.
+        let plan = input_track::plan_cursor(cfg.profile.cursor, || InputTrack::start_logger(cfg.monitor, &cfg.profile));
+        cfg.cursor = plan.burn_in;
         let prepared = PreparedCapture::open(&cfg, cam_plan, stats)?;
-        Ok(Self { prepared, cfg, camera_size })
+        Ok(Self { prepared, cfg, camera_size, input: plan.track, input_failure: plan.failure })
     }
+}
+
+/// How far back a replay clip can start: the buffer's length and the keyframe interval it can run over.
+fn replay_reach(cfg: &SessionConfig, length: Duration) -> Duration {
+    length + Duration::from_secs_f32(cfg.profile.keyframe_secs.max(0.0))
 }
 
 /// An empty replay buffer for the streams of a capture opened with `cfg`.
@@ -783,6 +800,13 @@ impl LiveCapture {
         cfg
     }
 
+    /// Starts the events file of a take whose first frame is at `start_qpc`, when the cursor is tracked.
+    fn begin_input_take(&self, take_folder: &Path, base_name: &str, start_qpc: i64) {
+        if let Some(input) = &self.input {
+            input.core().begin_take(&input_track::events_path(take_folder, base_name), start_qpc);
+        }
+    }
+
     /// The time of `qpc` on the capture's clock in ms. That clock never pauses, so neither does the replay buffer's.
     fn buffer_ms(&self, qpc: i64) -> u64 {
         MediaClock::new(self.capture.start_qpc(), qpc_frequency()).media_ms(qpc)
@@ -797,7 +821,7 @@ impl SharedCapture for LiveCapture {
     /// The capture's encoders open, the take builds its files around their streams, then every stream starts from one
     /// instant with the take already on it.
     fn open_for_take(cfg: SessionConfig) -> Result<(Self, Take), EngineError> {
-        let Opened { mut prepared, cfg, camera_size } = Opened::new(cfg)?;
+        let Opened { mut prepared, cfg, camera_size, input, input_failure } = Opened::new(cfg)?;
         let session_file = SessionFile::begin(&cfg);
         let files = match TakeFiles::open(&cfg, prepared.streams()) {
             Ok(files) => files,
@@ -818,14 +842,21 @@ impl SharedCapture for LiveCapture {
             }
         };
         let take = files.record(&cfg, session_file, &capture, camera_size, capture.start_qpc());
-        Ok((Self { capture, cfg, camera_size, rings: None }, take))
+        let input_notices = input_failure.iter().cloned().collect();
+        let live = Self { capture, cfg, camera_size, rings: None, input, input_failure, input_notices };
+        live.begin_input_take(&live.cfg.take_folder, &live.cfg.base_name, live.capture.start_qpc());
+        Ok((live, take))
     }
 
     fn open_for_replay(cfg: SessionConfig, length: Duration) -> Result<Self, EngineError> {
-        let Opened { prepared, cfg, camera_size } = Opened::new(cfg)?;
+        let Opened { prepared, cfg, camera_size, input, input_failure } = Opened::new(cfg)?;
+        if let Some(input) = &input {
+            input.core().set_replay(Some(replay_reach(&cfg, length)));
+        }
         let rings = new_rings(&cfg, prepared.streams(), camera_size, length);
         let capture = prepared.begin(None, Some(Arc::clone(&rings) as Arc<dyn PacketSink>))?;
-        Ok(Self { capture, cfg, camera_size, rings: Some(rings) })
+        let input_notices = input_failure.iter().cloned().collect();
+        Ok(Self { capture, cfg, camera_size, rings: Some(rings), input, input_failure, input_notices })
     }
 
     /// Only the take's file names come from `cfg`: its streams, tracks and profile are the running capture's.
@@ -834,11 +865,20 @@ impl SharedCapture for LiveCapture {
         take_cfg.output_file = cfg.output_file;
         take_cfg.take_folder = cfg.take_folder;
         take_cfg.base_name = cfg.base_name;
-        Take::start_on(&self.capture, &take_cfg, self.camera_size, press_qpc)
+        let take = Take::start_on(&self.capture, &take_cfg, self.camera_size, press_qpc)?;
+        // The take's recording time 0, which `start_on` left in the counters.
+        let start_qpc = self.capture.stats().started_qpc.load(Ordering::Relaxed) as i64;
+        self.input_notices.extend(self.input_failure.clone());
+        self.begin_input_take(&take_cfg.take_folder, &take_cfg.base_name, start_qpc);
+        Ok(take)
     }
 
     fn leave_take(&mut self, take: Take, press_qpc: i64) -> StoppedTake {
+        let end_qpc = self.capture.output().pause(press_qpc);
         let end = self.capture.leave_take(press_qpc);
+        if let Some(input) = &self.input {
+            input.core().finish_take(end_qpc.unwrap_or(press_qpc));
+        }
         take.finish(end, self.capture.stats())
     }
 
@@ -846,6 +886,9 @@ impl SharedCapture for LiveCapture {
     fn close(self, take: Option<Take>) -> Option<StoppedTake> {
         let stats = Arc::clone(self.capture.stats());
         let end = self.capture.stop();
+        if let Some(input) = &self.input {
+            input.core().finish_take(qpc_now());
+        }
         take.map(|take| take.finish(end, &stats))
     }
 
@@ -853,12 +896,18 @@ impl SharedCapture for LiveCapture {
         let rings = new_rings(&self.cfg, self.capture.streams(), self.camera_size, length);
         self.capture.output().set_rings(Some(Arc::clone(&rings) as Arc<dyn PacketSink>));
         self.rings = Some(rings);
+        if let Some(input) = &self.input {
+            input.core().set_replay(Some(replay_reach(&self.cfg, length)));
+        }
         Ok(())
     }
 
     fn drop_rings(&mut self) {
         self.capture.output().set_rings(None);
         self.rings = None;
+        if let Some(input) = &self.input {
+            input.core().set_replay(None);
+        }
     }
 
     fn is_dead(&self) -> bool {
@@ -914,7 +963,11 @@ impl Sharing<LiveCapture> {
     /// buffer and a running take go on untouched. None while the buffer is off or holds no video yet.
     pub(super) fn replay_snapshot(&self, press_qpc: i64) -> Option<(ReplaySnapshot, SessionConfig)> {
         let live = self.capture()?;
-        let snapshot = live.rings.as_ref()?.rings().snapshot(live.buffer_ms(press_qpc))?;
+        let mut snapshot = live.rings.as_ref()?.rings().snapshot(live.buffer_ms(press_qpc))?;
+        if let Some(input) = &live.input {
+            let (from, to) = snapshot.qpc_span(live.capture.start_qpc(), qpc_frequency());
+            snapshot.input = Some(input.core().clip(from, to));
+        }
         Some((snapshot, live.live_config()))
     }
 
@@ -933,6 +986,16 @@ impl Sharing<LiveCapture> {
         self.take_mut().is_some_and(|take| take.apply_app_events(events))
     }
 
+    /// The toasts the input track has raised since the last call.
+    pub(super) fn take_input_notices(&mut self) -> Vec<String> {
+        let Some(live) = self.capture_mut() else { return Vec::new() };
+        let mut notices = std::mem::take(&mut live.input_notices);
+        if let Some(input) = &live.input {
+            notices.extend(input.core().take_notices());
+        }
+        notices
+    }
+
     /// A handle to the take's last marks error, which stays readable after the take is stopped.
     pub(super) fn marks_warning(&self) -> MarksWarning {
         self.take().map(|take| take.marks_warning.clone()).unwrap_or_default()
@@ -942,13 +1005,20 @@ impl Sharing<LiveCapture> {
     pub(super) fn pause(&self, press_qpc: i64) {
         let Some(live) = self.capture() else { return };
         live.capture.stats().paused.store(true, Ordering::Relaxed);
-        live.capture.output().pause(press_qpc);
+        let from = live.capture.output().pause(press_qpc);
+        if let Some(input) = &live.input {
+            input.core().pause(from.unwrap_or(press_qpc));
+        }
     }
 
     /// Continues the take on a forced keyframe, with no gap in its frame indexes.
     pub(super) fn resume(&self, press_qpc: i64) {
         let Some(live) = self.capture() else { return };
-        live.capture.output().resume(press_qpc);
+        if let Some(to) = live.capture.output().resume(press_qpc)
+            && let Some(input) = &live.input
+        {
+            input.core().resume(to);
+        }
         live.capture.stats().paused.store(false, Ordering::Relaxed);
     }
 

@@ -28,6 +28,7 @@ fn notice(event: &ReplayEvent) -> Notice {
             text: format!("Replay saved: {}", take_label(&saved.name)),
             review: Some(ReviewTarget { view: ReviewView::Replays, take: saved.name.clone() }),
         },
+        ReplayEvent::InputTrack(text) => Notice { text: text.clone(), review: None },
         ReplayEvent::SaveFailed(reason) => Notice { text: format!("Replay could not be saved: {reason}"), review: None },
         ReplayEvent::RamWarning(warning) => {
             let gb = |bytes: u64| bytes as f64 / GIB as f64;

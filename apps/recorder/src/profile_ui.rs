@@ -152,6 +152,12 @@ impl AmfProbe {
         self.done.is_some()
     }
 
+    /// Whether the codec's encoder opens at `key`; None until the probe for that key has answered.
+    pub(crate) fn works(&self, key: ProbeKey, codec: EncoderCodec) -> Option<bool> {
+        let (done_key, list) = self.done.as_ref()?;
+        (*done_key == key).then(|| list.iter().any(|support| support.codec == codec && support.result.is_ok()))
+    }
+
     /// What the last probe reported for a codec.
     fn support(&self, codec: EncoderCodec) -> Option<&CodecSupport> {
         self.done.as_ref().and_then(|(_, list)| list.iter().find(|support| support.codec == codec))

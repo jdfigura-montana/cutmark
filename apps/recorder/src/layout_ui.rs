@@ -1,4 +1,4 @@
-//! The Layout tool's groups: which pictures the composite shows and how the camera looks
+//! The Layout tool's groups: the Screen group (in `screen_ui`), then which pictures the composite shows and how the camera looks
 //! (spec "Setup mode": View, Camera position, Crop, Frame; the Background group is in
 //! `background_ui`).
 //!
@@ -17,6 +17,7 @@ use ui_kit::{inspector_group, inspector_row, segmented, segmented_filled};
 use crate::config::{AnchorCorner, LayoutKind, PipConfig, PipShape};
 use crate::profile_ui::{Control, Lock};
 use crate::profiles::ProfileStore;
+use crate::screen_ui::ScreenGroup;
 
 /// The corners in the order the picker lists them.
 const CORNERS: [AnchorCorner; 4] = [AnchorCorner::TopLeft, AnchorCorner::TopRight, AnchorCorner::BottomLeft, AnchorCorner::BottomRight];
@@ -42,7 +43,11 @@ fn corner_label(corner: AnchorCorner) -> &'static str {
 }
 
 /// Draws the Layout tool's groups for the active profile; `lock` makes them read-only.
-pub fn show(ui: &mut Ui, store: &mut ProfileStore, profile_name: &str, lock: Lock) {
+pub fn show(ui: &mut Ui, screen: &mut ScreenGroup, store: &mut ProfileStore, profile_name: &str, lock: Lock) {
+    if store.get(profile_name).is_some() {
+        screen.show(ui, store, profile_name, lock);
+        ui.add_space(space::SCALE_8);
+    }
     let Some(profile) = store.get(profile_name) else {
         ui.weak("No profile is active.");
         return;

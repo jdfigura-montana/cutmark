@@ -200,6 +200,11 @@ impl TakeGate {
         }
     }
 
+    /// The QPC time of the first frame after a paused take; None while it runs or holds nothing.
+    pub(super) fn end_qpc(&self) -> Option<i64> {
+        self.spans.last().and_then(|span| span.end).map(|end| self.frame_qpc(end))
+    }
+
     /// The QPC time at which a frame of the capture clock is due.
     pub(super) fn frame_qpc(&self, frame: u64) -> i64 {
         let offset = i128::from(frame) * i128::from(self.qpc_freq) / i128::from(self.fps);

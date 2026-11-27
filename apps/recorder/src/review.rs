@@ -4,7 +4,7 @@
 //! A take is the main media file (mkv, mp4, mov) plus every file that shares
 //! its stem: the camera ISO file (`_cam`), the track WAV files (`_t*_*.wav`),
 //! the marks sidecar and the derived `_marks` files, session.json and the
-//! `_script` files. The start time comes from the marks sidecar's
+//! `_script` files, the input track (`.events`) and the baked copy (`.baked.mp4`). The start time comes from the marks sidecar's
 //! session start when there is one, and from the video file's modified time
 //! otherwise. The duration is what media-io's header probe reads from the main
 //! file, with the sidecar's length for that file as the fallback. The video
@@ -39,10 +39,13 @@ const SESSION_SUFFIX: &str = "_session.json";
 
 /// File-name suffixes whose stem is the take's stem; a plain `file_stem`
 /// would keep the `.marks` or `_marks` part and split a take's files apart.
-const SIDECAR_SUFFIXES: [&str; 6] = [MARKS_SUFFIX, "_marks.md", "_marks.csv", SESSION_SUFFIX, "_script.md", "_script.csv"];
+const SIDECAR_SUFFIXES: [&str; 7] = [MARKS_SUFFIX, "_marks.md", "_marks.csv", SESSION_SUFFIX, "_script.md", "_script.csv", BAKED_SUFFIX];
 
 /// What the camera file's stem adds to the take's stem.
 const CAM_SUFFIX: &str = "_cam";
+
+/// The end of the name of the take's copy with the cursor burned in. It is a media file, but never a take of its own.
+const BAKED_SUFFIX: &str = ".baked.mp4";
 
 /// One file of a take.
 pub struct TakeFile {
@@ -736,6 +739,14 @@ mod tests {
         assert_eq!(take.files.len(), 2);
         fs::remove_dir_all(&root)?;
         Ok(())
+    }
+
+    #[test]
+    fn the_events_file_and_the_baked_copy_belong_to_their_take() {
+        let videos: HashSet<String> = ["take01", "take01.baked"].map(str::to_owned).into();
+        for name in ["take01.mp4", "take01.events", "take01.baked.mp4"] {
+            assert_eq!(take_stem(name, &videos), "take01", "{name}");
+        }
     }
 
     #[test]

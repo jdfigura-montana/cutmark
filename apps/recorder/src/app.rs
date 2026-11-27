@@ -131,6 +131,8 @@ pub struct RecorderApp {
     profile_section: ProfileSection,
     /// The profiles in memory: the one place the Profile and Webcam sections edit, with one debounced save.
     profile_store: ProfileStore,
+    /// The Layout tool's Screen group: the encoder check of the Tutorial preset.
+    screen_group: crate::screen_ui::ScreenGroup,
     /// The size of the captured monitor, which a profile with the Source output size records at.
     source_size: (u32, u32),
     /// The control API server, or None while it is off or could not start.
@@ -287,6 +289,7 @@ impl RecorderApp {
             recovery: None,
             profile_section,
             profile_store,
+            screen_group: Default::default(),
             source_size,
             api: None,
             api_token,
@@ -603,7 +606,10 @@ impl RecorderApp {
         let Some(thread) = &self.compositor else { return };
         let handle = thread.handle();
         if let Some(profile) = self.profile_store.get(&self.settings.active_profile) {
-            let mut config = ComposeConfig::from_profile(profile, self.source_size, self.preview_monitor, self.preview_cursor);
+            // The preview captures the cursor as the take will. A recording then never starts on a leftover
+            // preview frame that has a cursor the take must not have.
+            let cursor = self.preview_cursor && profile.cursor == crate::config::CursorMode::Show;
+            let mut config = ComposeConfig::from_profile(profile, self.source_size, self.preview_monitor, cursor);
             config.matte = self.key_ui.matte;
             handle.set_config(config);
         }
@@ -1128,7 +1134,7 @@ impl RecorderApp {
                     let picked = webcam_ui::camera_picture(ui, &mut self.webcam, self.key_ui.eyedropper);
                     key_ui::key_panel(ui, &self.webcam, &mut self.profile_store, state, &mut self.key_ui, picked.as_ref());
                 }
-                Tool::Layout => layout_ui::show(ui, &mut self.profile_store, &self.settings.active_profile, lock),
+                Tool::Layout => layout_ui::show(ui, &mut self.screen_group, &mut self.profile_store, &self.settings.active_profile, lock),
                 Tool::Output => {
                     let mut outcome = ProfileOutcome::default();
                     self.profile_section.output_panel(ui, &mut self.profile_store, &mut self.settings, self.source_size, lock, &mut outcome);
