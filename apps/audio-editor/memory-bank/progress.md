@@ -1,3 +1,6 @@
+## Version 1.3.0 (2026-11-27)
+- DONE: version bump and CHANGELOG entry. check.ps1 green; release built.
+
 ## AE 1.3 R2b (2026-11-27)
 - DONE: state publishing and Edit > Preferences... with the Remote control section. check.ps1 green; release built. JD hand checks pending.
 

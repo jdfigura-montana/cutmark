@@ -1,3 +1,7 @@
+## Version 1.3.0 (2026-11-27)
+- Cargo.toml and CHANGELOG.md are at 1.3.0; the installer script reads the version from Cargo.toml.
+- Open: README.md still says "Version 1.2.0".
+
 ## AE 1.3 R2b state publishing and Preferences (2026-11-27)
 - `remote.rs`: `Remote` always exists in the running app (`App::remote` is None only in tests); its server is None while the setting is off or the start failed (status "Off"; off then on retries). app.rs calls `set_enabled(config.stream_deck)` before each `poll`.
 - `poll` publishes after the commands; `clear` publishes the no-project state on the start screen. `playhead_ms` is held to one new value per 100 ms while playing or recording. Bin preview and scrub publish "stopped".
