@@ -1,4 +1,5 @@
-//! io::config: app-wide settings (audio input) in %APPDATA%\CutMark\config.json.
+//! io::config: app-wide settings (audio input, Stream Deck) in
+//! %APPDATA%\CutMark\config.json.
 
 use std::fs;
 use std::io;
@@ -26,7 +27,7 @@ pub enum RecordChannels {
 }
 
 /// App settings that belong to the machine, not to a project.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppConfig {
     /// Input device display name; None means the Windows default input.
     #[serde(default)]
@@ -37,6 +38,20 @@ pub struct AppConfig {
     /// Extra latency compensation in milliseconds, -100..=100.
     #[serde(default)]
     pub latency_offset_ms: i32,
+    /// Whether the Stream Deck remote control runs; on by default.
+    #[serde(default = "stream_deck_default")]
+    pub stream_deck: bool,
+}
+
+/// The Stream Deck switch's value when the file has none.
+fn stream_deck_default() -> bool {
+    true
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        AppConfig { input_device: None, record_channels: RecordChannels::default(), latency_offset_ms: 0, stream_deck: stream_deck_default() }
+    }
 }
 
 impl AppConfig {
@@ -120,8 +135,12 @@ mod tests {
     fn save_then_load_round_trips() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("sub").join("config.json");
-        let config =
-            AppConfig { input_device: Some("Microphone (USB Audio) \u{e9}".to_string()), record_channels: RecordChannels::Stereo, latency_offset_ms: -42 };
+        let config = AppConfig {
+            input_device: Some("Microphone (USB Audio) \u{e9}".to_string()),
+            record_channels: RecordChannels::Stereo,
+            latency_offset_ms: -42,
+            ..AppConfig::default()
+        };
         save_to(&config, &path).unwrap();
         assert_eq!(load_from(&path), config);
         assert!(!path.with_extension("json.tmp").exists());

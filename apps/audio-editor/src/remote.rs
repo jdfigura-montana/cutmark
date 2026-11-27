@@ -2,20 +2,25 @@
 //! docs/audio-editor/1.3-StreamDeck.md, "App side"). Owns the cutmark-remote
 //! server and its command queue: every shortcut-table id runs through the same
 //! dispatch as the keyboard (`App::run_shortcut_action`, handed in by app.rs so
-//! this module stays free of egui), the remote-only ids run here. app.rs only
-//! calls `start` and `poll`.
+//! this module stays free of egui), the remote-only ids run here. It also
+//! publishes the app's state (spec "State published"), every frame through
+//! `poll` while a project is open and through `clear` on the start screen.
 
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cutmark_remote::{CommandInfo, RemoteCommand, RemoteConfig, RemoteServer};
-use serde_json::Value;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::editor::Editor;
 use crate::editor::action::Action;
 use crate::editor::editor::EditorError;
 use crate::editor::message;
+use crate::editor::transport::TransportState;
 use crate::ui::dialogs::confirm::ConfirmDialog;
+use crate::ui::dialogs::preferences::RemoteStatus;
 use crate::ui::menu::{ProjectMenu, ProjectMenuAction};
 
 /// The app's short name in the protocol and the discovery file's name.
@@ -44,14 +49,26 @@ const NOMINAL_LANE_W: f32 = 1000.0;
 /// The most ticks one command applies. The plugin coalesces rotation ticks;
 /// the cap bounds the loop a bad client could ask for.
 const MAX_TICKS: i64 = 100;
+/// While the playhead moves, a new `playhead_ms` is published at most this
+/// often (spec: at most 10 times per second).
+const PLAYHEAD_EVERY: Duration = Duration::from_millis(100);
 
-/// The app's remote control server plus its gesture state. `App` holds an
-/// `Option<Remote>`: `None` runs the app without the remote.
+/// The app's remote control: the server while it runs, plus what starting it
+/// again takes.
 pub struct Remote {
-    /// The server: socket, discovery files and the command queue.
-    server: RemoteServer,
+    /// The server (socket, discovery files, command queue); None while the
+    /// setting is off or when it could not start.
+    server: Option<RemoteServer>,
+    /// The Stream Deck setting as last applied.
+    enabled: bool,
+    /// Runs whenever a command arrives; every started server gets it.
+    wake: Arc<dyn Fn() + Send + Sync>,
+    /// Overrides the discovery folder (tests); None is the real one.
+    dir: Option<PathBuf>,
     /// The running track-volume turn, if any.
     volume: Option<VolumeGesture>,
+    /// When `playhead_ms` last took a new value, and that value.
+    playhead: Option<(Instant, u64)>,
 }
 
 /// One track-volume turn: the track it changes and when the last tick came.
@@ -62,12 +79,17 @@ struct VolumeGesture {
     last: Instant,
 }
 
-/// Starts the remote server: app "audio", this crate's version, this exe, and
-/// as the command list every shortcut-table id plus the remote-only ones.
-/// `wake` runs whenever a command arrives (the app passes `request_repaint`).
-/// When another instance of the app already runs the remote, or the server
-/// cannot start, logs why and returns `None`: the app runs without the remote.
-pub fn start(wake: Box<dyn Fn() + Send>) -> Option<Remote> {
+/// Creates the remote control and, when `enabled`, starts its server. `wake`
+/// runs whenever a command arrives (the app passes `request_repaint`).
+pub fn start(wake: Box<dyn Fn() + Send + Sync>, enabled: bool) -> Remote {
+    Remote::new(wake, enabled, None)
+}
+
+/// Starts a server: app "audio", this crate's version, this exe, and as the
+/// command list every shortcut-table id plus the remote-only ones. When
+/// another instance of the app already runs the remote, or the server cannot
+/// start, logs why and returns `None`: the app runs without it.
+fn start_server(wake: &Arc<dyn Fn() + Send + Sync>, dir: Option<PathBuf>) -> Option<RemoteServer> {
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
         Err(error) => {
@@ -78,11 +100,12 @@ pub fn start(wake: Box<dyn Fn() + Send>) -> Option<Remote> {
     let mut commands: Vec<CommandInfo> =
         crate::shortcuts::table().entries().iter().map(|entry| CommandInfo { id: entry.id.to_string(), label: entry.label.to_string() }).collect();
     commands.extend(REMOTE_ONLY.iter().map(|(id, label)| CommandInfo { id: (*id).to_string(), label: (*label).to_string() }));
-    let config = RemoteConfig { app: APP, version: env!("CARGO_PKG_VERSION").to_string(), exe, commands, dir: None };
+    let config = RemoteConfig { app: APP, version: env!("CARGO_PKG_VERSION").to_string(), exe, commands, dir };
     match RemoteServer::start(config) {
         Ok(server) => {
-            server.set_wake(wake);
-            Some(Remote { server, volume: None })
+            let wake = Arc::clone(wake);
+            server.set_wake(Box::new(move || wake()));
+            Some(server)
         }
         Err(error) => {
             log::info!("remote control not started: {error}");
@@ -91,10 +114,137 @@ pub fn start(wake: Box<dyn Fn() + Send>) -> Option<Remote> {
     }
 }
 
+impl Remote {
+    /// `start`, with the discovery folder the tests override.
+    fn new(wake: Box<dyn Fn() + Send + Sync>, enabled: bool, dir: Option<PathBuf>) -> Remote {
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::from(wake);
+        let server = if enabled { start_server(&wake, dir.clone()) } else { None };
+        Remote { server, enabled, wake, dir, volume: None, playhead: None }
+    }
+
+    /// Applies the Stream Deck setting: off drops the server, which removes
+    /// audio.json; on starts a new one. Does nothing while the setting is
+    /// unchanged, so a failed start is not retried every frame.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        if enabled == self.enabled {
+            return;
+        }
+        self.enabled = enabled;
+        self.server = if enabled { start_server(&self.wake, self.dir.clone()) } else { None };
+    }
+
+    /// The status Preferences shows. A server that could not start reads as
+    /// off: nothing is listening.
+    pub fn status(&self) -> RemoteStatus {
+        match &self.server {
+            Some(server) if server.is_connected() => RemoteStatus::Connected,
+            Some(_) => RemoteStatus::Waiting,
+            None => RemoteStatus::Off,
+        }
+    }
+
+    /// The next queued command, if the server runs and one arrived.
+    fn next_command(&self) -> Option<RemoteCommand> {
+        self.server.as_ref().and_then(RemoteServer::try_recv)
+    }
+
+    /// Answers one command with an error.
+    fn reply_error(&self, command_id: &str, code: &str, why: &str) {
+        if let Some(server) = &self.server {
+            server.reply_error(command_id, code, why);
+        }
+    }
+}
+
 /// Drops queued commands without running them: on the start screen nothing
 /// dispatches, and stale commands must not fire when the next project opens.
+/// Publishes the no-project state. Called once per frame there.
 pub fn clear(remote: &mut Remote) {
-    while remote.server.try_recv().is_some() {}
+    while remote.next_command().is_some() {}
+    remote.playhead = None;
+    if let Some(server) = &remote.server {
+        server.publish(idle_state());
+    }
+}
+
+/// The state with no project open.
+fn idle_state() -> Value {
+    json!({
+        "project": null,
+        "transport": "stopped",
+        "playhead_ms": 0,
+        "can_record": false,
+        "can_undo": false,
+        "can_redo": false,
+        "ripple": false,
+        "snap": false,
+        "zoom_label": "",
+        "tracks": [],
+    })
+}
+
+/// The state of an open project, as the spec's "State published" lists it.
+fn project_state(editor: &Editor, zoom_label: &str, playhead_ms: u64) -> Value {
+    let armed = editor.armed_track();
+    let tracks: Vec<Value> = editor
+        .project
+        .tracks
+        .iter()
+        .enumerate()
+        .map(|(index, track)| {
+            json!({
+                "n": index + 1,
+                "name": track.name,
+                "mute": track.mute,
+                "solo": track.solo,
+                "arm": armed == Some(track.id),
+                "volume_db": track.volume_db,
+            })
+        })
+        .collect();
+    json!({
+        "project": editor.project.name,
+        "transport": transport_name(editor),
+        "playhead_ms": playhead_ms,
+        "can_record": armed.is_some() && !editor.is_recording() && !editor.is_locked(),
+        "can_undo": editor.undo_label().is_some(),
+        "can_redo": editor.redo_label().is_some(),
+        "ripple": editor.view.ripple,
+        "snap": editor.view.snap,
+        "zoom_label": zoom_label,
+        "tracks": tracks,
+    })
+}
+
+/// The protocol's transport word. A bin preview and a scrub leave the
+/// timeline transport stopped.
+fn transport_name(editor: &Editor) -> &'static str {
+    if editor.is_recording() {
+        return "recording";
+    }
+    match editor.transport_state() {
+        TransportState::Playing => "playing",
+        TransportState::Paused => "paused",
+        TransportState::Stopped | TransportState::Previewing | TransportState::Scrubbing => "stopped",
+    }
+}
+
+/// The playhead in whole milliseconds.
+fn playhead_ms(editor: &Editor) -> u64 {
+    editor.view.playhead.saturating_mul(1000) / u64::from(editor.project.sample_rate.max(1))
+}
+
+/// The `playhead_ms` to publish: `current`, except that while the playhead
+/// moves the value in `last` is repeated until `PLAYHEAD_EVERY` has passed.
+fn limited_playhead(last: &mut Option<(Instant, u64)>, current: u64, moving: bool, now: Instant) -> u64 {
+    if let Some((at, sent)) = *last
+        && moving
+        && now.saturating_duration_since(at) < PLAYHEAD_EVERY
+    {
+        return sent;
+    }
+    *last = Some((now, current));
+    current
 }
 
 /// What one command did. `poll` turns the error forms into replies; the tests
@@ -119,27 +269,34 @@ type Dispatch<'a> = dyn FnMut(&mut Editor, &mut ProjectMenu, &str) -> crate::app
 /// remote-only id here. Errors go to the client as `blocked`, `bad_args` or
 /// `unknown_command` replies. Returns the Project menu action a command left
 /// behind (New or Open), else `None`. Also ends the track-volume gesture 500
-/// ms after its last tick, making the turn one undo step. Called once per
-/// frame while a project is open; `messages` takes what the keyboard path
-/// would show in the messages dialog.
+/// ms after its last tick, making the turn one undo step, then publishes the
+/// state with `zoom_label`, the zoom readout's text. Called once per frame
+/// while a project is open; `messages` takes what the keyboard path would
+/// show in the messages dialog.
 pub fn poll(
     remote: &mut Remote,
     editor: &mut Editor,
     menu: &mut ProjectMenu,
     messages: &mut Option<ConfirmDialog>,
+    zoom_label: &str,
     dispatch: &mut Dispatch,
 ) -> ProjectMenuAction {
     let mut action = ProjectMenuAction::None;
-    while let Some(command) = remote.server.try_recv() {
+    while let Some(command) = remote.next_command() {
         let id = command.id.clone();
         match handle(&mut remote.volume, command, editor, menu, messages, dispatch) {
             Handled::Project(left) => action = left,
             Handled::Ran => {}
-            Handled::Error(code, why) => remote.server.reply_error(&id, &code, &why),
-            Handled::Unknown => remote.server.reply_error(&id, "unknown_command", &format!("the app does not accept the command {id}")),
+            Handled::Error(code, why) => remote.reply_error(&id, &code, &why),
+            Handled::Unknown => remote.reply_error(&id, "unknown_command", &format!("the app does not accept the command {id}")),
         }
     }
     end_volume_gesture(&mut remote.volume, editor);
+    if let Some(server) = &remote.server {
+        let moving = matches!(transport_name(editor), "playing" | "recording");
+        let playhead = limited_playhead(&mut remote.playhead, playhead_ms(editor), moving, Instant::now());
+        server.publish(project_state(editor, zoom_label, playhead));
+    }
     action
 }
 
@@ -374,6 +531,89 @@ mod tests {
         let mut messages = None;
         let mut dispatch = dispatch();
         handle(volume, command, editor, &mut menu, &mut messages, &mut dispatch)
+    }
+
+    /// The state object has every field of the spec's "State published", with
+    /// the sample project's values; the start screen's has the same fields.
+    #[test]
+    fn the_state_object_has_every_field() {
+        let (mut editor, _dir) = test_editor(&[&[(0, 96_000)], &[]]);
+        editor.set_fake_input(FakeInput::default());
+        let (first, second) = (editor.project.tracks[0].id, editor.project.tracks[1].id);
+        editor.apply(Action::SetTrackMute { id: second, mute: true }).expect("mute");
+        editor.apply(Action::SetTrackSolo { id: first, solo: true }).expect("solo");
+        editor.apply(Action::SetTrackVolume { id: first, db: -3.0 }).expect("volume");
+        editor.toggle_arm(first);
+        editor.view.ripple = true;
+        editor.view.snap = false;
+        editor.view.playhead = u64::from(editor.project.sample_rate) * 3 / 2;
+        let names: Vec<String> = editor.project.tracks.iter().map(|track| track.name.clone()).collect();
+
+        let state = project_state(&editor, "100%", playhead_ms(&editor));
+        assert_eq!(
+            state,
+            json!({
+                "project": editor.project.name,
+                "transport": "stopped",
+                "playhead_ms": 1500,
+                "can_record": true,
+                "can_undo": true,
+                "can_redo": false,
+                "ripple": true,
+                "snap": false,
+                "zoom_label": "100%",
+                "tracks": [
+                    { "n": 1, "name": names[0], "mute": false, "solo": true, "arm": true, "volume_db": -3.0 },
+                    { "n": 2, "name": names[1], "mute": true, "solo": false, "arm": false, "volume_db": 0.0 },
+                ],
+            })
+        );
+
+        let fields = |state: &Value| state.as_object().map(|map| map.keys().cloned().collect::<Vec<_>>());
+        assert_eq!(fields(&idle_state()), fields(&state));
+
+        // A take reads as recording, and a second one cannot start.
+        editor.start_recording().expect("the take starts on the fake input");
+        let state = project_state(&editor, "100%", 0);
+        assert_eq!(state["transport"], "recording");
+        assert_eq!(state["can_record"], false);
+    }
+
+    /// A moving playhead is published at most every 100 ms; a still one at once.
+    #[test]
+    fn a_moving_playhead_is_limited_to_ten_updates_a_second() {
+        let start = Instant::now();
+        let after = |ms: u64| start + Duration::from_millis(ms);
+        let mut last = None;
+        assert_eq!(limited_playhead(&mut last, 0, true, after(0)), 0);
+        assert_eq!(limited_playhead(&mut last, 16, true, after(16)), 0);
+        assert_eq!(limited_playhead(&mut last, 99, true, after(99)), 0);
+        assert_eq!(limited_playhead(&mut last, 100, true, after(100)), 100);
+        assert_eq!(limited_playhead(&mut last, 120, false, after(120)), 120, "a paused playhead is not held back");
+    }
+
+    /// Turning the Stream Deck setting off removes audio.json; on writes it
+    /// again.
+    #[test]
+    fn the_setting_removes_and_rewrites_the_discovery_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_file = dir.path().join("audio.json");
+        let (mut editor, _project) = test_editor(&[&[]]);
+        editor.set_config_path(dir.path().join("config.json"));
+        let mut remote = Remote::new(Box::new(|| {}), editor.config().stream_deck, Some(dir.path().to_path_buf()));
+        assert!(app_file.exists(), "on by default");
+        assert_eq!(remote.status(), RemoteStatus::Waiting);
+
+        editor.set_stream_deck(false).expect("saved");
+        remote.set_enabled(editor.config().stream_deck);
+        assert!(!app_file.exists(), "off removes audio.json");
+        assert_eq!(remote.status(), RemoteStatus::Off);
+        assert!(!crate::io::config::load_from(&dir.path().join("config.json")).stream_deck, "off is saved");
+
+        editor.set_stream_deck(true).expect("saved");
+        remote.set_enabled(editor.config().stream_deck);
+        assert!(app_file.exists(), "on writes audio.json again");
+        assert_eq!(remote.status(), RemoteStatus::Waiting);
     }
 
     /// track.mute, track.solo and track.arm toggle their track's state.

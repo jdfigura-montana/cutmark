@@ -30,11 +30,12 @@ fn main() -> eframe::Result<()> {
         Box::new(|cc| {
             ui_kit::apply_for(&cc.egui_ctx, crate::app::APPEARANCE);
             ui_kit::chrome::install(cc);
-            // The Stream Deck remote control: start the server at launch and
-            // wake the UI when a command arrives. None when another instance
-            // of the app runs it or it failed to start.
+            // The Stream Deck remote control: unless Preferences turned it
+            // off, start the server at launch and wake the UI when a command
+            // arrives. It runs without a server when another instance of the
+            // app has one or it failed to start.
             let ctx = cc.egui_ctx.clone();
-            let remote = crate::remote::start(Box::new(move || ctx.request_repaint()));
+            let remote = crate::remote::start(Box::new(move || ctx.request_repaint()), crate::io::config::load().stream_deck);
             Ok(Box::new(crate::app::App::with_remote(remote)))
         }),
     )

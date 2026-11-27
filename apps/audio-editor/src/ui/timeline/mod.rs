@@ -304,6 +304,17 @@ fn zoom_readout(spp: f64, fit_spp: f64) -> String {
     }
 }
 
+/// The egui memory key of the zoom readout's text, as last drawn.
+fn zoom_label_id() -> egui::Id {
+    egui::Id::new("timeline_zoom_label")
+}
+
+/// The text the zoom readout showed when it was last drawn; empty before the
+/// timeline was ever drawn.
+pub fn shown_zoom_label(ctx: &egui::Context) -> String {
+    ctx.data(|data| data.get_temp::<String>(zoom_label_id()).unwrap_or_default())
+}
+
 /// Total scrollable span in samples: the larger of project length and visible
 /// width, plus 10 percent extra.
 fn scroll_extent(project_length: u64, visible: u64) -> u64 {
@@ -555,13 +566,9 @@ fn panel_toolbar(ui: &mut egui::Ui, editor: &mut Editor, lane_width: f32) {
             }
             let spp = editor.view.samples_per_pixel;
             let (readout, _) = ui.allocate_exact_size(egui::vec2(ZOOM_READOUT_W, size::SEGMENT_HEIGHT), egui::Sense::hover());
-            ui.painter().text(
-                readout.left_center(),
-                egui::Align2::LEFT_CENTER,
-                zoom_readout(spp, zoom_to_fit(content_length(editor), editor.project.sample_rate, lane_width).0),
-                ui_kit::fonts::mono(typography::VALUE_SIZE),
-                neutral.text_secondary,
-            );
+            let label = zoom_readout(spp, zoom_to_fit(content_length(editor), editor.project.sample_rate, lane_width).0);
+            ui.data_mut(|data| data.insert_temp(zoom_label_id(), label.clone()));
+            ui.painter().text(readout.left_center(), egui::Align2::LEFT_CENTER, label, ui_kit::fonts::mono(typography::VALUE_SIZE), neutral.text_secondary);
             let shown = zoom_to_slider(spp);
             let mut value = shown;
             ui.allocate_ui(egui::vec2(ZOOM_SLIDER_W, size::SEGMENT_HEIGHT), |ui| {

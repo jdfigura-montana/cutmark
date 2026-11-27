@@ -1,6 +1,13 @@
+## AE 1.3 R2b state publishing and Preferences (2026-11-27)
+- `remote.rs`: `Remote` always exists in the running app (`App::remote` is None only in tests); its server is None while the setting is off or the start failed (status "Off"; off then on retries). app.rs calls `set_enabled(config.stream_deck)` before each `poll`.
+- `poll` publishes after the commands; `clear` publishes the no-project state on the start screen. `playhead_ms` is held to one new value per 100 ms while playing or recording. Bin preview and scrub publish "stopped".
+- `zoom_label` is the text the timeline last drew (`timeline::shown_zoom_label`, kept in egui memory), because the percent depends on the lane width.
+- The setting is `AppConfig::stream_deck` in config.json; `Editor::set_stream_deck` saves it without reopening the input.
+- Edit > Preferences... (Ctrl+,, shortcut id `preferences`, so also a remote command) is only on the editor screen and is off while recording, like the rest of the Edit menu.
+- Open, JD hand checks: Preferences look and the three status lines with a device; track keys and dials with live state.
+
 ## ae-1.3 merged into main (2026-11-27)
 - Brought in crates/cutmark-remote, src/remote.rs, help/stream-deck.md and plugins/suite. User-facing text and the bundled profile names now read "CutMark"; the UUID com.cutmark.suite is unchanged.
-- R2b is not built (state publishing, Preferences > Remote control), yet help/stream-deck.md already tells users to open it. Track keys and dial strips need R2b.
 - Open, JD hand checks: install the plugin on a device, including both recased profiles.
 
 ## Brand M2 mark, wordmark and app icons (2026-11-26)
@@ -57,7 +64,7 @@ AE 1.3 R5 DONE: the four Stream Deck+ dials (spec 1.3-StreamDeck.md "Dials"). np
 - `src/actions/dials.ts` (new): ZoomDial (rotate zoom.step {ticks}, press zoom.fit, $B1 title "Zoom" + zoom_label + bar), JogDial (rotate jog.step {ticks, size}, press toggles per-dial fine/coarse, touch tap play_pause, $A1 title = playhead mm:ss.mmm + value "Fine"/"Coarse"), TrackVolumeDial (rotate track.volume.step {ticks, track}, press track.mute {track}, same `track` setting as R4 via ui/track.html + trackNumber(); $B1 title = track name, value = dB text, bar over the fader range -60..+6, value color + bar_fill_c grey #7f7f7f while muted, "No track N" when missing), MarkersDial (rotate marker.step {ticks}, press add_marker, $A1 "Markers" + playhead timecode). UUIDs com.cutmark.suite.audio.dial_zoom/dial_jog/dial_track_volume/dial_markers.
 - SDK 3.0.6 gotchas: setFeedback bar value is a NUMBER in the bar's default range 0..100 (not 0..1); the bar fill color key is `bar_fill_c` (not bar_c); text items take {value, color}; built-in layouts $A1 = title/icon/value, $B1 = title/icon/value/bar (keys "title", "value", "bar"). Manifest encoder action = "Controllers": ["Encoder"] + "Encoder": {"layout": "$B1"|"$A1"}; States with one image still required. zoom_label parsing assumes a percent string ("100%" = fit) per the app's percent-of-Fit readout; playhead ms formatting is local (mm:ss.mmm, minutes can exceed 2 digits).
 - plugin.ts: dials array wired with connection.use and registered together with the keys. Manifest: 4 encoder actions (dial_zoom/dial_jog/dial_track_volume/dial_markers), track volume has PropertyInspectorPath ui/track.html. 8 placeholder SVGs (imgs/actions/dial-zoom|dial-jog|dial-track-volume|dial-markers, icon+key identical).
-- Open for JD on the device: dial rendering depends on R2b state publishing (playhead_ms, zoom_label, tracks[].volume_db) which is not built yet, so strips show defaults until then; the built-in $A1/$B1 layout item keys and bar range (0..100) were taken from the SDK schemas, not a real Stream Deck+.
+- Open for JD on the device: dial rendering with live state; the built-in $A1/$B1 layout item keys and bar range (0..100) were taken from the SDK schemas, not a real Stream Deck+.
 
 
 ## Phase R4 (2026-11-23)
@@ -67,7 +74,7 @@ AE 1.3 R4 DONE: track keys and the Audio command key (spec 1.3-StreamDeck.md "Ke
 - `keys.ts`: TrackMuteKey/TrackSoloKey/TrackArmKey on track.mute/track.solo/track.arm, UUIDs com.cutmark.suite.audio.track_mute/track_solo/track_arm.
 - `src/actions/audio-command.ts` (new): AudioCommandKey (command "", UUID com.cutmark.suite.audio.command). onSendToPlugin answers the sdpi-select `datasource="getCommands"` request (payload `{event, isRefresh}`) via `streamDeck.ui.sendToPropertyInspector({event: "getCommands", items})`; items = welcome command list, or one disabled option "Open the audio editor to load commands" when not running/empty. Title = chosen command's label from conn.commands (falls back to the id), press sends the settings command, alerts only for errors whose id matches a visible key's command (Set of chosen ids, never pruned). hot-reload + show-refresh set in the PI so the user can refill after the app starts (no proactive push implemented).
 - Manifest: 4 new actions with `PropertyInspectorPath` (SDK v2 field, per @elgato/cli template; PI html lives in the sdPlugin's `ui/` folder, sdpi-components v4 script from sdpi-components.dev/releases/v4). `ui/track.html` = sdpi-range setting="track" 1..64 shared by the three track keys; `ui/audio-command.html` = sdpi-select setting="command" datasource="getCommands" loading/hot-reload/show-refresh. On-state icon colors: Mute #5B9DFF (accent), Solo #FFD60A (sem.meter.warn yellow), Arm #FF453A (sem.record), glyphs #0A0A0B on colored states. 12 new placeholder SVGs (imgs/actions/track-mute|track-solo|track-arm|audio-command).
-- Open for JD on the device: track keys need R2b state publishing (`tracks` in the state snapshot; until then they show "No track N"); the Audio command PI fills only from the sendToPlugin reply, so with the app down it shows the fallback until Refresh.
+- Open for JD on the device: track keys with live state; the Audio command PI fills only from the sendToPlugin reply, so with the app down it shows the fallback until Refresh.
 
 ## Phase R3 (2026-11-23)
 AE 1.3 R3 DONE: Stream Deck plugin connection and transport keys (spec Remote-Control.md "Protocol v1" + "Plugin (plugins/suite/)"; 1.3-StreamDeck.md "Keys"). npm run build clean. NOT yet committed when this was written; JD device checks pending (streamdeck link com.cutmark.suite.sdPlugin, then streamdeck restart com.cutmark.suite).

@@ -8,6 +8,7 @@ use crate::editor::Editor;
 use crate::ui::dialogs::audio_settings::AudioSettingsDialog;
 use crate::ui::dialogs::confirm::ConfirmDialog;
 use crate::ui::dialogs::export::ExportDialog;
+use crate::ui::dialogs::preferences::{PreferencesDialog, RemoteStatus};
 use crate::ui::dialogs::project_settings::ProjectSettingsDialog;
 use crate::ui::dialogs::save_as::SaveAsDialog;
 use crate::ui::timeline::ViewMenuAction;
@@ -113,7 +114,7 @@ pub fn menu_bar(
         ui_kit::Menu::new("Edit", |ui| {
             let editor = &mut **editor.borrow_mut();
             let recording = editor.is_recording();
-            ProjectMenu::edit_menu(ui, editor, recording);
+            menu.borrow_mut().edit_menu(ui, editor, recording);
         }),
         ui_kit::Menu::new("Markers", |ui| {
             let editor = &mut **editor.borrow_mut();
@@ -174,6 +175,10 @@ pub struct ProjectMenu {
     export_dialog: Option<ExportDialog>,
     /// True while the Appearance dialog (accent and glass) is open.
     appearance_open: bool,
+    /// Preferences dialog, when open.
+    preferences_dialog: Option<PreferencesDialog>,
+    /// The remote control's status, shown by the Preferences dialog.
+    remote_status: RemoteStatus,
 }
 
 impl ProjectMenu {
@@ -225,7 +230,7 @@ impl ProjectMenu {
     }
 
     /// The Edit menu's items.
-    fn edit_menu(menu: &mut egui::Ui, editor: &mut Editor, recording: bool) {
+    fn edit_menu(&mut self, menu: &mut egui::Ui, editor: &mut Editor, recording: bool) {
         let ctx = menu.ctx().clone();
         ui_kit::menu_check_slot(menu);
         if recording {
@@ -357,6 +362,11 @@ impl ProjectMenu {
         }
         if menu.add(item(&ctx, "Snap", "toggle_snap").checked(editor.view.snap)).clicked() {
             editor.toggle_snap();
+        }
+        menu_sep(menu);
+        if menu.add(item(&ctx, "Preferences...", "preferences")).clicked() {
+            self.open_preferences();
+            menu.close();
         }
     }
 
@@ -503,6 +513,12 @@ impl ProjectMenu {
         if let Some(dialog) = &mut self.export_dialog {
             dialog.show(ctx, editor);
         }
+        if let Some(dialog) = &mut self.preferences_dialog {
+            dialog.show(ctx, editor, self.remote_status);
+            if dialog.is_closed() {
+                self.preferences_dialog = None;
+            }
+        }
         if let Some(dialog) = &mut self.error_dialog {
             dialog.show(ctx);
         }
@@ -512,14 +528,27 @@ impl ProjectMenu {
     }
 
     /// True while one of the menu's dialogs (save error, Save As, Project or
-    /// Audio Settings) is up. The app keeps Esc and Space away from a running
-    /// take then, so closing a dialog never discards a recording.
+    /// Audio Settings, Appearance, Preferences) is up. The app keeps Esc and
+    /// Space away from a running take then, so closing a dialog never discards
+    /// a recording.
     pub fn modal_open(&self) -> bool {
         self.error_dialog.as_ref().is_some_and(|dialog| dialog.open)
             || self.save_as_dialog.is_some()
             || self.settings_dialog.is_some()
             || self.audio_settings_dialog.is_some()
             || self.appearance_open
+            || self.preferences_dialog.is_some()
+    }
+
+    /// Opens the Preferences dialog.
+    pub fn open_preferences(&mut self) {
+        self.preferences_dialog = Some(PreferencesDialog::new_open());
+    }
+
+    /// Sets the remote control's status the Preferences dialog shows; the app
+    /// calls it before it draws the frame.
+    pub fn set_remote_status(&mut self, status: RemoteStatus) {
+        self.remote_status = status;
     }
 
     /// Shows a failed Process menu operation in the error modal, with the
@@ -666,6 +695,7 @@ mod tests {
                 ("Clear Selection", "Escape"),
                 ("Ripple", "R"),
                 ("Snap", "N"),
+                ("Preferences...", "Ctrl+Comma"),
             ],
         ),
         ("Markers", &[("Add Marker", "M"), ("Previous Marker", "Comma"), ("Next Marker", "Period"), ("Delete Marker", "Delete")]),

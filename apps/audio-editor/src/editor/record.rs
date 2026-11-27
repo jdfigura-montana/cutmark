@@ -314,6 +314,17 @@ impl Editor {
         Ok(())
     }
 
+    /// Saves the Stream Deck switch. Unlike `set_config` it leaves the input
+    /// alone, so an armed track and a running take are not touched. An error
+    /// leaves the setting as it was.
+    pub fn set_stream_deck(&mut self, on: bool) -> Result<(), EditorError> {
+        let config = AppConfig { stream_deck: on, ..self.config.clone() };
+        let path = self.config_path.clone().ok_or_else(config::no_config_folder)?;
+        config::save_to(&config, &path)?;
+        self.config = config;
+        Ok(())
+    }
+
     /// Names of the input devices Windows lists. Slow (it probes every
     /// device): call when a dialog opens, not every frame.
     pub fn input_device_names(&self) -> Vec<String> {
@@ -804,9 +815,11 @@ mod tests {
             input_device: Some("Line In".to_string()),
             record_channels: RecordChannels::Stereo,
             latency_offset_ms: 250, // clamped
+            ..AppConfig::default()
         };
         editor.set_config(config).unwrap();
-        let want = AppConfig { input_device: Some("Line In".to_string()), record_channels: RecordChannels::Stereo, latency_offset_ms: 100 };
+        let want =
+            AppConfig { input_device: Some("Line In".to_string()), record_channels: RecordChannels::Stereo, latency_offset_ms: 100, ..AppConfig::default() };
         assert_eq!(editor.config(), &want);
         assert_eq!(config::load_from(&path), want);
         assert!(!editor.dirty, "settings are not part of the project");

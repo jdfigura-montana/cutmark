@@ -13,6 +13,7 @@ use crate::help;
 use crate::ui::bin_panel::{self, BinPanel};
 use crate::ui::dialogs::confirm::{CloseChoice, CloseConfirmDialog, ConfirmDialog, ExportCloseChoice, ExportCloseDialog, RecordCloseChoice, RecordCloseDialog};
 use crate::ui::dialogs::export::{BANNER_SECONDS, ExportBanner};
+use crate::ui::dialogs::preferences::RemoteStatus;
 use crate::ui::master_strip;
 use crate::ui::menu::{HelpMenuAction, ProjectMenu, ProjectMenuAction};
 use crate::ui::start_screen::StartScreen;
@@ -69,6 +70,7 @@ const SHORTCUT_ORDER: &[&str] = &[
     "paste",
     "trim_to_selection",
     "add_marker",
+    "preferences",
     "previous_marker",
     "next_marker",
     "process_gain",
@@ -181,7 +183,7 @@ pub struct App {
     about_open: bool,
     /// True once the first editing frame checked whether to show the tour.
     tour_checked: bool,
-    /// The remote control server, when this instance runs it (spec:
+    /// The remote control; None only in tests (spec:
     /// docs/audio-editor/1.3-StreamDeck.md "App side").
     remote: Option<crate::remote::Remote>,
 }
@@ -211,11 +213,10 @@ impl Default for App {
 }
 
 impl App {
-    /// The running app's `App`: with the remote control server (`None` when
-    /// another instance runs it or it failed to start). Tests use `default`,
+    /// The running app's `App`: with its remote control. Tests use `default`,
     /// which has none.
-    pub fn with_remote(remote: Option<crate::remote::Remote>) -> Self {
-        App { remote, ..Default::default() }
+    pub fn with_remote(remote: crate::remote::Remote) -> Self {
+        App { remote: Some(remote), ..Default::default() }
     }
 }
 
@@ -266,6 +267,7 @@ impl App {
                 opened = start.show(ui, self.start_output.as_deref());
             }
             Screen::Editing(editor) => {
+                self.menu.set_remote_status(self.remote.as_ref().map_or(RemoteStatus::Off, crate::remote::Remote::status));
                 let chosen = Self::show_editor(
                     ui,
                     editor,
@@ -285,8 +287,11 @@ impl App {
                 // text field). Called after the keyboard handling, so a
                 // keyboard press this frame wins over a queued command.
                 if let Some(remote) = self.remote.as_mut() {
+                    // The Preferences switch starts or drops the server.
+                    remote.set_enabled(editor.config().stream_deck);
                     let ctx = ui.ctx().clone();
-                    remote_action = crate::remote::poll(remote, editor, &mut self.menu, &mut self.messages, &mut |editor, menu, id| {
+                    let zoom_label = timeline::shown_zoom_label(&ctx);
+                    remote_action = crate::remote::poll(remote, editor, &mut self.menu, &mut self.messages, &zoom_label, &mut |editor, menu, id| {
                         Self::run_shortcut_action(&ctx, editor, menu, id)
                     });
                 }
@@ -809,6 +814,7 @@ impl App {
                 }
             }
             "save" => menu.save(editor),
+            "preferences" => menu.open_preferences(),
             "delete_selection" => Self::delete_selection(editor),
             "clear_selection" => editor.clear_selection(),
             "toggle_ripple" => editor.toggle_ripple(),

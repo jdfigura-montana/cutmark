@@ -3,7 +3,7 @@ id: stream-deck
 title: Stream Deck
 section: Basics
 order: 40
-keywords: stream deck, elgato, plugin, profile, remote control, controller, dial, keys, deck, hotkeys, external control
+keywords: stream deck, elgato, plugin, profile, remote control, controller, dial, keys, deck, hotkeys, external control, preferences
 context:
 ---
 
@@ -21,8 +21,8 @@ The plugin ships two ready-made layouts: **CutMark Audio MK2** for Stream Deck a
 
 ## Turn on remote control
 
-1. Open CutMark Audio and choose **Preferences** > **Remote control**.
-2. Leave remote control on. The Stream Deck keys and dials follow the app while it runs.
+1. Open a project, then choose **Edit** > **Preferences...** (Ctrl+,) and find **Remote control**.
+2. Leave the **Stream Deck** switch on. It is on by default, and the keys and dials follow the app while it runs. The line under the switch reads **Stream Deck connected**, **Waiting for Stream Deck** or **Off**.
 3. When the app is closed, pressing a key launches it again.
 
 > Tip: The Stream Deck keys follow CutMark Audio only while the Stream Deck app is running.
