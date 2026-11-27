@@ -1,5 +1,5 @@
-//! The logger thread: a 4 ms cursor sampler and a message-only window that receives Raw Input, on
-//! one high priority thread.
+//! The logger thread: a 4 ms cursor sampler, a message-only window that receives Raw Input and the
+//! foreground app hook, on one high priority thread.
 
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::sync::Arc;
@@ -15,24 +15,29 @@ use windows::Win32::System::Threading::{
     THREAD_PRIORITY_HIGHEST, TIMER_ALL_ACCESS,
 };
 use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VIRTUAL_KEY, VK_CONTROL, VK_LCONTROL, VK_LWIN, VK_MENU, VK_RMENU, VK_RWIN, VK_SHIFT};
 use windows::Win32::UI::Input::{
     GetRawInputData, GetRegisteredRawInputDevices, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER, RID_INPUT, RIDEV_INPUTSINK, RIDEV_REMOVE,
-    RIM_TYPEMOUSE, RegisterRawInputDevices,
+    RIM_TYPEKEYBOARD, RIM_TYPEMOUSE, RegisterRawInputDevices,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CURSOR_SHOWING, CURSORINFO, CreateWindowExW, DestroyWindow, DispatchMessageW, GetCursorInfo, GetWindowRect, HCURSOR, HWND_MESSAGE, IsIconic, IsWindow, MSG,
-    MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, QS_ALLINPUT, RI_MOUSE_HWHEEL, RI_MOUSE_WHEEL, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_INPUT,
+    CURSOR_SHOWING, CURSORINFO, CreateWindowExW, DestroyWindow, DispatchMessageW, GetCursorInfo, GetWindowRect, GetWindowThreadProcessId, HCURSOR,
+    HWND_MESSAGE, IsIconic, IsWindow, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, QS_ALLINPUT, RI_KEY_BREAK,
+    RI_MOUSE_HWHEEL, RI_MOUSE_WHEEL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_INPUT,
 };
 use windows::core::{PCWSTR, w};
 
+use super::dedupe::AppDedupe;
 use super::filter::SampleFilter;
+use super::foreground::{ForegroundChange, ForegroundHook};
+use super::keys::chord_key_name;
 use super::render::CursorReader;
 use super::shape::{Resolved, ShapeCache};
 use super::{
-    CaptureSource, CursorSample, DisplayInfo, GeometryChange, GeometryEvent, InputEvent, InputOptions, InputStartInfo, MouseAction, MouseButton, MouseEvent,
-    ScreenRect,
+    CaptureSource, CursorSample, DisplayInfo, GeometryChange, GeometryEvent, InputEvent, InputOptions, InputStartInfo, Modifiers, MouseAction, MouseButton,
+    MouseEvent, ScreenRect,
 };
+use crate::app_list::{process_description, process_exe};
 use crate::monitor::monitor_dpi;
 use crate::{CaptureError, list_monitors, qpc_frequency, qpc_now, qpc_now_100ns, with_context};
 
@@ -49,11 +54,12 @@ const CHANNEL_CAPACITY: usize = 4096;
 const MESSAGES_PER_PASS: usize = 64;
 /// The cursor base size when the setting was never changed.
 const DEFAULT_CURSOR_SIZE: u32 = 32;
-/// HID usage page and usage of a mouse.
+/// HID usage page, and the usages of a mouse and a keyboard.
 const USAGE_PAGE_GENERIC: u16 = 0x01;
 const USAGE_MOUSE: u16 = 0x02;
+const USAGE_KEYBOARD: u16 = 0x06;
 
-/// Raw Input allows one mouse registration per process, so only one logger may run.
+/// Raw Input allows one registration per device kind in a process, so only one logger may run.
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Holds the one logger slot; dropping it frees the slot.
@@ -135,7 +141,7 @@ impl InputLogger {
     }
 
     /// How many sends the full queue refused. Samples, shapes and geometry are offered again;
-    /// mouse events are lost.
+    /// mouse, chord and app events are lost.
     pub fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
     }
@@ -195,10 +201,15 @@ impl Outbox {
     }
 }
 
-/// Everything the logger thread owns. Field order matters: the Raw Input registration is undone
-/// before its target window is destroyed.
+/// Everything the logger thread owns. Field order matters: the Raw Input registrations are undone
+/// before their target window is destroyed.
 struct Worker {
-    _raw_mouse: Option<RawMouse>,
+    _raw_mouse: Option<RawRegistration>,
+    /// Some only when keyboard shortcuts are logged.
+    raw_keyboard: Option<RawRegistration>,
+    /// Some only when app switches are logged.
+    foreground: Option<ForegroundHook>,
+    apps: AppDedupe,
     _window: MessageWindow,
     timer: OwnedHandle,
     outbox: Outbox,
@@ -231,7 +242,9 @@ impl Worker {
         }
         let timer = create_timer()?;
         let window = MessageWindow::new()?;
-        let raw_mouse = if options.clicks { Some(RawMouse::register(window.0)?) } else { None };
+        let raw_mouse = if options.clicks { Some(RawRegistration::register(USAGE_MOUSE, window.0)?) } else { None };
+        let raw_keyboard = if options.keys { Some(RawRegistration::register(USAGE_KEYBOARD, window.0)?) } else { None };
+        let foreground = if options.apps { Some(ForegroundHook::set()?) } else { None };
         let displays = read_displays()?;
         let start_info = InputStartInfo { qpc_frequency: frequency, cursor_size: cursor_size(), displays: displays.clone() };
         let target = match options.source {
@@ -240,6 +253,9 @@ impl Worker {
         };
         let worker = Self {
             _raw_mouse: raw_mouse,
+            raw_keyboard,
+            foreground,
+            apps: AppDedupe::default(),
             _window: window,
             timer,
             outbox,
@@ -373,9 +389,14 @@ impl Worker {
             // DefWindowProc release the raw input data.
             unsafe { DispatchMessageW(&message) };
         }
+        // The foreground hook's callback runs inside PeekMessageW.
+        let changes = self.foreground.as_ref().map(ForegroundHook::take).unwrap_or_default();
+        for change in changes {
+            self.app_switch(change);
+        }
     }
 
-    /// Handles one Raw Input message: sends its button and wheel events with the latest position.
+    /// Handles one Raw Input message from the mouse or the keyboard.
     #[allow(unsafe_code)]
     fn raw_input(&mut self, input: HRAWINPUT) {
         let qpc = qpc_now();
@@ -384,12 +405,25 @@ impl Worker {
         let header = std::mem::size_of::<RAWINPUTHEADER>() as u32;
         // SAFETY: raw is a writable buffer of `size` bytes.
         let written = unsafe { GetRawInputData(input, RID_INPUT, Some((&raw mut raw).cast()), &mut size, header) };
-        if written == u32::MAX || raw.header.dwType != RIM_TYPEMOUSE.0 {
+        if written == u32::MAX {
             return;
         }
-        // SAFETY: the type says the mouse member is the one filled in.
-        let buttons = unsafe { raw.data.mouse.Anonymous.Anonymous };
-        let mut actions = mouse_actions(buttons.usButtonFlags, buttons.usButtonData).peekable();
+        if raw.header.dwType == RIM_TYPEMOUSE.0 {
+            // SAFETY: the type says the mouse member is the one filled in.
+            let buttons = unsafe { raw.data.mouse.Anonymous.Anonymous };
+            self.mouse_input(qpc, buttons.usButtonFlags, buttons.usButtonData);
+        } else if raw.header.dwType == RIM_TYPEKEYBOARD.0 && self.raw_keyboard.is_some() {
+            // SAFETY: the type says the keyboard member is the one filled in.
+            let key = unsafe { raw.data.keyboard };
+            if u32::from(key.Flags) & RI_KEY_BREAK == 0 {
+                self.key_down(qpc, key.VKey);
+            }
+        }
+    }
+
+    /// Sends a packet's button and wheel events with the latest position.
+    fn mouse_input(&mut self, qpc: i64, flags: u16, data: u16) {
+        let mut actions = mouse_actions(flags, data).peekable();
         // Plain movement carries no buttons; the sampler covers it.
         if actions.peek().is_none() {
             return;
@@ -399,6 +433,33 @@ impl Worker {
         let (x, y) = self.position;
         for action in actions {
             self.outbox.send(InputEvent::Mouse(MouseEvent { qpc, x, y, action }));
+        }
+    }
+
+    /// Sends a chord when the key down is a shortcut. Any other key is dropped here: it is not
+    /// stored, queued or written to the application log.
+    fn key_down(&self, qpc: i64, vk: u16) {
+        let modifiers = held_modifiers();
+        let altgr = key_held(VK_RMENU) && key_held(VK_LCONTROL);
+        if let Some(name) = chord_key_name(vk, modifiers, altgr) {
+            self.outbox.send(InputEvent::Chord { qpc, modifiers, key_name: name.to_owned() });
+        }
+    }
+
+    /// Sends an app event when the new foreground window belongs to another app. A window whose
+    /// process cannot be opened is skipped.
+    fn app_switch(&mut self, change: ForegroundChange) {
+        let Some(pid) = window_process(change.window) else { return };
+        let Some((exe, path)) = process_exe(pid) else {
+            log::debug!("could not read the foreground app's executable");
+            return;
+        };
+        if !self.apps.wants(&exe) {
+            return;
+        }
+        let display_name = process_description(&path).unwrap_or_else(|| exe.clone());
+        if self.outbox.send(InputEvent::App { qpc: change.qpc, exe: exe.clone(), display_name }) {
+            self.apps.sent(exe);
         }
     }
 
@@ -423,6 +484,27 @@ impl Worker {
     fn send_geometry(&self, change: GeometryChange) -> bool {
         self.outbox.send(InputEvent::Geometry(GeometryEvent { qpc: qpc_now(), change }))
     }
+}
+
+/// Whether a key is down right now. Windows is asked at each key down instead of tracking key up
+/// events: one lost on the lock screen would leave a modifier stuck, and typing would be logged.
+#[allow(unsafe_code)]
+fn key_held(key: VIRTUAL_KEY) -> bool {
+    // SAFETY: plain call with a value argument. The sign bit means the key is down.
+    unsafe { GetAsyncKeyState(i32::from(key.0)) < 0 }
+}
+
+fn held_modifiers() -> Modifiers {
+    Modifiers { ctrl: key_held(VK_CONTROL), alt: key_held(VK_MENU), shift: key_held(VK_SHIFT), win: key_held(VK_LWIN) || key_held(VK_RWIN) }
+}
+
+/// The process that owns a window; None when the window is gone.
+#[allow(unsafe_code)]
+fn window_process(window: isize) -> Option<u32> {
+    let mut pid = 0u32;
+    // SAFETY: the call accepts any value, and pid is a local out parameter.
+    unsafe { GetWindowThreadProcessId(HWND(window as *mut core::ffi::c_void), Some(&mut pid)) };
+    (pid != 0).then_some(pid)
 }
 
 /// The button and wheel events in one Raw Input mouse packet.
@@ -489,32 +571,33 @@ impl Drop for MessageWindow {
     }
 }
 
-/// The Raw Input mouse registration. A process has only one per device kind, and a UI framework may
-/// already hold it, so drop puts the earlier registration back.
-struct RawMouse {
+/// A Raw Input registration for one device kind. A process has only one per kind, and a UI
+/// framework may already hold it, so drop puts the earlier registration back.
+struct RawRegistration {
+    usage: u16,
     previous: Option<RAWINPUTDEVICE>,
 }
 
-impl RawMouse {
-    /// Delivers mouse input to `window`, also while other apps have the focus.
-    fn register(window: HWND) -> Result<Self, CaptureError> {
-        let previous = registered_mouse();
-        let device = RAWINPUTDEVICE { usUsagePage: USAGE_PAGE_GENERIC, usUsage: USAGE_MOUSE, dwFlags: RIDEV_INPUTSINK, hwndTarget: window };
-        with_context("failed to register for raw mouse input", register_device(device))?;
-        Ok(Self { previous })
+impl RawRegistration {
+    /// Delivers the device's input to `window`, also while other apps have the focus.
+    fn register(usage: u16, window: HWND) -> Result<Self, CaptureError> {
+        let previous = registered_device(usage);
+        let device = RAWINPUTDEVICE { usUsagePage: USAGE_PAGE_GENERIC, usUsage: usage, dwFlags: RIDEV_INPUTSINK, hwndTarget: window };
+        with_context("failed to register for raw input", register_device(device))?;
+        Ok(Self { usage, previous })
     }
 }
 
-impl Drop for RawMouse {
+impl Drop for RawRegistration {
     fn drop(&mut self) {
         if let Some(previous) = self.previous
             && register_device(previous).is_ok()
         {
             return;
         }
-        let remove = RAWINPUTDEVICE { usUsagePage: USAGE_PAGE_GENERIC, usUsage: USAGE_MOUSE, dwFlags: RIDEV_REMOVE, hwndTarget: HWND::default() };
+        let remove = RAWINPUTDEVICE { usUsagePage: USAGE_PAGE_GENERIC, usUsage: self.usage, dwFlags: RIDEV_REMOVE, hwndTarget: HWND::default() };
         if let Err(err) = register_device(remove) {
-            log::warn!("could not remove the raw mouse input registration: {err}");
+            log::warn!("could not remove a raw input registration: {err}");
         }
     }
 }
@@ -525,9 +608,9 @@ fn register_device(device: RAWINPUTDEVICE) -> windows::core::Result<()> {
     unsafe { RegisterRawInputDevices(&[device], std::mem::size_of::<RAWINPUTDEVICE>() as u32) }
 }
 
-/// The process's current Raw Input mouse registration, if any.
+/// The process's current Raw Input registration for a device kind, if any.
 #[allow(unsafe_code)]
-fn registered_mouse() -> Option<RAWINPUTDEVICE> {
+fn registered_device(usage: u16) -> Option<RAWINPUTDEVICE> {
     let size = std::mem::size_of::<RAWINPUTDEVICE>() as u32;
     let mut count = 0u32;
     // SAFETY: with no buffer the call only writes the number of registrations.
@@ -541,7 +624,7 @@ fn registered_mouse() -> Option<RAWINPUTDEVICE> {
     if written == u32::MAX {
         return None;
     }
-    devices.into_iter().take(written as usize).find(|device| device.usUsagePage == USAGE_PAGE_GENERIC && device.usUsage == USAGE_MOUSE)
+    devices.into_iter().take(written as usize).find(|device| device.usUsagePage == USAGE_PAGE_GENERIC && device.usUsage == usage)
 }
 
 /// The visible frame of a window, without the invisible resize border; None while it is minimized

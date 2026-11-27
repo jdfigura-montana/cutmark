@@ -48,8 +48,8 @@ pub use convert::Nv12Converter;
 #[cfg(windows)]
 pub use gpu::{AdapterInfo, Gpu, list_adapters};
 pub use input::{
-    CaptureSource, CursorSample, CursorShape, DisplayInfo, GeometryChange, GeometryEvent, InputEvent, InputLogger, InputOptions, InputStartInfo, MouseAction,
-    MouseButton, MouseEvent, ScreenRect, ShapeFrame,
+    CaptureSource, CursorSample, CursorShape, DisplayInfo, GeometryChange, GeometryEvent, InputEvent, InputLogger, InputOptions, InputStartInfo, Modifiers,
+    MouseAction, MouseButton, MouseEvent, ScreenRect, ShapeFrame,
 };
 #[cfg(windows)]
 pub use monitor::{MonitorInfo, list_monitors};

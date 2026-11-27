@@ -1,15 +1,22 @@
-//! The input logger: cursor samples, cursor shapes, mouse buttons and wheel, and geometry changes,
-//! all stamped on the same QPC clock as capture.
+//! The input logger: cursor samples, cursor shapes, mouse buttons and wheel, keyboard shortcuts,
+//! foreground app changes and geometry changes, all stamped on the same QPC clock as capture.
 //!
-//! See the input track spec: Recording, items 1 to 4 and 7. Positions and rectangles are physical
-//! virtual desktop pixels (Per-Monitor DPI Aware v2).
+//! See the input track spec: Recording, items 1 to 7. Positions and rectangles are physical
+//! virtual desktop pixels (Per-Monitor DPI Aware v2). Nothing typed is recorded, and window titles
+//! are never read.
 
-// The logger that drives the filter and the shape cache exists only on Windows.
+// The logger that drives the filters and the shape cache exists only on Windows.
+#[cfg_attr(not(windows), allow(dead_code))]
+mod dedupe;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod filter;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod keys;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod shape;
 
+#[cfg(windows)]
+mod foreground;
 #[cfg(windows)]
 mod logger;
 #[cfg(windows)]
@@ -56,6 +63,17 @@ pub struct InputOptions {
     pub source: CaptureSource,
     /// Whether to log mouse buttons and the wheel.
     pub clicks: bool,
+    /// Whether to log keyboard shortcuts. Opt-in; while false the keyboard is not read at all.
+    pub keys: bool,
+    /// Whether to log which app comes to the foreground.
+    pub apps: bool,
+}
+
+impl InputOptions {
+    /// The default settings for a source: clicks and app switches on, keyboard shortcuts off.
+    pub fn new(source: CaptureSource) -> Self {
+        Self { source, clicks: true, keys: false, apps: true }
+    }
 }
 
 /// One monitor in the display layout.
@@ -170,6 +188,19 @@ pub struct MouseEvent {
     pub action: MouseAction,
 }
 
+/// The modifier keys held during a shortcut, left or right.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Modifiers {
+    /// A Ctrl key.
+    pub ctrl: bool,
+    /// An Alt key.
+    pub alt: bool,
+    /// A Shift key.
+    pub shift: bool,
+    /// A Windows key.
+    pub win: bool,
+}
+
 /// What changed on screen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GeometryChange {
@@ -199,6 +230,25 @@ pub enum InputEvent {
     Mouse(MouseEvent),
     /// A window rectangle or display layout change.
     Geometry(GeometryEvent),
+    /// A keyboard shortcut went down: Ctrl, Alt or Win with a key, or F1 to F24. A held key
+    /// repeats as the keyboard does.
+    Chord {
+        /// QPC stamp taken when the key was read.
+        qpc: i64,
+        /// The modifiers held with the key.
+        modifiers: Modifiers,
+        /// The virtual key's name, for example S, F5 or Tab.
+        key_name: String,
+    },
+    /// Another app came to the foreground.
+    App {
+        /// QPC stamp taken when Windows reported the change.
+        qpc: i64,
+        /// The executable's file name in lowercase.
+        exe: String,
+        /// The executable's file description, else the file name.
+        display_name: String,
+    },
 }
 
 #[cfg(all(test, windows))]
@@ -209,18 +259,20 @@ mod tests {
 
     use super::{CaptureSource, InputEvent, InputLogger, InputOptions, MouseAction, ScreenRect};
 
-    /// Hand test: move the mouse, click, scroll and hover over text and links while it runs.
+    /// Hand test: move the mouse, click, scroll, hover over text and links, press shortcuts, type
+    /// some text (none of it may print) and switch between apps while it runs. Add `--nocapture`.
     #[test]
-    #[ignore = "reads real input for 5 seconds; run by hand"]
+    #[ignore = "reads real input for 15 seconds; run by hand"]
     fn input_hand_test() {
         // The recorder is Per-Monitor DPI aware; the test process must be too, for true DPI values.
         // SAFETY: a plain call made before any window or DPI dependent work in this process.
         #[allow(unsafe_code)]
         let _ = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
-        let options = InputOptions { source: CaptureSource::Monitor(ScreenRect::default()), clicks: true };
+        let options = InputOptions { keys: true, ..InputOptions::new(CaptureSource::Monitor(ScreenRect::default())) };
         let mut logger = InputLogger::start(options).unwrap();
         println!("start: {:?}", logger.start_info());
-        println!("logging for 5 s: move, click, scroll, and hover over text, links and window edges");
+        println!("logging for 15 s: move, click, scroll, hover over text, links and window edges,");
+        println!("press shortcuts such as Ctrl+S, F5 and Alt+Tab, type a sentence, and switch apps");
         let (mut samples, mut downs, mut ups, mut wheels, mut geometry) = (0u32, 0u32, 0u32, 0u32, 0u32);
         let mut shapes = Vec::new();
         let mut count = |event: InputEvent| match event {
@@ -232,8 +284,10 @@ mod tests {
                 MouseAction::Wheel(_) | MouseAction::HorizontalWheel(_) => wheels += 1,
             },
             InputEvent::Geometry(_) => geometry += 1,
+            InputEvent::Chord { modifiers, key_name, .. } => println!("chord: {key_name} with {modifiers:?}"),
+            InputEvent::App { exe, display_name, .. } => println!("app: {exe} ({display_name})"),
         };
-        let end = Instant::now() + Duration::from_secs(5);
+        let end = Instant::now() + Duration::from_secs(15);
         while Instant::now() < end {
             if let Ok(event) = logger.receiver().recv_timeout(Duration::from_millis(50)) {
                 count(event);

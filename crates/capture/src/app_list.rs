@@ -227,6 +227,17 @@ unsafe extern "system" fn collect_window_process(window: HWND, pids: LPARAM) -> 
     BOOL::from(true)
 }
 
+/// A process's executable: its file name in lowercase and its full path.
+pub(crate) fn process_exe(pid: u32) -> Option<(String, String)> {
+    let path = ProcessHandle::open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?.image_path()?;
+    Some((normalize_exe_name(&path), path))
+}
+
+/// The display name an executable declares; None when it has none.
+pub(crate) fn process_description(path: &str) -> Option<String> {
+    file_description(path)
+}
+
 /// The FileDescription of an executable's version resource; None when it has none.
 fn file_description(path: &str) -> Option<String> {
     let block = version_block(&HSTRING::from(path))?;
