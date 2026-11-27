@@ -14,3 +14,4 @@
 plugins/suite/node_modules/
 plugins/suite/com.cutmark.suite.sdPlugin/bin/
 plugins/suite/com.cutmark.suite.sdPlugin/logs/
+plugins/suite/*.streamDeckPlugin
