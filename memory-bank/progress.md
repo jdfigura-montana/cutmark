@@ -1,6 +1,9 @@
 # Progress
 
 ## Done
+- Recorder Phase 11 I6b (2026-11-27): a recording or the replay buffer turning on cancels a running bake, and the Review preview uses the stream's colour standard (BT.709 for untagged HD). cargo test cutmark-recorder 441 passed, media-io 66 passed; fmt + clippy clean. check.ps1, release build and a real-app run not done. Details in activeContext.md.
+- Recorder Phase 11 I6: Review draws the cursor and Bake with cursor writes `{stem}.baked.mp4` (commit 7b25100; no test results recorded in the commit). Details in activeContext.md.
+- Recorder Phase 11 I5: crates/cursor-render (commit 19f48e9; no test results recorded in the commit). Details in activeContext.md.
 - Recorder Phase 11 I4b (2026-11-27): the app in front starts every input track, a take's events file waits for its first video frame, gen_notices.py exception removed (neither notices file changed). 429 recorder tests, 17 events tests and clippy passed; check.ps1, release build and a real recording not run. Details in activeContext.md.
 - Recorder Phase 11 I4 (2026-11-27): cursor settings, Tutorial preset, input logger with takes and the replay buffer, file group, failure toasts. 427 recorder tests and clippy passed; check.ps1, release build and a real recording not run. Details in activeContext.md.
 - Recorder Phase 11 I3 (2026-11-27): crates/events, the input track file writer and reader. 17 tests and clippy passed; check.ps1 not run. Details in activeContext.md.
