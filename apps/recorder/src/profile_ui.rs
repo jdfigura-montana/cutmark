@@ -178,6 +178,54 @@ impl AmfProbe {
     }
 }
 
+/// The tooltip of a locked control when the replay buffer is the reason.
+pub(crate) const REPLAY_LOCK_TIP: &str = "Turn off the replay buffer to change this";
+
+/// The kinds of control the window lock tells apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Control {
+    /// A profile field, the profile picker or a profile action.
+    Profile,
+    /// A track list change (add, remove, enable, source) or a track or output setting fixed for a take.
+    TrackList,
+    /// A control that works on a running capture, such as gain and mute.
+    Live,
+}
+
+/// Why the window may be locked: a take, the replay buffer, both or neither.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Lock {
+    /// A take is running, or anything else that locks the same controls.
+    pub recording: bool,
+    /// The replay buffer is on.
+    pub replay_on: bool,
+}
+
+impl Lock {
+    /// Whether a control is locked now.
+    pub(crate) fn locks(self, control: Control) -> bool {
+        control != Control::Live && (self.recording || self.replay_on)
+    }
+
+    /// The replay tooltip, only when turning the buffer off would unlock: a take locks by itself.
+    pub(crate) fn replay_tip(self) -> Option<&'static str> {
+        (self.replay_on && !self.recording).then_some(REPLAY_LOCK_TIP)
+    }
+
+    /// Adds controls of one kind in a scope that is disabled while they are locked, with the replay
+    /// tooltip. `available` is false when something else disables them; then the tooltip is left out.
+    pub(crate) fn scope(self, ui: &mut Ui, control: Control, available: bool, add: impl FnOnce(&mut Ui)) {
+        let locked = self.locks(control);
+        let response = ui.add_enabled_ui(available && !locked, add).response;
+        if available
+            && locked
+            && let Some(tip) = self.replay_tip()
+        {
+            response.on_disabled_hover_text(tip);
+        }
+    }
+}
+
 /// The Profile section: the state of its widgets. The profiles themselves live in the [`ProfileStore`].
 pub struct ProfileSection {
     /// The encoder probe.
@@ -275,14 +323,14 @@ impl ProfileSection {
     }
 
     /// Draws the Output tool's groups (spec "Setup mode"): the Profile actions, the Encode group
-    /// and the Format group. Everything is disabled while a take runs, as the profiles are today.
+    /// and the Format group. Everything is disabled while `lock` locks the profile.
     pub fn output_panel(
         &mut self,
         ui: &mut Ui,
         store: &mut ProfileStore,
         settings: &mut Settings,
         source: (u32, u32),
-        recording: bool,
+        lock: Lock,
         outcome: &mut ProfileOutcome,
     ) {
         if self.ensure_active(store, settings) {
@@ -297,12 +345,12 @@ impl ProfileSection {
         if let Some(problem) = self.problem.as_deref().or_else(|| store.save_error()) {
             ui.colored_label(error, problem);
         }
-        ui.add_enabled_ui(!recording, |ui| {
+        lock.scope(ui, Control::Profile, true, |ui| {
             self.profile_group(ui, store, settings, outcome);
             ui.add_space(space::SCALE_8);
-            self.edit_fields(ui, store, settings, source, audio, recording);
+            self.edit_fields(ui, store, settings, source, audio, lock);
         });
-        if recording {
+        if lock.recording {
             ui.colored_label(color::TEXT_TERTIARY, "Profile settings are locked while recording");
         }
     }
@@ -446,12 +494,12 @@ impl ProfileSection {
 
     /// Draws the Encode and Format groups for the active profile and writes its edits after the debounce.
     /// Draws the Encode and Format groups for the active profile and writes its edits after the debounce.
-    fn edit_fields(&mut self, ui: &mut Ui, store: &mut ProfileStore, settings: &Settings, source: (u32, u32), audio: AudioCodec, recording: bool) {
+    fn edit_fields(&mut self, ui: &mut Ui, store: &mut ProfileStore, settings: &Settings, source: (u32, u32), audio: AudioCodec, lock: Lock) {
         let ctx = ui.ctx().clone();
         let Some(original) = store.get(&settings.active_profile).cloned() else { return };
         let mut p = original.clone();
         let size = effective_size(&p, source);
-        if !recording {
+        if !lock.locks(Control::Profile) {
             self.probe.update(&ctx, (size.0, size.1, p.fps));
         }
         let errors = validate(&p, size, audio, &self.probe);
@@ -632,15 +680,14 @@ fn composite_control(layout: LayoutKind, mode: CompositeMode) -> (bool, &'static
 }
 
 /// The Composite group of the Output tool: whether the camera is baked into the main video or only
-/// recorded to its own file. Disabled outside Picture in picture and, like every profile field,
-/// while recording.
-pub(crate) fn composite_group(ui: &mut Ui, store: &mut ProfileStore, profile_name: &str, recording: bool) {
+/// recorded to its own file. Disabled outside Picture in picture and while `lock` locks the profile.
+pub(crate) fn composite_group(ui: &mut Ui, store: &mut ProfileStore, profile_name: &str, lock: Lock) {
     let Some(profile) = store.get(profile_name) else { return };
     let (layout, saved) = (profile.layout, profile.composite_mode);
     let mut mode = saved;
     inspector_group(ui, |ui| {
         let (offered, _) = composite_control(layout, mode);
-        ui.add_enabled_ui(offered && !recording, |ui| {
+        lock.scope(ui, Control::Profile, offered, |ui| {
             inspector_row(
                 ui,
                 "Composite",

@@ -24,7 +24,7 @@ use crate::platform;
 use crate::playback::Playback;
 use crate::preflight_ui::PreflightSection;
 use crate::preview_ui::PreviewView;
-use crate::profile_ui::{self, ProfileOutcome, ProfileSection};
+use crate::profile_ui::{self, Control, Lock, ProfileOutcome, ProfileSection};
 use crate::profiles::ProfileStore;
 use crate::record_ui;
 use crate::recovery::{self, RecoveryReport};
@@ -924,7 +924,7 @@ impl RecorderApp {
         group_caption(ui, "Video");
         let fps = self.profile_store.get(&self.settings.active_profile).map(|profile| profile.fps);
         display_source_row(ui, self.source_size, fps);
-        self.camera_source_row(ui);
+        self.camera_source_row(ui, Lock { recording: state.phase.has_take(), replay_on: state.replay_on });
         ui.add_space(space::SCALE_8);
         group_caption(ui, "Audio");
         let live = if state.phase.has_take() { Some(&self.live_tracks) } else { None };
@@ -933,7 +933,7 @@ impl RecorderApp {
 
     /// The camera row of the video group: the camera's name, its format and a status dot;
     /// clicking it opens the Camera tool's Camera and Format pickers as a popover.
-    fn camera_source_row(&mut self, ui: &mut egui::Ui) {
+    fn camera_source_row(&mut self, ui: &mut egui::Ui, lock: Lock) {
         let (name, values, ok) = match self.webcam.settings(&self.profile_store) {
             Some(settings) => {
                 let present = self.webcam.cameras().iter().any(|camera| camera.id == settings.camera_id);
@@ -950,8 +950,10 @@ impl RecorderApp {
         };
         let response = source_row(ui, ui_kit::icons::regular::CAMERA, &name, &values, ok);
         egui::Popup::menu(&response).width(320.0).show(|ui| {
-            tools_ui::camera_row(ui, &mut self.webcam, &mut self.profile_store);
-            tools_ui::format_row(ui, &mut self.webcam, &mut self.profile_store);
+            lock.scope(ui, Control::Profile, true, |ui| {
+                tools_ui::camera_row(ui, &mut self.webcam, &mut self.profile_store);
+                tools_ui::format_row(ui, &mut self.webcam, &mut self.profile_store);
+            });
         });
     }
 
@@ -959,6 +961,7 @@ impl RecorderApp {
     /// vertical ScrollArea (the ui-kit overlay scrollbar comes from ui_kit::apply's global scroll style).
     fn settings_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, state: &ControllerState) {
         let active = state.phase.has_take();
+        let lock = Lock { recording: active, replay_on: state.replay_on };
         let items = tools_ui::strip_items();
         let mut tool = self.tool;
         let strip = ui_kit::tool_strip(ui, &mut tool, &items);
@@ -975,25 +978,33 @@ impl RecorderApp {
             ui.set_max_width(ui.available_width());
             match self.tool {
                 Tool::Camera => {
-                    tools_ui::camera_panel(ui, &mut self.webcam, &mut self.profile_store, active, state, &self.controller.sender(), &mut self.key_ui);
+                    tools_ui::camera_panel(
+                        ui,
+                        &mut self.webcam,
+                        &mut self.profile_store,
+                        lock.locks(Control::Profile),
+                        state,
+                        &self.controller.sender(),
+                        &mut self.key_ui,
+                    );
                 }
                 Tool::Key => {
                     let picked = webcam_ui::camera_picture(ui, &mut self.webcam, self.key_ui.eyedropper);
                     key_ui::key_panel(ui, &self.webcam, &mut self.profile_store, state, &mut self.key_ui, picked.as_ref());
                 }
-                Tool::Layout => layout_ui::show(ui, &mut self.profile_store, &self.settings.active_profile, active),
+                Tool::Layout => layout_ui::show(ui, &mut self.profile_store, &self.settings.active_profile, lock),
                 Tool::Output => {
                     let mut outcome = ProfileOutcome::default();
-                    self.profile_section.output_panel(ui, &mut self.profile_store, &mut self.settings, self.source_size, active, &mut outcome);
+                    self.profile_section.output_panel(ui, &mut self.profile_store, &mut self.settings, self.source_size, lock, &mut outcome);
                     self.on_profile_outcome(&outcome);
                     ui.add_space(space::SCALE_8);
-                    profile_ui::composite_group(ui, &mut self.profile_store, &self.settings.active_profile, active);
+                    profile_ui::composite_group(ui, &mut self.profile_store, &self.settings.active_profile, lock);
                     ui.add_space(space::SCALE_8);
-                    webcam_ui::iso_group(ui, &self.webcam, &mut self.profile_store, active, &state.active_profile);
+                    webcam_ui::iso_group(ui, &self.webcam, &mut self.profile_store, lock, &state.active_profile);
                 }
                 Tool::Audio => {
                     let live_tracks = if active { Some(&self.live_tracks) } else { None };
-                    let changed = tracks_ui::audio_panel(ui, &mut self.settings.audio, &self.devices, &mut self.app_sources, live_tracks, active);
+                    let changed = tracks_ui::audio_panel(ui, &mut self.settings.audio, &self.devices, &mut self.app_sources, live_tracks, lock);
                     self.push_settings_if_changed();
                     self.on_tracks_changed(ctx, changed);
                     if active {
@@ -1019,7 +1030,7 @@ impl RecorderApp {
                 ui.add_space(space::SCALE_8);
             }
             let mut outcome = ProfileOutcome::default();
-            app.preview_toolbar(ui, active, &mut outcome);
+            app.preview_toolbar(ui, Lock { recording: active, replay_on: state.replay_on }, &mut outcome);
             ui.add_space(space::SCALE_8);
             app.show_preview(ui);
             app.on_profile_outcome(&outcome);
@@ -1049,7 +1060,7 @@ impl RecorderApp {
 
     /// The preview panel's toolbar: the Profile caption and picker, a separator, and the
     /// Preview and Matte view chips.
-    fn preview_toolbar(&mut self, ui: &mut egui::Ui, active: bool, outcome: &mut ProfileOutcome) {
+    fn preview_toolbar(&mut self, ui: &mut egui::Ui, lock: Lock, outcome: &mut ProfileOutcome) {
         let key_on = self.webcam.settings(&self.profile_store).is_some_and(|settings| settings.key.enabled);
         let profile = self.profile_store.get(&self.settings.active_profile);
         let clean = profile.is_some_and(|profile| profile.effective_composite_mode() == CompositeMode::Clean);
@@ -1061,7 +1072,7 @@ impl RecorderApp {
                     .selectable(false),
             );
             ui.add_space(space::SCALE_8);
-            ui.add_enabled_ui(!active, |ui| {
+            lock.scope(ui, Control::Profile, true, |ui| {
                 self.profile_section.picker(ui, &mut self.profile_store, &mut self.settings, outcome);
             });
             ui.separator();

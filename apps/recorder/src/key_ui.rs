@@ -12,6 +12,7 @@ use ui_kit::{SliderKind, inspector_group, inspector_row, switch};
 use crate::config::KeyConfig;
 use crate::engine::controller::{ControllerState, Phase};
 use crate::preview_ui::Pick;
+use crate::profile_ui::{Control, Lock};
 use crate::profiles::ProfileStore;
 use crate::webcam::WebcamHost;
 
@@ -35,21 +36,28 @@ impl KeyUiState {
     }
 }
 
-/// True while nothing records, counts down, runs a pre-flight or runs a sync test, the only time the matte view may be on.
+/// True while nothing records, counts down, runs a pre-flight or runs a sync test and the replay buffer
+/// is off, the only time the matte view may be on.
 pub fn is_idle(state: &ControllerState) -> bool {
-    state.phase == Phase::Idle && state.preflight.is_none() && state.sync_test.is_none()
+    !key_lock(state).locks(Control::Profile)
+}
+
+/// What locks the Key tool: anything that runs, or the replay buffer.
+fn key_lock(state: &ControllerState) -> Lock {
+    let busy = state.phase != Phase::Idle || state.preflight.is_some() || state.sync_test.is_some();
+    Lock { recording: busy, replay_on: state.replay_on }
 }
 
 /// Draws the Key tool's groups: Chroma key, Garbage crop and Mask rectangle (spec "Setup mode").
 ///
 /// `picked` is the spot the user clicked on the camera picture this frame, if any. The groups are
-/// read-only while a take runs, because a take uses the profile as it was when it started; a group
+/// read-only while a take or the replay buffer runs, because both use the profile as it was at their start; a group
 /// whose switch is off shows its rows disabled, not hidden.
 pub fn key_panel(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, state: &ControllerState, key_state: &mut KeyUiState, picked: Option<&Pick>) {
     let Some(saved) = host.settings(store).map(|settings| settings.key.clone()) else { return };
     let idle = is_idle(state);
     let mut key = saved.clone();
-    ui.add_enabled_ui(idle, |ui| {
+    key_lock(state).scope(ui, Control::Profile, true, |ui| {
         chroma_group(ui, &mut key, key_state, picked);
         ui.add_space(space::SCALE_8);
         crop_group(ui, &mut key);

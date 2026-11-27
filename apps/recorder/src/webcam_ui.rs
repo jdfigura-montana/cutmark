@@ -13,7 +13,7 @@ use ui_kit::{inspector_group, inspector_row, switch};
 use crate::config::{CompositeMode, Profile, WebcamSettings};
 use crate::data_text;
 use crate::preview_ui::Pick;
-use crate::profile_ui::{AmfProbe, iso_codec_text, rate_control_editor, rate_errors};
+use crate::profile_ui::{AmfProbe, Control, Lock, iso_codec_text, rate_control_editor, rate_errors};
 use crate::profiles::ProfileStore;
 use crate::webcam::WebcamHost;
 
@@ -24,16 +24,16 @@ thread_local! {
 
 /// The Camera ISO file group of the Output tool (spec "Setup mode"): whether the raw camera is
 /// saved on its own and how it is encoded. The rows are disabled while the switch is off, and the
-/// group is read-only while recording. While Clean applies the switch is locked on, and the saved
+/// group is read-only while `lock` locks the profile. While Clean applies the switch is locked on, and the saved
 /// switch is left alone so it comes back when Clean goes off. The camera offset lives in the Camera
 /// tool's Sync group.
-pub(crate) fn iso_group(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, recording: bool, profile_name: &str) {
+pub(crate) fn iso_group(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore, lock: Lock, profile_name: &str) {
     let Some(settings) = host.settings(store).cloned() else { return };
     let Some(profile) = store.get(profile_name).cloned() else { return };
     let key = (settings.format.width, settings.format.height, profile.fps);
     let (ranges, (codec_text, codec_caption)) = ISO_PROBE.with(|cell| {
         let mut probe = cell.borrow_mut();
-        if !recording {
+        if !lock.locks(Control::Profile) {
             probe.update(ui.ctx(), key);
         }
         (probe.ranges(profile.codec), iso_codec_text(&profile, settings.format.height, &probe))
@@ -43,7 +43,7 @@ pub(crate) fn iso_group(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore
     let mut changed = false;
     inspector_group(ui, |ui| {
         let (mut shown, locked) = iso_switch(&profile, iso);
-        ui.add_enabled_ui(!recording && !locked, |ui| {
+        lock.scope(ui, Control::Profile, !locked, |ui| {
             let state = if shown { "On" } else { "Off" };
             let before = shown;
             inspector_row(
@@ -64,7 +64,7 @@ pub(crate) fn iso_group(ui: &mut Ui, host: &WebcamHost, store: &mut ProfileStore
         ui.add_space(space::SCALE_4);
         ui.label(RichText::new(caption).small().weak());
         ui.add_space(space::SCALE_4);
-        ui.add_enabled_ui(!recording && shown, |ui| {
+        lock.scope(ui, Control::Profile, shown, |ui| {
             let errors = rate_errors(profile.codec, rate, ranges.as_ref());
             changed |= rate_control_editor(ui, "webcam-iso", &mut rate, ranges.as_ref(), &errors);
             inspector_row(ui, "Codec", |_ui| {}, Some(&codec_text));

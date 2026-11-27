@@ -14,6 +14,7 @@ use ui_kit::{SliderKind, inspector_group, inspector_row, switch};
 use crate::config::{AudioCodecChoice, AudioSettings, MAX_OFFSET_MS, MAX_TRACKS, TrackKind, TrackSettings};
 use crate::engine::app_monitor::IdleAppTrack;
 use crate::engine::session::{Instances, TrackSnapshot};
+use crate::profile_ui::{Control, Lock};
 use crate::tools_ui::slider_row;
 
 /// The tooltip of every control that is locked while recording.
@@ -232,8 +233,8 @@ struct RowInput<'a> {
     index: usize,
     /// The audio devices that are present.
     devices: &'a [AudioDevice],
-    /// Whether a take is running.
-    recording: bool,
+    /// What locks the track list.
+    lock: Lock,
     /// The meter to show.
     level: Level,
     /// What the capture of an app or desktop-except track is doing, when known.
@@ -243,14 +244,14 @@ struct RowInput<'a> {
 /// Draws the Audio tool (spec "Setup mode"): one inspector group per track, then the Add track
 /// and Refresh devices buttons, then the Output group with the WAV sidecars and the audio format.
 ///
-/// While `recording` is true only gain and mute can change. `live` holds the running take's meters.
+/// While `lock` locks the track list only gain and mute can change. `live` holds the running take's meters.
 pub fn audio_panel(
     ui: &mut Ui,
     settings: &mut AudioSettings,
     devices: &[AudioDevice],
     apps: &mut AppSources,
     live: Option<&LiveTrackStats>,
-    recording: bool,
+    lock: Lock,
 ) -> TracksChanged {
     let mut changed = TracksChanged::default();
     let now = Instant::now();
@@ -265,7 +266,7 @@ pub fn audio_panel(
         }
         let mut remove = false;
         ui.push_id(index, |ui| {
-            let input = RowInput { index, devices, recording, level, status };
+            let input = RowInput { index, devices, lock, level, status };
             inspector_group(ui, |ui| track_group(ui, track, input, apps, &mut changed, &mut remove));
         });
         if remove {
@@ -281,8 +282,9 @@ pub fn audio_panel(
     }
     ui.add_space(space::SCALE_4);
     ui.horizontal(|ui| {
-        let can_add = !recording && settings.tracks.len() < MAX_TRACKS;
-        let tip = if recording { LOCKED_TIP } else { MAX_TRACKS_TIP };
+        let list_locked = lock.locks(Control::TrackList);
+        let can_add = !list_locked && settings.tracks.len() < MAX_TRACKS;
+        let tip = if list_locked { locked_tip(lock) } else { MAX_TRACKS_TIP };
         let menu = ui.add_enabled_ui(can_add, |ui| {
             ui.menu_button("Add track", |ui| {
                 let count = settings.tracks.len();
@@ -310,7 +312,7 @@ pub fn audio_panel(
         }
     });
     ui.add_space(space::SCALE_8);
-    output_group(ui, settings, recording, &mut changed);
+    output_group(ui, settings, lock, &mut changed);
     changed
 }
 
@@ -318,14 +320,14 @@ pub fn audio_panel(
 /// Offset, In mixdown, the level meter, Remove) and reports the edits through `changed`;
 /// sets `*remove` when the Remove button was clicked.
 fn track_group(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, apps: &mut AppSources, changed: &mut TracksChanged, remove: &mut bool) {
-    let recording = input.recording;
+    let lock = input.lock;
     let on_text = if track.enabled { "On" } else { "Off" };
     inspector_row(
         ui,
         "On",
         |ui| {
             let mut on = track.enabled;
-            if locked(ui, recording, |ui| switch(ui, &mut on)).changed() {
+            if locked(ui, lock, |ui| switch(ui, &mut on)).changed() {
                 track.enabled = on;
                 changed.discrete();
             }
@@ -336,7 +338,7 @@ fn track_group(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, apps
         ui,
         "Name",
         |ui| {
-            let name = locked(ui, recording, |ui| ui.add(egui::TextEdit::singleline(&mut track.name).desired_width(ui.available_width())));
+            let name = locked(ui, lock, |ui| ui.add(egui::TextEdit::singleline(&mut track.name).desired_width(ui.available_width())));
             changed.continuous(&name);
         },
         None,
@@ -377,7 +379,7 @@ fn track_group(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, apps
         "Offset",
         |ui| {
             ui.spacing_mut().slider_width = SLIDER_WIDTH;
-            let offset = locked(ui, recording, |ui| ui.add(egui::Slider::new(&mut track.offset_ms, -MAX_OFFSET_MS..=MAX_OFFSET_MS).suffix(" ms")));
+            let offset = locked(ui, lock, |ui| ui.add(egui::Slider::new(&mut track.offset_ms, -MAX_OFFSET_MS..=MAX_OFFSET_MS).suffix(" ms")));
             changed.continuous(&offset);
             if offset.changed() {
                 track.offset_ms = track.offset_ms.clamp(-MAX_OFFSET_MS, MAX_OFFSET_MS);
@@ -389,7 +391,7 @@ fn track_group(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, apps
         ui,
         "In mixdown",
         |ui| {
-            if locked(ui, recording, |ui| switch(ui, &mut track.in_mixdown)).changed() {
+            if locked(ui, lock, |ui| switch(ui, &mut track.in_mixdown)).changed() {
                 changed.discrete();
             }
             let width = (ui.available_width() - ui.spacing().item_spacing.x).max(60.0);
@@ -401,7 +403,7 @@ fn track_group(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, apps
         ui,
         "",
         |ui| {
-            if ui.button("Remove").clicked() {
+            if locked(ui, lock, |ui| ui.button("Remove")).clicked() {
                 *remove = true;
             }
         },
@@ -415,9 +417,9 @@ fn source_row(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, chang
     inspector_row(ui, "Source", |_| {}, None);
     let before = source_index(&track.kind);
     let mut source = before;
-    locked(ui, input.recording, |ui| ui_kit::segmented(ui, egui::Id::new(("track-source", input.index)), &mut source, &SOURCE_LABELS));
+    locked(ui, input.lock, |ui| ui_kit::segmented(ui, egui::Id::new(("track-source", input.index)), &mut source, &SOURCE_LABELS));
     ui.add_space(space::SCALE_4);
-    if source == before || input.recording {
+    if source == before || input.lock.locks(Control::TrackList) {
         return false;
     }
     set_source(track, source, input.devices);
@@ -461,7 +463,7 @@ fn app_row(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, picker: 
         ui,
         "App",
         |ui| {
-            locked(ui, input.recording, |ui| {
+            locked(ui, input.lock, |ui| {
                 let combo = ComboBox::from_id_salt(("track-app", input.index))
                     .selected_text(text)
                     .width(ui.available_width())
@@ -596,7 +598,7 @@ fn device_row(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, chang
         ui,
         "Device",
         |ui| {
-            locked(ui, input.recording, |ui| {
+            locked(ui, input.lock, |ui| {
                 ComboBox::from_id_salt(("track-device", input.index))
                     .selected_text(text.clone())
                     .width(ui.available_width())
@@ -625,7 +627,7 @@ fn device_row(ui: &mut Ui, track: &mut TrackSettings, input: RowInput<'_>, chang
 
 /// Draws the Output group (spec "Setup mode"): whether each track is also saved as a WAV file,
 /// and the audio format as a segmented choice.
-fn output_group(ui: &mut Ui, settings: &mut AudioSettings, recording: bool, changed: &mut TracksChanged) {
+fn output_group(ui: &mut Ui, settings: &mut AudioSettings, lock: Lock, changed: &mut TracksChanged) {
     inspector_group(ui, |ui| {
         let wav_text = if settings.wav_sidecars { "On" } else { "Off" };
         inspector_row(
@@ -633,7 +635,7 @@ fn output_group(ui: &mut Ui, settings: &mut AudioSettings, recording: bool, chan
             "Also save each track as a WAV file",
             |ui| {
                 let mut on = settings.wav_sidecars;
-                if locked(ui, recording, |ui| switch(ui, &mut on)).changed() {
+                if locked(ui, lock, |ui| switch(ui, &mut on)).changed() {
                     settings.wav_sidecars = on;
                     changed.discrete();
                 }
@@ -648,7 +650,7 @@ fn output_group(ui: &mut Ui, settings: &mut AudioSettings, recording: bool, chan
                     AudioCodecChoice::Aac320 => 0,
                     AudioCodecChoice::Pcm24 => 1,
                 };
-                locked(ui, recording, |ui| ui_kit::segmented_filled(ui, "audio-format", &mut index, &FORMAT_LABELS, &FORMAT_TIPS));
+                locked(ui, lock, |ui| ui_kit::segmented_filled(ui, "audio-format", &mut index, &FORMAT_LABELS, &FORMAT_TIPS));
                 let picked = if index == 0 { AudioCodecChoice::Aac320 } else { AudioCodecChoice::Pcm24 };
                 if picked != settings.codec {
                     settings.codec = picked;
@@ -703,10 +705,16 @@ fn source_row_text(track: &TrackSettings, attached: bool, peak_dbfs: f32) -> (&s
     (name, trailing)
 }
 
-/// Adds a widget that is disabled while recording, with the "next take" tooltip on it.
-fn locked(ui: &mut Ui, recording: bool, add: impl FnOnce(&mut Ui) -> Response) -> Response {
-    let response = ui.add_enabled_ui(!recording, add).inner;
-    if recording { response.on_disabled_hover_text(LOCKED_TIP) } else { response }
+/// Adds a track list widget that is disabled while `lock` locks the list, with the reason as its tooltip.
+fn locked(ui: &mut Ui, lock: Lock, add: impl FnOnce(&mut Ui) -> Response) -> Response {
+    let list_locked = lock.locks(Control::TrackList);
+    let response = ui.add_enabled_ui(!list_locked, add).inner;
+    if list_locked { response.on_disabled_hover_text(locked_tip(lock)) } else { response }
+}
+
+/// The tooltip of a locked track list control: the replay one when the buffer is the reason.
+fn locked_tip(lock: Lock) -> &'static str {
+    lock.replay_tip().unwrap_or(LOCKED_TIP)
 }
 
 /// The device a track points at: by endpoint ID, else by exact name.
@@ -772,7 +780,7 @@ mod tests {
         for (gain_db, shown, offset_ms) in [(GAIN_MIN_DB, "-30.0", -MAX_OFFSET_MS), (GAIN_MAX_DB, "12.0", MAX_OFFSET_MS)] {
             let mut track = TrackSettings { name: "Mic".to_owned(), gain_db, offset_ms, ..TrackSettings::default() };
             let harness = panel_harness(config::RIGHT_PANEL_MIN, move |ui| {
-                let input = RowInput { index: 0, devices: &[], recording: false, level: IDLE_LEVEL, status: None };
+                let input = RowInput { index: 0, devices: &[], lock: Lock::default(), level: IDLE_LEVEL, status: None };
                 inspector_group(ui, |ui| track_group(ui, &mut track, input, &mut AppSources::default(), &mut TracksChanged::default(), &mut false));
             });
             let texts = painted(&harness);
@@ -785,6 +793,19 @@ mod tests {
             assert_eq!(controls.len(), 2, "the slider and the mute switch");
             assert_no_overlap(&texts.iter().collect::<Vec<_>>(), &controls, config::RIGHT_PANEL_MIN);
         }
+    }
+
+    #[test]
+    fn the_replay_buffer_locks_profile_and_track_list_controls_but_not_gain_and_mute() {
+        let replay = Lock { recording: false, replay_on: true };
+        assert!(replay.locks(Control::Profile));
+        assert!(replay.locks(Control::TrackList));
+        assert!(!replay.locks(Control::Live), "gain and mute stay usable");
+        assert_eq!(locked_tip(replay), "Turn off the replay buffer to change this");
+        // During a take the buffer is not the reason: turning it off would unlock nothing.
+        let both = Lock { recording: true, replay_on: true };
+        assert_eq!((both.replay_tip(), locked_tip(both)), (None, LOCKED_TIP));
+        assert!(!Lock::default().locks(Control::Profile) && !Lock::default().locks(Control::TrackList));
     }
 
     #[test]
@@ -892,7 +913,7 @@ mod tests {
         track.kind = TrackKind::DesktopExcept { exe: "discord.exe".to_owned(), app_name: "Discord".to_owned() };
         let harness = panel_harness(config::RIGHT_PANEL_MIN, move |ui| {
             let status = Some(AppStatus { attached: true, instances: Instances { excluded: 1, total: 2 } });
-            let input = RowInput { index: 0, devices: &[], recording: false, level: IDLE_LEVEL, status };
+            let input = RowInput { index: 0, devices: &[], lock: Lock::default(), level: IDLE_LEVEL, status };
             inspector_group(ui, |ui| track_group(ui, &mut track, input, &mut AppSources::default(), &mut TracksChanged::default(), &mut false));
         });
         let texts = painted(&harness);

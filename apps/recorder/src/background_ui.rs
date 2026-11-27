@@ -10,6 +10,7 @@ use ui_kit::{inspector_group, inspector_row};
 
 use crate::config::{BackgroundFit, BackgroundKind};
 use crate::layout_ui::choice;
+use crate::profile_ui::{Control, Lock};
 use crate::profiles::ProfileStore;
 
 /// The background kinds in the order the segmented control lists them, with their labels.
@@ -19,8 +20,8 @@ const KINDS: [(BackgroundKind, &str); 4] =
 /// The image and video fits in the order the segmented control lists them, with their labels.
 const FITS: [(BackgroundFit, &str); 3] = [(BackgroundFit::Cover, "Cover"), (BackgroundFit::Contain, "Contain"), (BackgroundFit::Stretch, "Stretch")];
 
-/// Draws the Background group for the active profile; `recording` makes it read-only.
-pub fn show(ui: &mut Ui, store: &mut ProfileStore, profile_name: &str, recording: bool) {
+/// Draws the Background group for the active profile; `lock` makes it read-only.
+pub fn show(ui: &mut Ui, store: &mut ProfileStore, profile_name: &str, lock: Lock) {
     let Some(profile) = store.get(profile_name) else {
         ui.weak("No profile is active.");
         return;
@@ -28,7 +29,7 @@ pub fn show(ui: &mut Ui, store: &mut ProfileStore, profile_name: &str, recording
     let mut background = profile.background.clone();
     let mut changed = false;
     inspector_group(ui, |ui| {
-        ui.add_enabled_ui(!recording, |ui| {
+        lock.scope(ui, Control::Profile, true, |ui| {
             inspector_row(
                 ui,
                 "Background",
@@ -98,7 +99,7 @@ pub fn show(ui: &mut Ui, store: &mut ProfileStore, profile_name: &str, recording
             }
         });
     });
-    if recording {
+    if lock.recording {
         ui.add_space(space::SCALE_4);
         ui.weak("The background is fixed while recording.");
     }
