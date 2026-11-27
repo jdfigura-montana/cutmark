@@ -16,6 +16,8 @@ use crate::dialogs::{Dialog, Naming};
 use crate::editor::{self, Editor, PasteKeys};
 use crate::file_drop;
 use crate::find::FindBar;
+use crate::formatting::{Action as FormatAction, BlockStyle, ListKind};
+use crate::markup::Inline;
 use crate::menu::{EDITOR_MENU, Item, MENUS, MenuState, SCRIPTS_MENU};
 use crate::prefs::EditorPrefs;
 use crate::preview::Preview;
@@ -44,6 +46,8 @@ const SCRIPTS_WIDTH: f32 = 260.0;
 const RUN_WIDTH: f32 = 320.0;
 /// A panel title's inset past the panel's own padding, for 14 in all (rev 3 "Panel header").
 const HEADER_PAD: f32 = 6.0;
+/// The width of one column of the Format menu: its longest row and the row's padding.
+const MENU_COLUMN_WIDTH: f32 = 224.0;
 /// The hairline stroke width.
 const HAIRLINE: f32 = 1.0;
 /// How often to repaint while a toast shows, so that it goes away on time.
@@ -65,6 +69,8 @@ const ABOUT: ui_kit::widgets::AboutInfo = ui_kit::widgets::AboutInfo {
               Phosphor Icons and the egui-phosphor crate are licensed under MIT or Apache-2.0.\n\
               egui, eframe, epaint and wgpu are licensed under MIT or Apache-2.0.",
 };
+
+mod toolbar;
 
 /// The root window's state.
 pub struct PrompterApp {
@@ -106,8 +112,8 @@ pub struct PrompterApp {
     /// The editor's right-click menu is open.
     editor_menu_open: bool,
     dialog: Option<Dialog>,
-    /// An Edit menu item picked this frame, to be done in the next one: the click that picked
-    /// it would take the keyboard back from the field it is for.
+    /// An Edit or Format menu item picked this frame, to be done in the next one: the click
+    /// that picked it would take the keyboard back from the field it is for.
     queued: Option<Item>,
     /// A save failed while closing, so closing again quits without saving.
     close_refused: bool,
@@ -185,6 +191,12 @@ impl PrompterApp {
         }
     }
 
+    /// True while typing goes to the shown script's editor.
+    fn editor_has_keyboard(&self, ctx: &egui::Context) -> bool {
+        let open = self.workspace.as_ref().ok().and_then(|workspace| workspace.open_script());
+        open.is_some_and(|open| ctx.memory(|memory| memory.has_focus(editor::id(open.serial))))
+    }
+
     /// Keeps the Library out of screen captures.
     fn protect_root(&mut self, ctx: &egui::Context) {
         if self.root_find_frames == 0 {
@@ -212,7 +224,16 @@ impl PrompterApp {
             Item::NewScript => self.dialog = Some(Dialog::name(Naming::NewScript, "")),
             Item::NewFolder => self.dialog = Some(Dialog::name(Naming::NewFolder, "")),
             Item::Import | Item::Export | Item::Duplicate | Item::Delete | Item::Snapshots => self.file_command(ctx, frame, item),
-            Item::Undo | Item::Redo | Item::Cut | Item::Copy | Item::Paste | Item::PastePlain | Item::SelectAll | Item::FindInScript | Item::SearchAll => {
+            Item::Undo
+            | Item::Redo
+            | Item::Cut
+            | Item::Copy
+            | Item::Paste
+            | Item::PastePlain
+            | Item::SelectAll
+            | Item::FindInScript
+            | Item::SearchAll
+            | Item::Format(_) => {
                 self.queued = Some(item);
                 ctx.request_repaint();
             }
@@ -366,7 +387,7 @@ impl PrompterApp {
     }
 
     /// The editor panel: its tab bar, toolbar and find bar, then the open script or what to do
-    /// without one. `command` is an Edit menu item picked in the last frame.
+    /// without one. `command` is an Edit or Format menu item for the editor to do now.
     fn editor_column(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame, command: Option<Item>) {
         let clicked = match &self.workspace {
             Ok(workspace) => self.tab_bar.show(ui, workspace),
@@ -376,7 +397,7 @@ impl PrompterApp {
             self.change_tabs(ui.ctx(), TabChange::Click(action));
         }
         let state = self.menu_state();
-        if let Some(item) = panel_toolbar(ui, state, &mut self.preview.open) {
+        if let Some(item) = toolbar::show(ui, state, &mut self.preview.open) {
             self.run(ui.ctx(), frame, item);
         }
         let workspace = match &mut self.workspace {
@@ -404,8 +425,10 @@ impl PrompterApp {
         };
         let serial = open.serial;
         let id = editor::id(serial);
+        let mut formatted = false;
         match command {
             Some(Item::FindInScript) => self.find.open(),
+            Some(Item::Format(action)) => formatted = self.editor.format(ui.ctx(), serial, &mut open.text, action),
             Some(item) => editor::command(ui, id, item, self.clipboard.as_ref()),
             None => {}
         }
@@ -425,7 +448,7 @@ impl PrompterApp {
             }
             None => self.preview.forget(),
         }
-        if shown.changed {
+        if shown.changed || formatted {
             workspace.text_changed(Instant::now());
             // The title bar and the find bar, already drawn, have to catch up.
             ui.ctx().request_repaint();
@@ -482,10 +505,18 @@ impl PrompterApp {
         if click_through_hotkey(ui) {
             self.click_through = !self.click_through;
         }
-        let command = self.queued.take();
+        let mut command = self.queued.take();
         let modal = self.dialog.is_some() || self.appearance_open || self.about_open;
         if modal {
             self.scripts.cancel_drag();
+        }
+        // The formatting keys are the editor's, and are done this frame, ahead of what is
+        // typed next. Before the editor, which would delete to the line's start on Ctrl+U.
+        if !modal && self.editor_has_keyboard(ui.ctx()) {
+            let state = self.menu_state();
+            if let Some(item) = format_shortcut(ui, state.editor.format.list.is_some()).filter(|item| item.enabled(state)) {
+                command = Some(item);
+            }
         }
         // Before the editor, which would take Tab and Ctrl+W for itself.
         if let Some(change) = (!modal).then(|| tab_shortcut(ui)).flatten() {
@@ -785,6 +816,71 @@ fn shortcut(ui: &egui::Ui) -> Option<Item> {
     })
 }
 
+/// The Format menu item whose keys were pressed this frame. With the caret in a list,
+/// `in_list`, Tab and Shift+Tab indent and outdent. The keys are consumed.
+fn format_shortcut(ui: &egui::Ui, in_list: bool) -> Option<Item> {
+    use egui::Key;
+
+    ui.input_mut(|i| {
+        let mut found = None;
+        let held = i.modifiers;
+        i.events.retain(|event| {
+            let action = match event {
+                // egui-winit reports Ctrl with X as a cut even when Shift is held, so no X key
+                // arrives.
+                egui::Event::Cut if held.command && held.shift && !held.alt => Some(FormatAction::Inline(Inline::Strike)),
+                &egui::Event::Key { key, physical_key, pressed: true, modifiers, .. } => key_action(key, physical_key, modifiers, in_list),
+                _ => None,
+            };
+            if let Some(action) = action {
+                found.get_or_insert(Item::Format(action));
+            }
+            action.is_none()
+        });
+        if found == Some(Item::Format(FormatAction::Inline(Inline::Strike))) {
+            // The key itself, should it come too.
+            i.consume_key(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), Key::X);
+        }
+        found
+    })
+}
+
+/// The formatting action of one key press.
+fn key_action(key: egui::Key, physical: Option<egui::Key>, modifiers: egui::Modifiers, in_list: bool) -> Option<FormatAction> {
+    use egui::Key;
+
+    // AltGr is Ctrl with Alt, and types characters on some layouts.
+    if modifiers.alt {
+        return None;
+    }
+    if !modifiers.command {
+        return (in_list && key == Key::Tab).then_some(if modifiers.shift { FormatAction::Outdent } else { FormatAction::Indent });
+    }
+    if modifiers.shift {
+        // With Shift, some layouts give these keys other characters, so the key's place counts too.
+        let is = |wanted: Key| key == wanted || physical == Some(wanted);
+        return match () {
+            () if key == Key::X => Some(FormatAction::Inline(Inline::Strike)),
+            () if is(Key::Num8) => Some(FormatAction::List(ListKind::Bulleted)),
+            () if is(Key::Num7) => Some(FormatAction::List(ListKind::Numbered)),
+            () if is(Key::Period) => Some(FormatAction::Style(BlockStyle::Quote)),
+            () => None,
+        };
+    }
+    match key {
+        Key::B => Some(FormatAction::Inline(Inline::Bold)),
+        Key::I => Some(FormatAction::Inline(Inline::Italic)),
+        Key::U => Some(FormatAction::Inline(Inline::Underline)),
+        Key::Num0 => Some(FormatAction::Style(BlockStyle::Paragraph)),
+        Key::Num1 => Some(FormatAction::Style(BlockStyle::Heading(1))),
+        Key::Num2 => Some(FormatAction::Style(BlockStyle::Heading(2))),
+        Key::Num3 => Some(FormatAction::Style(BlockStyle::Heading(3))),
+        Key::CloseBracket => Some(FormatAction::Indent),
+        Key::OpenBracket => Some(FormatAction::Outdent),
+        _ => None,
+    }
+}
+
 /// The open script's part of the title bar.
 struct Document {
     title: String,
@@ -814,7 +910,8 @@ fn title_bar(
                         if title == "Edit" {
                             edit_menu_open.set(true);
                         }
-                        if let Some(item) = menu_rows(ui, groups, state, click_through) {
+                        let used = if title == "Format" { menu_columns(ui, groups, state) } else { menu_rows(ui, groups, state, click_through) };
+                        if let Some(item) = used {
                             picked.set(Some(item));
                         }
                     })
@@ -836,6 +933,24 @@ fn title_bar(
     .bar
 }
 
+/// A long menu's items in two columns, with its first two groups in the left one. One column
+/// would be taller than the window.
+fn menu_columns(ui: &mut egui::Ui, groups: &[&[Item]], state: MenuState) -> Option<Item> {
+    let (left, right) = groups.split_at(groups.len().min(2));
+    let mut picked = None;
+    ui.horizontal_top(|ui| {
+        for half in [left, right] {
+            ui.vertical(|ui| {
+                ui.set_width(MENU_COLUMN_WIDTH);
+                ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+                    picked = picked.or(menu_rows(ui, half, state, false));
+                });
+            });
+        }
+    });
+    picked
+}
+
 /// A menu's items, with a separator between groups. Returns the one clicked, which also
 /// closes the menu.
 fn menu_rows(ui: &mut egui::Ui, groups: &[&[Item]], state: MenuState, click_through: bool) -> Option<Item> {
@@ -845,7 +960,8 @@ fn menu_rows(ui: &mut egui::Ui, groups: &[&[Item]], state: MenuState, click_thro
             ui.separator();
         }
         for &item in *group {
-            let checked = (item == Item::ClickThrough && click_through) || (item == Item::ShowMarkdown && state.show_markdown);
+            let formatted = matches!(item, Item::Format(action) if state.editor.format.has(action));
+            let checked = (item == Item::ClickThrough && click_through) || (item == Item::ShowMarkdown && state.show_markdown) || formatted;
             if ui.add_enabled(item.enabled(state), menu_button(item).selected(checked)).clicked() {
                 picked = Some(item);
                 ui.close();
@@ -953,26 +1069,6 @@ fn split(area: egui::Rect, preview: bool) -> (egui::Rect, Option<egui::Rect>) {
     let mut right = area;
     right.min.x = area.right() - half;
     (left, Some(right))
-}
-
-/// The editor's toolbar (rev 3 "Panel toolbar"). Returns the button clicked, as its menu item.
-/// The Preview chip sets `preview` itself.
-fn panel_toolbar(ui: &mut egui::Ui, state: MenuState, preview: &mut bool) -> Option<Item> {
-    let mut picked = None;
-    panel_row(ui, |ui| {
-        let buttons = [(Item::Undo, ui_kit::icons::regular::ARROW_COUNTER_CLOCKWISE), (Item::Redo, ui_kit::icons::regular::ARROW_CLOCKWISE)];
-        for (item, icon) in buttons {
-            ui.add_enabled_ui(item.enabled(state), |ui| {
-                if ui_kit::icon_button(ui, icon, item.label()).clicked() {
-                    picked = Some(item);
-                }
-            });
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_enabled_ui(state.script_open, |ui| ui_kit::widgets::chip(ui, preview, "Preview"));
-        });
-    });
-    picked
 }
 
 /// The editor panel with no scripts at all. True if New was clicked.

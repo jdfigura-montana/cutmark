@@ -10,6 +10,8 @@ mod drag;
 mod editor;
 mod file_drop;
 mod find;
+mod formatting;
+mod lines;
 mod markup;
 mod menu;
 mod prefs;

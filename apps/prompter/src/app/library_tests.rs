@@ -1623,68 +1623,420 @@ fn typing_time_on_10_000_words() {
     assert!(library.script().len() > text.len());
 }
 
-/// The outline of the editor's box as last painted, and whether the box is filled as a field.
-fn editor_box(library: &Library) -> (bool, Option<egui::Stroke>) {
-    // The box is the large rectangle in the middle column.
-    let at = egui::pos2(520.0, 420.0);
-    let boxes = || {
-        library.shapes.iter().filter_map(|clipped| match &clipped.shape {
-            egui::Shape::Rect(shape) if shape.rect.contains(at) && shape.rect.width() < 520.0 => Some(shape),
-            _ => None,
-        })
-    };
-    let filled = boxes().any(|shape| shape.fill == ui_kit::tokens::color::BG_CONTROL);
-    (filled, boxes().find(|shape| shape.fill == egui::Color32::TRANSPARENT && !shape.stroke.is_empty()).map(|shape| shape.stroke))
+/// The part of the window the editor panel takes.
+fn editor_panel(library: &Library) -> Rect {
+    let mut body = Rect::from_min_size(Pos2::ZERO, library.size);
+    body.min.y += size::TOOLBAR_MAIN_HEIGHT;
+    body.max.y -= size::STATUS_BAR_HEIGHT;
+    columns(body.shrink(space::SCALE_8))[1]
 }
 
-/// The text the editor painted last, with the color of its first character.
-fn painted_start(library: &Library) -> Option<egui::Color32> {
-    library.shapes.iter().find_map(|clipped| match &clipped.shape {
-        egui::Shape::Text(shape) if shape.galley.job.text.starts_with("# Title") => Some(shape.galley.job.sections[0].format.color),
-        _ => None,
+/// Every filled or outlined rectangle the last frame drew.
+fn rects(library: &Library) -> Vec<egui::epaint::RectShape> {
+    fn search(shape: &egui::Shape, found: &mut Vec<egui::epaint::RectShape>) {
+        match shape {
+            egui::Shape::Rect(rect) => found.push(rect.clone()),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| search(shape, found)),
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    library.shapes.iter().for_each(|clipped| search(&clipped.shape, &mut found));
+    found
+}
+
+/// True if a frame in the next blink of the caret draws it, thin and in the accent color.
+fn caret_shows(library: &mut Library) -> bool {
+    let accent = ui_kit::Theme::get(&library.ctx).accent.accent;
+    (0..12).any(|_| {
+        library.step(Vec::new());
+        library.shapes.iter().any(|clipped| {
+            matches!(&clipped.shape, egui::Shape::LineSegment { points, stroke }
+                if stroke.width == editor::CARET_WIDTH && stroke.color == accent && points[0].x == points[1].x)
+        })
+    })
+}
+
+/// True if no box is drawn around the editor: no large field fill and no accent outline.
+fn is_unboxed(library: &Library) -> bool {
+    let panel = editor_panel(library);
+    let accent = ui_kit::Theme::get(&library.ctx).accent.accent;
+    !rects(library).iter().any(|shape| {
+        let inside = panel.contains_rect(shape.rect) && shape.rect.height() > 200.0;
+        inside && (shape.fill == ui_kit::tokens::color::BG_CONTROL || shape.stroke.color == accent && !shape.stroke.is_empty())
     })
 }
 
 #[test]
-fn a_script_at_launch_looks_like_a_field_being_typed_in() {
-    let mut library = Library::with_script(
-        "# Title
-
-words",
-    );
+fn a_script_at_launch_has_no_box_and_a_thin_accent_caret_to_type_at() {
+    let mut library = Library::with_script("# Title\n\nwords");
     // As at the next launch: the tab comes back from the disk, and nothing is clicked.
-    library.app.workspace.as_mut().unwrap().flush().unwrap();
-    library.ctx = egui::Context::default();
-    ui_kit::apply(&library.ctx);
-    library.app = PrompterApp::with_library(true, AlphaInUse::default(), Ok(Workspace::new(Store::open(&library.folder).unwrap())));
-    library.settle();
+    library.restart();
 
     let id = library.editor_id();
     assert_eq!(library.focused(), Some(id));
-    let caret = egui::text_edit::TextEditState::load(&library.ctx, id).unwrap().cursor.char_range().unwrap();
-    assert_eq!((caret.primary.index.0, caret.is_empty()), (0, true));
-    // The caret's line shows its Markdown, dimmed.
-    assert_eq!(painted_start(&library), Some(ui_kit::tokens::color::TEXT_TERTIARY));
-    let accent = ui_kit::Theme::get(&library.ctx).accent.accent;
-    assert_eq!(editor_box(&library), (true, Some(egui::Stroke::new(editor::FOCUS_STROKE, accent))));
+    assert_eq!(selection(&library), (0, 0));
+    assert!(is_unboxed(&library));
+    assert!(caret_shows(&mut library));
 
-    // Without the keyboard it is still a box, with a hairline.
     library.ctx.memory_mut(|memory| memory.surrender_focus(id));
     library.settle();
-    let hairline = egui::Stroke::new(editor::FIELD_STROKE, ui_kit::tokens::color::STROKE_HAIRLINE);
-    assert_eq!(editor_box(&library), (true, Some(hairline)));
+    assert!(is_unboxed(&library));
+    assert!(!caret_shows(&mut library));
 }
 
 #[test]
-fn a_quote_bar_is_drawn_inside_the_editors_box() {
-    let library = Library::with_script("> quoted");
-    let filled = |fill: egui::Color32, wanted: fn(Rect) -> bool| {
+fn the_text_is_a_centered_column_no_wider_than_760_px_with_48_px_above() {
+    let mut library = Library::with_script(&"word ".repeat(400));
+    for width in [900.0, 1100.0, 2200.0] {
+        library.size = egui::vec2(width, 720.0);
+        library.settle();
+        let panel = editor_panel(&library);
+        let (pos, galley) = editor_galley(&library);
+        let wrap = galley.job.wrap.max_width;
+        assert!(wrap <= editor::COLUMN_WIDTH, "{width}: {wrap}");
+        let (left, right) = (pos.x - panel.left(), panel.right() - (pos.x + wrap));
+        assert!((left - right).abs() <= 3.0, "{width}: {left} at the left, {right} at the right");
+        if width > 2000.0 {
+            assert!(wrap > editor::COLUMN_WIDTH - 3.0, "{wrap}");
+        }
+    }
+    // The toolbar is one row in a panel this wide.
+    let toolbar_bottom = library.find_text(ui_kit::icons::regular::TEXT_B).unwrap().center().y + size::PANEL_TOOLBAR_HEIGHT / 2.0;
+    let (pos, _) = editor_galley(&library);
+    assert!((pos.y - toolbar_bottom - editor::TOP_PAD).abs() <= 6.0, "{} below the toolbar", pos.y - toolbar_bottom);
+}
+
+#[test]
+fn an_empty_script_shows_the_placeholder_until_something_is_typed() {
+    let mut library = Library::with_script("");
+    let placeholder = |library: &Library| {
         library.shapes.iter().find_map(|clipped| match &clipped.shape {
-            egui::Shape::Rect(shape) if shape.fill == fill && wanted(shape.rect) => Some(shape.rect),
+            egui::Shape::Text(shape) if shape.galley.text() == editor::PLACEHOLDER => Some(shape.galley.job.sections[0].format.clone()),
             _ => None,
         })
     };
-    let boxed = filled(ui_kit::tokens::color::BG_CONTROL, |rect| rect.height() > 300.0 && rect.width() < 520.0).unwrap();
-    let bar = filled(ui_kit::tokens::color::TEXT_TERTIARY, |rect| rect.width() == 2.0).unwrap();
-    assert!(boxed.contains_rect(bar), "the bar at {bar:?} is outside the box {boxed:?}");
+    let format = placeholder(&library).unwrap();
+    assert!(format.italics);
+    assert_eq!(format.color, ui_kit::tokens::color::TEXT_TERTIARY);
+    assert_eq!(editor::PLACEHOLDER, "Enter text or type '/' for commands");
+    library.focus_editor();
+    assert!(placeholder(&library).is_some(), "it stays while the editor has the keyboard");
+    library.type_text("a");
+    assert!(placeholder(&library).is_none());
+}
+
+#[test]
+fn a_quote_bar_is_drawn_left_of_the_column_inside_the_panel() {
+    let library = Library::with_script("> quoted");
+    let (pos, _) = editor_galley(&library);
+    let bar = rects(&library).into_iter().find(|shape| shape.fill == ui_kit::tokens::color::TEXT_TERTIARY && shape.rect.width() == 2.0).unwrap();
+    assert!(editor_panel(&library).contains_rect(bar.rect));
+    assert!(bar.rect.right() < pos.x, "{:?} and the text at {pos:?}", bar.rect);
+}
+
+/// Selects characters `from` to `to` in the editor, with the cursor at `to`.
+fn select_in_editor(library: &mut Library, from: usize, to: usize) {
+    library.focus_editor();
+    let id = library.editor_id();
+    let cursor = |at: usize| egui::text::CCursor::new(egui::text::CharIndex(at));
+    let mut state = egui::text_edit::TextEditState::load(&library.ctx, id).unwrap();
+    state.cursor.set_char_range(Some(egui::text::CCursorRange::two(cursor(from), cursor(to))));
+    state.store(&library.ctx, id);
+    library.settle();
+}
+
+/// The shortcut of a format item, as the window reports it.
+fn press_format(library: &mut Library, item: Item) {
+    match item.chord() {
+        "Ctrl+Shift+X" => {
+            // egui-winit sends this one as a cut, with no key.
+            library.step(vec![Event::ModifiersChanged(CTRL_SHIFT), Event::Cut]);
+            library.step(vec![Event::ModifiersChanged(Modifiers::NONE)]);
+            library.settle();
+        }
+        "Ctrl+B" => library.key(CTRL, Key::B),
+        "Ctrl+I" => library.key(CTRL, Key::I),
+        "Ctrl+U" => library.key(CTRL, Key::U),
+        "Ctrl+0" => library.key(CTRL, Key::Num0),
+        "Ctrl+1" => library.key(CTRL, Key::Num1),
+        "Ctrl+2" => library.key(CTRL, Key::Num2),
+        "Ctrl+3" => library.key(CTRL, Key::Num3),
+        "Ctrl+Shift+8" => library.key(CTRL_SHIFT, Key::Num8),
+        "Ctrl+Shift+7" => library.key(CTRL_SHIFT, Key::Num7),
+        "Ctrl+Shift+." => library.key(CTRL_SHIFT, Key::Period),
+        "Ctrl+]" => library.key(CTRL, Key::CloseBracket),
+        "Ctrl+[" => library.key(CTRL, Key::OpenBracket),
+        chord => panic!("no keys for {chord:?}"),
+    }
+}
+
+#[test]
+fn every_format_shortcut_changes_the_script_as_one_undo_step() {
+    use crate::formatting::{Action as A, BlockStyle as S, ListKind as L};
+    use crate::markup::Inline as I;
+    // Each starts on the second item of a list, with its word selected.
+    let start = "- one\n- two";
+    let cases = [
+        (A::Inline(I::Bold), "- one\n- **two**"),
+        (A::Inline(I::Italic), "- one\n- *two*"),
+        (A::Inline(I::Underline), "- one\n- <u>two</u>"),
+        (A::Inline(I::Strike), "- one\n- ~~two~~"),
+        (A::Style(S::Heading(1)), "- one\n# two"),
+        (A::Style(S::Heading(2)), "- one\n## two"),
+        (A::Style(S::Heading(3)), "- one\n### two"),
+        (A::Style(S::Quote), "- one\n> two"),
+        (A::Style(S::Paragraph), "- one\n\ntwo"),
+        (A::List(L::Bulleted), "- one\n\ntwo"),
+        (A::List(L::Numbered), "- one\n1. two"),
+        (A::Indent, "- one\n  - two"),
+    ];
+    for (action, wanted) in cases {
+        let mut library = Library::with_script(start);
+        select_in_editor(&mut library, 8, 11);
+        // The undo history takes a point once the text has rested.
+        library.time += 2.0;
+        library.settle();
+        press_format(&mut library, Item::Format(action));
+        assert_eq!(library.script(), wanted, "{action:?}");
+        assert_eq!(library.focused(), Some(library.editor_id()), "{action:?}");
+        library.key(CTRL, Key::Z);
+        assert_eq!(library.script(), start, "{action:?} is not one undo step");
+        library.key(CTRL, Key::Y);
+        assert_eq!(library.script(), wanted, "{action:?}");
+    }
+}
+
+/// Checks that one undo takes back `change`, made with no rest after the text was typed,
+/// and leaves what was typed.
+fn undoes_in_one_step(start: &str, name: &str, change: impl FnOnce(&mut Library)) {
+    let mut library = Library::with_script(start);
+    let end = start.chars().count();
+    select_in_editor(&mut library, end, end);
+    library.type_text("x");
+    let typed = format!("{start}x");
+    assert_eq!(library.script(), typed, "{name}");
+    change(&mut library);
+    let changed = library.script().to_owned();
+    assert_ne!(changed, typed, "{name} did nothing");
+    library.key(CTRL, Key::Z);
+    assert_eq!(library.script(), typed, "{name} is not one undo step");
+    library.key(CTRL, Key::Y);
+    assert_eq!(library.script(), changed, "{name}");
+}
+
+#[test]
+fn actions_right_after_typing_are_their_own_undo_step() {
+    use crate::formatting::Action;
+    use crate::markup::CueKind;
+    let press = |action| move |library: &mut Library| press_format(library, Item::Format(action));
+    undoes_in_one_step("- one\n  - two", "outdent", press(Action::Outdent));
+    undoes_in_one_step("one", "bold", press(Action::Inline(Inline::Bold)));
+    undoes_in_one_step("- one\n- two", "tab", |library| library.key(Modifiers::NONE, Key::Tab));
+    undoes_in_one_step("- one\n  - two", "shift tab", |library| library.key(Modifiers::SHIFT, Key::Tab));
+    undoes_in_one_step("one", "rule", |library| library.click_text(ui_kit::icons::regular::MINUS));
+    for kind in [CueKind::Note, CueKind::Pause, CueKind::Mark, CueKind::End] {
+        let action = Action::Cue(kind);
+        undoes_in_one_step("one", action.label(), |library| library.pick("Format", Item::Format(action)));
+    }
+}
+
+#[test]
+fn ctrl_bracket_takes_a_nested_item_out() {
+    let mut library = Library::with_script("- one\n  - two");
+    select_in_editor(&mut library, 13, 13);
+    press_format(&mut library, Item::Format(crate::formatting::Action::Outdent));
+    assert_eq!(library.script(), "- one\n- two");
+}
+
+#[test]
+fn tab_and_shift_tab_nest_list_items_and_stay_in_the_editor() {
+    let mut library = Library::with_script("- one\n- two");
+    select_in_editor(&mut library, 11, 11);
+    library.key(Modifiers::NONE, Key::Tab);
+    assert_eq!(library.script(), "- one\n  - two");
+    assert_eq!(library.focused(), Some(library.editor_id()));
+    // With nowhere further to go, Tab does nothing: no tab character, and no move away.
+    library.key(Modifiers::NONE, Key::Tab);
+    assert_eq!(library.script(), "- one\n  - two");
+    assert_eq!(library.focused(), Some(library.editor_id()));
+    library.key(Modifiers::SHIFT, Key::Tab);
+    assert_eq!(library.script(), "- one\n- two");
+    library.key(Modifiers::SHIFT, Key::Tab);
+    assert_eq!(library.script(), "- one\n- two");
+    assert_eq!(library.focused(), Some(library.editor_id()));
+}
+
+#[test]
+fn tab_outside_a_list_moves_the_keyboard_on_as_before() {
+    let mut library = Library::with_script("words");
+    select_in_editor(&mut library, 5, 5);
+    library.key(Modifiers::NONE, Key::Tab);
+    assert_eq!(library.script(), "words");
+    assert_ne!(library.focused(), Some(library.editor_id()));
+}
+
+#[test]
+fn the_format_keys_are_left_alone_in_other_fields() {
+    let mut library = Library::with_script("words");
+    library.key(CTRL, Key::F);
+    library.type_text("wo");
+    library.key(CTRL, Key::B);
+    assert_eq!(library.script(), "words");
+}
+
+#[test]
+fn a_toolbar_button_formats_the_selection_and_then_shows_as_on() {
+    let mut library = Library::with_script("one two");
+    select_in_editor(&mut library, 4, 7);
+    let glyph = ui_kit::icons::regular::TEXT_B;
+    let lit = |library: &Library| {
+        let at = library.find_text(glyph).unwrap().center();
+        let accent = ui_kit::Theme::get(&library.ctx).accent.accent;
+        library.shapes.iter().any(
+            |clipped| matches!(&clipped.shape, egui::Shape::Circle(circle) if circle.center.distance(at) < 3.0 && circle.fill == accent.gamma_multiply(0.35)),
+        )
+    };
+    assert!(!lit(&library));
+    library.click_text(glyph);
+    assert_eq!(library.script(), "one **two**");
+    assert_eq!(selection(&library), (6, 9));
+    assert!(lit(&library));
+    assert_eq!(library.focused(), Some(library.editor_id()));
+    // The change is saved like typing.
+    library.app.workspace.as_mut().unwrap().flush().unwrap();
+    library.restart();
+    assert_eq!(library.script(), "one **two**");
+    select_in_editor(&mut library, 6, 9);
+    library.click_text(glyph);
+    assert_eq!(library.script(), "one two");
+    assert!(!lit(&library));
+}
+
+#[test]
+fn the_style_dropdown_shows_the_caret_lines_style_and_changes_it() {
+    let mut library = Library::with_script("## two\n\nbody");
+    let dropdown = |name: &str| format!("{name}{}", ui_kit::icons::regular::CARET_DOWN);
+    select_in_editor(&mut library, 4, 4);
+    assert!(library.find_text(&dropdown("Heading 2")).is_some());
+    select_in_editor(&mut library, 10, 10);
+    library.click_text(&dropdown("Paragraph"));
+    library.click_text("QuoteCtrl+Shift+.");
+    assert_eq!(library.script(), "## two\n\n> body");
+    assert!(library.find_text(&dropdown("Quote")).is_some());
+    library.click_text(&dropdown("Quote"));
+    library.click_text("Heading 1Ctrl+1");
+    assert_eq!(library.script(), "## two\n\n# body");
+    library.click_text(&dropdown("Heading 1"));
+    library.click_text("ParagraphCtrl+0");
+    assert_eq!(library.script(), "## two\n\nbody");
+}
+
+#[test]
+fn the_toolbar_inserts_cues_from_a_menu_and_a_rule_from_its_button() {
+    for (name, cue) in [("Note", "[[note: ]]"), ("Pause", "[[pause]]"), ("Mark", "[[mark: ]]"), ("End", "[[end]]")] {
+        let mut library = Library::with_script("words");
+        select_in_editor(&mut library, 5, 5);
+        library.click_text(ui_kit::icons::regular::BRACKETS_SQUARE);
+        library.click_text(name);
+        assert_eq!(library.script(), format!("words {cue}"));
+    }
+    let mut library = Library::with_script("words");
+    select_in_editor(&mut library, 5, 5);
+    library.click_text(ui_kit::icons::regular::MINUS);
+    assert_eq!(library.script(), "words\n\n---\n");
+}
+
+#[test]
+fn the_toolbars_undo_redo_and_find_buttons_work() {
+    let mut library = Library::with_script("words");
+    select_in_editor(&mut library, 0, 5);
+    library.time += 2.0;
+    library.settle();
+    library.click_text(ui_kit::icons::regular::TEXT_ITALIC);
+    library.click_text(ui_kit::icons::regular::ARROW_COUNTER_CLOCKWISE);
+    assert_eq!(library.script(), "words");
+    library.click_text(ui_kit::icons::regular::ARROW_CLOCKWISE);
+    assert_eq!(library.script(), "*words*");
+    library.click_text(ui_kit::icons::regular::MAGNIFYING_GLASS);
+    assert!(library.app.find.is_open());
+}
+
+#[test]
+fn the_format_menu_acts_on_the_selection_the_editor_had() {
+    let mut library = Library::with_script("one two");
+    select_in_editor(&mut library, 4, 7);
+    library.pick("Format", Item::Format(crate::formatting::Action::Inline(crate::markup::Inline::Strike)));
+    assert_eq!(library.script(), "one ~~two~~");
+    library.pick("Format", Item::Format(crate::formatting::Action::Cue(crate::markup::CueKind::End)));
+    assert!(library.script().contains("[[end]]"), "{}", library.script());
+}
+
+#[test]
+fn the_format_menu_and_the_whole_toolbar_fit_the_smallest_window() {
+    let mut library = Library::with_script("- one\n- two");
+    library.size = egui::vec2(900.0, 480.0);
+    library.settle();
+    let panel = editor_panel(&library);
+    use ui_kit::icons::regular as icon;
+    let glyphs = [
+        icon::TEXT_B,
+        icon::TEXT_ITALIC,
+        icon::TEXT_UNDERLINE,
+        icon::TEXT_STRIKETHROUGH,
+        icon::LIST_BULLETS,
+        icon::LIST_NUMBERS,
+        icon::TEXT_OUTDENT,
+        icon::TEXT_INDENT,
+        icon::MINUS,
+        icon::BRACKETS_SQUARE,
+        icon::ARROW_COUNTER_CLOCKWISE,
+        icon::ARROW_CLOCKWISE,
+        icon::MAGNIFYING_GLASS,
+    ];
+    let mut places: Vec<Rect> = Vec::new();
+    for glyph in glyphs {
+        let rect = library.find_text(glyph).unwrap();
+        assert!(panel.contains_rect(rect), "{glyph:?} at {rect:?} is outside {panel:?}");
+        assert!(places.iter().all(|other| !other.intersects(rect)), "{glyph:?} overlaps another");
+        places.push(rect);
+    }
+    let preview = library.find_text("Preview").unwrap();
+    assert!(panel.contains_rect(preview) && places.iter().all(|other| !other.intersects(preview)), "{preview:?}");
+    assert!(preview.right() > panel.right() - 40.0 && preview.center().y <= places[0].center().y + 1.0, "{preview:?}");
+    // The text starts under the lowest button, and still has room.
+    let (pos, _) = editor_galley(&library);
+    assert!(places.iter().all(|button| button.bottom() < pos.y), "{pos:?} is under a button");
+    assert!(pos.y < panel.bottom() - 60.0, "{pos:?}");
+
+    library.click_text("Format");
+    let window = Rect::from_min_size(Pos2::ZERO, library.size);
+    for item in crate::menu::MENUS.iter().find(|(title, _)| *title == "Format").unwrap().1.iter().copied().flatten() {
+        let row = format!("{}{}", item.label(), item.chord());
+        let rect = library.find_text(&row).unwrap_or_else(|| panic!("{row} is not painted"));
+        assert!(window.contains_rect(rect), "{row} at {rect:?} is off screen");
+    }
+}
+
+#[test]
+fn a_click_in_a_wrapped_list_row_lands_on_that_character() {
+    let text = format!("- {}end", "word ".repeat(60));
+    let mut library = Library::with_script(&text);
+    // Past the first row, whatever its length.
+    let index = text.len() - 40;
+    let at = character_at(&library, index);
+    assert!(at.y > character_at(&library, 2).y, "the item wraps");
+    library.click(at, PointerButton::Primary);
+    assert_eq!(selection(&library), (index, index));
+    // Down and up keep to the same place across the rows.
+    library.key(Modifiers::NONE, Key::ArrowUp);
+    assert!(selection(&library).1 < index);
+    library.key(Modifiers::NONE, Key::ArrowDown);
+    assert_eq!(selection(&library), (index, index));
+    // A drag selects the real text.
+    let (from, to) = (character_at(&library, index), character_at(&library, index + 9));
+    library.hold(from);
+    library.move_to(to);
+    library.let_go(to);
+    assert_eq!(selection(&library), (index, index + 9));
 }

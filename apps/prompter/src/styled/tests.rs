@@ -139,8 +139,8 @@ fn a_find_match_is_backed_across_runs() {
 /// The x of the character at `index`, and the top and height of each row.
 fn measure(text: &str, reveal: Reveal, index: usize) -> (f32, Vec<(f32, f32)>) {
     with_ui(|ui| {
-        let job = layout_job(ui, text, &Markup::parse(text), reveal, &[], 600.0);
-        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+        let markup = Markup::parse(text);
+        let galley = layout(ui, &markup, layout_job(ui, text, &markup, reveal, &[], 600.0));
         assert_eq!(galley.text(), text);
         let x = galley.pos_from_cursor(egui::text::CCursor::new(CharIndex(index))).left();
         (x, galley.rows.iter().map(|row| (row.min_y(), row.height())).collect())
@@ -189,8 +189,7 @@ struct Drawn {
 fn drawn(text: &str, reveal: Reveal, wrap_width: f32) -> Drawn {
     with_ui(|ui| {
         let markup = Markup::parse(text);
-        let job = layout_job(ui, text, &markup, reveal, &[], wrap_width);
-        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+        let galley = layout(ui, &markup, layout_job(ui, text, &markup, reveal, &[], wrap_width));
         let drawn = decorations(ui, &markup, &galley, vec2(GUTTER, 0.0), reveal);
         let labels = drawn.front.iter().filter_map(|shape| match shape {
             Shape::Text(text) => Some(text.galley.text().to_owned()),
@@ -256,6 +255,114 @@ fn a_chip_surrounds_its_text_whether_or_not_the_brackets_show() {
 fn a_cue_that_wraps_gets_a_chip_on_each_row() {
     let long = format!("[[note: {}]]", "word ".repeat(40));
     assert!(drawn(&long, Reveal::default(), 200.0).chips.len() > 1);
+}
+
+#[test]
+fn underline_and_strikethrough_are_drawn_on_their_text_alone() {
+    let text = "a <u>under</u> b ~~gone~~ <u>~~both~~</u>";
+    for reveal in [Reveal::default(), ALL] {
+        let job = job(text, reveal);
+        let lines = |needle: &str| {
+            let format = format_at(&job, text.find(needle).unwrap());
+            (format.underline.width > 0.0, format.strikethrough.width > 0.0)
+        };
+        assert_eq!(["a ", "under", "gone", "both"].map(lines), [(false, false), (true, false), (false, true), (true, true)]);
+        // The markers have no lines of their own.
+        for marker in ["<u>", "</u>", "~~"] {
+            assert_eq!(lines(marker), (false, false), "{marker}");
+        }
+    }
+}
+
+/// A row as laid out: where its first character past `skip` is, its right edge, its text.
+struct Placed {
+    start: f32,
+    right: f32,
+    text: String,
+}
+
+/// The rows of `text`'s layout. The galley is checked to map every character back to itself.
+fn rows(text: &str, reveal: Reveal, wrap_width: f32) -> Vec<Placed> {
+    with_ui(|ui| {
+        let markup = Markup::parse(text);
+        let galley = layout(ui, &markup, layout_job(ui, text, &markup, reveal, &[], wrap_width));
+        assert_eq!(galley.text(), text);
+        assert_eq!(galley.end().index.0, text.chars().count(), "every character has a place: {text:?}");
+        // The plain layout, which egui makes by itself, has the same rows of each plain line.
+        for index in 0..=text.chars().count() {
+            let cursor = egui::text::CCursor { index: CharIndex(index), prefer_next_row: true };
+            let at = galley.pos_from_cursor(cursor);
+            assert_eq!(galley.layout_from_cursor(galley.cursor_from_pos(at.center().to_vec2())).row, galley.layout_from_cursor(cursor).row);
+        }
+        galley
+            .rows
+            .iter()
+            .map(|row| Placed {
+                start: row.pos.x + row.glyphs.first().map_or(0.0, |glyph| glyph.pos.x),
+                right: row.rect().right(),
+                text: row.glyphs.iter().map(|glyph| glyph.chr).collect(),
+            })
+            .collect()
+    })
+}
+
+/// The x of the character at `index`, and the x each later row starts at.
+fn hang_of(text: &str, content: usize, reveal: Reveal) -> (f32, Vec<f32>) {
+    let first = measure_at(text, reveal, content, 200.0);
+    (first, rows(text, reveal, 200.0).iter().skip(1).map(|row| row.start).collect())
+}
+
+fn measure_at(text: &str, reveal: Reveal, index: usize, wrap_width: f32) -> f32 {
+    with_ui(|ui| {
+        let markup = Markup::parse(text);
+        let galley = layout(ui, &markup, layout_job(ui, text, &markup, reveal, &[], wrap_width));
+        galley.pos_from_cursor(egui::text::CCursor::new(CharIndex(index))).left()
+    })
+}
+
+#[test]
+fn the_wrapped_rows_of_items_and_quotes_line_up_under_their_text() {
+    let long = "word ".repeat(30);
+    for prefix in ["- ", "12. ", "- a\n  - ", "> ", "> > ", "> - ", "- [[pause]] "] {
+        for reveal in [Reveal::default(), ALL] {
+            let text = format!("{prefix}{long}");
+            // The last line is the long one.
+            let line = text.rfind('\n').map_or(0, |at| at + 1);
+            let content = line + Markup::parse(&text).hangs.last().unwrap().1 - line;
+            let (first, rest) = hang_of(&text, content, reveal);
+            let rest = &rest[usize::from(line > 0)..];
+            assert!(rest.len() > 2, "{prefix:?} wraps");
+            for x in rest {
+                assert!((x - first).abs() <= 1.0, "{prefix:?} {reveal:?}: a row at {x}, the text at {first}");
+            }
+            for row in rows(&text, reveal, 200.0) {
+                assert!(row.right <= 201.0, "{prefix:?}: a row ends at {}", row.right);
+            }
+        }
+    }
+}
+
+#[test]
+fn lines_around_a_hanging_one_are_laid_out_as_before() {
+    let text = "plain\n\n- item\n\n- next\ntail line\n\n> quote\n";
+    let laid = rows(text, Reveal::default(), 600.0);
+    let texts: Vec<&str> = laid.iter().map(|row| row.text.as_str()).collect();
+    assert_eq!(texts, text.split('\n').collect::<Vec<_>>());
+    assert!(laid[0].start < 1.0 && laid[7].start < 1.0);
+    // The same rows, at the same heights, as egui's own layout of the whole text.
+    let tops = |hung: bool| {
+        with_ui(|ui| {
+            let markup = Markup::parse(text);
+            let job = layout_job(ui, text, &markup, Reveal::default(), &[], 600.0);
+            let galley = if hung { layout(ui, &markup, job) } else { ui.fonts_mut(|fonts| fonts.layout_job(job)) };
+            galley.rows.iter().map(|row| (row.min_y(), row.height())).collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(tops(true), tops(false));
+    // With nothing after a last item, there is still a row for the caret.
+    for text in ["- a\n", "- a", "- \n", "> \n\n", "- a\n\n- b\n"] {
+        assert_eq!(rows(text, Reveal::default(), 600.0).len(), text.split('\n').count(), "{text:?}");
+    }
 }
 
 #[test]

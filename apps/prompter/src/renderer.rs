@@ -81,6 +81,8 @@ const ITEM_GAP: f32 = 0.15;
 /// The gap between "End" and the rule on each side of it.
 const END_GAP: f32 = 0.5;
 const RULE_WIDTH: f32 = 0.06;
+/// The weight of an underline and a strikethrough.
+const TEXT_LINE: f32 = 0.06;
 
 /// How a script is drawn. The views' settings will add to it.
 #[derive(Debug, Clone, PartialEq)]
@@ -221,6 +223,8 @@ fn spans_job(block: &Block, style: &RenderStyle, size: f32, heading: bool) -> La
         let family = if heading || span.bold { &style.bold_font } else { &style.font };
         let mut format = style.format(FontId::new(size, family.clone()), style.colors.text);
         format.italics = span.italic;
+        let line_if = |on: bool| if on { Stroke::new(TEXT_LINE * size, style.colors.text) } else { Stroke::NONE };
+        (format.underline, format.strikethrough) = (line_if(span.underline), line_if(span.strike));
         job.append(&span.text, 0.0, format);
     }
     job
@@ -333,6 +337,13 @@ mod tests {
         let blocks = laid("plain **bold** *slanted*");
         let sections: Vec<(bool, bool)> = blocks[0].job.sections.iter().map(|s| (s.format.font_id.family == style.bold_font, s.format.italics)).collect();
         assert_eq!(sections, [(false, false), (true, false), (false, false), (false, true)]);
+    }
+
+    #[test]
+    fn underline_and_strike_spans_are_drawn_with_their_lines() {
+        let blocks = laid("plain <u>under</u> ~~gone~~");
+        let lines: Vec<(bool, bool)> = blocks[0].job.sections.iter().map(|s| (s.format.underline.width > 0.0, s.format.strikethrough.width > 0.0)).collect();
+        assert_eq!(lines, [(false, false), (true, false), (false, false), (false, true)]);
     }
 
     #[test]

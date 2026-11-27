@@ -1,6 +1,8 @@
 //! The menus' items and their enable rules (spec "Library window", Menus).
 
 use crate::editor;
+use crate::formatting::{Action, BlockStyle, ListKind};
+use crate::markup::{CueKind, Inline};
 
 /// One menu item. An item with no action yet is listed and disabled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +26,8 @@ pub enum Item {
     SelectAll,
     FindInScript,
     SearchAll,
+    /// An item of the Format menu, which the editor's toolbar has too.
+    Format(Action),
     StartOrPause,
     ResetToTop,
     JumpToSection,
@@ -60,8 +64,25 @@ pub struct MenuState {
     pub clipboard_has_html: bool,
 }
 
+/// The paragraph styles, as the toolbar's dropdown and the Format menu list them.
+pub const STYLES: &[Item] = &[
+    Item::Format(Action::Style(BlockStyle::Paragraph)),
+    Item::Format(Action::Style(BlockStyle::Heading(1))),
+    Item::Format(Action::Style(BlockStyle::Heading(2))),
+    Item::Format(Action::Style(BlockStyle::Heading(3))),
+    Item::Format(Action::Style(BlockStyle::Quote)),
+];
+
+/// The cues, as the toolbar's Insert cue menu and the Format menu list them.
+pub const CUES: &[Item] = &[
+    Item::Format(Action::Cue(CueKind::Note)),
+    Item::Format(Action::Cue(CueKind::Pause)),
+    Item::Format(Action::Cue(CueKind::Mark)),
+    Item::Format(Action::Cue(CueKind::End)),
+];
+
 /// The menus in bar order. Each is a list of groups, drawn with a separator between them.
-pub const MENUS: [(&str, &[&[Item]]); 5] = [
+pub const MENUS: [(&str, &[&[Item]]); 6] = [
     (
         "File",
         &[
@@ -72,6 +93,26 @@ pub const MENUS: [(&str, &[&[Item]]); 5] = [
         ],
     ),
     ("Edit", &[&[Item::Undo, Item::Redo], &[Item::Cut, Item::Copy, Item::Paste, Item::PastePlain], &[Item::SelectAll, Item::FindInScript, Item::SearchAll]]),
+    (
+        "Format",
+        &[
+            STYLES,
+            &[
+                Item::Format(Action::Inline(Inline::Bold)),
+                Item::Format(Action::Inline(Inline::Italic)),
+                Item::Format(Action::Inline(Inline::Underline)),
+                Item::Format(Action::Inline(Inline::Strike)),
+            ],
+            &[
+                Item::Format(Action::List(ListKind::Bulleted)),
+                Item::Format(Action::List(ListKind::Numbered)),
+                Item::Format(Action::Outdent),
+                Item::Format(Action::Indent),
+                Item::Format(Action::Rule),
+            ],
+            CUES,
+        ],
+    ),
     ("Script", &[&[Item::StartOrPause, Item::ResetToTop, Item::JumpToSection, Item::ToggleMode]]),
     (
         "View",
@@ -116,6 +157,7 @@ impl Item {
             Self::SelectAll => "Select all",
             Self::FindInScript => "Find in script",
             Self::SearchAll => "Search all scripts",
+            Self::Format(action) => action.label(),
             Self::StartOrPause => "Start or Pause",
             Self::ResetToTop => "Reset to top",
             Self::JumpToSection => "Jump to section",
@@ -148,6 +190,7 @@ impl Item {
             Self::SelectAll => "Ctrl+A",
             Self::FindInScript => "Ctrl+F",
             Self::SearchAll => "Ctrl+Shift+F",
+            Self::Format(action) => action.chord(),
             Self::ClickThrough => "Ctrl+Alt+C",
             Self::CloseTab => "Ctrl+W",
             Self::NextTab => "Ctrl+Tab",
@@ -171,6 +214,9 @@ impl Item {
             Self::Paste => state.script_open && (state.clipboard_has_text || state.clipboard_has_html),
             Self::PastePlain => state.script_open && state.clipboard_has_text,
             Self::SelectAll => state.editor.has_text,
+            Self::Format(Action::Indent) => state.editor.format.can_indent,
+            Self::Format(Action::Outdent) => state.editor.format.can_outdent,
+            Self::Format(_) => state.script_open,
             _ => false,
         }
     }
@@ -205,8 +251,67 @@ mod tests {
     fn an_open_script_with_nothing_to_edit_enables_its_file_items_and_find() {
         use Item::*;
         let mut expected = vec![NewScript, NewFolder, Import, Export, Duplicate, Delete, Snapshots, CloseTab, Exit];
-        expected.extend([FindInScript, SearchAll, ShowView, ClickThrough, ShowMarkdown, Appearance, About]);
+        expected.extend([FindInScript, SearchAll]);
+        expected.extend(format_items().into_iter().filter(|item| !nesting().contains(item)));
+        expected.extend([ShowView, ClickThrough, ShowMarkdown, Appearance, About]);
         assert_eq!(enabled(false, true), expected);
+    }
+
+    fn format_items() -> Vec<Item> {
+        all().into_iter().filter(|item| matches!(item, Item::Format(_))).collect()
+    }
+
+    fn nesting() -> [Item; 2] {
+        [Item::Format(Action::Outdent), Item::Format(Action::Indent)]
+    }
+
+    #[test]
+    fn indent_and_outdent_wait_for_a_list_item_that_can_move() {
+        let [outdent, indent] = nesting();
+        let base = MenuState { library_open: true, script_open: true, ..Default::default() };
+        let at = |can_indent, can_outdent| {
+            let format = crate::formatting::Active { can_indent, can_outdent, ..Default::default() };
+            MenuState { editor: editor::Status { format, ..Default::default() }, ..base }
+        };
+        assert!(!indent.enabled(base) && !outdent.enabled(base));
+        assert!(indent.enabled(at(true, false)) && !outdent.enabled(at(true, false)));
+        assert!(!indent.enabled(at(false, true)) && outdent.enabled(at(false, true)));
+    }
+
+    #[test]
+    fn every_format_item_needs_only_an_open_script_but_for_nesting() {
+        let closed = MenuState { library_open: true, ..Default::default() };
+        let open = MenuState { script_open: true, ..closed };
+        for item in format_items() {
+            assert!(!item.enabled(closed), "{item:?}");
+            assert_eq!(item.enabled(open), !nesting().contains(&item), "{item:?}");
+        }
+    }
+
+    #[test]
+    fn the_format_menu_lists_every_action_with_its_shortcut() {
+        let chords: Vec<(&str, &str)> = format_items().into_iter().map(|item| (item.label(), item.chord())).collect();
+        let expected = [
+            ("Paragraph", "Ctrl+0"),
+            ("Heading 1", "Ctrl+1"),
+            ("Heading 2", "Ctrl+2"),
+            ("Heading 3", "Ctrl+3"),
+            ("Quote", "Ctrl+Shift+."),
+            ("Bold", "Ctrl+B"),
+            ("Italic", "Ctrl+I"),
+            ("Underline", "Ctrl+U"),
+            ("Strikethrough", "Ctrl+Shift+X"),
+            ("Bulleted list", "Ctrl+Shift+8"),
+            ("Numbered list", "Ctrl+Shift+7"),
+            ("Outdent", "Ctrl+["),
+            ("Indent", "Ctrl+]"),
+            ("Horizontal rule", ""),
+            ("Insert note cue", ""),
+            ("Insert pause cue", ""),
+            ("Insert mark cue", ""),
+            ("Insert end cue", ""),
+        ];
+        assert_eq!(chords, expected);
     }
 
     #[test]
@@ -263,7 +368,7 @@ mod tests {
     #[test]
     fn every_item_from_the_spec_is_listed_once() {
         let counts: Vec<(&str, usize)> = MENUS.iter().map(|(title, groups)| (*title, groups.iter().map(|group| group.len()).sum())).collect();
-        assert_eq!(counts, [("File", 10), ("Edit", 9), ("Script", 4), ("View", 9), ("Help", 4)]);
+        assert_eq!(counts, [("File", 10), ("Edit", 9), ("Format", 18), ("Script", 4), ("View", 9), ("Help", 4)]);
         let items = all();
         for (index, item) in items.iter().enumerate() {
             assert!(!items[..index].contains(item), "{item:?} is listed twice");

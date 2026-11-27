@@ -2,10 +2,11 @@
 //! editor. It uses the parser the views use, and finds cues the way prompter-core's
 //! `script.rs` does. All ranges are byte ranges of the source unless they say otherwise.
 
+use std::collections::BTreeMap;
 use std::ops::Range;
 
 use prompter_core::script::{self, BlockKind, Cue};
-use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
 /// A list item's bullet. An ordered item has its number instead.
 pub const BULLET: &str = "\u{2022}";
@@ -17,6 +18,8 @@ pub struct Style {
     pub heading: Option<u8>,
     pub bold: bool,
     pub italic: bool,
+    pub underline: bool,
+    pub strike: bool,
     /// Markdown syntax: hidden or dimmed.
     pub marker: bool,
 }
@@ -60,6 +63,24 @@ pub struct CueMarkup {
     pub kind: CueKind,
 }
 
+/// A kind of formatting inside a line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Inline {
+    Bold,
+    Italic,
+    Underline,
+    Strike,
+}
+
+/// Formatted text, with the markers around it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineSpan {
+    pub kind: Inline,
+    pub open: Range<usize>,
+    /// Empty, at the end of the block's text, for a `<u>` left open.
+    pub close: Range<usize>,
+}
+
 /// One parse of a script.
 #[derive(Debug, Default)]
 pub struct Markup {
@@ -71,16 +92,30 @@ pub struct Markup {
     pub quote_lines: Vec<usize>,
     /// In order, without overlaps.
     pub cues: Vec<CueMarkup>,
+    /// In no set order.
+    pub spans: Vec<InlineSpan>,
+    /// Inline code, links and images, which formatting goes around and never into.
+    pub solid: Vec<Range<usize>>,
+    /// Each list item's and quote's line with the byte where its text starts, after the
+    /// markers. Its wrapped rows line up there. In order.
+    pub hangs: Vec<(usize, usize)>,
 }
 
 impl Markup {
     pub fn parse(text: &str) -> Self {
         let mut scan = Scan::new(text);
         // The same parser options as prompter-core, so that the two agree.
-        for (event, range) in Parser::new(text).into_offset_iter() {
-            scan.event(event, range);
+        for (event, range) in Parser::new_ext(text, Options::ENABLE_STRIKETHROUGH).into_offset_iter() {
+            let strike = matches!(event, Event::Start(Tag::Strikethrough) | Event::End(TagEnd::Strikethrough));
+            if strike && !text[range.clone()].starts_with("~~") {
+                // One tilde is not a marker. The range covers the whole run, so it has both.
+                let at = if matches!(event, Event::Start(_)) { range.start } else { range.end - 1 };
+                scan.collect("~", at, false);
+            } else {
+                scan.event(event, range);
+            }
         }
-        scan.find_cues();
+        scan.end_block();
         scan.finish()
     }
 }
@@ -89,8 +124,11 @@ impl Markup {
 const BOLD: u8 = 1;
 const ITALIC: u8 = 2;
 const MARKER: u8 = 4;
-/// The heading level, or 0, is kept in the bits from here up.
+const UNDERLINE: u8 = 64;
+const STRIKE: u8 = 128;
+/// The heading level, or 0, is kept in three bits from here up.
 const HEADING_SHIFT: u8 = 3;
+const HEADING_MASK: u8 = 7;
 
 /// Text collected for the current block, to look for cues in.
 struct Piece {
@@ -109,6 +147,14 @@ struct Scan<'a> {
     items: Vec<ListMarker>,
     quote_lines: Vec<usize>,
     cues: Vec<(Range<usize>, CueKind)>,
+    spans: Vec<InlineSpan>,
+    solid: Vec<Range<usize>>,
+    /// By line.
+    hangs: BTreeMap<usize, usize>,
+    /// The `<u>` tags of the current block that are still open.
+    open_underlines: Vec<Range<usize>>,
+    /// Where the current block's last text ends in the source.
+    text_end: usize,
     /// The number the next item of each open list gets, or `None` for a bulleted one.
     lists: Vec<Option<u64>>,
     quotes: usize,
@@ -130,6 +176,11 @@ impl<'a> Scan<'a> {
             items: Vec::new(),
             quote_lines: Vec::new(),
             cues: Vec::new(),
+            spans: Vec::new(),
+            solid: Vec::new(),
+            hangs: BTreeMap::new(),
+            open_underlines: Vec::new(),
+            text_end: 0,
             lists: Vec::new(),
             quotes: 0,
             code_block: false,
@@ -143,23 +194,32 @@ impl<'a> Scan<'a> {
         match event {
             Event::Start(tag) => self.start(tag, range),
             Event::End(tag) => self.end(tag),
-            Event::Text(text) => self.collect(&text, range.start, self.code_block),
-            Event::Code(text) => self.collect(&text, range.start, true),
+            Event::Text(text) => {
+                self.text_end = range.end;
+                self.collect(&text, range.start, self.code_block);
+            }
+            Event::Code(text) => {
+                self.text_end = range.end;
+                self.collect(&text, range.start, true);
+                self.solid.push(range);
+            }
+            Event::InlineHtml(html) => self.inline_html(&html, range),
             Event::SoftBreak => self.collect(" ", range.start, false),
             Event::HardBreak => self.collect("\n", range.start, false),
-            Event::Rule => self.find_cues(),
+            Event::Rule => self.end_block(),
             _ => {}
         }
     }
 
     fn start(&mut self, tag: Tag<'_>, range: Range<usize>) {
         match tag {
-            Tag::Strong => self.emphasis(range, 2, BOLD),
-            Tag::Emphasis => self.emphasis(range, 1, ITALIC),
-            Tag::Link { .. } | Tag::Image { .. } => {}
+            Tag::Strong => self.emphasis(range, Inline::Bold),
+            Tag::Emphasis => self.emphasis(range, Inline::Italic),
+            Tag::Strikethrough => self.emphasis(range, Inline::Strike),
+            Tag::Link { .. } | Tag::Image { .. } => self.solid.push(range),
             other => {
                 // Every other tag starts a block.
-                self.find_cues();
+                self.end_block();
                 match other {
                     Tag::Heading { level, .. } => self.heading(range, level as u8),
                     Tag::List(first) => self.lists.push(first),
@@ -176,10 +236,10 @@ impl<'a> Scan<'a> {
     }
 
     fn end(&mut self, tag: TagEnd) {
-        if matches!(tag, TagEnd::Strong | TagEnd::Emphasis | TagEnd::Link | TagEnd::Image) {
+        if matches!(tag, TagEnd::Strong | TagEnd::Emphasis | TagEnd::Strikethrough | TagEnd::Link | TagEnd::Image) {
             return;
         }
-        self.find_cues();
+        self.end_block();
         match tag {
             TagEnd::List(_) => {
                 self.lists.pop();
@@ -211,12 +271,55 @@ impl<'a> Scan<'a> {
         from + self.text[from..].bytes().take_while(|&byte| byte == b' ' || byte == b'\t').count()
     }
 
-    /// `range` covers the delimiters, `width` bytes at each end.
-    fn emphasis(&mut self, range: Range<usize>, width: usize, style: u8) {
+    /// `range` covers the delimiters.
+    fn emphasis(&mut self, range: Range<usize>, kind: Inline) {
+        let width = if kind == Inline::Italic { 1 } else { 2 };
         let (open, close) = (range.start..range.start + width, range.end.saturating_sub(width)..range.end);
+        self.span(kind, open, close);
+    }
+
+    fn span(&mut self, kind: Inline, open: Range<usize>, close: Range<usize>) {
+        let style = match kind {
+            Inline::Bold => BOLD,
+            Inline::Italic => ITALIC,
+            Inline::Underline => UNDERLINE,
+            Inline::Strike => STRIKE,
+        };
         self.add(open.end..close.start, style);
-        self.add(open, MARKER);
-        self.add(close, MARKER);
+        self.add(open.clone(), MARKER);
+        self.add(close.clone(), MARKER);
+        self.spans.push(InlineSpan { kind, open, close });
+    }
+
+    /// `<u>` and `</u>` are markers. Other HTML shows as it is written.
+    fn inline_html(&mut self, html: &str, range: Range<usize>) {
+        match underline_tag(html) {
+            Some(true) => {
+                self.text_end = range.end;
+                self.open_underlines.push(range);
+            }
+            Some(false) => match self.open_underlines.pop() {
+                Some(open) => self.span(Inline::Underline, open, range),
+                // The views drop a stray closing tag too.
+                None => self.add(range, MARKER),
+            },
+            None => {}
+        }
+    }
+
+    /// Finds the cues of the block just ended and ends each `<u>` left open in it.
+    fn end_block(&mut self) {
+        while let Some(open) = self.open_underlines.pop() {
+            let end = self.text_end.max(open.end);
+            self.span(Inline::Underline, open, end..end);
+        }
+        self.find_cues();
+    }
+
+    /// Wrapped rows of `line` line up at `at`, or further in if the line has more markers.
+    fn hang(&mut self, line: usize, at: usize) {
+        let hang = self.hangs.entry(line).or_insert(at);
+        *hang = (*hang).max(at);
     }
 
     fn heading(&mut self, range: Range<usize>, level: u8) {
@@ -262,6 +365,7 @@ impl<'a> Scan<'a> {
             _ => BULLET.to_owned(),
         };
         self.add(range.clone(), MARKER);
+        self.hang(line, range.end);
         self.items.push(ListMarker { range, line, depth, label });
     }
 
@@ -273,6 +377,7 @@ impl<'a> Scan<'a> {
             if let Some(at) = quote_marker(&self.text[..self.line_end(line)], self.line_starts[line], self.quotes) {
                 let space = usize::from(self.text[at + 1..].starts_with(' '));
                 self.add(at..at + 1 + space, MARKER);
+                self.hang(line, at + 1 + space);
             }
         }
     }
@@ -353,8 +458,16 @@ impl<'a> Scan<'a> {
             }
             let newline = &text[start..at] == "\n";
             let bits = if newline { 0 } else { self.bytes[start] };
-            let level = bits >> HEADING_SHIFT;
-            let style = Style { heading: (level > 0).then_some(level), bold: bits & BOLD != 0, italic: bits & ITALIC != 0, marker: bits & MARKER != 0 };
+            let level = (bits >> HEADING_SHIFT) & HEADING_MASK;
+            let has = |bit: u8| bits & bit != 0;
+            let style = Style {
+                heading: (level > 0).then_some(level),
+                bold: has(BOLD),
+                italic: has(ITALIC),
+                underline: has(UNDERLINE),
+                strike: has(STRIKE),
+                marker: has(MARKER),
+            };
             runs.push(Run { range: start..at, line, style });
             line += usize::from(newline);
             start = at;
@@ -371,12 +484,21 @@ impl<'a> Scan<'a> {
         // Nested quotes list a line once each.
         self.quote_lines.sort_unstable();
         self.quote_lines.dedup();
-        Markup { runs, items: self.items, quote_lines: self.quote_lines, cues }
+        let hangs = self.hangs.into_iter().collect();
+        Markup { runs, items: self.items, quote_lines: self.quote_lines, cues, spans: self.spans, solid: self.solid, hangs }
     }
 }
 
+/// `Some(true)` for `<u>`, `Some(false)` for `</u>` and `None` for any other HTML. The same
+/// rule as prompter-core's.
+fn underline_tag(html: &str) -> Option<bool> {
+    let name = html.strip_prefix('<')?.strip_suffix('>')?.trim_end();
+    let (name, opens) = name.strip_prefix('/').map_or((name, true), |name| (name, false));
+    name.eq_ignore_ascii_case("u").then_some(opens)
+}
+
 /// The length of the list marker that `text` starts with, without the space after it.
-fn list_marker_width(text: &str) -> Option<usize> {
+pub fn list_marker_width(text: &str) -> Option<usize> {
     let digits = text.bytes().take_while(u8::is_ascii_digit).count();
     let width = match text.as_bytes().get(digits)? {
         b'-' | b'+' | b'*' if digits == 0 => 1,
@@ -471,6 +593,38 @@ mod tests {
         // Across lines, with each end on its own.
         assert_eq!(markers("**one\ntwo**"), ["**", "**"]);
         assert_eq!(markers("2 * 3 = 6, snake_case, `**code**`, **open"), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn underline_and_strikethrough_markers_are_found_and_their_text_styled() {
+        let text = "a <u>under</u> b ~~gone~~ c <U >**both**</u>";
+        assert_eq!(markers(text), ["<u>", "</u>", "~~", "~~", "<U >**", "**</u>"]);
+        assert_eq!(styled(text, |style| style.underline), "underboth");
+        assert_eq!(styled(text, |style| style.strike), "gone");
+        assert_eq!(styled("## <u>~~Head~~</u>", |style| style.underline && style.strike && style.heading == Some(2)), "Head");
+        // One tilde, a tag with attributes and other HTML are text.
+        assert_eq!(markers("~one~ a <u class=x>b <br> c"), Vec::<&str>::new());
+        // A tag left open ends with its block, and a stray closing tag is still a marker.
+        assert_eq!(styled("a <u>open\n\nnext", |style| style.underline), "open");
+        assert_eq!(markers("a</u> b"), ["</u>"]);
+    }
+
+    #[test]
+    fn the_underline_and_strike_text_is_what_the_views_draw() {
+        let text = "- <u>a **b** c\n- ~~d~~ ~e~ </u>\n\n> x <u>y</u> z";
+        let drawn = |pick: fn(&prompter_core::script::Span) -> bool| -> String {
+            script::parse(text).blocks.iter().flat_map(|block| &block.spans).filter(|span| pick(span)).map(|span| span.text.as_str()).collect()
+        };
+        assert_eq!(styled(text, |style| style.underline), drawn(|span| span.underline));
+        assert_eq!(styled(text, |style| style.strike), drawn(|span| span.strike));
+    }
+
+    #[test]
+    fn each_list_and_quote_line_hangs_where_its_text_starts() {
+        let text = "- a\n  - b\n\ntext\n\n> c\n> > d\n> - e\nlazy";
+        let before = |at: usize| &text[text[..at].rfind('\n').map_or(0, |newline| newline + 1)..at];
+        let hangs: Vec<(usize, &str)> = Markup::parse(text).hangs.into_iter().map(|(line, at)| (line, before(at))).collect();
+        assert_eq!(hangs, [(0, "- "), (1, "  - "), (5, "> "), (6, "> > "), (7, "> - ")]);
     }
 
     #[test]

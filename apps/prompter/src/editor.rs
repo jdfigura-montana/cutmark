@@ -1,15 +1,16 @@
 //! The script editor: a styled Markdown text field that keeps its selection while a menu or
-//! the find bar has the keyboard, and the Edit menu's commands for it.
+//! the find bar has the keyboard, and the Edit and Format menus' commands for it.
 
 use std::collections::HashSet;
 use std::ops::Range;
 
-use egui::text::{CCursor, CCursorRange, CharIndex};
+use egui::text::{CCursor, CCursorRange, CharIndex, LayoutJob, TextFormat};
 use egui::text_edit::TextEditState;
-use ui_kit::tokens::{color, radius, space};
+use ui_kit::tokens::{color, space};
 
 use crate::clipboard::{self, Clipboard};
 use crate::find;
+use crate::formatting::{self, Action};
 use crate::menu::Item;
 use crate::styled::{self, ParseCache, Reveal};
 
@@ -17,11 +18,15 @@ use crate::styled::{self, ParseCache, Reveal};
 const MATCH_TINT: f32 = 0.3;
 const CURRENT_TINT: f32 = 0.7;
 
-/// The room between the field's box and what scrolls in it.
-const FIELD_PAD: f32 = space::SCALE_4;
-/// The box's outline: a hairline, or heavier and in the accent color while typing goes there.
-pub const FIELD_STROKE: f32 = 1.0;
-pub const FOCUS_STROKE: f32 = 2.0;
+/// The widest the column of text gets.
+pub const COLUMN_WIDTH: f32 = 760.0;
+/// The room above the first line, and below the last.
+pub const TOP_PAD: f32 = 48.0;
+const BOTTOM_PAD: f32 = space::SCALE_8;
+/// The caret, in the accent color. It is what shows that typing goes to the editor.
+pub const CARET_WIDTH: f32 = 1.5;
+/// What an empty script shows.
+pub const PLACEHOLDER: &str = "Enter text or type '/' for commands";
 
 /// The editor's id for one opening of a script. Its cursor and undo history are kept under it.
 pub fn id(serial: u64) -> egui::Id {
@@ -135,6 +140,8 @@ pub struct Status {
     pub has_selection: bool,
     pub can_undo: bool,
     pub can_redo: bool,
+    /// The formatting at the caret.
+    pub format: formatting::Active,
 }
 
 /// The find matches to paint.
@@ -247,9 +254,35 @@ impl Editor {
         self.look.show_markdown = show;
     }
 
-    /// The editor in its box, filling the space left. The first time an opening is shown, the
-    /// caret goes to the top and the editor takes the keyboard: with its syntax hidden and no
-    /// caret, a script looks like a page that cannot be typed in.
+    /// Does a formatting action to the selection or the caret's line, as one step of the
+    /// undo history, and gives the editor the keyboard. True if the text changed. Call it
+    /// before [`Editor::show`], and not in the frame of a click that asked for it.
+    pub fn format(&mut self, ctx: &egui::Context, serial: u64, text: &mut String, action: Action) -> bool {
+        let id = id(serial);
+        ctx.memory_mut(|memory| memory.request_focus(id));
+        let end = || CCursorRange::one(CCursor::new(CharIndex(text.chars().count())));
+        let range = TextEditState::load(ctx, id).and_then(|state| state.cursor.char_range()).unwrap_or_else(end);
+        let [first, last] = range.sorted_cursors();
+        let selection = byte_of(text, first.index)..byte_of(text, last.index);
+        let markup = self.look.cache.get(text);
+        let Some(change) = formatting::apply(text, &markup, selection, action) else {
+            return false;
+        };
+        // A point on each side, so that the change is exactly one step.
+        add_undo_point(ctx, id, text);
+        *text = change.text;
+        select(ctx, id, char_range(text, change.selection));
+        add_undo_point(ctx, id, text);
+        self.edited.insert(serial);
+        // The status is read again, though the caret may not have moved.
+        self.seen = None;
+        true
+    }
+
+    /// The editor, filling the space left: a column of text in the middle of it. The first
+    /// time an opening is shown, the caret goes to the top and the editor takes the keyboard:
+    /// with its syntax hidden and no caret, a script looks like a page that cannot be typed
+    /// in.
     pub fn show(&mut self, ui: &mut egui::Ui, serial: u64, text: &mut String, highlight: Option<Highlight<'_>>) -> Shown {
         if self.serial != serial {
             (self.serial, self.seen, self.status) = (serial, None, Status::default());
@@ -260,19 +293,23 @@ impl Editor {
             select(ui.ctx(), id, CCursorRange::one(CCursor::new(CharIndex(0))));
             ui.memory_mut(|memory| memory.request_focus(id));
         }
-        let boxed = ui.available_rect_before_wrap();
-        ui.painter().rect_filled(boxed, radius::SEGMENT, color::BG_CONTROL);
         let look = &mut self.look;
-        let inside = egui::UiBuilder::new().max_rect(boxed.shrink(FIELD_PAD));
+        // With the caret in a list, Tab is the editor's. Elsewhere it moves the keyboard on.
+        let in_list = self.status.format.list.is_some();
+        let area = egui::UiBuilder::new().max_rect(ui.available_rect_before_wrap());
         let shown = ui
-            .scope_builder(inside, |ui| egui::ScrollArea::vertical().id_salt(id).auto_shrink(false).show(ui, |ui| field(ui, id, text, highlight, look)).inner)
+            .scope_builder(area, |ui| {
+                let accent = ui_kit::Theme::get(ui.ctx()).accent.accent;
+                ui.visuals_mut().text_cursor.stroke = egui::Stroke::new(CARET_WIDTH, accent);
+                let scroll = egui::ScrollArea::vertical().id_salt(id).auto_shrink(false);
+                scroll
+                    .show(ui, |ui| {
+                        let column = column(ui.available_rect_before_wrap());
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(column), |ui| field(ui, id, text, highlight, look, in_list)).inner
+                    })
+                    .inner
+            })
             .inner;
-        let outline = if ui.memory(|memory| memory.has_focus(id)) {
-            egui::Stroke::new(FOCUS_STROKE, ui_kit::Theme::get(ui.ctx()).accent.accent)
-        } else {
-            egui::Stroke::new(FIELD_STROKE, color::STROKE_HAIRLINE)
-        };
-        ui.painter().rect_stroke(boxed, radius::SEGMENT, outline, egui::StrokeKind::Inside);
 
         if shown.changed {
             self.edited.insert(serial);
@@ -282,9 +319,14 @@ impl Editor {
         self.cursor_line = line_of(text, range.primary.index);
         self.status.has_text = !text.is_empty();
         self.status.has_selection = !range.is_empty();
-        // Reading the undo history copies it, so it is read only when it can have changed.
+        // Reading the undo history copies it, so it is read only when it can have changed, and
+        // so is the formatting at the caret, which reads the whole text.
         if shown.changed || self.seen != Some(range) {
             self.seen = Some(range);
+            let [first, last] = range.sorted_cursors();
+            let selection = byte_of(text, first.index)..byte_of(text, last.index);
+            let caret = byte_of(text, range.primary.index);
+            self.status.format = formatting::active(text, &self.look.cache.get(text), selection, caret);
             let undoer = state.undoer();
             let now = (range, text.clone());
             // Before the first change, the history holds only where the cursor was.
@@ -307,8 +349,21 @@ fn cursor_row(ctx: &egui::Context, id: egui::Id, text: &str) -> Option<usize> {
     Some(line_of(text, range.primary.index) as usize - 1)
 }
 
+/// The byte at which the character at `index` starts.
+fn byte_of(text: &str, index: CharIndex) -> usize {
+    text.char_indices().nth(index.0).map_or(text.len(), |(at, _)| at)
+}
+
+/// Where the field goes in `area`: the text's column in the middle, with room at its left for
+/// quote bars and as much at its right.
+fn column(area: egui::Rect) -> egui::Rect {
+    let width = area.width().min(COLUMN_WIDTH + 2.0 * styled::GUTTER);
+    let left = area.left() + ((area.width() - width) / 2.0).floor();
+    egui::Rect::from_min_size(egui::pos2(left, area.top()), egui::vec2(width, area.height()))
+}
+
 /// The text field inside its scroll area.
-fn field(ui: &mut egui::Ui, id: egui::Id, text: &mut String, highlight: Option<Highlight<'_>>, look: &mut Look) -> Shown {
+fn field(ui: &mut egui::Ui, id: egui::Id, text: &mut String, highlight: Option<Highlight<'_>>, look: &mut Look, in_list: bool) -> Shown {
     // egui drops the selection of a field without the keyboard, and a right-click moves the
     // cursor. The selection is put back below, so that menus and the find bar can act on it.
     let mut kept = TextEditState::load(ui.ctx(), id).and_then(|state| state.cursor.char_range());
@@ -326,8 +381,8 @@ fn field(ui: &mut egui::Ui, id: egui::Id, text: &mut String, highlight: Option<H
 
     let font = styled::body_font();
     let line = ui.fonts_mut(|fonts| fonts.row_height(&font));
-    // Enough empty rows that a click anywhere in the panel lands in the field.
-    let rows = (ui.available_height() / line).floor().max(1.0) as usize;
+    // Enough empty rows that a click anywhere down the column lands in the field.
+    let rows = ((ui.available_height() - TOP_PAD - BOTTOM_PAD) / line).floor().max(1.0) as usize;
     let accent = ui_kit::Theme::get(ui.ctx()).accent.accent;
     let cache = &mut look.cache;
     let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, wrap_width: f32| {
@@ -341,8 +396,9 @@ fn field(ui: &mut egui::Ui, id: egui::Id, text: &mut String, highlight: Option<H
                 (found, accent.gamma_multiply(if current { CURRENT_TINT } else { MATCH_TINT }))
             })
             .collect();
-        let job = styled::layout_job(ui, text, &cache.get(text), reveal, &tinted, wrap_width);
-        ui.fonts_mut(|fonts| fonts.layout_job(job))
+        let markup = cache.get(text);
+        let job = styled::layout_job(ui, text, &markup, reveal, &tinted, wrap_width);
+        styled::layout(ui, &markup, job)
     };
 
     // The undo history takes points when the text has rested, so a paste gets one on each side
@@ -354,9 +410,11 @@ fn field(ui: &mut egui::Ui, id: egui::Id, text: &mut String, highlight: Option<H
     let right_button = ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary) || i.pointer.button_released(egui::PointerButton::Secondary));
     // A place under the text, for what is only known once the text is laid out.
     let behind = ui.painter().add(egui::Shape::Noop);
-    let margin = egui::Margin { left: styled::GUTTER as i8, ..egui::Margin::symmetric(space::SCALE_4 as i8, space::SCALE_2 as i8) };
+    let gutter = styled::GUTTER as i8;
+    let margin = egui::Margin { left: gutter, right: gutter, top: TOP_PAD as i8, bottom: BOTTOM_PAD as i8 };
     let output = egui::TextEdit::multiline(text)
         .id(id)
+        .lock_focus(in_list)
         .font(font)
         .text_color(color::TEXT_PRIMARY)
         // The margin goes in the frame: egui ignores TextEdit::margin once a frame is given.
@@ -372,6 +430,9 @@ fn field(ui: &mut egui::Ui, id: egui::Id, text: &mut String, highlight: Option<H
     let decorations = styled::decorations(ui, &look.cache.get(text), &output.galley, output.galley_pos.to_vec2(), reveal);
     ui.painter().set(behind, egui::Shape::Vec(decorations.behind));
     ui.painter().extend(decorations.front);
+    if text.is_empty() {
+        placeholder(ui, &output.galley, output.galley_pos);
+    }
 
     if let Some(range) = kept {
         // A right-click inside the selection keeps it. Anywhere else, it moves the cursor.
@@ -397,6 +458,15 @@ fn field(ui: &mut egui::Ui, id: egui::Id, text: &mut String, highlight: Option<H
         ui.ctx().request_repaint();
     }
     Shown { changed: response.changed(), response }
+}
+
+/// The hint in an empty script, where its first line would be.
+fn placeholder(ui: &egui::Ui, galley: &egui::Galley, at: egui::Pos2) {
+    let format = TextFormat { italics: true, ..TextFormat::simple(styled::body_font(), color::TEXT_TERTIARY) };
+    let mut job = LayoutJob::single_section(PLACEHOLDER.to_owned(), format);
+    job.wrap.max_width = galley.job.wrap.max_width;
+    let hint = ui.fonts_mut(|fonts| fonts.layout_job(job));
+    ui.painter().galley(at, hint, color::TEXT_TERTIARY);
 }
 
 fn select(ctx: &egui::Context, id: egui::Id, range: CCursorRange) {

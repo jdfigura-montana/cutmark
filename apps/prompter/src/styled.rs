@@ -5,9 +5,10 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use egui::text::{ByteIndex, ByteRange, CharIndex, LayoutJob, LayoutSection, TextFormat};
-use egui::{Color32, FontId, Rect, Shape, Vec2, pos2, vec2};
+use egui::{Color32, FontId, Galley, Rect, Shape, Stroke, Vec2, pos2, vec2};
 use ui_kit::tokens::{color, space, typography};
 
 use crate::markup::{CueKind, ListMarker, Markup, Style};
@@ -25,6 +26,10 @@ const LINE_HEIGHT: f32 = 1.6;
 const CHIP_PAD: f32 = space::SCALE_4;
 /// How far a chip reaches above and below its text.
 const CHIP_REACH: f32 = 1.0;
+/// The weight of an underline and a strikethrough.
+const TEXT_LINE: f32 = 1.0;
+/// The least width wrapped rows keep, however deep their hanging indent is.
+const MIN_WRAP: f32 = 4.0 * typography::BODY_SIZE;
 /// How strongly each cue type's color fills its chip.
 const NOTE_TINT: f32 = 0.45;
 const ACCENT_TINT: f32 = 0.35;
@@ -98,7 +103,9 @@ fn format(style: Style, shown: bool) -> TextFormat {
         return TextFormat { line_height, ..TextFormat::simple(FontId::new(HIDDEN_SIZE, font.family), Color32::TRANSPARENT) };
     }
     let text = if style.marker { color::TEXT_TERTIARY } else { color::TEXT_PRIMARY };
-    TextFormat { line_height, italics: style.italic, ..TextFormat::simple(font, text) }
+    let line_if = |on: bool| if on { Stroke::new(TEXT_LINE, text) } else { Stroke::NONE };
+    let (underline, strikethrough) = (line_if(style.underline), line_if(style.strike));
+    TextFormat { line_height, italics: style.italic, underline, strikethrough, ..TextFormat::simple(font, text) }
 }
 
 fn width(ui: &egui::Ui, font: &FontId, text: &str) -> f32 {
@@ -159,6 +166,102 @@ pub fn layout_job(ui: &egui::Ui, text: &str, markup: &Markup, reveal: Reveal, ma
         }
     }
     job
+}
+
+/// The laid out text. The wrapped rows of a list item or quote line start where its text
+/// does. egui has no such hanging indent, so each of those lines is laid out on its own, as
+/// narrow as its wrapped rows are, and they are then moved in. The cursor, the selection and
+/// clicks all go by where a row is, so they move with it.
+pub fn layout(ui: &egui::Ui, markup: &Markup, job: LayoutJob) -> Arc<Galley> {
+    if markup.hangs.is_empty() {
+        return ui.fonts_mut(|fonts| fonts.layout_job(job));
+    }
+    let starts: Vec<usize> = std::iter::once(0).chain(job.text.match_indices('\n').map(|(at, _)| at + 1)).collect();
+    // A last line that is empty goes with the line before it, as it does in egui's layout.
+    let count = starts.len() - usize::from(starts.len() > 1 && job.text.ends_with('\n'));
+    let end_of = |line: usize| if line + 1 < count { starts[line + 1] - 1 } else { job.text.len() };
+
+    let mut galleys = Vec::new();
+    let mut hangs = markup.hangs.iter().peekable();
+    // The section to look from, and the first line not laid out yet.
+    let (mut section, mut plain) = (0, 0);
+    for line in 0..=count {
+        while hangs.next_if(|&&(hung, _)| hung < line).is_some() {}
+        let content = hangs.next_if(|&&(hung, _)| hung == line).map(|&(_, content)| content);
+        if line < count && content.is_none() {
+            continue;
+        }
+        // The lines between two hanging ones are laid out together.
+        if plain < line {
+            let piece = piece(&job, &mut section, starts[plain]..end_of(line - 1));
+            galleys.push(ui.fonts_mut(|fonts| fonts.layout_job(piece)));
+        }
+        if let Some(content) = content.filter(|_| line < count) {
+            let piece = piece(&job, &mut section, starts[line]..end_of(line));
+            galleys.push(hanging(ui, piece, content - starts[line]));
+        }
+        plain = line + 1;
+    }
+    let pixels_per_point = ui.ctx().pixels_per_point();
+    Arc::new(Galley::concat(Arc::new(job), &galleys, pixels_per_point))
+}
+
+/// The part of `job` in `range`, cut the way egui cuts a job into paragraphs. `from` is the
+/// first section that may reach into it, and is moved up.
+fn piece(job: &LayoutJob, from: &mut usize, range: Range<usize>) -> LayoutJob {
+    let (start, end) = (ByteIndex(range.start), ByteIndex(range.end));
+    while job.sections.get(*from).is_some_and(|section| section.byte_range.end <= start) {
+        *from += 1;
+    }
+    let sections = job.sections[*from..]
+        .iter()
+        .take_while(|section| section.byte_range.start <= end)
+        .map(|section| LayoutSection {
+            leading_space: if start <= section.byte_range.start { section.leading_space } else { 0.0 },
+            byte_range: section.byte_range.start.saturating_sub(range.start)..section.byte_range.end.min(end).saturating_sub(range.start),
+            format: section.format.clone(),
+        })
+        .collect();
+    LayoutJob { text: job.text[range].to_owned(), sections, wrap: job.wrap.clone(), keep_trailing_whitespace: true, ..Default::default() }
+}
+
+/// Lays out one line whose text starts at byte `content`, past its markers.
+fn hanging(ui: &egui::Ui, mut job: LayoutJob, content: usize) -> Arc<Galley> {
+    // Where the text starts: the line's indent, then whatever width its markers have.
+    let lead = job.sections.first().map_or(0.0, |section| section.leading_space);
+    let markers: f32 = job
+        .sections
+        .iter()
+        .enumerate()
+        .take_while(|(_, section)| section.byte_range.start.0 < content)
+        .map(|(index, section)| {
+            let part = section.byte_range.start.0..section.byte_range.end.0.min(content);
+            let space = if index == 0 { 0.0 } else { section.leading_space };
+            space + width(ui, &section.format.font_id, &job.text[part])
+        })
+        .sum();
+    if lead + markers < 1.0 {
+        return ui.fonts_mut(|fonts| fonts.layout_job(job));
+    }
+    // The first row's indent is added after the layout, so that every row can be as wide.
+    if let Some(first) = job.sections.first_mut() {
+        first.leading_space = 0.0;
+    }
+    job.wrap.max_width = (job.wrap.max_width - lead - markers).max(MIN_WRAP);
+    let chars = job.text[..content.min(job.text.len())].chars().count();
+    let mut galley = Arc::unwrap_or_clone(ui.fonts_mut(|fonts| fonts.layout_job(job)));
+    // Where the text is on the first row, measured in the layout itself.
+    let text_at = galley.rows.first().map_or(0.0, |row| row.x_offset(CharIndex(chars)));
+    let mut wrapped = false;
+    for (index, row) in galley.rows.iter_mut().enumerate() {
+        if index == 0 {
+            row.pos.x += lead;
+        } else if wrapped {
+            row.pos.x += lead + text_at;
+        }
+        wrapped = !row.ends_with_newline;
+    }
+    Arc::new(galley)
 }
 
 /// What is drawn around the text.
