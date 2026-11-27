@@ -198,7 +198,7 @@ fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, mut pipeline: P
             };
             let pts = pacer.pts_for(n);
             let timer = Instant::now();
-            let encoded = encode_one_frame(&mut pipeline, &mux, stats, &frame, pts);
+            let encoded = encode_one_frame(&mut pipeline, &mut |packet| send_video(&mux, packet), stats, &frame, pts);
             times.add(timer.elapsed());
             match encoded {
                 Ok(()) => {
@@ -231,29 +231,37 @@ fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, mut pipeline: P
     }
 }
 
+/// Where the video thread's encoded packets go.
+type VideoSink<'a> = &'a mut dyn FnMut(EncodedPacket) -> Result<(), MediaError>;
+
+/// Queues one packet as the video stream of a muxer.
+fn send_video(mux: &MuxSender, packet: EncodedPacket) -> Result<(), MediaError> {
+    mux.send(VIDEO_STREAM, packet)
+}
+
 /// Converts, encodes and queues one due frame.
-fn encode_one_frame(pipeline: &mut Pipeline, mux: &MuxSender, stats: &Stats, frame: &Composite, pts: i64) -> Result<(), EngineError> {
+fn encode_one_frame(pipeline: &mut Pipeline, sink: VideoSink<'_>, stats: &Stats, frame: &Composite, pts: i64) -> Result<(), EngineError> {
     pipeline.converter.convert(&frame.texture, &pipeline.nv12)?;
     let mut hw = HwFrame::from_pool(&pipeline.pool)?;
     hw.copy_from(pipeline.gpu.context(), &pipeline.nv12)?;
     hw.set_pts(pts);
     pipeline.encoder.send(hw)?;
-    let mut mux_err: Option<MediaError> = None;
-    pipeline.encoder.receive(&mut |packet| write_packet(packet, mux, stats, &mut mux_err))?;
-    if let Some(err) = mux_err {
+    let mut sink_err: Option<MediaError> = None;
+    pipeline.encoder.receive(&mut |packet| write_packet(packet, &mut *sink, stats, &mut sink_err))?;
+    if let Some(err) = sink_err {
         return Err(err.into());
     }
     Ok(())
 }
 
-/// Queues one packet into the mux thread and adds its bytes to the stats.
-fn write_packet(packet: EncodedPacket, mux: &MuxSender, stats: &Stats, mux_err: &mut Option<MediaError>) {
+/// Hands one packet on and adds its bytes to the stats.
+fn write_packet(packet: EncodedPacket, sink: VideoSink<'_>, stats: &Stats, sink_err: &mut Option<MediaError>) {
     stats.bytes_written.fetch_add(packet.size() as u64, Ordering::Relaxed);
-    if mux_err.is_some() {
+    if sink_err.is_some() {
         return;
     }
-    if let Err(err) = mux.send(VIDEO_STREAM, packet) {
-        *mux_err = Some(err);
+    if let Err(err) = sink(packet) {
+        *sink_err = Some(err);
     }
 }
 
@@ -261,7 +269,7 @@ fn write_packet(packet: EncodedPacket, mux: &MuxSender, stats: &Stats, mux_err: 
 /// when the session finishes it.
 fn finish_file(mut encoder: AmfEncoder, mux: &MuxSender, stats: &Stats) -> Result<(), EngineError> {
     let mut mux_err: Option<MediaError> = None;
-    encoder.finish(&mut |packet| write_packet(packet, mux, stats, &mut mux_err))?;
+    encoder.finish(&mut |packet| write_packet(packet, &mut |packet| send_video(mux, packet), stats, &mut mux_err))?;
     if let Some(err) = mux_err {
         return Err(err.into());
     }
@@ -335,6 +343,10 @@ fn tick_time(clock_start: i64, n: u64, qpc_freq: i64, fps: u32) -> i64 {
     let offset = i128::from(n) * i128::from(qpc_freq) / i128::from(fps);
     (i128::from(clock_start) + offset) as i64
 }
+
+#[cfg(test)]
+#[path = "video_amf_tests.rs"]
+mod amf_tests;
 
 #[cfg(test)]
 mod tests {

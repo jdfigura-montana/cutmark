@@ -159,7 +159,8 @@ fn audio_camera_pcm_and_marks_are_cut_to_the_video_start() -> TestResult {
     // 12 s buffered with 5 s to keep: the video starts on the keyframe at 6 s.
     let start_sample = 6 * i64::from(OUT_RATE);
     assert_eq!(front_pts(&rings.video.ring), Some(180));
-    assert_eq!(rings.camera.as_ref().and_then(|camera| front_pts(&camera.ring)), Some(181));
+    // The camera keeps its own newest keyframe at or before that, from 4 s.
+    assert_eq!(rings.camera.as_ref().and_then(|camera| front_pts(&camera.ring)), Some(121));
     let audio_front = rings.audio.first().and_then(|audio| front_pts(&audio.ring)).ok_or("no audio")?;
     assert!((start_sample - AAC_FRAME_SAMPLES..start_sample).contains(&audio_front), "{audio_front}");
     assert_eq!(rings.pcm.first().and_then(|pcm| pcm.blocks.front()).map(|block| block.start), Some(start_sample as u64));
@@ -169,7 +170,7 @@ fn audio_camera_pcm_and_marks_are_cut_to_the_video_start() -> TestResult {
     let snapshot = rings.snapshot(11_500).ok_or("no snapshot")?;
     assert_eq!((snapshot.start_us, snapshot.duration_ms), (6_000_000, 5500));
     let camera = snapshot.camera.as_ref().ok_or("no camera")?;
-    assert_eq!((camera.packets.first().map(|p| p.pts), camera.packets.last().map(|p| p.pts)), (Some(181), Some(344)));
+    assert_eq!((camera.packets.first().map(|p| p.pts), camera.packets.last().map(|p| p.pts)), (Some(121), Some(344)));
     let audio = &snapshot.audio.first().ok_or("no audio")?.packets;
     assert_eq!(audio.first().map(|p| p.pts), Some(audio_front));
     assert!(audio.last().is_some_and(|p| p.time_us < 11_500_000 && p.time_us > 11_470_000));
@@ -196,8 +197,11 @@ fn a_saved_replay_is_a_take_with_its_streams_marks_wav_and_session_file() -> Tes
     fn assert_send<T: Send>() {}
     assert_send::<ReplaySnapshot>();
     media_io::init()?;
-    let dir = scratch("take")?;
-    let cfg = config(&dir, true);
+    // The writer creates the take folder.
+    let dir = scratch("take")?.join("take07");
+    let mut cfg = config(&dir, true);
+    cfg.profile.layout = crate::config::LayoutKind::Pip;
+    cfg.profile.webcam = Some(crate::config::WebcamSettings::default());
     let mut encoders = Vec::new();
     for _ in 0..2 {
         encoders.push(AudioEncoder::open(cfg.audio_codec, OUT_RATE, OUT_CHANNELS)?);
@@ -248,9 +252,9 @@ fn a_saved_replay_is_a_take_with_its_streams_marks_wav_and_session_file() -> Tes
     let cam = saved.cam.ok_or("no camera file")?;
     assert_eq!(cam.file, dir.join("take07_cam.mkv"));
     let cam_times = packet_times(&cam.file)?;
-    // The first camera keyframe, 2 frames in, is written at 0; the frame after it keeps its time.
-    assert_eq!(cam_times.first().map(|list| list.iter().take(2).copied().collect::<Vec<_>>()), Some(vec![0, 100]));
-    assert_eq!(cam.duration_ms, 5000);
+    // The clip starts at frame 210; the camera file starts on its keyframe at frame 182, with every frame at its own time.
+    assert_eq!(cam_times.first().map(|list| list.iter().take(2).copied().collect::<Vec<_>>()), Some(vec![0, 33]));
+    assert_eq!(cam.duration_ms, 5933);
 
     assert_eq!(saved.summary.wav_files, vec![dir.join("take07_t1_Mic.wav")]);
     assert_eq!(saved.summary.wav_files.first().and_then(|wav| wav_length_ms(wav)), Some(5000));
@@ -264,7 +268,7 @@ fn a_saved_replay_is_a_take_with_its_streams_marks_wav_and_session_file() -> Tes
     assert!(marks.contains(&(MarkType::Note, 1000, None, None)) && marks.contains(&(MarkType::Note, 3000, None, None)), "{marks:?}");
     assert!(marks.contains(&(MarkType::System, 4000, None, Some("Paused"))), "{marks:?}");
     assert_eq!(sidecar.media.len(), 3);
-    assert!(sidecar.media.iter().all(|media| media.duration_ms == 5000));
+    assert_eq!(sidecar.media.iter().filter(|media| media.duration_ms == 5000).count(), 2);
     let made = |t_ms: u64| sidecar.marks.iter().find(|mark| mark.mark_type == MarkType::Note && mark.t_ms == t_ms).map(|mark| mark.created_at);
     assert_eq!(made(3000).zip(made(1000)).map(|(late, early)| (late - early).num_milliseconds()), Some(2000));
     assert!(dir.join("take07_marks.md").exists() && dir.join("take07_marks.csv").exists());
@@ -276,7 +280,8 @@ fn a_saved_replay_is_a_take_with_its_streams_marks_wav_and_session_file() -> Tes
     assert_eq!(session["video_file"], "take07.mkv");
     assert_eq!(session["cam_file"], "take07_cam.mkv");
     assert_eq!(session["result"]["finished"], true);
-    assert!(session["composite"].is_object());
+    assert_eq!(session["composite"]["layers"][0]["start_offset_ms"], 933);
+    assert!(saved.finalize_warnings.is_empty());
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

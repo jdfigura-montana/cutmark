@@ -532,6 +532,17 @@ impl SessionFile {
         }
     }
 
+    /// Records on the composite block's camera layer how many ms before the main video the camera file starts;
+    /// negative when it starts later. Only a saved replay has one.
+    pub(super) fn set_camera_start_offset(&mut self, offset_ms: i64) {
+        let layers = self.doc.pointer_mut("/composite/layers").and_then(serde_json::Value::as_array_mut);
+        for layer in layers.into_iter().flatten().filter_map(serde_json::Value::as_object_mut) {
+            if layer.get("source").and_then(serde_json::Value::as_str) == Some("cam") {
+                layer.insert("start_offset_ms".to_owned(), serde_json::json!(offset_ms));
+            }
+        }
+    }
+
     /// Marks the take as a saved replay of the buffer: `length` is the replay length setting, `started_at` the clip's start.
     pub(super) fn set_replay(&mut self, started_at: chrono::DateTime<chrono::Local>, length: std::time::Duration) {
         if let Some(doc) = self.doc.as_object_mut() {

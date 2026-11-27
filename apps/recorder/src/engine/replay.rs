@@ -6,7 +6,7 @@
 //! See the replay buffer spec: Under the hood, The buffer and Save.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -140,10 +140,11 @@ struct CamRing {
 }
 
 impl CamRing {
-    /// Starts the ring on the first keyframe at or after the video's start, to the nearest camera frame.
+    /// Starts the ring on its newest keyframe at or before the video's start, or on its first one while it has none
+    /// that old. The camera's keyframes need not fall on the main video's.
     fn trim(&mut self, start_us: i64) {
-        let cut = us_to_ticks(start_us, self.ring.time_base);
-        self.ring.drop_front_while(|packet| packet.pts < cut || !packet.key);
+        self.ring.drop_front_while(|packet| !packet.key);
+        self.ring.drop_old_gops(start_us);
     }
 }
 
@@ -384,8 +385,9 @@ impl ReplayRings {
             packets
         };
         let camera = self.camera.as_ref().map(|camera| {
-            let cut = us_to_ticks(start_us, camera.ring.time_base);
-            let packets = camera.ring.packets.iter().skip_while(|packet| packet.pts < cut || !packet.key).cloned().collect();
+            let packets = &camera.ring.packets;
+            let first = packets.iter().rposition(|packet| packet.key && packet.time_us <= start_us).or_else(|| packets.iter().position(|packet| packet.key));
+            let packets = first.map_or_else(Vec::new, |first| packets.range(first..).cloned().collect());
             CamClip {
                 params: SendParameters(camera.stream.params.0.clone()),
                 time_base: camera.ring.time_base,
@@ -472,9 +474,17 @@ pub(super) struct ReplaySnapshot {
     marks: Vec<NewMark>,
 }
 
+impl ReplaySnapshot {
+    /// Where the clip starts on the buffer's clock.
+    #[cfg(test)]
+    pub(super) fn start_us(&self) -> i64 {
+        self.start_us
+    }
+}
+
 /// Where a saved replay goes, named like any take.
 pub(super) struct TakePaths {
-    /// The take folder, which must exist.
+    /// The take folder, which the writer creates.
     pub(super) folder: PathBuf,
     /// The base name of the take's files.
     pub(super) base_name: String,
@@ -490,14 +500,17 @@ pub(super) struct ReplayTake {
     pub(super) cam: Option<CamSummary>,
     /// Why the camera file is missing although the setup has a camera.
     pub(super) cam_notice: Option<String>,
+    /// One line per MP4 or MOV file that could not be finalized; such a file stays fragmented and playable.
+    pub(super) finalize_warnings: Vec<String>,
     /// The last marks problem, which never fails the save.
     pub(super) marks_warning: Option<String>,
 }
 
-/// Writes a snapshot as a take of the setup `cfg`, with every stream timed from the clip's start. Like stopping a
-/// recording, it leaves an MP4 or MOV file for the caller to finalize.
+/// Writes a snapshot as a take of the setup `cfg`: the main video and the WAV sidecars are timed from the clip's start,
+/// and the camera file from its own first frame. As after stopping a recording, MP4 and MOV files are then finalized.
 pub(super) fn write_replay(mut snapshot: ReplaySnapshot, cfg: &SessionConfig, take: &TakePaths) -> Result<ReplayTake, EngineError> {
     media_io::init()?;
+    std::fs::create_dir_all(&take.folder).map_err(|err| EngineError::Failed(format!("could not create {}: {err}", take.folder.display())))?;
     let mut cfg = cfg.clone();
     cfg.output_file.clone_from(&take.output_file);
     cfg.take_folder.clone_from(&take.folder);
@@ -507,7 +520,7 @@ pub(super) fn write_replay(mut snapshot: ReplaySnapshot, cfg: &SessionConfig, ta
     // As in a recording, a camera file that cannot be written never fails the take.
     let cam_size = snapshot.camera.as_ref().map(|camera| camera.size);
     let (cam, cam_notice) = match snapshot.camera.take().map(|camera| write_camera(camera, snapshot.start_us, &cfg)) {
-        Some(Ok(summary)) => (Some(summary), None),
+        Some(Ok(written)) => (Some(written), None),
         Some(Err(reason)) => {
             let notice = format!("The camera file was skipped: {reason}");
             log::warn!("{notice}");
@@ -515,12 +528,16 @@ pub(super) fn write_replay(mut snapshot: ReplaySnapshot, cfg: &SessionConfig, ta
         }
         None => (None, None),
     };
+    let (cam, cam_start_offset_ms) = cam.map_or((None, None), |(summary, offset)| (Some(summary), Some(offset)));
 
     let mut session_file = SessionFile::begin(&cfg);
     session_file.set_replay(started_at.with_timezone(&chrono::Local), snapshot.length);
     session_file.set_cam(cam.as_ref().map(|cam| cam.file.as_path()), cam_notice.as_deref());
     let cam_name = cam.as_ref().map(|cam| file_name(&cam.file));
     session_file.set_composite(&CompositeBlock::new(&cfg.profile, cam_size, &file_name(&cfg.output_file), cam_name.as_deref()));
+    if let Some(offset_ms) = cam_start_offset_ms {
+        session_file.set_camera_start_offset(offset_ms);
+    }
     if let Err(err) = session_file.write() {
         log::warn!("could not write the session file: {err}");
     }
@@ -531,7 +548,22 @@ pub(super) fn write_replay(mut snapshot: ReplaySnapshot, cfg: &SessionConfig, ta
     if let Err(err) = session_file.write() {
         log::warn!("could not update the session file: {err}");
     }
-    Ok(ReplayTake { summary: outcome?, cam, cam_notice, marks_warning: warning.take() })
+    let summary = outcome?;
+    let files = std::iter::once(summary.file.as_path()).chain(cam.as_ref().map(|cam| cam.file.as_path()));
+    let finalize_warnings = files.filter_map(finalize_file).collect();
+    Ok(ReplayTake { summary, cam, cam_notice, marks_warning: warning.take(), finalize_warnings })
+}
+
+/// Rewrites an MP4 or MOV file as a standard file, as after a recording; the warning when that fails. Other files are
+/// final as written.
+fn finalize_file(file: &Path) -> Option<String> {
+    let container = file.extension().and_then(|extension| extension.to_str()).and_then(media_io::Container::from_extension)?;
+    if !container.needs_finalize() {
+        return None;
+    }
+    let err = media_io::mux::finalize(file, container, &mut |_| {}).err()?;
+    log::warn!("could not finalize {}: {err}", file.display());
+    Some(format!("{} could not be finished and stays in its fragmented form, which still plays: {err}", file_name(file)))
 }
 
 /// One stream's packets on their way into the main file.
@@ -575,25 +607,23 @@ fn send_interleaved(mux: &MuxThread, feeds: Vec<Feed>) -> Result<(), MediaError>
     }
 }
 
-/// Writes the camera ISO file of a clip that starts at `start_us`.
-fn write_camera(clip: CamClip, start_us: i64, cfg: &SessionConfig) -> Result<CamSummary, String> {
+/// Writes the camera ISO file of a clip that starts at `start_us`. The file starts on the camera's own keyframe, so it
+/// also returns how many ms before the clip's start that is: negative when the camera starts later.
+fn write_camera(clip: CamClip, start_us: i64, cfg: &SessionConfig) -> Result<(CamSummary, i64), String> {
     let Some(end_pts) = clip.packets.iter().map(|packet| packet.pts).max().map(|pts| pts.saturating_add(1)) else {
         return Err("the buffer holds no camera keyframe in the clip.".to_owned());
     };
-    let offset = us_to_ticks(start_us, clip.time_base);
+    let (offset, first_us) = clip.packets.first().map_or((0, start_us), |packet| (packet.pts, packet.time_us));
     let file = cam::file_path(&cfg.take_folder, &cfg.base_name, cfg.profile.container);
     let fps = (clip.fps.0 as i32, clip.fps.1 as i32);
     let mux = cam::open_muxer(&file, cfg.profile.container, clip.params.0, clip.time_base, fps)?;
-    let sent = clip.packets.iter().enumerate().try_for_each(|(at, source)| {
-        // The first keyframe is written at 0 and so held until the second frame is due: the camera's keyframes need
-        // not fall on the main video's, and a file that began later would be shifted back to 0 by the muxer.
-        let (pts, dts) = if at == 0 { (0, 0) } else { (source.pts - offset, source.dts - offset) };
-        restamped(source, pts, dts).map_or(Ok(()), |packet| mux.send(0, packet))
-    });
+    let sent =
+        clip.packets.iter().try_for_each(|source| restamped(source, source.pts - offset, source.dts - offset).map_or(Ok(()), |packet| mux.send(0, packet)));
     // The mux thread's own result names the cause when a send failed.
     let finished = mux.finish().map_err(|err| err.to_string())?;
     sent.map_err(|err| err.to_string())?;
-    Ok(CamSummary {
+    let start_offset_ms = scale(start_us - first_us, 1, 1000);
+    let summary = CamSummary {
         file,
         frames: clip.packets.len() as u64,
         duplicated: 0,
@@ -604,7 +634,8 @@ fn write_camera(clip: CamClip, start_us: i64, cfg: &SessionConfig) -> Result<Cam
         encode_avg_ms: 0.0,
         encode_p95_ms: 0.0,
         lost: false,
-    })
+    };
+    Ok((summary, start_offset_ms))
 }
 
 /// Writes the WAV sidecar of the track at `index`, as long as the clip, with silence wherever the ring has no samples.
