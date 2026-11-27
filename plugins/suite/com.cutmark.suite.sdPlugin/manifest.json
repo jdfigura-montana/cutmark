@@ -1,6 +1,6 @@
 {
 	"Name": "CutMark Creator Suite",
-	"Version": "1.0.0.0",
+	"Version": "1.1.0.0",
 	"Author": "CutMark",
 	"Actions": [
 		{
@@ -386,11 +386,11 @@
 			"States": [
 				{
 					"Image": "imgs/actions/recorder-record/key",
-					"TitleAlignment": "middle"
+					"TitleAlignment": "bottom"
 				},
 				{
 					"Image": "imgs/actions/recorder-record/key-on",
-					"TitleAlignment": "middle"
+					"TitleAlignment": "bottom"
 				}
 			]
 		},
@@ -406,11 +406,12 @@
 			"States": [
 				{
 					"Image": "imgs/actions/recorder-pause/key",
-					"TitleAlignment": "middle"
+					"TitleAlignment": "bottom"
 				},
 				{
 					"Image": "imgs/actions/recorder-pause/key-on",
-					"TitleAlignment": "middle"
+					"TitleAlignment": "bottom",
+					"TitleColor": "#0A0A0B"
 				}
 			]
 		},
@@ -426,7 +427,7 @@
 			"States": [
 				{
 					"Image": "imgs/actions/recorder-mark/note",
-					"TitleAlignment": "middle"
+					"TitleAlignment": "bottom"
 				}
 			]
 		},
@@ -441,7 +442,7 @@
 			"States": [
 				{
 					"Image": "imgs/actions/recorder-mark-label/key",
-					"TitleAlignment": "middle"
+					"TitleAlignment": "bottom"
 				}
 			]
 		},
@@ -456,7 +457,7 @@
 			"States": [
 				{
 					"Image": "imgs/actions/recorder-highlight/key",
-					"TitleAlignment": "middle"
+					"TitleAlignment": "bottom"
 				}
 			]
 		},
@@ -472,11 +473,12 @@
 			"States": [
 				{
 					"Image": "imgs/actions/recorder-mute-mic/key",
-					"TitleAlignment": "middle"
+					"TitleAlignment": "bottom"
 				},
 				{
 					"Image": "imgs/actions/recorder-mute-mic/key-on",
-					"TitleAlignment": "middle"
+					"TitleAlignment": "bottom",
+					"TitleColor": "#0A0A0B"
 				}
 			]
 		},
@@ -492,11 +494,12 @@
 			"States": [
 				{
 					"Image": "imgs/actions/recorder-replay/key",
-					"TitleAlignment": "middle"
+					"TitleAlignment": "bottom"
 				},
 				{
 					"Image": "imgs/actions/recorder-replay/key-on",
-					"TitleAlignment": "middle"
+					"TitleAlignment": "bottom",
+					"TitleColor": "#0A0A0B"
 				}
 			]
 		},
@@ -511,7 +514,7 @@
 			"States": [
 				{
 					"Image": "imgs/actions/recorder-save-replay/key",
-					"TitleAlignment": "middle"
+					"TitleAlignment": "bottom"
 				}
 			]
 		},
@@ -528,11 +531,30 @@
 			"States": [
 				{
 					"Image": "imgs/actions/recorder-track-mute/key",
-					"TitleAlignment": "middle"
+					"TitleAlignment": "bottom"
 				},
 				{
 					"Image": "imgs/actions/recorder-track-mute/key-on",
-					"TitleAlignment": "middle"
+					"TitleAlignment": "bottom",
+					"TitleColor": "#0A0A0B"
+				}
+			]
+		},
+		{
+			"Name": "Recorder: Track gain",
+			"UUID": "com.cutmark.suite.recorder.dial-track-gain",
+			"Icon": "imgs/actions/recorder-dial-track-gain/icon",
+			"Tooltip": "Set a track's gain: rotate for 0.5 dB steps, press to mute. The strip shows the live level.",
+			"PropertyInspectorPath": "ui/track.html",
+			"Controllers": [
+				"Encoder"
+			],
+			"Encoder": {
+				"layout": "layouts/recorder-gain.json"
+			},
+			"States": [
+				{
+					"Image": "imgs/actions/recorder-dial-track-gain/key"
 				}
 			]
 		}

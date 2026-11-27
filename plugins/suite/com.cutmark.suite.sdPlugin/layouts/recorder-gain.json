@@ -1,0 +1,32 @@
+{
+	"$schema": "https://schemas.elgato.com/streamdeck/plugins/layout.json",
+	"id": "com.cutmark.suite.recorder-gain",
+	"items": [
+		{
+			"key": "title",
+			"type": "text",
+			"rect": [16, 10, 168, 24],
+			"font": { "size": 16, "weight": 600 },
+			"color": "#ffffff",
+			"alignment": "left"
+		},
+		{
+			"key": "value",
+			"type": "text",
+			"rect": [16, 40, 168, 30],
+			"font": { "size": 24, "weight": 600 },
+			"color": "#ffffff",
+			"alignment": "right"
+		},
+		{
+			"key": "bar",
+			"type": "bar",
+			"rect": [16, 76, 168, 12],
+			"value": 0,
+			"subtype": 0,
+			"border_w": 0,
+			"bar_bg_c": "#2c2c2e",
+			"bar_fill_c": "#45d3c7"
+		}
+	]
+}

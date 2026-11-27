@@ -1,6 +1,7 @@
 # Progress
 
 ## Done
+- Recorder Stream Deck SD3 (2026-11-27): track gain dial, final icons, plugin 1.1.0.0, packed. npm run build and streamdeck pack passed; icons not looked at, no device run. Details in activeContext.md.
 - Recorder Stream Deck SD2 (2026-11-27): the plugin's nine Recorder keys. npm run build passes; no device run. The countdown number is not published yet. Details in activeContext.md.
 - Recorder Stream Deck SD1 (2026-11-27): remote control server, commands, state and the Settings switch. cargo test -p cutmark-recorder 416 passed, fmt + clippy clean. check.ps1, release build and a real-client run not done. Details in activeContext.md.
 - ae-1.3 merged into main (2026-11-27): Stream Deck remote control for the audio editor, with "CutMark" casing (only the prompter branch still needs it). check.ps1 green, audio editor release built, plugin built. No Stream Deck device run.

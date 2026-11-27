@@ -33,6 +33,7 @@ import {
 	RecorderSaveReplayKey,
 	RecorderTrackMuteKey,
 } from "./actions/recorder-keys";
+import { RecorderTrackGainDial } from "./actions/recorder-dial";
 import { JogDial, MarkersDial, TrackVolumeDial, ZoomDial } from "./actions/dials";
 import { DialBase } from "./actions/dial";
 
@@ -83,6 +84,10 @@ const recorderKeys: CommandKeyAction[] = [
 ];
 for (const key of recorderKeys) key.use(recorder);
 
+// The Recorder's dial (spec: recorder-stream-deck "Plugin: Stream Deck+ dial").
+const recorderDials: DialBase[] = [new RecorderTrackGainDial()];
+for (const dial of recorderDials) dial.use(recorder);
+
 // Follow the monitored apps: reconnect on launch, drop the socket on quit.
 streamDeck.system.onApplicationDidLaunch((ev) => {
 	if (ev.application.includes("cutmark-audio")) connection.appLaunched();
@@ -93,7 +98,7 @@ streamDeck.system.onApplicationDidTerminate((ev) => {
 	if (ev.application.includes("cutmark-recorder")) recorder.appTerminated();
 });
 
-for (const action of [...keys, ...dials, ...recorderKeys]) streamDeck.actions.registerAction(action);
+for (const action of [...keys, ...dials, ...recorderKeys, ...recorderDials]) streamDeck.actions.registerAction(action);
 
 // The apps may already run when the plugin starts.
 connection.beginConnecting();
