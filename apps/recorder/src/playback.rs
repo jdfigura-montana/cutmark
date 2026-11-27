@@ -4,8 +4,8 @@
 //! No UI: the review panels call this API every frame and pull the picture with
 //! [`Playback::current_frame`]. When the file has audio and an output device exists, the
 //! clock counts the stereo frames the callback actually hands to the device minus the
-//! latency the device reports; without one it falls back to an `Instant` clock and keeps
-//! the video playing.
+//! latency the device reports; without one, or when the device or the audio decoder fails,
+//! it falls back to an `Instant` clock and keeps the video playing.
 
 use std::cell::Cell;
 use std::path::Path;
@@ -176,9 +176,9 @@ pub struct Playback {
     duration_ms: u64,
     /// Whether the clock runs.
     playing: bool,
-    /// Whether playback already fell back to the wall clock, so a lost device reports once.
+    /// Whether playback already fell back to the wall clock, so a failure reports once.
     fallback: bool,
-    /// The device problem that made playback fall back to the wall clock, to report once.
+    /// The audio problem that made playback fall back to the wall clock, to report once.
     device_error: Option<String>,
 }
 
@@ -284,11 +284,16 @@ impl Playback {
     }
 
     /// The newest video frame at or before the clock, pausing the take when it reaches its
-    /// end. A lost output device is noticed once: the clock switches to the wall clock and
-    /// the reason is reported through [`Playback::take_device_error`], the video keeps going.
+    /// end. A lost output device or a failed audio decoder is noticed once: the clock
+    /// switches to the wall clock and the reason is reported through
+    /// [`Playback::take_device_error`], the video keeps going.
     pub fn current_frame(&mut self) -> Option<RgbaFrame> {
-        if !self.fallback && self.shared.errored.load(Ordering::Relaxed) {
-            self.fallback_to_wall_clock("the output device was lost");
+        if !self.fallback {
+            if let Some(reason) = self.audio.as_ref().and_then(|audio| audio.take_error()) {
+                self.fallback_to_wall_clock(&reason);
+            } else if self.shared.errored.load(Ordering::Relaxed) {
+                self.fallback_to_wall_clock("the output device was lost");
+            }
         }
         let position = self.position_ms();
         if self.playing && end_of_file(position, self.duration_ms) {
@@ -297,10 +302,10 @@ impl Playback {
         self.video.as_ref().and_then(|video| video.frame_at(position))
     }
 
-    /// The device problem that made playback fall back to the wall clock, if it happened;
-    /// reported once, `None` afterwards.
+    /// The caption for the audio problem (device or decoder) that made playback fall back to
+    /// the wall clock, if it happened; reported once, `None` afterwards.
     pub fn take_device_error(&mut self) -> Option<String> {
-        self.device_error.take()
+        self.device_error.take().map(|reason| format!("Audio could not be played: {reason}"))
     }
 
     /// Stops playback and closes the output stream and both decoders.
@@ -323,6 +328,8 @@ impl Playback {
             clock.play();
         }
         self.clock = Clock::Wall(clock);
+        // The stream holds the decoder too, so it goes first.
+        self.stream = None;
         self.audio = None;
         if self.device_error.is_none() {
             self.device_error = Some(reason.to_owned());
@@ -643,6 +650,65 @@ pub(crate) mod tests {
         assert_eq!(playback.position_ms(), playback.duration_ms());
         assert!(playback.current_frame().is_some(), "the last frame stays shown");
         drop(frame);
+        Ok(())
+    }
+
+    /// Writes a tenth of a second of silence as a 16-bit mono WAV.
+    fn write_silent_wav(path: &Path) -> std::io::Result<()> {
+        let data = [0u8; 9_600];
+        let mut bytes = b"RIFF".to_vec();
+        bytes.extend((36 + data.len() as u32).to_le_bytes());
+        bytes.extend(b"WAVEfmt ");
+        bytes.extend(16u32.to_le_bytes());
+        for field in [1u16, 1] {
+            bytes.extend(field.to_le_bytes());
+        }
+        for field in [48_000u32, 96_000] {
+            bytes.extend(field.to_le_bytes());
+        }
+        for field in [2u16, 16] {
+            bytes.extend(field.to_le_bytes());
+        }
+        bytes.extend(b"data");
+        bytes.extend((data.len() as u32).to_le_bytes());
+        bytes.extend(data);
+        std::fs::write(path, bytes)
+    }
+
+    #[test]
+    fn a_failed_resampler_leaves_the_video_playing_on_the_wall_clock() -> Result<(), Box<dyn std::error::Error>> {
+        let take = match test_take() {
+            Ok(take) => take,
+            Err(reason) => {
+                eprintln!("skipped: {reason}");
+                return Ok(());
+            }
+        };
+        let wav = std::env::temp_dir().join(format!("cutmark_playback_test_{}_refused.wav", std::process::id()));
+        write_silent_wav(&wav)?;
+        let mut playback = Playback::open(take)?;
+        // Stand in for an opened output: the audio clock, with no device handing samples, and a
+        // decoder whose resampler cannot start because its output rate is zero.
+        playback.audio = Some(Arc::new(AudioDecoder::open(&wav, 0)?));
+        playback.clock = Clock::Audio(SampleClock::new(Arc::clone(&playback.shared), 48_000));
+        playback.play();
+        let started = std::time::Instant::now();
+        while !playback.runs_on_the_wall_clock() && started.elapsed() < Duration::from_secs(5) {
+            playback.current_frame();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(playback.runs_on_the_wall_clock(), "the failed decoder gave up the clock");
+        assert!(playback.is_playing(), "the video keeps playing");
+        assert!(playback.audio.is_none(), "the decoder was stopped");
+        let before = playback.position_ms();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(playback.position_ms() > before, "the wall clock advances");
+        assert!(playback.current_frame().is_some(), "the picture arrives");
+        let caption = playback.take_device_error().ok_or("the failure was not reported")?;
+        assert!(caption.starts_with("Audio could not be played: "), "{caption}");
+        playback.current_frame();
+        assert_eq!(playback.take_device_error(), None, "reported once");
+        let _ = std::fs::remove_file(wav);
         Ok(())
     }
 }
