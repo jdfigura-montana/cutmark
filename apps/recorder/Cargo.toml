@@ -28,6 +28,7 @@ capture = { version = "0.1.0", path = "../../crates/capture" }
 chrono = { workspace = true, features = ["clock"] }
 cpal = "0.18.2"
 cutmark-hotkeys = { version = "0.1.0", path = "../../crates/cutmark-hotkeys" }
+cutmark-remote = { version = "0.1.0", path = "../../crates/cutmark-remote" }
 directories = "6.0.0"
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }
 egui.workspace = true

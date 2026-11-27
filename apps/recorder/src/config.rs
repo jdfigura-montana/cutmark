@@ -300,6 +300,8 @@ pub struct Settings {
     pub replay_length_s: u32,
     /// The local control API.
     pub api: ApiSettings,
+    /// Whether the Stream Deck remote control server runs.
+    pub stream_deck: bool,
     /// The audio tracks, the WAV sidecar switch and the audio codec.
     pub audio: AudioSettings,
     /// Whether the main window is hidden from screen captures; the label popup is always hidden.
@@ -435,6 +437,7 @@ impl Default for Settings {
             hide_countdown_when_linked: true,
             replay_length_s: DEFAULT_REPLAY_LENGTH_S,
             api: ApiSettings::default(),
+            stream_deck: true,
             audio: AudioSettings::default(),
             hide_from_capture: true,
             mode: Mode::default(),

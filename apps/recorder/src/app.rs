@@ -28,6 +28,7 @@ use crate::profile_ui::{self, Control, Lock, ProfileOutcome, ProfileSection};
 use crate::profiles::ProfileStore;
 use crate::record_ui;
 use crate::recovery::{self, RecoveryReport};
+use crate::remote::{self, Remote};
 use crate::replay_ui::{self, Notice};
 use crate::review::{self, ReviewTarget, ReviewView};
 use crate::review_ui;
@@ -148,6 +149,10 @@ pub struct RecorderApp {
     api_port_edit: u16,
     /// Set once the window is closing, so the API is not started again.
     shutting_down: bool,
+    /// The Stream Deck remote control server, or None while it is off or could not start.
+    remote: Option<Remote>,
+    /// Whether the remote was last asked to run, so a refused start is not retried every frame.
+    remote_wanted: bool,
     /// The Pre-flight section: its button and the Keep files choice.
     preflight_section: PreflightSection,
     /// The measured height of the Sources panel's pre-flight card, from the previous frame.
@@ -291,6 +296,8 @@ impl RecorderApp {
             api_regenerate: false,
             api_port_edit,
             shutting_down: false,
+            remote: None,
+            remote_wanted: false,
             preflight_section: PreflightSection::default(),
             sources_card_height: 0.0,
             modes,
@@ -315,7 +322,51 @@ impl RecorderApp {
         };
         app.sync_preview(&cc.egui_ctx);
         app.sync_api(&cc.egui_ctx);
+        app.sync_remote(&cc.egui_ctx);
         app
+    }
+
+    /// Starts or drops the Stream Deck remote so it matches the switch; it is dropped once the
+    /// window is closing.
+    ///
+    /// A start another Recorder already holds is logged and not retried until the switch is
+    /// turned off and on.
+    fn sync_remote(&mut self, ctx: &egui::Context) {
+        let wanted = self.settings.stream_deck && !self.shutting_down;
+        if wanted == self.remote_wanted {
+            return;
+        }
+        self.remote_wanted = wanted;
+        let repaint_ctx = ctx.clone();
+        self.remote = if wanted { Remote::start(Box::new(move || repaint_ctx.request_repaint())) } else { None };
+    }
+
+    /// Runs the waiting Stream Deck commands, then publishes the state.
+    fn poll_remote(&mut self, ctx: &egui::Context) {
+        let Some(remote) = self.remote.take() else { return };
+        let shared = self.controller.shared();
+        let mut state = lock(&shared);
+        // While the window is hidden no frame is drawn, so the mutes the hotkeys changed are
+        // taken in here before a gain change sends the settings back.
+        self.sync_from_controller(&mut state);
+        let bus = self.controller.sender();
+        while let Some(command) = remote.try_recv() {
+            let guards =
+                remote::Guards { phase: state.phase, replay_on: state.replay_on, profile_blocked: self.profile_section.blocked(), settings: &self.settings };
+            match remote::run(&command, &guards, &bus) {
+                Ok(None) => {}
+                Ok(Some(change)) => {
+                    if let Some(track) = self.settings.audio.tracks.get_mut(change.track) {
+                        track.gain_db = change.gain_db;
+                        // The same path the track's gain slider takes.
+                        self.on_tracks_changed(ctx, TracksChanged { settings: true, live: true, ..TracksChanged::default() });
+                    }
+                }
+                Err(refusal) => remote.reply(&command.id, &refusal),
+            }
+        }
+        remote.publish(remote::state_value(&state, &self.settings));
+        self.remote = Some(remote);
     }
 
     /// Makes a new token when asked, then starts, restarts or stops the control API so it matches the switch, the port and the token.
@@ -2077,12 +2128,20 @@ fn same_drive(a: &std::path::Path, b: &std::path::Path) -> bool {
 }
 
 impl eframe::App for RecorderApp {
+    // The remote runs here, not in `ui`: eframe draws no frame while the window is hidden in
+    // the tray, and the Stream Deck keys must work then too.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.sync_remote(ctx);
+        self.poll_remote(ctx);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if ctx.input(|input| input.viewport().close_requested()) {
             // The X button or the tray's Quit: the API closes its connections, then the controller finishes the take's file.
             self.shutting_down = true;
             self.sync_api(&ctx);
+            self.sync_remote(&ctx);
             self.controller.stop();
             self.profile_store.flush();
             if self.settings_dirty {
@@ -2170,7 +2229,13 @@ impl eframe::App for RecorderApp {
             &next_take,
             &self.hotkeys,
             &state.recent,
-            ApiUi { server: self.api.as_ref(), token: self.api_token.as_deref(), show_token: &mut self.api_show_token, port_edit: &mut self.api_port_edit },
+            ApiUi {
+                server: self.api.as_ref(),
+                token: self.api_token.as_deref(),
+                show_token: &mut self.api_show_token,
+                port_edit: &mut self.api_port_edit,
+                stream_deck_status: remote::status_text(self.remote.as_ref()),
+            },
         );
         if outcome.settings_changed {
             self.push_settings_if_changed();

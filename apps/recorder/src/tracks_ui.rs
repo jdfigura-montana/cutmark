@@ -28,9 +28,9 @@ const METER_FLOOR_DBFS: f32 = -60.0;
 /// How fast a shown peak falls back, in dB per second.
 const METER_FALL_DB_PER_S: f32 = 40.0;
 /// The lowest gain of a track, in dB.
-const GAIN_MIN_DB: f32 = -30.0;
+pub(crate) const GAIN_MIN_DB: f32 = -30.0;
 /// The highest gain of a track, in dB.
-const GAIN_MAX_DB: f32 = 12.0;
+pub(crate) const GAIN_MAX_DB: f32 = 12.0;
 /// Width of the sliders, in points.
 const SLIDER_WIDTH: f32 = 130.0;
 /// Width of the compact level meter slot in the Sources panel, in points.

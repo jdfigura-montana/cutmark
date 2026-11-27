@@ -1507,6 +1507,7 @@ dependencies = [
  "chrono",
  "cpal 0.18.2",
  "cutmark-hotkeys",
+ "cutmark-remote",
  "directories",
  "eframe",
  "egui",

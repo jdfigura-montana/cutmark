@@ -79,6 +79,8 @@ pub struct ApiUi<'a> {
     pub show_token: &'a mut bool,
     /// The port as typed, applied to the settings when the field is left.
     pub port_edit: &'a mut u16,
+    /// The Stream Deck row's status line.
+    pub stream_deck_status: &'static str,
 }
 
 /// What the dialog's rows changed this frame, for the app to act on.
@@ -529,10 +531,12 @@ fn recording_section(ui: &mut Ui, settings: &mut Settings, next_take: &NextTake,
     }
 }
 
-/// The Control API section: the switch, the port, the listening and clients values and the
-/// token with Show or Hide, Copy and Regenerate (spec "Settings dialog").
+/// The Control API section: the switch, the port, the listening and clients values, the
+/// token with Show or Hide, Copy and Regenerate (spec "Settings dialog") and the Stream Deck
+/// switch with its status line.
 fn api_section(ui: &mut Ui, settings: &mut Settings, api: ApiUi<'_>, outcome: &mut Outcome) {
     let before_enabled = settings.api.enabled;
+    let before_stream_deck = settings.stream_deck;
     let (listening, clients) = match api.server {
         Some(server) => (format!("127.0.0.1:{}", server.port()), server.client_count().to_string()),
         None => ("Not running".to_owned(), "0".to_owned()),
@@ -597,8 +601,23 @@ fn api_section(ui: &mut Ui, settings: &mut Settings, api: ApiUi<'_>, outcome: &m
         }
         ui.add_space(space::SCALE_4);
     });
+    ui.add_space(space::SCALE_8);
+    ui_kit::inspector_group(ui, |ui| {
+        ui.add_space(space::SCALE_4);
+        ui_kit::inspector_row(
+            ui,
+            "Stream Deck",
+            |ui| {
+                let _switch = ui_kit::switch(ui, &mut settings.stream_deck);
+                #[cfg(test)]
+                test_record_control(TestControl::StreamDeck, _switch.rect);
+            },
+            Some(api.stream_deck_status),
+        );
+        ui.add_space(space::SCALE_4);
+    });
     // The flip is detected by comparing the setting before and after the row.
-    if settings.api.enabled != before_enabled {
+    if settings.api.enabled != before_enabled || settings.stream_deck != before_stream_deck {
         outcome.settings_changed = true;
     }
 }
@@ -754,6 +773,8 @@ enum TestControl {
     ApiOn,
     /// The Control API section's port value.
     ApiPort,
+    /// The Control API section's Stream Deck switch.
+    StreamDeck,
     /// The Control API section's token Regenerate button.
     Regenerate,
     /// The Recording section's replays Use project folder button.
@@ -888,7 +909,13 @@ mod tests {
                             ui.painter().layout_no_wrap("Settings".to_owned(), ui_kit::fonts::semibold(typography::HEADLINE_SIZE), color::TEXT_PRIMARY);
                         title_measured.set(Some(galley.size().y));
                     }
-                    let api = ApiUi { server: None, token: Some("0123456789abcdef0123456789abcdef"), show_token: &mut show_token, port_edit: &mut port_edit };
+                    let api = ApiUi {
+                        server: None,
+                        token: Some("0123456789abcdef0123456789abcdef"),
+                        show_token: &mut show_token,
+                        port_edit: &mut port_edit,
+                        stream_deck_status: "Off",
+                    };
                     show(ui.ctx(), &mut dialog, &mut settings, &next_take, &hotkeys, &recent, api);
                 });
                 if frame == 3 {
@@ -1031,7 +1058,7 @@ mod tests {
         let mut show_token = false;
         let mut port_edit = 8765u16;
         let mut output = ctx.run_ui(raw.clone(), |ui| {
-            let api = ApiUi { server: None, token: None, show_token: &mut show_token, port_edit: &mut port_edit };
+            let api = ApiUi { server: None, token: None, show_token: &mut show_token, port_edit: &mut port_edit, stream_deck_status: "Off" };
             show(ui.ctx(), dialog, &mut settings, &next_take, &hotkeys, &recent, api);
         });
         output.textures_delta.clear();
@@ -1081,7 +1108,7 @@ mod tests {
         let next_take = NextTake::default();
         let mut show_token = false;
         let mut output = ctx.run_ui(raw.clone(), |ui| {
-            let api = ApiUi { server: None, token, show_token: &mut show_token, port_edit };
+            let api = ApiUi { server: None, token, show_token: &mut show_token, port_edit, stream_deck_status: "Off" };
             outcome.set(show(ui.ctx(), dialog, settings, &next_take, &hotkeys, &recent, api));
         });
         output.textures_delta.clear();
@@ -1224,6 +1251,23 @@ mod tests {
         assert_eq!(settings.api.enabled, !before, "the switch flip did not reach the settings field");
         interact_frame(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
         assert_eq!(settings.api.enabled, !before, "the flip did not stick");
+    }
+
+    /// The Stream Deck switch is on by default; flipping it reports the change, so the app
+    /// saves it.
+    #[test]
+    fn flipping_the_stream_deck_switch_reports_the_change() {
+        let (ctx, raw, outcome) = test_setup();
+        let mut dialog = SettingsDialog { open: true, section: Section::ControlApi };
+        let mut settings = Settings::default();
+        assert!(settings.stream_deck, "the remote is on by default");
+        let mut port_edit = 8765u16;
+        warm_frames(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        let switch = test_control_rect(TestControl::StreamDeck).center();
+        interact_frame(&ctx, &click_at(&raw, switch), &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        assert!(outcome.get().settings_changed, "the switch flip did not report settings_changed");
+        assert!(!settings.stream_deck, "the switch flip did not reach the settings field");
+        assert!(settings.api.enabled, "the Control API switch is not the Stream Deck switch");
     }
 
     /// Typing a new port and pressing Enter reports the change and reaches the settings field

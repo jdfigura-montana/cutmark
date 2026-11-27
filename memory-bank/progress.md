@@ -1,6 +1,7 @@
 # Progress
 
 ## Done
+- Recorder Stream Deck SD1 (2026-11-27): remote control server, commands, state and the Settings switch. cargo test -p cutmark-recorder 416 passed, fmt + clippy clean. check.ps1, release build and a real-client run not done. Details in activeContext.md.
 - ae-1.3 merged into main (2026-11-27): Stream Deck remote control for the audio editor, with "CutMark" casing (only the prompter branch still needs it). check.ps1 green, audio editor release built, plugin built. No Stream Deck device run.
 - Recorder installer (2026-11-27): version 0.9.0, installer script and build script mirroring the audio editor's, licenses folder with generated notices. Installer built (53.31 MB), check.ps1 passed. Install and uninstall not tried. Details in activeContext.md.
 - Recorder output folders F3 (2026-11-27), spec item 6: Review's Takes | Replays views, the folder button follows the view, the "Replay saved" toast's Review opens Replays on that take. Not looked at in the running app.
