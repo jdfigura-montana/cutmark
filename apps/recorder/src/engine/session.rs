@@ -532,14 +532,20 @@ impl SessionFile {
         }
     }
 
-    /// Records on the composite block's camera layer how many ms before the main video the camera file starts;
-    /// negative when it starts later. Only a saved replay has one.
-    pub(super) fn set_camera_start_offset(&mut self, offset_ms: i64) {
+    /// Records how many ms before the main video the camera file starts; negative when it starts later. It goes on the
+    /// composite block's camera layer, or into a `camera_iso` object when the block has no such layer because the
+    /// layout hides the camera. Only a saved replay has one. Call it after [`SessionFile::set_composite`].
+    pub(super) fn set_camera_start_offset(&mut self, file: &str, offset_ms: i64) {
         let layers = self.doc.pointer_mut("/composite/layers").and_then(serde_json::Value::as_array_mut);
+        let mut on_a_layer = false;
         for layer in layers.into_iter().flatten().filter_map(serde_json::Value::as_object_mut) {
             if layer.get("source").and_then(serde_json::Value::as_str) == Some("cam") {
                 layer.insert("start_offset_ms".to_owned(), serde_json::json!(offset_ms));
+                on_a_layer = true;
             }
+        }
+        if !on_a_layer && let Some(doc) = self.doc.as_object_mut() {
+            doc.insert("camera_iso".to_owned(), serde_json::json!({ "file": file, "start_offset_ms": offset_ms }));
         }
     }
 

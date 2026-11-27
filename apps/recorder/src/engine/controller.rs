@@ -18,8 +18,9 @@ use super::bus::{Bus, BusSender, Command, CommandKind, MarkKind};
 use super::cam::CamSummary;
 use super::marks::{MarksWarning, RecentMark, TakeMarks};
 use super::preflight::{self, PreflightReport};
+use super::replay::ReplayTake;
 use super::script::{PositionMsg, ScriptMsg, ScriptSnapshot, TakeScript};
-use super::session::{AppSpec, RecordingSession, SessionConfig, StatsSnapshot, Summary, TrackSpec};
+use super::session::{AppSpec, EngineError, RecordingSession, SessionConfig, StatsSnapshot, Summary, TrackSpec};
 use super::stats::{self, GIB, StatsTracker, TakeStats};
 use crate::config::{AudioCodecChoice, CompositeMode, Profile, Settings, TrackKind};
 use crate::countdown::CountdownHandle;
@@ -1678,6 +1679,13 @@ impl Worker {
         }
     }
 
+    /// Raises what the user has to know about a finished replay save, which the app shows as banners and the control
+    /// API sends as warning events.
+    #[allow(dead_code, reason = "the save queue that calls this comes with the next replay step")]
+    fn report_replay(&mut self, saved: &Result<ReplayTake, EngineError>) {
+        self.raise(replay_alerts(saved));
+    }
+
     /// While no take runs, watches the enabled app and desktop-except tracks, so their state and meters are
     /// current before one. A pre-flight or sync test is not a take. The take's own links replace the watch.
     fn poll_idle_apps(&mut self) {
@@ -1746,6 +1754,16 @@ struct Alert {
     mark: Option<(&'static str, String)>,
     /// Whether the take is stopped cleanly.
     stop: bool,
+}
+
+/// The warnings of one replay save: `replay_failed` when no take was written, and `replay_finalize` for each MP4 or
+/// MOV file of a saved take that could not be finalized. A clean save has none.
+fn replay_alerts(saved: &Result<ReplayTake, EngineError>) -> Vec<Alert> {
+    let alert = |code, message| Alert { code, message, banner: true, sound: false, mark: None, stop: false };
+    match saved {
+        Ok(take) => take.finalize_warnings.iter().map(|warning| alert("replay_finalize", warning.clone())).collect(),
+        Err(err) => vec![alert("replay_failed", format!("The replay could not be saved: {err}"))],
+    }
 }
 
 /// Fires once when a condition starts and fires again only after the condition has cleared.
@@ -2000,6 +2018,33 @@ mod tests {
 
     use super::*;
     use crate::config::Container;
+
+    #[test]
+    fn a_failed_or_half_finished_replay_save_is_a_warning_and_a_clean_one_is_not() {
+        let summary = Summary {
+            file: PathBuf::from("take07.mp4"),
+            frames: 0,
+            duplicated: 0,
+            dropped: 0,
+            bytes_written: 0,
+            packets: Vec::new(),
+            duration_ms: 0,
+            average_mbps: 0.0,
+            wav_files: Vec::new(),
+            encode_avg_ms: 0.0,
+            encode_p95_ms: 0.0,
+            track_peaks: Vec::new(),
+        };
+        let mut saved = Ok(ReplayTake { summary, cam: None, cam_notice: None, finalize_warnings: Vec::new(), marks_warning: None });
+        assert!(replay_alerts(&saved).is_empty());
+        if let Ok(take) = &mut saved {
+            take.finalize_warnings.push("take07.mp4 could not be finished".to_owned());
+        }
+        let told = |alerts: Vec<Alert>| alerts.into_iter().map(|alert| (alert.code, alert.message, alert.banner, alert.stop)).collect::<Vec<_>>();
+        assert_eq!(told(replay_alerts(&saved)), [("replay_finalize", "take07.mp4 could not be finished".to_owned(), true, false)]);
+        let failed = Err(EngineError::Failed("the disk is full".to_owned()));
+        assert_eq!(told(replay_alerts(&failed)), [("replay_failed", "The replay could not be saved: the disk is full".to_owned(), true, false)]);
+    }
 
     fn secs(seconds: f64) -> Duration {
         Duration::from_secs_f64(seconds)

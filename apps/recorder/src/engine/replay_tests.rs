@@ -102,6 +102,22 @@ fn front_pts(ring: &PacketRing) -> Option<i64> {
 }
 
 #[test]
+fn a_camera_the_layout_hides_still_gets_its_start_offset_into_session_json() -> TestResult {
+    let dir = scratch("hidden_cam")?;
+    let mut cfg = config(&dir, false);
+    cfg.profile.webcam = None;
+    let mut session_file = SessionFile::begin(&cfg);
+    session_file.set_composite(&CompositeBlock::new(&cfg.profile, Some((16, 16)), "buffer.mkv", Some("buffer_cam.mkv")));
+    session_file.set_camera_start_offset("buffer_cam.mkv", -40);
+    session_file.write()?;
+    let session: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("buffer_session.json"))?)?;
+    assert_eq!(session["composite"]["layers"].as_array().map(Vec::len), Some(0));
+    assert_eq!(session["camera_iso"], serde_json::json!({ "file": "buffer_cam.mkv", "start_offset_ms": -40 }));
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+#[test]
 fn trimming_keeps_a_keyframe_first_and_at_least_the_length() -> TestResult {
     let mut rings = fake_rings(false, false, 5)?;
     rings.push_video(fake_packet(0, false));
@@ -282,6 +298,7 @@ fn a_saved_replay_is_a_take_with_its_streams_marks_wav_and_session_file() -> Tes
     assert_eq!(session["result"]["finished"], true);
     assert_eq!(session["composite"]["layers"][0]["start_offset_ms"], 933);
     assert!(saved.finalize_warnings.is_empty());
+    assert!(session.get("camera_iso").is_none(), "the camera layer carries the offset");
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

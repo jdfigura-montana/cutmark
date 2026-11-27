@@ -535,8 +535,8 @@ pub(super) fn write_replay(mut snapshot: ReplaySnapshot, cfg: &SessionConfig, ta
     session_file.set_cam(cam.as_ref().map(|cam| cam.file.as_path()), cam_notice.as_deref());
     let cam_name = cam.as_ref().map(|cam| file_name(&cam.file));
     session_file.set_composite(&CompositeBlock::new(&cfg.profile, cam_size, &file_name(&cfg.output_file), cam_name.as_deref()));
-    if let Some(offset_ms) = cam_start_offset_ms {
-        session_file.set_camera_start_offset(offset_ms);
+    if let Some((name, offset_ms)) = cam_name.as_deref().zip(cam_start_offset_ms) {
+        session_file.set_camera_start_offset(name, offset_ms);
     }
     if let Err(err) = session_file.write() {
         log::warn!("could not write the session file: {err}");
