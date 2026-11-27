@@ -12,13 +12,14 @@ use capture::{AudioDevice, CaptureError, qpc_frequency, qpc_now};
 use media_io::AudioCodec;
 use media_io::MediaError;
 use media_io::encode::{ComboError, EncoderConfig, check_combo};
-use media_io::mux::{MuxSender, MuxThread, Muxer, SendParameters};
+use media_io::mux::{MuxThread, Muxer, SendParameters};
 
 use super::audio::{self, AudioMessage, AudioStart};
 use super::cam::{self, CamCounters, CamHandle, CamSnapshot, CamSummary};
 use super::clock::MediaClock;
 use super::composite::CompositeBlock;
 use super::marks::{MarksWarning, MkvChapter, TakeMarks, wav_length_ms};
+use super::sink::{PacketSink, TakeWriter, WavPlan};
 use super::video;
 use crate::config::{Container, Profile};
 
@@ -460,8 +461,8 @@ pub(super) struct VideoSetup {
 pub(super) struct StartCommand {
     /// The QPC value every stream counts its recording time 0 from.
     pub(super) start_qpc: i64,
-    /// The queue the thread writes its packets into.
-    pub(super) mux: MuxSender,
+    /// Where the thread's packets go.
+    pub(super) sink: Arc<dyn PacketSink>,
 }
 
 /// One audio stream to add to the muxer between the video stream and start.
@@ -677,14 +678,12 @@ impl RecordingSession {
         let (start_tx, start_rx) = mpsc::channel::<StartCommand>();
         let thread_stats = Arc::clone(&stats);
         let thread_stop = Arc::clone(&stop_flag);
-        let job = audio::AudioJob {
-            tracks: cfg.tracks.clone(),
-            codec: cfg.audio_codec,
-            mixdown: cfg.mixdown,
-            track_streams: cfg.track_streams,
-            wav_sidecars: cfg.wav_sidecars,
-            take_folder: cfg.take_folder.clone(),
-            base_name: cfg.base_name.clone(),
+        let job = audio::AudioJob { tracks: cfg.tracks.clone(), codec: cfg.audio_codec, mixdown: cfg.mixdown, track_streams: cfg.track_streams };
+        let wav_plan = WavPlan {
+            enabled: cfg.wav_sidecars,
+            take_folder: take_folder.clone(),
+            base_name: base_name.clone(),
+            track_names: cfg.tracks.iter().map(|track| track.name.clone()).collect(),
         };
         let handle = std::thread::Builder::new()
             .name("video".to_owned())
@@ -742,14 +741,17 @@ impl RecordingSession {
             }
         };
         // The camera file has its own encoder and mux thread; a camera file that cannot start never stops the recording.
-        let (cam, cam_notice) = match cam_plan {
+        let (cam, cam_sender, cam_notice) = match cam_plan {
             Ok(Some(plan)) => match cam::spawn(plan, Arc::clone(&stats), Arc::clone(&stop_flag)) {
-                Ok(handle) => (Some(handle), None),
-                Err(notice) => (None, Some(notice)),
+                Ok((handle, sender)) => (Some(handle), Some(sender), None),
+                Err(notice) => (None, None, Some(notice)),
             },
-            Ok(None) => (None, None),
-            Err(notice) => (None, Some(notice)),
+            Ok(None) => (None, None, None),
+            Err(notice) => (None, None, Some(notice)),
         };
+        // Every stream thread writes the take through this. The session must not keep it: a mux thread finishes only
+        // once its sender is gone, so a failed start drops it before finishing them.
+        let sink: Arc<dyn PacketSink> = Arc::new(TakeWriter::new(mux.0.sender(), mux.1, cam_sender, wav_plan));
         // One start instant for every stream: the video thread only begins
         // pacing, and the audio thread only begins filling, once they receive
         // their commands.
@@ -758,9 +760,10 @@ impl RecordingSession {
         // The audio thread works in 100 ns units, the video pacer in QPC ticks.
         let qpc_freq = qpc_frequency();
         let start_100ns = (start_qpc / qpc_freq) * 10_000_000 + (start_qpc % qpc_freq) * 10_000_000 / qpc_freq;
-        let sent = start_tx.send(StartCommand { start_qpc, mux: mux.0.sender() });
+        let video_ended = start_tx.send(StartCommand { start_qpc, sink: Arc::clone(&sink) }).is_err();
         drop(start_tx);
-        if sent.is_err() {
+        if video_ended {
+            drop(sink);
             wind_up_audio(&stop_flag, audio_start_tx, &audio_rx, audio_handle);
             wind_up(&stop_flag, &rx, handle);
             let _ = mux.0.finish();
@@ -769,9 +772,10 @@ impl RecordingSession {
             }
             return Err(EngineError::Failed("the video thread ended before recording started".into()));
         }
-        let audio_sent = audio_start_tx.send(AudioStart { start_qpc: start_100ns, mux: mux.0.sender(), streams: mux.1 });
+        let audio_ended = audio_start_tx.send(AudioStart { start_qpc: start_100ns, sink: Arc::clone(&sink) }).is_err();
         drop(audio_start_tx);
-        if audio_sent.is_err() {
+        if audio_ended {
+            drop(sink);
             wind_up(&stop_flag, &rx, handle);
             let _ = mux.0.finish();
             if let Some(cam) = cam {
@@ -781,12 +785,13 @@ impl RecordingSession {
         }
         // The camera thread starts from the same instant as every other stream.
         let (cam, cam_notice) = match cam {
-            Some(handle) if !handle.begin(start_qpc) => {
+            Some(handle) if !handle.begin(StartCommand { start_qpc, sink: Arc::clone(&sink) }) => {
                 handle.abort();
                 (None, Some("The camera file was skipped: its thread ended before recording started.".to_owned()))
             }
             other => (other, cam_notice),
         };
+        drop(sink);
         if let Some(notice) = &cam_notice {
             log::warn!("{notice}");
         }

@@ -21,7 +21,8 @@ use media_io::{AmfEncoder, AudioCodec, D3d11Device, D3d11FramePool, EncodedPacke
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 
 use super::pacer::Pacer;
-use super::session::{ENCODER_TAG, SessionConfig, Stats, encoder_config, take_title};
+use super::session::{ENCODER_TAG, SessionConfig, StartCommand, Stats, encoder_config, take_title};
+use super::sink::PacketSink;
 use crate::config::{CompositeMode, Container};
 use crate::webcam::CamShare;
 
@@ -30,9 +31,6 @@ const POLL: Duration = Duration::from_millis(1);
 
 /// Frames may fail in a row this many times before the camera file is ended.
 const MAX_CONSECUTIVE_FAILURES: u32 = 30;
-
-/// The muxer stream index of the video stream, the only stream of the file.
-const CAM_STREAM: usize = 0;
 
 /// The width of one bucket of the encode-time histogram, in milliseconds.
 const TIME_BUCKET_MS: f64 = 0.1;
@@ -355,16 +353,16 @@ pub(super) fn plan(cfg: &SessionConfig) -> Result<Option<CamPlan>, String> {
 
 /// What the camera thread reports back to the session.
 enum CamMessage {
-    /// The setup ended: the encoder and the file are ready, or this is why not.
-    Setup(Result<(), String>),
+    /// The setup ended: the encoder and the file are ready, with the file's mux queue, or this is why not.
+    Setup(Result<MuxSender, String>),
     /// The camera file ended, with its totals or the reason it could not be finished.
     Finished(Result<CamSummary, String>),
 }
 
 /// The session's handle on the running camera thread.
 pub(super) struct CamHandle {
-    /// Releases the thread to start pacing, carrying the shared start QPC.
-    start_tx: Sender<i64>,
+    /// Releases the thread to start pacing.
+    start_tx: Sender<StartCommand>,
     /// The thread's messages.
     rx: Receiver<CamMessage>,
     /// The thread, joined by `finish` or `abort`.
@@ -379,9 +377,9 @@ impl CamHandle {
         &self.file
     }
 
-    /// Releases the thread to record from `start_qpc`; false when the thread has already ended.
-    pub(super) fn begin(&self, start_qpc: i64) -> bool {
-        self.start_tx.send(start_qpc).is_ok()
+    /// Releases the thread to record; false when the thread has already ended.
+    pub(super) fn begin(&self, command: StartCommand) -> bool {
+        self.start_tx.send(command).is_ok()
     }
 
     /// Waits for the thread to finish the file and returns its totals; the stop flag must be set.
@@ -404,19 +402,21 @@ impl CamHandle {
     }
 }
 
-/// Starts the "cam-video" thread, waits for it to open the encoder and the file, and returns the handle.
+/// Starts the "cam-video" thread, waits for it to open the encoder and the file, and returns the handle with the
+/// file's mux queue, which the take's sink writes the camera packets into. The thread can finish the file only once
+/// that queue is dropped, or the sink holding it has closed the camera.
 ///
 /// The error is the text of the banner for a camera file that could not be started.
-pub(super) fn spawn(plan: CamPlan, stats: Arc<Stats>, stop: Arc<AtomicBool>) -> Result<CamHandle, String> {
+pub(super) fn spawn(plan: CamPlan, stats: Arc<Stats>, stop: Arc<AtomicBool>) -> Result<(CamHandle, MuxSender), String> {
     let file = plan.file.clone();
     let (tx, rx) = mpsc::channel();
-    let (start_tx, start_rx) = mpsc::channel::<i64>();
+    let (start_tx, start_rx) = mpsc::channel::<StartCommand>();
     let handle = std::thread::Builder::new()
         .name("cam-video".to_owned())
         .spawn(move || run(plan, &stats, &stop, &tx, &start_rx))
         .map_err(|err| format!("The camera file was skipped: its thread could not be started: {err}"))?;
     match rx.recv() {
-        Ok(CamMessage::Setup(Ok(()))) => Ok(CamHandle { start_tx, rx, handle, file }),
+        Ok(CamMessage::Setup(Ok(sender))) => Ok((CamHandle { start_tx, rx, handle, file }, sender)),
         Ok(CamMessage::Setup(Err(err))) => {
             let _ = handle.join();
             Err(format!("The camera file was skipped: {err}"))
@@ -439,7 +439,7 @@ struct Pipeline {
 }
 
 /// Entry point of the camera thread: sets up, waits for the start command, records until told to stop, then reports.
-fn run(plan: CamPlan, stats: &Stats, stop: &AtomicBool, tx: &Sender<CamMessage>, start_rx: &Receiver<i64>) {
+fn run(plan: CamPlan, stats: &Stats, stop: &AtomicBool, tx: &Sender<CamMessage>, start_rx: &Receiver<StartCommand>) {
     let pipeline = match setup(&plan) {
         Ok(pipeline) => pipeline,
         Err(err) => {
@@ -447,11 +447,11 @@ fn run(plan: CamPlan, stats: &Stats, stop: &AtomicBool, tx: &Sender<CamMessage>,
             return;
         }
     };
-    if tx.send(CamMessage::Setup(Ok(()))).is_err() {
+    if tx.send(CamMessage::Setup(Ok(pipeline.mux.sender()))).is_err() {
         return;
     }
     let outcome = match start_rx.recv() {
-        Ok(start_qpc) => record(&plan, stats, stop, pipeline, start_qpc),
+        Ok(command) => record(&plan, stats, stop, pipeline, command),
         Err(_) => {
             // The session gave up before the take began: the empty file goes.
             let _ = pipeline.mux.finish();
@@ -489,7 +489,7 @@ pub(super) fn open_muxer(file: &Path, container: Container, params: Parameters, 
 /// The recording loop's state: the pipeline, its pacer and the per-frame bookkeeping.
 struct Recorder<'a> {
     pipeline: Pipeline,
-    sender: MuxSender,
+    sink: Arc<dyn PacketSink>,
     pacer: CamPacer,
     times: CamTimes,
     plan: &'a CamPlan,
@@ -502,7 +502,7 @@ impl Recorder<'_> {
     /// Encodes the camera texture for tick `n`; false once too many frames in a row failed.
     fn emit(&mut self, n: u64, texture: &ID3D11Texture2D, seq: u64) -> bool {
         let timer = Instant::now();
-        let sent = encode_one_frame(&mut self.pipeline, &self.sender, self.plan, texture, self.pacer.pts_for(n));
+        let sent = encode_one_frame(&mut self.pipeline, self.sink.as_ref(), self.plan, texture, self.pacer.pts_for(n));
         self.times.add(timer.elapsed());
         match &sent {
             Ok(()) => self.failures = 0,
@@ -518,12 +518,12 @@ impl Recorder<'_> {
 }
 
 /// Runs the paced recording loop from the shared start QPC, then finishes the camera file.
-fn record(plan: &CamPlan, stats: &Stats, stop: &AtomicBool, pipeline: Pipeline, start_qpc: i64) -> Result<CamSummary, String> {
+fn record(plan: &CamPlan, stats: &Stats, stop: &AtomicBool, pipeline: Pipeline, command: StartCommand) -> Result<CamSummary, String> {
+    let StartCommand { start_qpc, sink } = command;
     let capture = &plan.share.capture;
     let counters = &stats.cam;
     let pacer = CamPacer::new(qpc_frequency(), plan.encoder.fps_num, plan.encoder.fps_den, start_qpc, plan.offset_ms);
-    let sender = pipeline.mux.sender();
-    let mut rec = Recorder { pipeline, sender, pacer, times: CamTimes::new(), plan, stats, failures: 0 };
+    let mut rec = Recorder { pipeline, sink, pacer, times: CamTimes::new(), plan, stats, failures: 0 };
     counters.started.store(true, Ordering::Relaxed);
     counters.running.store(true, Ordering::Relaxed);
     let mut paused = false;
@@ -581,40 +581,41 @@ fn record(plan: &CamPlan, stats: &Stats, stop: &AtomicBool, pipeline: Pipeline, 
     finish_file(rec, plan, lost)
 }
 
-/// Copies one camera texture into a pool frame, encodes it and queues the packets.
-fn encode_one_frame(pipeline: &mut Pipeline, mux: &MuxSender, plan: &CamPlan, texture: &ID3D11Texture2D, pts: i64) -> Result<(), MediaError> {
+/// Copies one camera texture into a pool frame, encodes it and hands on the packets.
+fn encode_one_frame(pipeline: &mut Pipeline, sink: &dyn PacketSink, plan: &CamPlan, texture: &ID3D11Texture2D, pts: i64) -> Result<(), MediaError> {
     let mut hw = HwFrame::from_pool(&pipeline.pool)?;
     hw.copy_from(plan.share.gpu.context(), texture)?;
     hw.set_pts(pts);
     pipeline.encoder.send(hw)?;
-    let mut mux_err: Option<MediaError> = None;
-    pipeline.encoder.receive(&mut |packet| write_packet(packet, mux, &mut mux_err))?;
-    mux_err.map_or(Ok(()), Err)
+    let mut sink_err: Option<MediaError> = None;
+    pipeline.encoder.receive(&mut |packet| write_packet(packet, sink, &mut sink_err))?;
+    sink_err.map_or(Ok(()), Err)
 }
 
-/// Queues one packet into the camera's mux thread; the first failure is kept.
-fn write_packet(packet: EncodedPacket, mux: &MuxSender, mux_err: &mut Option<MediaError>) {
-    if mux_err.is_some() {
+/// Hands one camera packet on; the first failure is kept.
+pub(super) fn write_packet(packet: EncodedPacket, sink: &dyn PacketSink, sink_err: &mut Option<MediaError>) {
+    if sink_err.is_some() {
         return;
     }
-    if let Err(err) = mux.send(CAM_STREAM, packet) {
-        *mux_err = Some(err);
+    if let Err(err) = sink.camera(packet) {
+        *sink_err = Some(err);
     }
 }
 
 /// Drains the encoder, writes the trailer and builds the totals.
 fn finish_file(rec: Recorder<'_>, plan: &CamPlan, lost: bool) -> Result<CamSummary, String> {
-    let Recorder { pipeline, sender, pacer, times, stats, .. } = rec;
+    let Recorder { pipeline, sink, pacer, times, stats, .. } = rec;
     let Pipeline { pool, mut encoder, mux } = pipeline;
-    let mut mux_err: Option<MediaError> = None;
-    let drained = encoder.finish(&mut |packet| write_packet(packet, &sender, &mut mux_err));
+    let mut sink_err: Option<MediaError> = None;
+    let drained = encoder.finish(&mut |packet| write_packet(packet, sink.as_ref(), &mut sink_err));
     // The queue closes only when every sender is gone.
-    drop(sender);
+    sink.close_camera();
+    drop(sink);
     drop(encoder);
     drop(pool);
     let mux_summary = mux.finish();
     drained.map_err(|err| err.to_string())?;
-    if let Some(err) = mux_err {
+    if let Some(err) = sink_err {
         return Err(err.to_string());
     }
     let mux_summary = mux_summary.map_err(|err| err.to_string())?;

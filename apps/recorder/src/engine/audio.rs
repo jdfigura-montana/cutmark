@@ -1,5 +1,5 @@
-//! The audio thread: every track's capture and pipeline, WAV sidecars, the
-//! mixdown and per-track AAC streams, and their packets into the muxer.
+//! The audio thread: every track's capture and pipeline, the PCM for the WAV
+//! sidecars, the mixdown and per-track AAC streams, all handed to the sink.
 //!
 //! See the recorder spec: Audio capture and tracks (Format, Mixdown track,
 //! WAV sidecars) and Sync and reliability rules (Audio, Pause, Crash safety,
@@ -18,11 +18,12 @@ use capture::{
     qpc_now,
 };
 use hound::{SampleFormat, WavSpec, WavWriter};
-use media_io::mux::{MuxSender, SendParameters};
+use media_io::mux::SendParameters;
 use media_io::{AudioCodec, AudioEncoder};
 
 use super::audio_track::{AppChange, AppSource, AppSystem, TrackLink, TrackPipeline, app_pids};
 use super::session::{AppEvent, AudioStreamSpec, EngineError, Instances, Stats, TrackSpec};
+use super::sink::PacketSink;
 
 /// The audio thread's tick, about one AAC frame.
 const TICK: Duration = Duration::from_millis(10);
@@ -74,11 +75,8 @@ pub(super) struct AudioSummary {
 pub(super) struct AudioStart {
     /// The QPC value recording time 0 maps to, in 100 nanosecond units.
     pub(super) start_qpc: i64,
-    /// The queue the thread writes its packets into.
-    pub(super) mux: MuxSender,
-    /// The mux stream index per encoder slot: the mixdown first when present,
-    /// then one per track.
-    pub(super) streams: Vec<usize>,
+    /// Where the thread's packets and PCM go.
+    pub(super) sink: Arc<dyn PacketSink>,
 }
 /// The audio side of a take's configuration, handed to the audio thread.
 pub(super) struct AudioJob {
@@ -90,12 +88,6 @@ pub(super) struct AudioJob {
     pub(super) mixdown: bool,
     /// Whether every track also gets its own stream in the video file.
     pub(super) track_streams: bool,
-    /// Whether every track is written as a WAV sidecar.
-    pub(super) wav_sidecars: bool,
-    /// The take folder the WAV sidecars are written into.
-    pub(super) take_folder: PathBuf,
-    /// The base name for the WAV sidecar file names.
-    pub(super) base_name: String,
 }
 
 /// The audio thread's entry point: sets up, waits for the start command,
@@ -174,18 +166,11 @@ fn record(
         // The session gave up; leave quietly without writing any files.
         Err(_) => return Ok(AudioSummary { wav_files: Vec::new(), track_peaks_dbfs: Vec::new() }),
     };
-    let mut rig = AudioRig::new(
-        tracks.clone(),
-        captures,
-        mix_encoder,
-        track_encoders,
-        mixdown_on,
-        job.wav_sidecars,
-        &job.take_folder,
-        &job.base_name,
-        start.start_qpc,
-        start.streams,
-    )?;
+    let sink = start.sink.as_ref();
+    sink.open_pcm()?;
+    // Closes the PCM output however the take ends.
+    let _pcm = PcmGuard(sink);
+    let mut rig = AudioRig::new(tracks.clone(), captures, mix_encoder, track_encoders, mixdown_on, start.start_qpc);
     rig.attach_at_start(apps, stats);
     let mut start_100ns = start.start_qpc;
     let mut paused_at: Option<i64> = None;
@@ -235,13 +220,13 @@ fn record(
         let now_index = timeline_index(now, start_100ns);
         rig.fill_silence(now_index);
         if let Some(frames) = rig.ready_frames(MAX_BLOCK_FRAMES)
-            && let Err(err) = rig.emit_block(frames, &start.mux, stats)
+            && let Err(err) = rig.emit_block(frames, sink, stats)
         {
             stats.set_last_error(format!("audio: {err}"));
             return Err(err);
         }
         if last_flush.elapsed() >= WAV_FLUSH_INTERVAL {
-            rig.flush_wavs();
+            sink.flush_pcm();
             last_flush = Instant::now();
         }
     }
@@ -250,23 +235,21 @@ fn record(
     let stop_index = timeline_index(qpc_now(), start_100ns);
     rig.fill_silence(stop_index);
     while let Some(frames) = rig.ready_frames(MAX_BLOCK_FRAMES) {
-        rig.emit_block(frames, &start.mux, stats)?;
+        rig.emit_block(frames, sink, stats)?;
     }
-    // Finish the encoders and queue their last packets for the muxer.
-    // A take without a mixdown has no mixdown stream, and may have no stream at all.
-    if let Some(encoder) = rig.mix_encoder.as_mut() {
-        let mix_stream = rig.stream_indexes.first().copied().ok_or(EngineError::Failed("the mixdown stream index is missing".into()))?;
-        finish_stream(Some(encoder), mix_stream, &start.mux)?;
-    }
-    for (slot, encoder) in rig.track_encoders.iter_mut().enumerate() {
-        let Some(stream) = rig.stream_indexes.get(rig.first_track_slot + slot).copied() else {
-            return Err(EngineError::Failed("a track stream index is missing".into()));
-        };
-        finish_stream(encoder.as_mut(), stream, &start.mux)?;
-    }
-    rig.flush_wavs();
+    rig.finish_streams(sink)?;
+    sink.flush_pcm();
     let track_peaks_dbfs = rig.pipelines.iter().map(TrackPipeline::peak_hold_dbfs).collect();
-    Ok(AudioSummary { wav_files: rig.finalize_wavs(), track_peaks_dbfs })
+    Ok(AudioSummary { wav_files: sink.close_pcm(), track_peaks_dbfs })
+}
+
+/// Closes a sink's PCM output when dropped, so an audio thread that fails still leaves finished WAV files.
+struct PcmGuard<'a>(&'a dyn PacketSink);
+
+impl Drop for PcmGuard<'_> {
+    fn drop(&mut self) {
+        self.0.close_pcm();
+    }
 }
 
 /// One WAV sidecar: the hound writer and the file it lands in.
@@ -278,6 +261,9 @@ pub(super) struct SidecarWav {
 }
 
 impl SidecarWav {
+    /// The bytes one sample of one channel takes in the file.
+    pub(super) const BYTES_PER_SAMPLE: u64 = (WAV_BITS / 8) as u64;
+
     /// Creates the sidecar of the track at `index` in track order, named `{base_name}_t{n}_{track}.wav`.
     pub(super) fn create(take_folder: &Path, base_name: &str, index: usize, track_name: &str) -> Result<Self, EngineError> {
         let path = take_folder.join(format!("{base_name}_t{}_{}.wav", index + 1, safe_file_name(track_name)));
@@ -292,6 +278,16 @@ impl SidecarWav {
             self.writer.write_sample(scaled).map_err(|err| EngineError::Failed(format!("the WAV sidecar write failed: {err}")))?;
         }
         Ok(())
+    }
+
+    /// Refreshes the header and flushes, so a crash leaves a usable file; a failure is left for the next write.
+    pub(super) fn flush(&mut self) {
+        let _ = self.writer.flush();
+    }
+
+    /// Drops the writer, which completes the header if it can, and returns the file written.
+    pub(super) fn close(self) -> PathBuf {
+        self.path
     }
 
     /// Completes the header and returns the file written.
@@ -313,8 +309,6 @@ struct AudioRig {
     lost: Vec<bool>,
     /// The link of each app or desktop-except track, in track order; None for a device track.
     apps: Vec<Option<TrackLink>>,
-    /// One WAV sidecar per track when sidecars are on, in track order.
-    wavs: Vec<Option<SidecarWav>>,
     /// The mixdown encoder, when the mixdown is on and a track feeds it.
     mix_encoder: Option<AudioEncoder>,
     /// One per-track encoder when track streams are on, in track order.
@@ -325,26 +319,20 @@ struct AudioRig {
     mixdown_on: bool,
     /// The first track stream's mux slot: 1 with a mixdown, 0 without.
     first_track_slot: usize,
-    /// The mux stream index per encoder slot: the mixdown first when present,
-    /// then one per track.
-    stream_indexes: Vec<usize>,
+    /// How many audio streams the take has: the mixdown when present, then one per track encoder.
+    stream_count: usize,
 }
 
 impl AudioRig {
-    /// Builds the rig: pipelines at the take's timeline start, and the WAV sidecars.
-    #[allow(clippy::too_many_arguments)]
+    /// Builds the rig, with the pipelines at the take's timeline start.
     fn new(
         tracks: Vec<TrackSpec>,
         captures: Vec<Option<AudioCapture>>,
         mix_encoder: Option<AudioEncoder>,
         track_encoders: Vec<Option<AudioEncoder>>,
         mixdown_on: bool,
-        wav_sidecars: bool,
-        take_folder: &Path,
-        base_name: &str,
         start_100ns: i64,
-        stream_indexes: Vec<usize>,
-    ) -> Result<Self, EngineError> {
+    ) -> Self {
         let mut pipelines = Vec::with_capacity(tracks.len());
         for track in &tracks {
             let mut pipeline = TrackPipeline::new(start_100ns, OUT_RATE);
@@ -353,31 +341,23 @@ impl AudioRig {
             pipeline.set_offset_ms(track.offset_ms as f32);
             pipelines.push(pipeline);
         }
-        let mut wavs = Vec::with_capacity(tracks.len());
-        if wav_sidecars {
-            let _ = std::fs::create_dir_all(take_folder);
-        }
-        for (n, track) in tracks.iter().enumerate() {
-            let wav = if wav_sidecars { Some(SidecarWav::create(take_folder, base_name, n, &track.name)?) } else { None };
-            wavs.push(wav);
-        }
+        let stream_count = usize::from(mix_encoder.is_some()) + track_encoders.iter().flatten().count();
         let apps = app_links(&tracks);
         // A track with no capture starts lost.
         let lost = captures.iter().map(Option::is_none).collect();
-        Ok(Self {
+        Self {
             captures,
             pipelines,
             taken: vec![0; tracks.len()],
             lost,
             apps,
-            wavs,
             mix_encoder,
             track_encoders,
             mixdown_on,
             first_track_slot: usize::from(mixdown_on),
             tracks,
-            stream_indexes,
-        })
+            stream_count,
+        }
     }
     /// Takes over the app links polled before the start, and reports the attached ones as attached at time 0.
     fn attach_at_start(&mut self, apps: Vec<Option<TrackLink>>, stats: &Stats) {
@@ -537,9 +517,15 @@ impl AudioRig {
         }
         if ready == 0 || ready == u64::MAX { None } else { Some((ready as usize).min(max_frames)) }
     }
-    /// Takes the same number of frames from every track, writes the WAVs,
-    /// sums the mixdown and queues every stream's packets.
-    fn emit_block(&mut self, frames: usize, mux: &MuxSender, stats: &Stats) -> Result<(), EngineError> {
+    /// The audio stream slot of the track at `index`.
+    fn track_slot(&self, index: usize) -> Result<usize, EngineError> {
+        let slot = self.first_track_slot + index;
+        if slot < self.stream_count { Ok(slot) } else { Err(EngineError::Failed("a track stream index is missing".into())) }
+    }
+
+    /// Takes the same number of frames from every track, hands on their PCM,
+    /// sums the mixdown and hands on every stream's packets.
+    fn emit_block(&mut self, frames: usize, sink: &dyn PacketSink, stats: &Stats) -> Result<(), EngineError> {
         let mut blocks: Vec<Vec<f32>> = self.pipelines.iter_mut().map(|pipeline| pipeline.take(frames)).collect();
         let common = blocks.iter().map(|block| block.len() / 2).min().unwrap_or(0);
         if common == 0 {
@@ -548,18 +534,13 @@ impl AudioRig {
         for block in &mut blocks {
             block.truncate(common * 2);
         }
-        for ((block, wav), taken) in blocks.iter().zip(self.wavs.iter_mut()).zip(self.taken.iter_mut()) {
-            if let Some(wav) = wav {
-                wav.write(block)?;
-            }
+        let mut wav_bytes = 0;
+        for (index, (block, taken)) in blocks.iter().zip(self.taken.iter_mut()).enumerate() {
+            wav_bytes += sink.pcm(index, *taken, block)?;
             *taken += common as u64;
         }
-        if self.wavs.iter().any(Option::is_some) {
-            let wav_count = self.wavs.iter().flatten().count() as u64;
-            stats.wav_bytes.fetch_add(wav_count * common as u64 * u64::from(OUT_CHANNELS) * u64::from(WAV_BITS / 8), Ordering::Relaxed);
-        }
+        stats.wav_bytes.fetch_add(wav_bytes, Ordering::Relaxed);
         if self.mixdown_on {
-            let stream = self.stream_indexes.first().copied().ok_or(EngineError::Failed("the mixdown stream index is missing".into()))?;
             let mut mix = vec![0.0f32; common * 2];
             for (block, track) in blocks.iter().zip(&self.tracks) {
                 if track.in_mixdown {
@@ -571,28 +552,29 @@ impl AudioRig {
             for sample in mix.iter_mut() {
                 *sample = sample.clamp(-1.0, 1.0);
             }
-            encode_stream(self.mix_encoder.as_mut(), stream, &mix, mux, stats)?;
+            // The mixdown is always the first stream.
+            encode_stream(self.mix_encoder.as_mut(), 0, &mix, sink, stats)?;
         }
-        for (slot, (encoder, block)) in self.track_encoders.iter_mut().zip(&blocks).enumerate() {
-            let Some(stream) = self.stream_indexes.get(self.first_track_slot + slot).copied() else {
-                return Err(EngineError::Failed("a track stream index is missing".into()));
-            };
-            encode_stream(encoder.as_mut(), stream, block, mux, stats)?;
+        for (index, block) in blocks.iter().enumerate() {
+            let slot = self.track_slot(index)?;
+            let encoder = self.track_encoders.get_mut(index).and_then(Option::as_mut);
+            encode_stream(encoder, slot, block, sink, stats)?;
         }
         Ok(())
     }
 
-    /// Refreshes every WAV header flush so a crash leaves a usable file.
-    fn flush_wavs(&mut self) {
-        for wav in self.wavs.iter_mut().flatten() {
-            let _ = wav.writer.flush();
+    /// Finishes the encoders and hands on their last packets.
+    fn finish_streams(&mut self, sink: &dyn PacketSink) -> Result<(), EngineError> {
+        // A take without a mixdown has no mixdown stream, and may have no stream at all.
+        if let Some(encoder) = self.mix_encoder.as_mut() {
+            finish_stream(Some(encoder), 0, sink)?;
         }
-    }
-
-    /// Finishes every WAV sidecar and returns the files written.
-    fn finalize_wavs(&mut self) -> Vec<PathBuf> {
-        let wavs = std::mem::take(&mut self.wavs);
-        wavs.into_iter().flatten().map(|wav| wav.path).collect()
+        for index in 0..self.track_encoders.len() {
+            let slot = self.track_slot(index)?;
+            let encoder = self.track_encoders.get_mut(index).and_then(Option::as_mut);
+            finish_stream(encoder, slot, sink)?;
+        }
+        Ok(())
     }
 }
 
@@ -703,34 +685,34 @@ fn take_ms(now_100ns: i64, start_100ns: i64) -> u64 {
     (now_100ns - start_100ns).max(0) as u64 / 10_000
 }
 
-/// Feeds one interleaved block into its encoder and queues the packets.
-fn encode_stream(encoder: Option<&mut AudioEncoder>, stream: usize, block: &[f32], mux: &MuxSender, stats: &Stats) -> Result<(), EngineError> {
+/// Feeds one interleaved block into its encoder and hands on the packets of the stream in `slot`.
+fn encode_stream(encoder: Option<&mut AudioEncoder>, slot: usize, block: &[f32], sink: &dyn PacketSink, stats: &Stats) -> Result<(), EngineError> {
     let Some(encoder) = encoder else {
         return Ok(());
     };
     encoder.send(block)?;
     let mut send_error = None;
     encoder.receive(&mut |packet| {
-        if let Err(err) = mux.send(stream, packet) {
+        if let Err(err) = sink.audio(slot, packet) {
             send_error = Some(err);
         }
     })?;
     stats.audio_frames.fetch_add(block.len() as u64 / u64::from(OUT_CHANNELS), Ordering::Relaxed);
-    send_error.map_or(Ok(()), |err| Err(err.into()))
+    send_error.map_or(Ok(()), Err)
 }
 
-/// Pads the encoder's last frame and queues the final packets for its stream.
-fn finish_stream(encoder: Option<&mut AudioEncoder>, stream: usize, mux: &MuxSender) -> Result<(), EngineError> {
+/// Pads the encoder's last frame and hands on the final packets of the stream in `slot`.
+fn finish_stream(encoder: Option<&mut AudioEncoder>, slot: usize, sink: &dyn PacketSink) -> Result<(), EngineError> {
     let Some(encoder) = encoder else {
         return Ok(());
     };
     let mut send_error = None;
     encoder.finish(&mut |packet| {
-        if let Err(err) = mux.send(stream, packet) {
+        if let Err(err) = sink.audio(slot, packet) {
             send_error = Some(err);
         }
     })?;
-    send_error.map_or(Ok(()), |err| Err(err.into()))
+    send_error.map_or(Ok(()), Err)
 }
 
 /// The timeline index a QPC stamp in 100 ns units lands on, in output frames.
@@ -756,7 +738,54 @@ mod tests {
     use super::super::clock::MediaClock;
     use super::super::marks::{MarksWarning, TakeMarks};
     use super::super::session::AppSpec;
+    use super::super::sink::fake::{FakeSink, Output};
+    use super::super::{cam, video};
     use super::*;
+
+    /// A track with no device, which the rig fills with silence.
+    fn silent_track(name: &str) -> TrackSpec {
+        TrackSpec {
+            name: name.to_owned(),
+            device: None,
+            device_id: String::new(),
+            device_name: String::new(),
+            gain_db: 0.0,
+            muted: false,
+            offset_ms: 0,
+            in_mixdown: true,
+            app: None,
+        }
+    }
+
+    #[test]
+    fn a_fake_sink_receives_every_stream_a_take_writes() -> Result<(), EngineError> {
+        media_io::init()?;
+        let tracks = vec![silent_track("Mic"), silent_track("Desktop")];
+        let stats = Stats::new(&tracks);
+        let open = || AudioEncoder::open(AudioCodec::Aac { kbps: 320 }, OUT_RATE, OUT_CHANNELS);
+        let mut rig = AudioRig::new(tracks, vec![None, None], Some(open()?), vec![Some(open()?), Some(open()?)], true, 0);
+        let sink = FakeSink::default();
+        rig.fill_silence(48_000);
+        // Blocks of one audio tick, 10 ms, as a running take hands them on.
+        while let Some(frames) = rig.ready_frames(480) {
+            rig.emit_block(frames, &sink, &stats)?;
+        }
+        rig.finish_streams(&sink)?;
+        // The video encoders need the GPU, so their packets enter where each thread takes them from its encoder.
+        let packet = || media_io::EncodedPacket::from_raw_packet(ffmpeg_next::Packet::copy(&[0; 4]));
+        let (mut video_err, mut cam_err) = (None, None);
+        video::write_packet(packet(), &mut |packet| sink.video(packet), &stats, &mut video_err);
+        cam::write_packet(packet(), &sink, &mut cam_err);
+        assert!(video_err.is_none() && cam_err.is_none());
+
+        let received = sink.received();
+        let outputs = [Output::Video, Output::Camera, Output::Audio(0), Output::Audio(1), Output::Audio(2), Output::Pcm(0), Output::Pcm(1)];
+        assert_eq!(received.keys().copied().collect::<Vec<_>>(), outputs);
+        assert!(received.values().all(|count| *count > 0));
+        let frames = 48_000 - OUTPUT_LEAD_FRAMES;
+        assert_eq!((received.get(&Output::Pcm(0)), received.get(&Output::Pcm(1))), (Some(&frames), Some(&frames)));
+        Ok(())
+    }
 
     /// A rig with one app track for Discord, no encoders and no files, and its stats.
     fn discord_rig() -> Result<(AudioRig, Stats), EngineError> {
@@ -773,7 +802,7 @@ mod tests {
             app: Some(app),
         }];
         let stats = Stats::new(&tracks);
-        let rig = AudioRig::new(tracks, vec![None], None, vec![None], false, false, Path::new("."), "take", 0, Vec::new())?;
+        let rig = AudioRig::new(tracks, vec![None], None, vec![None], false, 0);
         Ok((rig, stats))
     }
 

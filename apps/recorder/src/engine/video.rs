@@ -1,6 +1,6 @@
 //! The video thread: the latest composite, NV12 conversion and AMF encode on one thread,
 //! paced at the exact profile frame rate from the shared start QPC, with its
-//! packets queued into the session's mux thread. The composite comes from the compose thread.
+//! packets handed to the session's sink. The composite comes from the compose thread.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -9,19 +9,17 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use capture::{Gpu, Nv12Converter, list_monitors, qpc_frequency, qpc_now};
-use media_io::mux::{MuxSender, SendParameters};
+use media_io::mux::SendParameters;
 use media_io::{AmfEncoder, D3d11Device, D3d11FramePool, EncodedPacket, Encoder, HwFrame, MediaError};
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 
 use super::pacer::Pacer;
 use super::session::{EngineError, SessionConfig, StartCommand, Stats, Summary, ThreadMessage, VideoSetup, encoder_config};
+use super::sink::PacketSink;
 use crate::compositor::{self, ComposeConfig, Composite, CompositorThread, PinGuard};
 
 /// Frames may fail in a row this many times before the session stops itself.
 const MAX_CONSECUTIVE_FAILURES: u32 = 30;
-
-/// The muxer stream index of the video stream, which the session adds first.
-const VIDEO_STREAM: usize = 0;
 
 /// The width of one bucket of the encode-time histogram, in milliseconds.
 const TIME_BUCKET_MS: f64 = 0.1;
@@ -149,12 +147,12 @@ fn setup(cfg: &SessionConfig) -> Result<(Pipeline, VideoSetup), EngineError> {
 }
 
 /// Runs the paced recording loop from the shared start QPC, then drains the
-/// encoder into the mux queue.
+/// encoder into the sink.
 fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, mut pipeline: Pipeline, command: StartCommand) -> Result<Summary, EngineError> {
     let profile = &cfg.profile;
     let qpc_freq = qpc_frequency();
     let start_qpc = command.start_qpc;
-    let mux = command.mux;
+    let sink = command.sink;
     let mut pacer = Pacer::new(qpc_freq, profile.fps, 1, start_qpc);
     // Mirrors of the pacer's shifted start and next frame index, used to sleep
     // up to the next tick without ever sleeping past it.
@@ -198,7 +196,7 @@ fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, mut pipeline: P
             };
             let pts = pacer.pts_for(n);
             let timer = Instant::now();
-            let encoded = encode_one_frame(&mut pipeline, &mut |packet| send_video(&mux, packet), stats, &frame, pts);
+            let encoded = encode_one_frame(&mut pipeline, &mut |packet| sink.video(packet), stats, &frame, pts);
             times.add(timer.elapsed());
             match encoded {
                 Ok(()) => {
@@ -224,22 +222,17 @@ fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, mut pipeline: P
     match frame_error {
         // Still drain the encoder so the take stays playable to the last frame.
         Some(err) => {
-            let _ = finish_file(encoder, &mux, stats);
+            let _ = finish_file(encoder, sink.as_ref(), stats);
             Err(err)
         }
-        None => finish_file(encoder, &mux, stats).and_then(|()| build_summary(&cfg.output_file, &pacer, profile.fps, &times)),
+        None => finish_file(encoder, sink.as_ref(), stats).and_then(|()| build_summary(&cfg.output_file, &pacer, profile.fps, &times)),
     }
 }
 
 /// Where the video thread's encoded packets go.
 type VideoSink<'a> = &'a mut dyn FnMut(EncodedPacket) -> Result<(), MediaError>;
 
-/// Queues one packet as the video stream of a muxer.
-fn send_video(mux: &MuxSender, packet: EncodedPacket) -> Result<(), MediaError> {
-    mux.send(VIDEO_STREAM, packet)
-}
-
-/// Converts, encodes and queues one due frame.
+/// Converts, encodes and hands on one due frame.
 fn encode_one_frame(pipeline: &mut Pipeline, sink: VideoSink<'_>, stats: &Stats, frame: &Composite, pts: i64) -> Result<(), EngineError> {
     pipeline.converter.convert(&frame.texture, &pipeline.nv12)?;
     let mut hw = HwFrame::from_pool(&pipeline.pool)?;
@@ -255,7 +248,7 @@ fn encode_one_frame(pipeline: &mut Pipeline, sink: VideoSink<'_>, stats: &Stats,
 }
 
 /// Hands one packet on and adds its bytes to the stats.
-fn write_packet(packet: EncodedPacket, sink: VideoSink<'_>, stats: &Stats, sink_err: &mut Option<MediaError>) {
+pub(super) fn write_packet(packet: EncodedPacket, sink: VideoSink<'_>, stats: &Stats, sink_err: &mut Option<MediaError>) {
     stats.bytes_written.fetch_add(packet.size() as u64, Ordering::Relaxed);
     if sink_err.is_some() {
         return;
@@ -265,12 +258,12 @@ fn write_packet(packet: EncodedPacket, sink: VideoSink<'_>, stats: &Stats, sink_
     }
 }
 
-/// Drains the encoder into the mux queue; the mux thread writes the trailer
+/// Drains the encoder into the sink; the mux thread writes the trailer
 /// when the session finishes it.
-fn finish_file(mut encoder: AmfEncoder, mux: &MuxSender, stats: &Stats) -> Result<(), EngineError> {
-    let mut mux_err: Option<MediaError> = None;
-    encoder.finish(&mut |packet| write_packet(packet, &mut |packet| send_video(mux, packet), stats, &mut mux_err))?;
-    if let Some(err) = mux_err {
+fn finish_file(mut encoder: AmfEncoder, sink: &dyn PacketSink, stats: &Stats) -> Result<(), EngineError> {
+    let mut sink_err: Option<MediaError> = None;
+    encoder.finish(&mut |packet| write_packet(packet, &mut |packet| sink.video(packet), stats, &mut sink_err))?;
+    if let Some(err) = sink_err {
         return Err(err.into());
     }
     Ok(())

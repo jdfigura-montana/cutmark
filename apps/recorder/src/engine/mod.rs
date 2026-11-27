@@ -46,6 +46,9 @@ pub mod replay;
 /// The Prompter link's files for one take: the script snapshot and the script position log.
 pub mod script;
 
+/// Where a take's encoded output goes: the sink trait of the stream threads and the writer behind it.
+mod sink;
+
 /// Live numbers of a running take: bytes, bitrate, free disk space and time left.
 pub mod stats;
 
