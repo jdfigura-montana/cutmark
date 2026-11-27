@@ -48,6 +48,9 @@ const METER_REFRESH: Duration = Duration::from_millis(33);
 /// How often the window looks for the recovery report until it has arrived.
 const RECOVERY_POLL: Duration = Duration::from_millis(250);
 
+/// How often the replays folder's free space is read while the replay buffer is on.
+const REPLAYS_FREE_REFRESH: Duration = Duration::from_secs(2);
+
 /// The 1px hairline stroke width.
 const HAIRLINE: f32 = 1.0;
 
@@ -171,6 +174,10 @@ pub struct RecorderApp {
     toast_up: bool,
     /// The number of the newest replay event already turned into a toast.
     seen_replay_seq: u64,
+    /// The free space of the replays folder's drive, read every 2 seconds while the buffer is on.
+    replays_free: Option<u64>,
+    /// When the replays free space was last read, so the disk is not queried every frame.
+    replays_free_at: Option<Instant>,
     /// The Review take panel's editing state: the rename field and the delete dialog.
     take_panel: review_ui::TakePanelState,
     /// The Review playback of the selected take, closed when Review is left or a take starts.
@@ -295,6 +302,8 @@ impl RecorderApp {
             notices: VecDeque::new(),
             toast_up: false,
             seen_replay_seq: 0,
+            replays_free: None,
+            replays_free_at: None,
             take_panel: review_ui::TakePanelState::default(),
             review_playback: None,
             review_playback_for: None,
@@ -347,11 +356,19 @@ impl RecorderApp {
     /// and the "Starting is blocked" reason. Returns whether any row was drawn.
     fn banner_strip(&mut self, ui: &mut egui::Ui, state: &ControllerState) -> bool {
         let mut rows: Vec<BannerRow> = Vec::new();
+        let mut folder_error: Option<(String, RefusedFolder)> = None;
         if self.capture_exclusion_failed {
             rows.push(BannerRow::Warn("This window may appear in recordings".to_owned()));
         }
         if let Some(message) = &state.error {
-            rows.push(BannerRow::Error(format!("Recording error: {message}")));
+            // A folder refusal the controller answered a start with is its own banner with a
+            // Choose folder button (spec "Recorder output folders", Checks 1); every other
+            // error stays the plain red recording error.
+            if message.starts_with("Can't save to ") {
+                folder_error = Some((message.clone(), refusal_target(message, &self.settings)));
+            } else {
+                rows.push(BannerRow::Error(format!("Recording error: {message}")));
+            }
         }
         if let Some(notice) = &state.audio_notice {
             rows.push(BannerRow::Warn(notice.clone()));
@@ -377,22 +394,28 @@ impl RecorderApp {
         let recovered: Vec<String> = self.recovery.as_ref().map(|report| report.recovered.clone()).unwrap_or_default();
         let recovery_errors: Vec<String> =
             self.recovery.as_ref().map(|report| report.errors.iter().map(|error| format!("Marks recovery: {error}")).collect()).unwrap_or_default();
-        if rows.is_empty() && recovered.is_empty() && recovery_errors.is_empty() {
+        if rows.is_empty() && folder_error.is_none() && recovered.is_empty() && recovery_errors.is_empty() {
             return false;
         }
         for row in &rows {
             match row {
                 BannerRow::Warn(message) => {
-                    banner_row(ui, color::SEM_METER_WARN, message, None, false);
+                    banner_row(ui, color::SEM_METER_WARN, message, None, None, false);
                 }
                 BannerRow::Error(message) => {
-                    banner_row(ui, color::SEM_RECORD, message, None, false);
+                    banner_row(ui, color::SEM_RECORD, message, None, None, false);
                 }
             }
         }
+        if let Some((message, target)) = &folder_error {
+            let (_, choose, _, _) = banner_row(ui, color::SEM_RECORD, message, Some("Choose folder"), None, false);
+            if choose.is_some_and(|response| response.clicked()) {
+                self.choose_folder(*target);
+            }
+        }
         if !recovered.is_empty() {
-            let (_, details, dismiss) =
-                banner_row(ui, color::SEM_METER_WARN, &format!("Recovered marks for {} take(s)", recovered.len()), Some("Details"), true);
+            let (_, _, details, dismiss) =
+                banner_row(ui, color::SEM_METER_WARN, &format!("Recovered marks for {} take(s)", recovered.len()), None, Some("Details"), true);
             if let Some(details) = details {
                 egui::Popup::menu(&details).show(|ui| {
                     for name in &recovered {
@@ -407,7 +430,7 @@ impl RecorderApp {
         if !recovery_errors.is_empty() {
             let dismissable = recovered.is_empty();
             for message in &recovery_errors {
-                let (_, _, dismiss) = banner_row(ui, color::SEM_METER_WARN, message, None, dismissable);
+                let (_, _, _, dismiss) = banner_row(ui, color::SEM_METER_WARN, message, None, None, dismissable);
                 if dismissable && dismiss.is_some_and(|response| response.clicked()) {
                     self.recovery = None;
                 }
@@ -427,6 +450,42 @@ impl RecorderApp {
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => self.recovery_rx = None,
         }
+    }
+
+    /// Opens the folder picker for the folder a start refusal named and sends the picked folder
+    /// to the controller and the settings file.
+    fn choose_folder(&mut self, target: RefusedFolder) {
+        let title = match target {
+            RefusedFolder::Recordings => "Choose the recordings folder",
+            RefusedFolder::Replays => "Choose the replays folder",
+        };
+        if let Some(folder) = platform::pick_folder(title) {
+            match target {
+                RefusedFolder::Recordings => self.settings.root_folder = Some(folder),
+                RefusedFolder::Replays => self.settings.replays_root = Some(folder),
+            }
+            self.push_settings_if_changed();
+            self.save_settings();
+        }
+    }
+
+    /// The replays folder's free space while the buffer is on and replays go to another drive
+    /// than the recordings, read every 2 seconds (spec "Recorder output folders", status bar).
+    fn replays_free(&mut self, state: &ControllerState) -> Option<u64> {
+        if !state.replay_on {
+            return None;
+        }
+        let recordings = config::takes_root(&self.settings);
+        let replays = crate::takes::replays_folder(&self.settings);
+        if same_drive(&recordings, &replays) {
+            return None;
+        }
+        let now = Instant::now();
+        if self.replays_free_at.is_none_or(|at| now.duration_since(at) >= REPLAYS_FREE_REFRESH) {
+            self.replays_free = crate::engine::stats::free_space(&replays, 0);
+            self.replays_free_at = Some(now);
+        }
+        self.replays_free
     }
 
     /// The size of the composite: the active profile's output size, or the captured monitor's for the Source size.
@@ -715,6 +774,8 @@ impl RecorderApp {
         let project_changed = Cell::new(false);
         let open_settings = Cell::new(false);
         let open_appearance = Cell::new(false);
+        let change_recordings = Cell::new(false);
+        let open_recordings = Cell::new(false);
         // The caption is one fact, the profile (docs/suite/Recorder-E3.md, section 5).
         let caption = self.settings.active_profile.clone();
         let chords = Chords::of(&self.hotkeys);
@@ -738,7 +799,15 @@ impl RecorderApp {
                 ui_kit::brand::mark(ui, crate::BRAND, ui_kit::brand::TITLE_BAR_MARK);
                 let file = ui_kit::Menu::new("File", |ui| {
                     if menu_item(ui, "Open project folder", "").clicked() {
-                        open_folder(&project_folder);
+                        platform::open_folder(&project_folder);
+                        ui.close();
+                    }
+                    if menu_item(ui, "Change recordings folder\u{2026}", "").clicked() {
+                        change_recordings.set(true);
+                        ui.close();
+                    }
+                    if menu_item(ui, "Open recordings folder", "").clicked() {
+                        open_recordings.set(true);
                         ui.close();
                     }
                     ui.separator();
@@ -869,6 +938,16 @@ impl RecorderApp {
         if open_appearance.get() {
             self.settings_dialog.open = true;
             self.settings_dialog.section = Section::Appearance;
+        }
+        if change_recordings.get()
+            && let Some(folder) = platform::pick_folder("Choose the recordings folder")
+        {
+            self.settings.root_folder = Some(folder);
+            self.push_settings_if_changed();
+            self.save_settings();
+        }
+        if open_recordings.get() {
+            platform::open_folder(&config::takes_root(&self.settings));
         }
 
         // The switch wrote its selection into the cell; report a change through `mode_picked`.
@@ -1043,8 +1122,21 @@ impl RecorderApp {
     fn take_stage(&mut self, ui: &mut egui::Ui, state: &ControllerState, add_content: impl FnOnce(&mut Self, &mut egui::Ui)) {
         let chords = Chords::of(&self.hotkeys);
         // Only the idle bar shows the next take, so a running take never reads the takes folder.
-        let (next_take, next_take_path) =
-            if state.phase.has_take() { (None, String::new()) } else { self.profile_section.next_take(&self.profile_store, &self.settings) };
+        let plan = if state.phase.has_take() { None } else { Some(self.profile_section.next_take(&self.profile_store, &self.settings, state.replay_on)) };
+        let next_take = plan.as_ref().and_then(|plan| plan.label.clone());
+        // The tooltip is the take's folder; while the buffer is on a second line names where
+        // the next replay goes (spec "Recorder output folders", preview toolbar).
+        let mut next_take_path =
+            plan.as_ref().map_or(String::new(), |plan| if plan.folder_path.is_empty() { plan.video_path.clone() } else { plan.folder_path.clone() });
+        if let Some(plan) = &plan
+            && !plan.replay_path.is_empty()
+        {
+            if !next_take_path.is_empty() {
+                next_take_path.push('\n');
+            }
+            next_take_path.push_str("Next replay: ");
+            next_take_path.push_str(&plan.replay_path);
+        }
         let bar = bar_ui::TakeBar {
             phase: state.phase,
             fps: state.fps,
@@ -1114,7 +1206,7 @@ impl RecorderApp {
         egui::CentralPanel::default().frame(window_frame(ui.ctx())).show(ui, |ui| {
             let [left, center, right] = three_columns(ui.max_rect(), self.settings.panel_widths.get(Mode::Review));
             column(ui, left, |ui| match review_ui::takes_panel(ui, &self.review_days, &mut self.review_selected) {
-                review_ui::TakesAction::OpenFolder => open_folder(&project_folder(&self.settings)),
+                review_ui::TakesAction::OpenFolder => platform::open_folder(&project_folder(&self.settings)),
                 review_ui::TakesAction::Refresh => self.review_dirty = true,
                 review_ui::TakesAction::None => {}
             });
@@ -1641,15 +1733,18 @@ enum BannerRow {
     Error(String),
 }
 
-/// One banner row: a colored dot, the message, and the optional Details and Dismiss buttons
-/// on the right, reading left to right. Returns the row, Details and Dismiss responses.
+/// One banner row: a colored dot, the message, and the optional Choose folder, Details and
+/// Dismiss buttons on the right, reading left to right. Returns the row and the button
+/// responses in that order.
 fn banner_row(
     ui: &mut egui::Ui,
     dot: egui::Color32,
     message: &str,
+    choose: Option<&str>,
     details_label: Option<&str>,
     dismiss: bool,
-) -> (egui::Response, Option<egui::Response>, Option<egui::Response>) {
+) -> (egui::Response, Option<egui::Response>, Option<egui::Response>, Option<egui::Response>) {
+    let mut choose_response = None;
     let mut details = None;
     let mut dismiss_response = None;
     let row = ui.horizontal(|ui| {
@@ -1667,9 +1762,12 @@ fn banner_row(
             if let Some(label) = details_label {
                 details = Some(ui.small_button(label));
             }
+            if let Some(label) = choose {
+                choose_response = Some(ui.small_button(label));
+            }
         });
     });
-    (row.response, details, dismiss_response)
+    (row.response, choose_response, details, dismiss_response)
 }
 
 /// The window-body frame all three modes share: the ground fill with the 8px window gap on
@@ -1925,10 +2023,30 @@ fn project_folder(settings: &Settings) -> std::path::PathBuf {
     config::takes_root(settings).join(name)
 }
 
-/// Opens a folder in Explorer; a failure is logged, not shown.
-fn open_folder(folder: &std::path::Path) {
-    if let Err(err) = std::process::Command::new("explorer").arg(folder).spawn() {
-        log::warn!("could not open {}: {err}", folder.display());
+/// The folder a "Can't save to <path>: reason" refusal names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefusedFolder {
+    /// The recordings root: Choose folder opens the recordings picker.
+    Recordings,
+    /// A picked replays root: Choose folder opens the replays picker.
+    Replays,
+}
+
+/// Which configured folder the controller's "Can't save to <path>: reason" refusal names: the
+/// replays folder when one was picked and the refused path is exactly it, the recordings folder
+/// otherwise (a refusal inside a project's Replays folder means the recordings root is bad).
+fn refusal_target(message: &str, settings: &Settings) -> RefusedFolder {
+    let replays = crate::takes::replays_folder(settings);
+    let replays_refused = settings.replays_root.is_some() && message.starts_with(&format!("Can't save to {}:", replays.display()));
+    if replays_refused { RefusedFolder::Replays } else { RefusedFolder::Recordings }
+}
+
+/// Whether two folders sit on the same drive, by their first path component; folders whose
+/// drive cannot be told count as the same.
+fn same_drive(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (a.components().next(), b.components().next()) {
+        (Some(first), Some(second)) => first == second,
+        _ => true,
     }
 }
 
@@ -1974,10 +2092,11 @@ impl eframe::App for RecorderApp {
         // The status bar (docs/suite/Recorder-E3.md, section 4): state, disk free, camera note, API clients.
         // The notch button reaches into the status bar, so its text stays clear of it.
         let notch_x = stage_center_x(ui.max_rect(), self.modes.mode, self.settings.panel_widths.get(self.modes.mode));
+        let replays_free = self.replays_free(&state);
         egui::Panel::bottom("status-bar").frame(egui::Frame::new().fill(ground(&ctx))).show(ui, |ui| {
             let clients = self.api.as_ref().map(|server| server.client_count());
             let blocked = state.phase == Phase::Idle && self.profile_section.blocked();
-            status_ui::show(ui, &state, clients, blocked, crate::engine::cam::info_line().as_deref(), notch_x);
+            status_ui::show(ui, &state, clients, blocked, crate::engine::cam::info_line().as_deref(), replays_free, notch_x);
         });
 
         // The 44px title bar (spec "Title bar", rev 3); it reports a picked mode through the cell.
@@ -2013,8 +2132,8 @@ impl eframe::App for RecorderApp {
         // The Settings dialog (spec "Settings dialog"): File > Settings (Ctrl+,) and
         // View > Appearance open it, Esc closes it.
         let next_take = if self.settings_dialog.open {
-            let (_label, path) = self.profile_section.next_take(&self.profile_store, &self.settings);
-            NextTake { path }
+            let plan = self.profile_section.next_take(&self.profile_store, &self.settings, false);
+            NextTake { path: plan.video_path }
         } else {
             NextTake::default()
         };
@@ -2037,6 +2156,14 @@ impl eframe::App for RecorderApp {
         if outcome.regenerate_token {
             self.api_regenerate = true;
         }
+
+        // The first-launch dialog (spec "Recorder output folders", UI 3): stays up until the
+        // recordings folder is answered; the flag and a picked folder are saved.
+        let launch = settings_ui::first_launch(&ctx, &mut self.settings);
+        if launch.confirmed || launch.folder_changed {
+            self.push_settings_if_changed();
+            self.save_settings();
+        }
     }
 }
 
@@ -2051,6 +2178,27 @@ mod tests {
     fn the_app_has_its_own_appearance_identity() {
         assert_eq!(APPEARANCE.id, "recorder");
         assert_eq!(APPEARANCE.default_preset, ui_kit::Preset::Teal);
+    }
+
+    /// A "Can't save to <path>: reason" refusal names the folder whose picker Choose folder
+    /// opens: the recordings root, a picked replays root, or the recordings root when replays
+    /// live inside the project (spec "Recorder output folders", Checks 1).
+    #[test]
+    fn a_folder_refusal_names_the_folder_to_choose_again() {
+        let settings = Settings {
+            root_folder: Some(std::path::PathBuf::from("D:\\Recordings")),
+            replays_root: Some(std::path::PathBuf::from("E:\\Replays")),
+            project: "Show".to_owned(),
+            ..Settings::default()
+        };
+        // The take refusal names the recordings root exactly.
+        assert_eq!(refusal_target("Can't save to D:\\Recordings: the folder is not writable", &settings), RefusedFolder::Recordings);
+        // The replay refusal names the picked replays root with the project under it.
+        assert_eq!(refusal_target("Can't save to E:\\Replays\\Show: the folder is not writable", &settings), RefusedFolder::Replays);
+        // Without a picked replays root, a refusal inside the project's Replays folder is the recordings root.
+        let mut inside = settings;
+        inside.replays_root = None;
+        assert_eq!(refusal_target("Can't save to D:\\Recordings\\Show\\Replays: the folder is not writable", &inside), RefusedFolder::Recordings);
     }
 
     /// The Setup layout, headless at 1300 x 840: the right settings column ends at the window

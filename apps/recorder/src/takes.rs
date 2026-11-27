@@ -212,7 +212,9 @@ pub fn plan_take(root: &Path, now: DateTime<Local>, container: Container, naming
 }
 
 /// Works out the next take's paths directly inside `folder` for `now` without creating anything; no project folder is added.
-fn plan_take_in(folder: &Path, now: DateTime<Local>, container: Container, naming: &Naming) -> Result<TakePaths, io::Error> {
+///
+/// The replay toolbar uses it to plan where the next replay goes inside the replays folder.
+pub(crate) fn plan_take_in(folder: &Path, now: DateTime<Local>, container: Container, naming: &Naming) -> Result<TakePaths, io::Error> {
     let take = next_number(folder, naming, now)?;
     let base_name = expand(naming, now, take);
     let folder = folder.join(&base_name);

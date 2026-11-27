@@ -246,14 +246,32 @@ pub struct ProfileSection {
     preview: Option<Preview>,
 }
 
+/// The next take's answer for the preview toolbar and the Settings dialog.
+#[derive(Debug, Clone, Default)]
+pub struct NextTakePlan {
+    /// The take's short label ("takeNN"), or None when the takes folder could not be read.
+    pub label: Option<String>,
+    /// The full video file path, or the error message when the takes folder could not be read.
+    pub video_path: String,
+    /// The take's folder path, or empty when the takes folder could not be read.
+    pub folder_path: String,
+    /// Where the next replay goes while the replay buffer is on, or empty otherwise or when unknown.
+    pub replay_path: String,
+}
+
 /// The next take's answer for the preview toolbar.
 struct Preview {
     /// When the takes folder was read.
     at: Instant,
-    /// What the answer was worked out from: the root, project, template, profile and container.
+    /// What the answer was worked out from: the root, project, template, profile, container,
+    /// replays folder and buffer state.
     key: String,
     /// The path as shown, or the error message when the takes folder could not be read.
     text: String,
+    /// The take's folder path, or empty when the takes folder could not be read.
+    folder: String,
+    /// Where the next replay goes while the buffer is on, or empty otherwise or when unknown.
+    replay_folder: String,
     /// The take's short label ("takeNN"), or None when the folder could not be read.
     label: Option<String>,
 }
@@ -469,27 +487,49 @@ impl ProfileSection {
         }
     }
 
-    /// The next take for the preview toolbar: its short label ("takeNN" when the take name ends
-    /// with one) and the full video file path, or an error message in the path's place.
+    /// The next take for the preview toolbar and the Settings dialog: its short label
+    /// ("takeNN" when the take name ends with one), the full video file path, the take's folder
+    /// path and, while the replay buffer is on, where the next replay goes. The path fields
+    /// carry the error message when the takes folder could not be read.
     ///
     /// The takes folder is read again when something on the line changed or two seconds passed.
-    pub fn next_take(&mut self, store: &ProfileStore, settings: &Settings) -> (Option<String>, String) {
+    pub fn next_take(&mut self, store: &ProfileStore, settings: &Settings, replay_on: bool) -> NextTakePlan {
         let container = store.get(&settings.active_profile).map(|profile| profile.container).unwrap_or_default();
         let root = takes_root(settings);
-        let key = format!("{}|{}|{}|{}|{}", root.display(), settings.project, settings.naming_template, settings.active_profile, container.extension());
+        let replays = takes::replays_folder(settings);
+        let key = format!(
+            "{}|{}|{}|{}|{}|{}|{}",
+            root.display(),
+            settings.project,
+            settings.naming_template,
+            settings.active_profile,
+            container.extension(),
+            replays.display(),
+            replay_on
+        );
         if self.preview.as_ref().is_none_or(|preview| preview.key != key || preview.at.elapsed() > PREVIEW_REFRESH) {
             let naming = takes::Naming { project: &settings.project, template: &settings.naming_template, profile: &settings.active_profile };
-            let (text, label) = match takes::plan_take(&root, chrono::Local::now(), container, &naming) {
-                Ok(paths) => (paths.video_file.display().to_string(), Some(take_label(&paths.base_name).to_owned())),
-                Err(err) => (format!("The takes folder could not be read: {err}"), None),
+            let now = chrono::Local::now();
+            let (text, folder, label) = match takes::plan_take(&root, now, container, &naming) {
+                Ok(paths) => (paths.video_file.display().to_string(), paths.folder.display().to_string(), Some(take_label(&paths.base_name).to_owned())),
+                Err(err) => (format!("The takes folder could not be read: {err}"), String::new(), None),
             };
-            self.preview = Some(Preview { at: Instant::now(), key, text, label });
+            // The next replay's folder is planned only while the buffer is on: nothing else reads it.
+            let replay_folder = match replay_on.then(|| takes::plan_take_in(&replays, now, container, &naming)) {
+                Some(Ok(paths)) => paths.folder.display().to_string(),
+                _ => String::new(),
+            };
+            self.preview = Some(Preview { at: Instant::now(), key, text, folder, replay_folder, label });
         }
-        let mut answer = (None, String::new());
-        if let Some(preview) = self.preview.as_ref() {
-            answer = (preview.label.clone(), preview.text.clone());
+        match self.preview.as_ref() {
+            Some(preview) => NextTakePlan {
+                label: preview.label.clone(),
+                video_path: preview.text.clone(),
+                folder_path: preview.folder.clone(),
+                replay_path: preview.replay_folder.clone(),
+            },
+            None => NextTakePlan::default(),
         }
-        answer
     }
 
     /// Draws the Encode and Format groups for the active profile and writes its edits after the debounce.

@@ -200,7 +200,9 @@ pub struct TakeBar<'a> {
     pub chords: &'a Chords,
     /// The next take's short name, shown while no take runs; None when it is unknown.
     pub next_take: Option<&'a str>,
-    /// The next take's full video file path, or why it is unknown, as the name's tooltip.
+    /// The next take's name tooltip: its full folder path, with the next replay's folder on a
+    /// second line while the buffer is on; the error message when the takes folder could not be
+    /// read.
     pub next_take_path: &'a str,
 }
 

@@ -14,6 +14,14 @@ pub fn show_in_folder(path: &std::path::Path) {
     let _ = path;
 }
 
+/// Opens a folder in Explorer; a failure is logged, not shown.
+pub fn open_folder(folder: &std::path::Path) {
+    if let Err(err) = std::process::Command::new("explorer").arg(folder).spawn() {
+        log::warn!("could not open {}: {err}", folder.display());
+    }
+}
+
+/// Opens the Windows notification settings page; the Recorder never changes the setting itself.
 /// Opens the Windows notification settings page; the Recorder never changes the setting itself.
 pub fn open_notification_settings() {
     #[cfg(windows)]
@@ -121,6 +129,71 @@ pub fn set_capture_exclusion(raw_hwnd: isize, exclude: bool) -> Result<(), Strin
         let _ = (raw_hwnd, exclude);
         Ok(())
     }
+}
+
+/// Opens a folder picker titled `title`; None when it fails or the user cancels.
+pub fn pick_folder(title: &str) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        pick_folder_dialog(title)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = title;
+        None
+    }
+}
+
+/// Runs the folder picker on this thread's COM apartment.
+#[cfg(windows)]
+#[allow(unsafe_code, reason = "the shell folder picker: COM calls that run a modal open dialog")]
+fn pick_folder_dialog(title: &str) -> Option<PathBuf> {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+    use windows::core::HRESULT;
+
+    // SAFETY: CoInitializeEx only takes an apartment flag; a returned S_OK is balanced by CoUninitialize below.
+    let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    let folder = pick_with_folder_dialog(title);
+    if let Err(error) = &folder {
+        log::warn!("the folder picker failed: {error}");
+    }
+    if hr == HRESULT(0) {
+        // SAFETY: this thread was the one that got S_OK above, and every COM pointer is released by now.
+        unsafe { CoUninitialize() };
+    }
+    folder.ok().flatten()
+}
+
+/// Shows the folder dialog with the given title and turns the picked shell item into a path; None when the user cancels.
+#[cfg(windows)]
+#[allow(unsafe_code, reason = "the shell folder picker: COM calls that run a modal open dialog")]
+fn pick_with_folder_dialog(title: &str) -> Result<Option<PathBuf>, windows::core::Error> {
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
+    use windows::Win32::UI::Shell::{FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST, FOS_PICKFOLDERS, FileOpenDialog, IFileDialog, IFileOpenDialog, SIGDN_FILESYSPATH};
+    use windows::core::{HRESULT, HSTRING, Interface, PCWSTR};
+
+    // SAFETY: FileOpenDialog is the standard dialog class id and the interface is a valid out parameter.
+    let dialog: IFileOpenDialog = unsafe { CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)? };
+    let file_dialog: IFileDialog = dialog.cast()?;
+    let title_h = HSTRING::from(title);
+    // SAFETY: the dialog is live; the calls only set picker options and the title, whose string is live.
+    unsafe {
+        file_dialog.SetOptions(FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_PICKFOLDERS)?;
+        file_dialog.SetTitle(PCWSTR(title_h.as_ptr()))?;
+    }
+    // SAFETY: the dialog is live and a null owner means the dialog has no parent window.
+    if let Err(error) = unsafe { file_dialog.Show(None) } {
+        // Cancelling the dialog comes back as HRESULT 0x800704C7, which is not a failure.
+        return if error.code() == HRESULT(0x8007_04C7u32 as i32) { Ok(None) } else { Err(error) };
+    }
+    let item = unsafe { dialog.GetResult() }?;
+    // SAFETY: the item is live and SIGDN_FILESYSPATH asks for a file system path.
+    let display = unsafe { item.GetDisplayName(SIGDN_FILESYSPATH)? };
+    // SAFETY: display is a live NUL terminated string handed out by GetDisplayName.
+    let path = unsafe { display.to_string() }.ok().map(PathBuf::from);
+    // SAFETY: balances the allocation behind GetDisplayName, which is done with once the path is taken.
+    unsafe { CoTaskMemFree(Some(display.as_ptr().cast())) };
+    Ok(path)
 }
 
 /// Gets the raw Win32 window handle of a freshly created window as an `isize`.

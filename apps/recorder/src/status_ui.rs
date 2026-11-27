@@ -22,10 +22,20 @@ const CAMERA_WARNING: &str = "Camera falls back to HEVC on this GPU";
 
 /// Draws the status bar. While idle the first item reads Ready, or Blocked when starting is
 /// blocked (the reason stays in the banner strip; spec "Mapping"). `camera_note` is why the
-/// camera file's codec falls back, when it does. The stage's notch button reaches into the
-/// bar around `notch_x`, so no text is drawn there: the side panels can differ in width, so
-/// the empty center follows the stage and not the window.
-pub fn show(ui: &mut Ui, state: &ControllerState, api_clients: Option<usize>, blocked: bool, camera_note: Option<&str>, notch_x: f32) {
+/// camera file's codec falls back, when it does. `replays_free` is the free space of the
+/// replays folder's drive while the replay buffer is on and replays go to another drive than
+/// the recordings (spec "Recorder output folders", status bar). The stage's notch button
+/// reaches into the bar around `notch_x`, so no text is drawn there: the side panels can
+/// differ in width, so the empty center follows the stage and not the window.
+pub fn show(
+    ui: &mut Ui,
+    state: &ControllerState,
+    api_clients: Option<usize>,
+    blocked: bool,
+    camera_note: Option<&str>,
+    replays_free: Option<u64>,
+    notch_x: f32,
+) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ui_kit::STATUS_BAR_GAP_HEIGHT), Sense::hover());
     let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
     let text = ui_kit::Theme::get(ui.ctx()).neutrals.text_tertiary;
@@ -45,11 +55,18 @@ pub fn show(ui: &mut Ui, state: &ControllerState, api_clients: Option<usize>, bl
     let mut x = rect.left() + space::SCALE_4;
     painter.circle_filled(Pos2::new(x + DOT_DIAMETER / 2.0, rect.center().y), DOT_DIAMETER / 2.0, dot);
     x += DOT_DIAMETER + space::SCALE_8;
-    // The free disk space, while idle and while a take writes.
+    // The free disk space, while idle and while a take writes; while the replay buffer is on
+    // and replays go to another drive, the replays drive's free space follows it.
     let free = state.take_stats.as_ref().and_then(|stats| stats.disk_free_bytes).or(state.idle_free_bytes);
     let free = format_free(free);
     let free_value = free.strip_suffix(" free").unwrap_or_default();
-    for job in [data_text::with_data(label, &[], text), data_text::with_data(&free, &[free_value], text)] {
+    let mut items = vec![data_text::with_data(label, &[], text), data_text::with_data(&free, &[free_value], text)];
+    if let Some(bytes) = replays_free {
+        let replays = format!("Replays: {:.1} GB free", bytes as f64 / GIB as f64);
+        let value = format!("{:.1}", bytes as f64 / GIB as f64);
+        items.push(data_text::with_data(&replays, &[&value], text));
+    }
+    for job in items {
         let galley = ui.painter().layout_job(job);
         let width = galley.size().x;
         if x + width > left_end {
@@ -132,8 +149,19 @@ mod tests {
         painted_state(width, move || ControllerState { phase, idle_free_bytes: Some(9999 * GIB), ..ControllerState::default() }, notch_x)
     }
 
-    /// [`painted`] for any controller state.
+    /// [`painted`] for any controller state, with the camera warning and no replays item.
     fn painted_state(width: f32, state: impl Fn() -> ControllerState + 'static, notch_x: f32) -> Vec<(String, Rect)> {
+        painted_extra(width, state, notch_x, Some(CAMERA_WARNING), None)
+    }
+
+    /// [`painted`] with the camera note and the replays free space chosen per test.
+    fn painted_extra(
+        width: f32,
+        state: impl Fn() -> ControllerState + 'static,
+        notch_x: f32,
+        camera_note: Option<&'static str>,
+        replays_free: Option<u64>,
+    ) -> Vec<(String, Rect)> {
         let first_pass = Rc::new(Cell::new(true));
         let mut harness = Harness::builder().with_size(vec2(width, 60.0)).build_ui(move |ui| {
             // The fonts a style asks for are only there from the next pass on.
@@ -144,7 +172,7 @@ mod tests {
             let window = ui.ctx().content_rect();
             let mut bar = ui.new_child(egui::UiBuilder::new().max_rect(window));
             bar.set_clip_rect(window);
-            show(&mut bar, &state(), Some(12), false, Some("Camera ISO: HEVC (AV1 1080p not supported in MP4 on this GPU)"), notch_x);
+            show(&mut bar, &state(), Some(12), false, camera_note, replays_free, notch_x);
         });
         harness.run();
         let texts = harness.output().shapes.iter().filter_map(|clipped| match &clipped.shape {
@@ -225,6 +253,20 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// While the replay buffer is on and replays go to another drive, the bar also shows the
+    /// replays drive's free space; without one it does not.
+    #[test]
+    fn the_status_bar_shows_the_replays_free_space_while_the_buffer_is_on() {
+        let width = 1300.0;
+        let window = Rect::from_min_size(Pos2::ZERO, vec2(width, 600.0));
+        let notch_x = stage_center_x(window, Mode::Setup, PanelWidths::default());
+        let state = || ControllerState { replay_on: true, idle_free_bytes: Some(9999 * GIB), ..ControllerState::default() };
+        let without = painted_extra(width, state, notch_x, None, None);
+        assert!(!without.iter().any(|(text, _)| text.contains("Replays:")), "the replays item showed without a reading: {without:?}");
+        let with = painted_extra(width, state, notch_x, None, Some(5 * GIB));
+        assert!(with.iter().any(|(text, _)| text == "Replays: 5.0 GB free"), "the replays item is missing: {with:?}");
     }
 
     #[test]
