@@ -9,3 +9,8 @@
 /test_*.mp4
 /test_*.mkv
 /test_*.mov
+
+# Stream Deck plugin build output
+plugins/suite/node_modules/
+plugins/suite/com.cutmark.suite.sdPlugin/bin/
+plugins/suite/com.cutmark.suite.sdPlugin/logs/

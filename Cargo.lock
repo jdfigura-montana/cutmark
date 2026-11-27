@@ -1453,6 +1453,7 @@ dependencies = [
  "chrono",
  "cpal 0.18.2",
  "crossbeam-channel",
+ "cutmark-remote",
  "directories",
  "eframe",
  "egui-phosphor",
@@ -1460,6 +1461,7 @@ dependencies = [
  "ffmpeg-next",
  "filetime",
  "hound",
+ "log",
  "rfd",
  "rtrb",
  "rubato",
@@ -1528,6 +1530,21 @@ dependencies = [
  "uuid",
  "windows 0.62.2",
  "winresource",
+]
+
+[[package]]
+name = "cutmark-remote"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "getrandom 0.4.3",
+ "http",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tungstenite",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

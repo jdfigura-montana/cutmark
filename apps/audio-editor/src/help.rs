@@ -28,6 +28,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("getting-started.md", include_str!("../help/getting-started.md")),
     ("projects.md", include_str!("../help/projects.md")),
     ("the-window.md", include_str!("../help/the-window.md")),
+    ("stream-deck.md", include_str!("../help/stream-deck.md")),
     ("recording-a-take.md", include_str!("../help/recording-a-take.md")),
     ("choosing-devices.md", include_str!("../help/choosing-devices.md")),
     ("importing-audio.md", include_str!("../help/importing-audio.md")),
