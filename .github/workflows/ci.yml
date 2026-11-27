@@ -1,5 +1,5 @@
 name: CI
-# Manual trigger only. One run per milestone. Linux only, because marks is the only crate CI builds.
+# Manual trigger only. One run per milestone. Linux only, because marks and events are the only crates CI builds.
 on: workflow_dispatch
 concurrency:
   group: ci
@@ -19,8 +19,8 @@ jobs:
         run: git config --global url."https://x-access-token:${{ secrets.FILMCRAFT_TOKEN }}@github.com/jdfigura-montana/filmcraft".insteadOf "https://github.com/jdfigura-montana/filmcraft"
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - run: cargo clippy -p marks --all-targets -- -D warnings
-      - run: cargo test -p marks
+      - run: cargo clippy -p marks -p events --all-targets -- -D warnings
+      - run: cargo test -p marks -p events
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny

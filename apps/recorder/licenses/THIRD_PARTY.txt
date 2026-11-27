@@ -135,6 +135,7 @@ Rust crates (from the cutmark-recorder dependency tree; license as declared on c
 - litrs 1.0.0 - MIT OR Apache-2.0
 - lock_api 0.4.14 - MIT OR Apache-2.0
 - log 0.4.34 - MIT OR Apache-2.0
+- lz4_flex 0.14.2 - MIT
 - memchr 2.8.3 - Unlicense OR MIT
 - miniz_oxide 0.9.1 - MIT OR Zlib OR Apache-2.0
 - moxcms 0.8.1 - BSD-3-Clause OR Apache-2.0
