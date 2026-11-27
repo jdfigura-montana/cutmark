@@ -184,8 +184,8 @@ impl PacketSink for TakeWriter {
     }
 }
 
-/// The one sink of a running capture: it holds the take, if there is one, and passes on what the take's gate lets
-/// through, restamped to the take's clock. With no take everything is dropped.
+/// The one sink of a running capture, with up to two listeners. The replay rings get everything, on the capture's own
+/// clock. The take gets what its gate lets through, restamped to the take's clock. With neither everything is dropped.
 ///
 /// The take's writer is never called under the lock, apart from creating its WAV files, so a slow disk does not make
 /// a pause or another stream wait.
@@ -203,12 +203,58 @@ struct Routing {
     take: Option<Arc<dyn PacketSink>>,
     /// Whether the audio thread is ready for PCM, so a take that joins later must open its own.
     pcm_open: bool,
+    /// The replay rings, while the buffer is on.
+    rings: Option<Arc<dyn PacketSink>>,
+    /// The highest linear level of each track while the take was on, pauses included.
+    peaks: Vec<f32>,
+    /// How the take's camera file ended, when the camera thread closed it.
+    camera_end: Option<(PathBuf, Result<u64, String>)>,
+}
+
+/// What is left of a take that has left its capture.
+pub(super) struct LeftTake {
+    /// The take's sink; None when no take was on.
+    pub(super) take: Option<Arc<dyn PacketSink>>,
+    /// The highest level of each track during the take, in dBFS, in track order; -100.0 for silence.
+    pub(super) peaks_dbfs: Vec<f32>,
+    /// How the take's camera file ended, if the camera thread closed it first.
+    pub(super) camera_end: Option<CamFileEnd>,
+}
+
+/// Where one output goes.
+struct Routed<T> {
+    rings: Option<Arc<dyn PacketSink>>,
+    /// The take and what its gate chose.
+    take: Option<(Arc<dyn PacketSink>, T)>,
 }
 
 impl CaptureOutput {
     /// The output of a capture with no take.
     pub(super) fn new(stats: Arc<Stats>, audio_streams: usize, gate: TakeGate) -> Self {
-        Self { stats, audio_streams: audio_streams as u64, routing: Mutex::new(Routing { gate, take: None, pcm_open: false }) }
+        let routing = Routing { gate, take: None, pcm_open: false, rings: None, peaks: Vec::new(), camera_end: None };
+        Self { stats, audio_streams: audio_streams as u64, routing: Mutex::new(routing) }
+    }
+
+    /// Starts or stops feeding the replay rings. A take is not affected.
+    pub(super) fn set_rings(&self, rings: Option<Arc<dyn PacketSink>>) {
+        lock(&self.routing).rings = rings;
+    }
+
+    /// See [`TakeGate::drained`].
+    pub(super) fn drained(&self, camera: bool, tracks: usize) -> bool {
+        lock(&self.routing).gate.drained(camera, self.audio_streams as usize, tracks)
+    }
+
+    /// Lets the take go, so its files can be finished, and makes the gate ready for the next one.
+    pub(super) fn leave_take(&self) -> LeftTake {
+        let mut routing = lock(&self.routing);
+        routing.gate.end_take();
+        let peaks = std::mem::take(&mut routing.peaks);
+        LeftTake {
+            take: routing.take.take(),
+            peaks_dbfs: peaks.into_iter().map(|peak| if peak > 0.0 { 20.0 * peak.log10() } else { -100.0 }).collect(),
+            camera_end: routing.camera_end.take().map(|(file, bytes)| CamFileEnd { file, bytes }),
+        }
     }
 
     /// Gives the capture its take before any stream has started: the take holds everything from the start.
@@ -231,11 +277,6 @@ impl CaptureOutput {
         routing.take = Some(take);
         let frame = routing.gate.open(press_qpc);
         Ok(routing.gate.frame_qpc(frame))
-    }
-
-    /// Lets the take go, so its mux threads can be finished.
-    pub(super) fn release_take(&self) {
-        lock(&self.routing).take = None;
     }
 
     /// Pauses the take; the capture goes on.
@@ -276,12 +317,12 @@ impl CaptureOutput {
         lock(&self.routing).gate.take_ms(capture_100ns)
     }
 
-    /// Runs the gate and returns what it chose with the take, if there is one and it wants the output.
-    fn route<T>(&self, choose: impl FnOnce(&mut TakeGate) -> Option<T>) -> Option<(Arc<dyn PacketSink>, T)> {
+    /// Runs the gate, which follows every stream also while there is no take, and returns the rings with what the gate
+    /// chose for the take, if there is one and it wants the output.
+    fn route<T>(&self, choose: impl FnOnce(&mut TakeGate) -> Option<T>) -> Routed<T> {
         let mut routing = lock(&self.routing);
-        let take = routing.take.clone()?;
-        let chosen = choose(&mut routing.gate)?;
-        Some((take, chosen))
+        let chosen = choose(&mut routing.gate);
+        Routed { rings: routing.rings.clone(), take: routing.take.clone().zip(chosen) }
     }
 
     fn take(&self) -> Option<Arc<dyn PacketSink>> {
@@ -294,6 +335,11 @@ fn moved(packet: EncodedPacket, offset: i64, duration: i64) -> Option<EncodedPac
     if offset == 0 {
         return Some(packet);
     }
+    copied(&packet, offset, duration)
+}
+
+/// A copy of a packet's payload and key flag, with its time stamps moved back by `offset`.
+fn copied(packet: &EncodedPacket, offset: i64, duration: i64) -> Option<EncodedPacket> {
     let mut copy = Packet::copy(packet.data()?);
     copy.set_pts(packet.pts().map(|pts| pts - offset));
     copy.set_dts(packet.dts().map(|dts| dts - offset));
@@ -304,10 +350,32 @@ fn moved(packet: EncodedPacket, offset: i64, duration: i64) -> Option<EncodedPac
     Some(EncodedPacket::from_raw_packet(copy))
 }
 
+/// Gives the rings their packet through `send`, and returns the one the take still needs: the rings get a copy only
+/// when the take wants the packet too.
+fn feed_rings<E>(
+    rings: Option<Arc<dyn PacketSink>>,
+    packet: EncodedPacket,
+    take_wants_it: bool,
+    send: impl FnOnce(&dyn PacketSink, EncodedPacket) -> Result<(), E>,
+) -> Result<Option<EncodedPacket>, E> {
+    let Some(rings) = rings else {
+        return Ok(take_wants_it.then_some(packet));
+    };
+    if !take_wants_it {
+        return send(rings.as_ref(), packet).map(|()| None);
+    }
+    if let Some(copy) = copied(&packet, 0, 0) {
+        send(rings.as_ref(), copy)?;
+    }
+    Ok(Some(packet))
+}
+
 impl PacketSink for CaptureOutput {
     fn video(&self, packet: EncodedPacket) -> Result<(), MediaError> {
         let (pts, key) = (packet.pts().unwrap_or(-1), packet.is_key());
-        let Some((take, offset)) = self.route(|gate| gate.video_packet(pts, key)) else {
+        let Routed { rings, take } = self.route(|gate| gate.video_packet(pts, key));
+        let packet = feed_rings(rings, packet, take.is_some(), |rings, packet| rings.video(packet))?;
+        let Some(((take, offset), packet)) = take.zip(packet) else {
             return Ok(());
         };
         self.stats.bytes_written.fetch_add(packet.size() as u64, Ordering::Relaxed);
@@ -317,14 +385,18 @@ impl PacketSink for CaptureOutput {
 
     fn camera(&self, packet: EncodedPacket) -> Result<(), MediaError> {
         let (pts, key) = (packet.pts().unwrap_or(-1), packet.is_key());
-        let Some((take, offset)) = self.route(|gate| gate.camera_packet(pts, key)) else {
+        let Routed { rings, take } = self.route(|gate| gate.camera_packet(pts, key));
+        let packet = feed_rings(rings, packet, take.is_some(), |rings, packet| rings.camera(packet))?;
+        let Some(((take, offset), packet)) = take.zip(packet) else {
             return Ok(());
         };
         moved(packet, offset, 1).map_or(Ok(()), |packet| take.camera(packet))
     }
 
     fn close_camera(&self) -> Option<CamFileEnd> {
-        self.take().and_then(|take| take.close_camera())
+        let end = self.take().and_then(|take| take.close_camera())?;
+        lock(&self.routing).camera_end = Some((end.file.clone(), end.bytes.clone()));
+        Some(end)
     }
 
     fn camera_bytes(&self) -> u64 {
@@ -336,7 +408,9 @@ impl PacketSink for CaptureOutput {
         let Some(pts) = packet.pts() else {
             return Ok(());
         };
-        let Some((take, (out, duration))) = self.route(|gate| gate.audio_packet(slot, pts)) else {
+        let Routed { rings, take } = self.route(|gate| gate.audio_packet(slot, pts));
+        let packet = feed_rings(rings, packet, take.is_some(), |rings, packet| rings.audio(slot, packet))?;
+        let Some(((take, (out, duration)), packet)) = take.zip(packet) else {
             return Ok(());
         };
         moved(packet, pts - out, duration).map_or(Ok(()), |packet| take.audio(slot, packet))
@@ -350,7 +424,25 @@ impl PacketSink for CaptureOutput {
 
     fn pcm(&self, track: usize, start: u64, samples: &[f32]) -> Result<u64, EngineError> {
         let channels = usize::from(OUT_CHANNELS);
-        let Some((take, parts)) = self.route(|gate| Some(gate.pcm(start, samples.len() / channels))) else {
+        let frames = samples.len() / channels;
+        let peak = samples.iter().fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+        let (rings, take) = {
+            let mut routing = lock(&self.routing);
+            let parts = routing.gate.pcm(start, frames);
+            routing.gate.pcm_seen(track, start + frames as u64);
+            let take = routing.take.clone();
+            if take.is_some() {
+                if routing.peaks.len() <= track {
+                    routing.peaks.resize(track + 1, 0.0);
+                }
+                routing.peaks[track] = routing.peaks[track].max(peak);
+            }
+            (routing.rings.clone(), take.map(|take| (take, parts)))
+        };
+        if let Some(rings) = rings {
+            rings.pcm(track, start, samples)?;
+        }
+        let Some((take, parts)) = take else {
             return Ok(0);
         };
         let mut bytes = 0;

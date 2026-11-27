@@ -42,12 +42,15 @@ pub mod pacer;
 pub mod preflight;
 
 /// The replay buffer: rings of encoded packets, PCM and marks, and the writer that saves a snapshot as a take.
-/// The controller wires it up in a later phase 12 prompt.
+/// Saving is wired up in a later phase 12 prompt.
 #[allow(dead_code)]
 pub mod replay;
 
 /// The Prompter link's files for one take: the script snapshot and the script position log.
 pub mod script;
+
+/// One capture shared by the replay buffer and a take: who listens to it, and when it starts and stops.
+mod share;
 
 /// Where a take's encoded output goes: the sink trait of the stream threads and the writer behind it.
 mod sink;

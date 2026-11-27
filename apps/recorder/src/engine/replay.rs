@@ -7,7 +7,7 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use ::marks::{Clock, MarkType, NewMark, Source, SystemClock};
@@ -22,6 +22,7 @@ use super::clock::MediaClock;
 use super::composite::CompositeBlock;
 use super::marks::{MarksWarning, TakeMarks};
 use super::session::{AudioStreamSpec, EngineError, SessionConfig, SessionFile, Stats, Summary, VideoSetup, build_muxer, file_name, finish_marks};
+use super::sink::{CamFileEnd, PacketSink};
 
 const US_PER_S: i64 = 1_000_000;
 
@@ -430,6 +431,60 @@ impl ReplayRings {
             pcm: self.pcm.iter().map(|pcm| pcm.clip(pcm_from, pcm_to)).collect(),
             marks: self.marks.clip(start_ms, now_ms),
         })
+    }
+}
+
+/// The rings as a listener of a running capture: every packet and PCM block goes into them. Keeping one never fails.
+pub(super) struct RingSink(Mutex<ReplayRings>);
+
+impl RingSink {
+    pub(super) fn new(rings: ReplayRings) -> Self {
+        Self(Mutex::new(rings))
+    }
+
+    /// The rings, locked; keep it short, because the stream threads wait for it.
+    pub(super) fn rings(&self) -> MutexGuard<'_, ReplayRings> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl PacketSink for RingSink {
+    fn video(&self, packet: EncodedPacket) -> Result<(), MediaError> {
+        self.rings().push_video(packet);
+        Ok(())
+    }
+
+    fn camera(&self, packet: EncodedPacket) -> Result<(), MediaError> {
+        self.rings().push_camera(packet);
+        Ok(())
+    }
+
+    fn close_camera(&self) -> Option<CamFileEnd> {
+        None
+    }
+
+    fn camera_bytes(&self) -> u64 {
+        0
+    }
+
+    fn audio(&self, slot: usize, packet: EncodedPacket) -> Result<(), EngineError> {
+        self.rings().push_audio(slot, packet);
+        Ok(())
+    }
+
+    fn open_pcm(&self) -> Result<(), EngineError> {
+        Ok(())
+    }
+
+    fn pcm(&self, track: usize, start: u64, samples: &[f32]) -> Result<u64, EngineError> {
+        self.rings().push_pcm(track, start, samples);
+        Ok(0)
+    }
+
+    fn flush_pcm(&self) {}
+
+    fn close_pcm(&self) -> Vec<PathBuf> {
+        Vec::new()
     }
 }
 

@@ -108,12 +108,63 @@ pub(super) struct TakeGate {
     audio: Vec<AudioSlot>,
     /// The take pts of the last camera packet taken.
     last_camera: Option<i64>,
+    /// How far each stream's output has got on the capture clock, taken or not: the first video frame, camera tick
+    /// and, per track, PCM sample that has not arrived yet.
+    video_reach: u64,
+    camera_reach: u64,
+    pcm_reach: Vec<u64>,
 }
 
 impl TakeGate {
     /// A gate with no take on a capture whose frame 0 is at `start_qpc`.
     pub(super) fn new(start_qpc: i64, qpc_freq: i64, fps: u32, camera_rate: Option<(u32, u32)>) -> Self {
-        Self { start_qpc, qpc_freq: qpc_freq.max(1), fps: fps.max(1), camera_rate, spans: Vec::new(), next_video: 0, audio: Vec::new(), last_camera: None }
+        Self {
+            start_qpc,
+            qpc_freq: qpc_freq.max(1),
+            fps: fps.max(1),
+            camera_rate,
+            spans: Vec::new(),
+            next_video: 0,
+            audio: Vec::new(),
+            last_camera: None,
+            video_reach: 0,
+            camera_reach: 0,
+            pcm_reach: Vec::new(),
+        }
+    }
+
+    /// Forgets the take, so the next one starts fresh. What is known of the capture's streams stays.
+    pub(super) fn end_take(&mut self) {
+        self.spans.clear();
+        self.last_camera = None;
+        for slot in &mut self.audio {
+            slot.next_out = None;
+        }
+    }
+
+    /// Whether every stream's output has reached the end of the paused take, so nothing the take wants is still in an
+    /// encoder: the main video, the camera while `camera` says it is running, `audio` streams and the PCM of `tracks`.
+    pub(super) fn drained(&self, camera: bool, audio: usize, tracks: usize) -> bool {
+        // A take with no span holds nothing to wait for.
+        let Some(span) = self.spans.last() else { return true };
+        let Some(end) = span.end else { return false };
+        let sample = self.sample(end);
+        let audio_reach = |slot: usize| {
+            let state = self.audio.get(slot)?;
+            state.last_pts.map(|pts| pts + state.frame.unwrap_or(DEFAULT_AUDIO_FRAME))
+        };
+        self.video_reach >= end
+            && (!camera || self.camera_reach >= self.camera_tick(end))
+            && (0..audio).all(|slot| audio_reach(slot).is_some_and(|reach| reach >= sample))
+            && (0..tracks).all(|track| self.pcm_reach.get(track).is_some_and(|reach| *reach as i64 >= sample))
+    }
+
+    /// Notes that the PCM of `track` has arrived up to the capture sample `end`.
+    pub(super) fn pcm_seen(&mut self, track: usize, end: u64) {
+        if self.pcm_reach.len() <= track {
+            self.pcm_reach.resize(track + 1, 0);
+        }
+        self.pcm_reach[track] = self.pcm_reach[track].max(end);
     }
 
     /// Starts the take together with the capture: it holds everything from frame 0, and every stream's first packet
@@ -200,6 +251,7 @@ impl TakeGate {
     /// How far a main video packet's stamps move back in the take; None when the take does not want the packet.
     pub(super) fn video_packet(&mut self, pts: i64, key: bool) -> Option<i64> {
         let frame = u64::try_from(pts).ok()?;
+        self.video_reach = self.video_reach.max(frame + 1);
         let span = self.spans.iter_mut().find(|span| span.contains(frame))?;
         span.video.accept(pts, key).then_some(span.start as i64 - span.before as i64)
     }
@@ -243,7 +295,9 @@ impl TakeGate {
 
     /// How far a camera packet's stamps move back in the take; None when the take does not want the packet.
     pub(super) fn camera_packet(&mut self, pts: i64, key: bool) -> Option<i64> {
-        let (index, offset) = self.camera_span(u64::try_from(pts).ok()?)?;
+        let tick = u64::try_from(pts).ok()?;
+        self.camera_reach = self.camera_reach.max(tick + 1);
+        let (index, offset) = self.camera_span(tick)?;
         let last = self.last_camera;
         let span = &mut self.spans[index];
         let opening = span.camera != Keyframe::Open;

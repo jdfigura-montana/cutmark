@@ -256,3 +256,41 @@ fn a_normal_take_passes_every_output_through_unchanged() -> Result<(), EngineErr
     assert_eq!(sink.stamps(Output::Pcm(0)), (0..70).map(|k| k * 480).collect::<Vec<_>>());
     Ok(())
 }
+
+#[test]
+fn a_second_take_on_the_same_gate_starts_its_own_clock_and_audio_grid() {
+    let mut gate = TakeGate::new(START, FREQ, FPS, None);
+    // 800 samples are one 60 fps frame at 48 kHz.
+    let feed = |gate: &mut TakeGate, range: std::ops::Range<i64>| range.filter_map(|n| gate.audio_packet(0, n * 800)).map(|(out, _)| out).collect::<Vec<_>>();
+    assert_eq!(gate.open(press(10)), 10);
+    assert!(feed(&mut gate, 0..15).contains(&0));
+    gate.close(press(15));
+    gate.end_take();
+    assert!(feed(&mut gate, 15..40).is_empty(), "nothing is taken between takes");
+    assert_eq!(gate.open(press(40)), 40);
+    let second = feed(&mut gate, 40..45);
+    assert_eq!(second, [0, 800, 1600, 2400, 3200]);
+    assert_eq!(gate.take_ms(750 * 10_000), 84);
+}
+
+#[test]
+fn a_paused_take_is_drained_once_every_stream_has_reached_its_end() {
+    let mut gate = TakeGate::new(START, FREQ, FPS, None);
+    gate.begin_with_capture();
+    for frame in 0..9 {
+        gate.video_frame(frame);
+        gate.video_packet(frame as i64, true);
+        gate.audio_packet(0, frame as i64 * 800);
+    }
+    gate.pcm_seen(0, 8_000);
+    assert!(!gate.drained(false, 1, 1), "a running take is never drained");
+    gate.video_frame(9);
+    gate.close(press(10));
+    // Frame 9 is still inside the encoder, and so is the audio up to the end.
+    assert!(!gate.drained(false, 1, 1));
+    gate.video_packet(9, false);
+    assert!(!gate.drained(false, 1, 1));
+    gate.audio_packet(0, 9 * 800);
+    assert!(gate.drained(false, 1, 1));
+    assert!(!gate.drained(false, 1, 2), "the second track's PCM has not arrived");
+}

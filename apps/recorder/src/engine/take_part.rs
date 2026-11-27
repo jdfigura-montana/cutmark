@@ -3,18 +3,17 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use capture::qpc_frequency;
-use media_io::mux::{MuxThread, SendParameters};
+use media_io::mux::MuxThread;
 
 use super::cam;
 use super::capture_part::{Capture, CaptureEnd, CaptureStreams};
 use super::clock::MediaClock;
 use super::composite::CompositeBlock;
 use super::marks::{MarksWarning, TakeMarks};
-use super::session::{
-    AppEvent, AudioStreamSpec, EngineError, SessionConfig, SessionFile, Stats, Summary, TrackPeak, VideoSetup, build_muxer, file_name, finish_marks,
-};
+use super::session::{AppEvent, EngineError, SessionConfig, SessionFile, Stats, Summary, TrackPeak, build_muxer, file_name, finish_marks};
 use super::sink::{CamFile, PacketSink, TakeWriter, WavPlan};
 
 /// A take's open files, before it records.
@@ -32,18 +31,7 @@ impl TakeFiles {
     /// opened never stops the take.
     pub(super) fn open(cfg: &SessionConfig, streams: &CaptureStreams) -> Result<Self, EngineError> {
         let container = cfg.profile.container;
-        let video = VideoSetup { params: SendParameters(streams.video.params.0.clone()), time_base: streams.video.time_base };
-        let audio = streams
-            .audio
-            .iter()
-            .map(|spec| AudioStreamSpec {
-                params: SendParameters(spec.params.0.clone()),
-                time_base: spec.time_base,
-                title: spec.title.clone(),
-                default: spec.default,
-            })
-            .collect();
-        let (mux, audio_streams) = build_muxer(&cfg.output_file, container, streams.fps, video, audio)?;
+        let (mux, audio_streams) = build_muxer(&cfg.output_file, container, streams.fps, streams.video_setup(), streams.audio_specs())?;
         let (mut camera, mut camera_error) = (None, None);
         if let Some(setup) = &streams.camera {
             let file = cam::file_path(&cfg.take_folder, &cfg.base_name, container);
@@ -103,6 +91,7 @@ impl TakeFiles {
         if capture.streams().camera.is_none() {
             self.discard_camera();
         }
+        // A take whose lost camera was already dropped keeps that reason.
         let notice = self.camera_error.take().or_else(|| capture.camera_notice().map(str::to_owned));
         if let Some(notice) = &notice {
             log::warn!("{notice}");
@@ -146,13 +135,26 @@ pub(super) struct Take {
 impl Take {
     /// Starts a take on a capture that is already running, pressed at `press_qpc`. It begins on a forced keyframe.
     /// `cfg` names the take's files; its streams must be the capture's.
-    // The replay buffer's controller calls this in a later prompt; a recording starts its take with its capture.
-    #[allow(dead_code)]
     pub(super) fn start_on(capture: &Capture, cfg: &SessionConfig, camera_size: Option<(u32, u32)>, press_qpc: i64) -> Result<Self, EngineError> {
-        let session_file = SessionFile::begin(cfg);
-        let files = TakeFiles::open(cfg, capture.streams())?;
+        let mut session_file = SessionFile::begin(cfg);
+        let mut files = TakeFiles::open(cfg, capture.streams())?;
+        let stats = capture.stats();
+        // A camera lost earlier has ended its thread, so this take would get an empty camera file.
+        if stats.cam.is_lost() && files.camera_file.is_some() {
+            files.discard_camera();
+            files.camera_error = Some("The camera was lost, so this take has no camera file.".to_owned());
+        }
+        stats.begin_take();
+        // What happened before the take is not part of it, but the apps attached now are listed from its start.
+        drop(stats.take_app_events());
+        for event in stats.attached_apps(&cfg.tracks) {
+            session_file.app_event(&event);
+        }
         match capture.output().start_take(files.sink(), press_qpc) {
-            Ok(start_qpc) => Ok(files.record(cfg, session_file, capture, camera_size, start_qpc)),
+            Ok(start_qpc) => {
+                stats.started_qpc.store(start_qpc as u64, Ordering::Relaxed);
+                Ok(files.record(cfg, session_file, capture, camera_size, start_qpc))
+            }
             Err(err) => {
                 files.discard();
                 Err(err)

@@ -1,23 +1,29 @@
 //! The recording session: session config, live stats, and the start, pause,
-//! resume and stop calls. A session is a capture part ([`Capture`]) and the take part ([`Take`]) recording it.
+//! resume and stop calls. A session is a capture part ([`Capture`]) with the take part ([`Take`]) recording it, the
+//! replay buffer's rings, or both.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use thiserror::Error;
 
-use capture::{AudioDevice, CaptureError};
+use ::marks::NewMark;
+use capture::{AudioDevice, CaptureError, qpc_frequency, qpc_now};
 use media_io::AudioCodec;
 use media_io::MediaError;
 use media_io::encode::{ComboError, EncoderConfig, check_combo};
 use media_io::mux::{MuxThread, Muxer, SendParameters};
 
 use super::cam::{self, CamCounters, CamSnapshot, CamSummary};
-use super::capture_part::{Capture, PreparedCapture};
+use super::capture_part::{Capture, CaptureStreams, PreparedCapture};
+use super::clock::MediaClock;
 use super::composite::CompositeBlock;
-use super::marks::{MarksWarning, MkvChapter, TakeMarks, wav_length_ms};
-use super::sink::CaptureOutput;
+use super::marks::{self, MarksWarning, MkvChapter, TakeMarks, wav_length_ms};
+use super::replay::{CamStream, ReplayRings, RingSink};
+use super::share::{SharedCapture, Sharing};
+use super::sink::{CaptureOutput, PacketSink};
 use super::take_part::{Take, TakeFiles};
 use crate::config::{Container, Profile};
 
@@ -160,6 +166,11 @@ pub struct Stats {
     pub(super) wav_bytes: AtomicU64,
     /// The counters of the camera ISO file, written by the camera thread.
     pub(super) cam: CamCounters,
+    /// Where the frame, byte and audio counters stood when the take started: they count for the whole capture, and a
+    /// take is the difference.
+    base: TakeBase,
+    /// The video thread's average and 95th percentile time per frame in ms, over the whole capture.
+    encode_ms: Mutex<(f64, f64)>,
     /// One entry per audio track, folded in by the audio thread.
     tracks: Vec<TrackSlot>,
     /// App attach and detach events the session has not applied yet, oldest first.
@@ -180,6 +191,8 @@ impl Stats {
             audio_frames: AtomicU64::new(0),
             wav_bytes: AtomicU64::new(0),
             cam: CamCounters::new(),
+            base: TakeBase::default(),
+            encode_ms: Mutex::new((0.0, 0.0)),
             tracks: tracks
                 .iter()
                 .map(|track| TrackSlot {
@@ -196,6 +209,62 @@ impl Stats {
                 .collect(),
             app_events: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Starts the counters of a take that joins a running capture: they count from here on.
+    pub(super) fn begin_take(&self) {
+        let move_up = |base: &AtomicU64, now: &AtomicU64| base.store(now.load(Ordering::Relaxed), Ordering::Relaxed);
+        move_up(&self.base.frames, &self.frames);
+        move_up(&self.base.duplicated, &self.duplicated);
+        move_up(&self.base.dropped, &self.dropped);
+        move_up(&self.base.bytes_written, &self.bytes_written);
+        move_up(&self.base.audio_frames, &self.audio_frames);
+        move_up(&self.base.wav_bytes, &self.wav_bytes);
+        self.cam.begin_take();
+        // Reading a meter resets it, so the take does not show peaks from before it.
+        for slot in &self.tracks {
+            let _ = slot.snapshot();
+        }
+        self.paused.store(false, Ordering::Relaxed);
+        if let Ok(mut slot) = self.last_error.lock() {
+            *slot = None;
+        }
+    }
+
+    /// The take's frames, repeated frames and dropped frames.
+    pub(super) fn take_frames(&self) -> (u64, u64, u64) {
+        (since(&self.frames, &self.base.frames), since(&self.duplicated, &self.base.duplicated), since(&self.dropped, &self.base.dropped))
+    }
+
+    /// The WAV bytes of the take.
+    fn take_wav_bytes(&self) -> u64 {
+        since(&self.wav_bytes, &self.base.wav_bytes)
+    }
+
+    /// Records the video thread's frame times.
+    pub(super) fn set_encode_times(&self, average_ms: f64, p95_ms: f64) {
+        if let Ok(mut slot) = self.encode_ms.lock() {
+            *slot = (average_ms, p95_ms);
+        }
+    }
+
+    /// The video thread's average and 95th percentile time per frame in ms.
+    pub(super) fn encode_times(&self) -> (f64, f64) {
+        self.encode_ms.lock().map(|slot| *slot).unwrap_or_default()
+    }
+
+    /// The apps the app tracks have a capture of right now, as attach events at time 0 that get no mark.
+    pub(super) fn attached_apps(&self, tracks: &[TrackSpec]) -> Vec<AppEvent> {
+        tracks
+            .iter()
+            .zip(&self.tracks)
+            .enumerate()
+            .filter(|(_, (_, slot))| slot.attached.load(Ordering::Relaxed))
+            .filter_map(|(index, (track, _))| {
+                let app = track.app.as_ref()?;
+                Some(AppEvent { track: index, app_name: app.app_name.clone(), except: app.except, attached: true, t_ms: 0, mark: false })
+            })
+            .collect()
     }
 
     /// The track names, in track order.
@@ -231,16 +300,17 @@ impl Stats {
 
     /// Reads every counter into a plain snapshot.
     pub(super) fn snapshot(&self) -> StatsSnapshot {
+        let (frames, duplicated, dropped) = self.take_frames();
         StatsSnapshot {
-            frames: self.frames.load(Ordering::Relaxed),
-            duplicated: self.duplicated.load(Ordering::Relaxed),
-            dropped: self.dropped.load(Ordering::Relaxed),
+            frames,
+            duplicated,
+            dropped,
             frames_received: self.frames_received.load(Ordering::Relaxed),
-            bytes_written: self.bytes_written.load(Ordering::Relaxed),
+            bytes_written: since(&self.bytes_written, &self.base.bytes_written),
             started_qpc: self.started_qpc.load(Ordering::Relaxed),
             paused: self.paused.load(Ordering::Relaxed),
             last_error: self.last_error.lock().ok().and_then(|slot| slot.clone()),
-            audio_frames: self.audio_frames.load(Ordering::Relaxed),
+            audio_frames: since(&self.audio_frames, &self.base.audio_frames),
             cam: self.cam.snapshot(),
             tracks: self.tracks.iter().map(TrackSlot::snapshot).collect(),
         }
@@ -288,6 +358,22 @@ impl Stats {
             *slot = Some(text);
         }
     }
+}
+
+/// A counter's growth since its base.
+fn since(counter: &AtomicU64, base: &AtomicU64) -> u64 {
+    counter.load(Ordering::Relaxed).saturating_sub(base.load(Ordering::Relaxed))
+}
+
+/// The capture's counters as they were when the take started; zero for a take that started with the capture.
+#[derive(Default)]
+struct TakeBase {
+    frames: AtomicU64,
+    duplicated: AtomicU64,
+    dropped: AtomicU64,
+    bytes_written: AtomicU64,
+    audio_frames: AtomicU64,
+    wav_bytes: AtomicU64,
 }
 
 /// A plain copy of the live counters at one instant.
@@ -632,28 +718,69 @@ fn track_entry(track: &TrackSpec) -> serde_json::Value {
     entry
 }
 
-/// One running recording: a capture and the take that records it, started and stopped together.
-pub struct RecordingSession {
+/// How a take ended: its totals, and its camera file's, which are none when it had no camera file or the file could not
+/// be finished.
+pub(super) type StoppedTake = (Result<Summary, EngineError>, Option<CamSummary>);
+
+/// The Recorder's session: the one capture, shared by the take and the replay buffer.
+pub(super) type RecordingSession = Sharing<LiveCapture>;
+
+/// A running capture and what every listener of it is made from.
+pub(super) struct LiveCapture {
     capture: Capture,
-    take: Take,
+    /// What the capture was opened with, its output size resolved. Every take on it has these streams.
+    cfg: SessionConfig,
+    /// The open camera's size as it was at the capture's start, for the composite block.
+    camera_size: Option<(u32, u32)>,
+    /// The replay buffer, while it is on.
+    rings: Option<Arc<RingSink>>,
 }
 
-impl RecordingSession {
-    /// Starts a recording: the capture's encoders open, the take builds its files around their streams, then every
-    /// stream starts from one instant with the take already on it.
-    pub fn start(mut cfg: SessionConfig) -> Result<Self, EngineError> {
+/// A capture ready to start, with what a [`LiveCapture`] keeps of it.
+struct Opened {
+    prepared: PreparedCapture,
+    cfg: SessionConfig,
+    camera_size: Option<(u32, u32)>,
+}
+
+impl Opened {
+    /// Checks the config and opens the capture's encoders.
+    fn new(mut cfg: SessionConfig) -> Result<Self, EngineError> {
         resolve_source_size(&mut cfg)?;
-        let container = cfg.profile.container;
         let encoder = encoder_config(&cfg.profile);
         encoder.validate().map_err(media_io::encode::EncoderError::Config)?;
-        check_combo(container, encoder.codec, cfg.profile.height, cfg.audio_codec)?;
+        check_combo(cfg.profile.container, encoder.codec, cfg.profile.height, cfg.audio_codec)?;
         media_io::init()?;
-        let session_file = SessionFile::begin(&cfg);
         let cam_plan = cam::plan(&cfg);
         // The composite block needs the camera's size as it is at the start.
-        let cam_size = crate::webcam::shared().map(|share| share.capture.format()).map(|format| (format.width, format.height));
+        let camera_size = crate::webcam::shared().map(|share| share.capture.format()).map(|format| (format.width, format.height));
         let stats = Arc::new(Stats::new(&cfg.tracks));
-        let mut prepared = PreparedCapture::open(&cfg, cam_plan, stats)?;
+        let prepared = PreparedCapture::open(&cfg, cam_plan, stats)?;
+        Ok(Self { prepared, cfg, camera_size })
+    }
+}
+
+/// An empty replay buffer for the streams of a capture opened with `cfg`.
+fn new_rings(cfg: &SessionConfig, streams: &CaptureStreams, camera_size: Option<(u32, u32)>, length: Duration) -> Arc<RingSink> {
+    let camera = streams.camera.as_ref().map(|camera| CamStream {
+        params: SendParameters(camera.params.0.clone()),
+        time_base: camera.time_base,
+        fps: camera.fps,
+        size: camera_size.unwrap_or_default(),
+    });
+    Arc::new(RingSink::new(ReplayRings::new(cfg, streams.video_setup(), camera, streams.audio_specs(), length)))
+}
+
+impl SharedCapture for LiveCapture {
+    type Config = SessionConfig;
+    type Take = Take;
+    type Stopped = StoppedTake;
+
+    /// The capture's encoders open, the take builds its files around their streams, then every stream starts from one
+    /// instant with the take already on it.
+    fn open_for_take(cfg: SessionConfig) -> Result<(Self, Take), EngineError> {
+        let Opened { mut prepared, cfg, camera_size } = Opened::new(cfg)?;
+        let session_file = SessionFile::begin(&cfg);
         let files = match TakeFiles::open(&cfg, prepared.streams()) {
             Ok(files) => files,
             Err(err) => {
@@ -665,93 +792,179 @@ impl RecordingSession {
         if let Some(notice) = files.camera_error() {
             prepared.drop_camera(notice.to_owned());
         }
-        let capture = match prepared.begin(Some(files.sink())) {
+        let capture = match prepared.begin(Some(files.sink()), None) {
             Ok(capture) => capture,
             Err(err) => {
                 files.discard();
                 return Err(err);
             }
         };
-        let start_qpc = capture.stats().started_qpc.load(Ordering::Relaxed) as i64;
-        let take = files.record(&cfg, session_file, &capture, cam_size, start_qpc);
-        Ok(Self { capture, take })
+        let take = files.record(&cfg, session_file, &capture, camera_size, capture.start_qpc());
+        Ok((Self { capture, cfg, camera_size, rings: None }, take))
     }
 
-    /// Why the profile's camera file is not being recorded in this take, if it asked for one.
-    pub fn cam_notice(&self) -> Option<&str> {
-        self.take.camera_notice.as_deref()
+    fn open_for_replay(cfg: SessionConfig, length: Duration) -> Result<Self, EngineError> {
+        let Opened { prepared, cfg, camera_size } = Opened::new(cfg)?;
+        let rings = new_rings(&cfg, prepared.streams(), camera_size, length);
+        let capture = prepared.begin(None, Some(Arc::clone(&rings) as Arc<dyn PacketSink>))?;
+        Ok(Self { capture, cfg, camera_size, rings: Some(rings) })
     }
 
-    /// The take's marks, until the take is stopped.
-    pub fn marks_mut(&mut self) -> Option<&mut TakeMarks> {
-        self.take.marks.as_mut()
-    }
-
-    /// Moves the app tracks' attach and detach events into the marks and session.json.
-    ///
-    /// The controller calls this while a take runs, so the marks appear when they happen. True when a mark was added.
-    pub fn apply_app_events(&mut self) -> bool {
-        let events = self.capture.stats().take_app_events();
-        self.take.apply_app_events(events)
-    }
-
-    /// A handle to the take's last marks error, which stays readable after the take is stopped.
-    pub fn marks_warning(&self) -> MarksWarning {
-        self.take.marks_warning.clone()
-    }
-
-    /// Pauses the take at the moment of the press; the capture goes on.
-    pub fn pause(&self, press_qpc: i64) {
-        self.capture.stats().paused.store(true, Ordering::Relaxed);
-        self.capture.output().pause(press_qpc);
-    }
-
-    /// Continues the take on a forced keyframe, with no gap in its frame indexes.
-    pub fn resume(&self, press_qpc: i64) {
-        self.capture.output().resume(press_qpc);
-        self.capture.stats().paused.store(false, Ordering::Relaxed);
-    }
-
-    /// Sets a track's gain in dB right away; `index` counts the tracks of this take, in order.
-    pub fn set_track_gain_db(&self, index: usize, db: f32) {
-        if db.is_finite() {
-            self.capture.stats().set_track_gain_db(index, db);
+    /// Only the take's file names come from `cfg`: its streams, tracks and profile are the running capture's.
+    fn join_take(&mut self, cfg: SessionConfig, press_qpc: i64) -> Result<Take, EngineError> {
+        let mut take_cfg = self.cfg.clone();
+        take_cfg.output_file = cfg.output_file;
+        take_cfg.take_folder = cfg.take_folder;
+        take_cfg.base_name = cfg.base_name;
+        // The gains and mutes may have changed since the capture started.
+        for (index, track) in take_cfg.tracks.iter_mut().enumerate() {
+            if let Some((gain_db, muted)) = self.capture.stats().track_controls(index) {
+                (track.gain_db, track.muted) = (gain_db, muted);
+            }
         }
+        Take::start_on(&self.capture, &take_cfg, self.camera_size, press_qpc)
     }
 
-    /// Mutes or unmutes a track right away; `index` counts the tracks of this take, in order.
-    pub fn set_track_muted(&self, index: usize, muted: bool) {
-        self.capture.stats().set_track_muted(index, muted);
+    fn leave_take(&mut self, take: Take, press_qpc: i64) -> StoppedTake {
+        let end = self.capture.leave_take(press_qpc);
+        take.finish(end, self.capture.stats())
     }
 
-    /// A snapshot of the live counters, safe to call from the UI thread at any time.
-    pub fn stats(&self) -> StatsSnapshot {
-        self.capture.stats().snapshot()
+    /// The capture stops first, then the take's mux thread.
+    fn close(self, take: Option<Take>) -> Option<StoppedTake> {
+        let stats = Arc::clone(self.capture.stats());
+        let end = self.capture.stop();
+        take.map(|take| take.finish(end, &stats))
     }
 
-    /// The bytes written to the take's files and the mux queue depth, safe to call from any thread at any time.
-    pub fn counters(&self) -> TakeCounters {
-        let stats = self.capture.stats();
-        TakeCounters {
-            mux_bytes: self.take.mux.bytes_written(),
-            cam_bytes: stats.cam.bytes(),
-            wav_bytes: stats.wav_bytes.load(Ordering::Relaxed),
-            queue_depth: self.take.mux.queue_depth(),
-        }
+    fn add_rings(&mut self, length: Duration) -> Result<(), EngineError> {
+        let rings = new_rings(&self.cfg, self.capture.streams(), self.camera_size, length);
+        self.capture.output().set_rings(Some(Arc::clone(&rings) as Arc<dyn PacketSink>));
+        self.rings = Some(rings);
+        Ok(())
     }
 
-    /// Finishes the file and returns the summary of the take; the camera file's totals are dropped, see [`RecordingSession::stop_with_cam`].
-    pub fn stop(self) -> Result<Summary, EngineError> {
+    fn drop_rings(&mut self) {
+        self.capture.output().set_rings(None);
+        self.rings = None;
+    }
+
+    fn is_dead(&self) -> bool {
+        self.capture.is_dead()
+    }
+}
+
+impl Sharing<LiveCapture> {
+    /// Starts a recording right now.
+    pub(super) fn start(&mut self, cfg: SessionConfig) -> Result<(), EngineError> {
+        self.start_take(cfg, qpc_now())
+    }
+
+    /// Finishes the take's files and returns the summary of the take; the camera file's totals are dropped, see
+    /// [`RecordingSession::stop_with_cam`].
+    pub(super) fn stop(&mut self) -> Result<Summary, EngineError> {
         self.stop_with_cam().0
     }
 
-    /// Finishes the files and returns the summary of the take with the camera ISO file's totals, which are none when the
-    /// take had no camera file or the file could not be finished. The capture stops first, then the take's mux thread.
-    pub fn stop_with_cam(self) -> (Result<Summary, EngineError>, Option<CamSummary>) {
-        let Self { capture, take } = self;
-        let stats = Arc::clone(capture.stats());
-        let end = capture.stop();
-        take.finish(end, &stats)
+    /// Finishes the take's files and returns the summary of the take with the camera ISO file's totals. The capture
+    /// goes on while the replay buffer is on.
+    pub(super) fn stop_with_cam(&mut self) -> StoppedTake {
+        let press_qpc = qpc_now();
+        // The buffer gets the marks of the app events that are still queued.
+        self.apply_app_events();
+        self.stop_take(press_qpc).unwrap_or_else(|| (Err(EngineError::Failed("no take is running".into())), None))
+    }
+
+    /// What the running capture was opened with.
+    pub(super) fn capture_config(&self) -> Option<&SessionConfig> {
+        self.capture().map(|live| &live.cfg)
+    }
+
+    /// Why the profile's camera file is not being recorded in this take, if it asked for one.
+    pub(super) fn cam_notice(&self) -> Option<&str> {
+        self.take().and_then(|take| take.camera_notice.as_deref())
+    }
+
+    /// The take's marks, until the take is stopped.
+    pub(super) fn marks_mut(&mut self) -> Option<&mut TakeMarks> {
+        self.take_mut().and_then(|take| take.marks.as_mut())
+    }
+
+    /// Keeps a mark made at `press_qpc` in the replay buffer; `build` gets the time on the buffer's clock in ms.
+    /// Nothing happens while the buffer is off.
+    pub(super) fn buffer_mark(&self, press_qpc: i64, build: impl FnOnce(u64) -> NewMark) {
+        let Some(live) = self.capture() else { return };
+        let Some(rings) = &live.rings else { return };
+        // The capture's clock never pauses, so neither does the buffer's.
+        let t_ms = MediaClock::new(live.capture.start_qpc(), qpc_frequency()).media_ms(press_qpc);
+        rings.rings().push_mark(build(t_ms));
+    }
+
+    /// Moves the app tracks' attach and detach events into the replay buffer's marks, and into the take's marks and
+    /// session.json while one runs.
+    ///
+    /// The controller calls this while a capture runs, so the marks appear when they happen. True when the take got a mark.
+    pub(super) fn apply_app_events(&mut self) -> bool {
+        let Some(live) = self.capture() else { return false };
+        let events = live.capture.stats().take_app_events();
+        for event in events.iter().filter(|event| event.mark) {
+            let (kind, label) = marks::app_text(&event.app_name, event.except, event.attached);
+            // An event's own time is on the take's clock; the buffer takes the time it is picked up.
+            self.buffer_mark(qpc_now(), |t_ms| marks::system_mark(kind, &label, t_ms));
+        }
+        self.take_mut().is_some_and(|take| take.apply_app_events(events))
+    }
+
+    /// A handle to the take's last marks error, which stays readable after the take is stopped.
+    pub(super) fn marks_warning(&self) -> MarksWarning {
+        self.take().map(|take| take.marks_warning.clone()).unwrap_or_default()
+    }
+
+    /// Pauses the take at the moment of the press; the capture and the replay buffer go on.
+    pub(super) fn pause(&self, press_qpc: i64) {
+        let Some(live) = self.capture() else { return };
+        live.capture.stats().paused.store(true, Ordering::Relaxed);
+        live.capture.output().pause(press_qpc);
+    }
+
+    /// Continues the take on a forced keyframe, with no gap in its frame indexes.
+    pub(super) fn resume(&self, press_qpc: i64) {
+        let Some(live) = self.capture() else { return };
+        live.capture.output().resume(press_qpc);
+        live.capture.stats().paused.store(false, Ordering::Relaxed);
+    }
+
+    /// Sets a track's gain in dB right away; `index` counts the tracks of the capture, in order.
+    pub(super) fn set_track_gain_db(&self, index: usize, db: f32) {
+        if db.is_finite()
+            && let Some(live) = self.capture()
+        {
+            live.capture.stats().set_track_gain_db(index, db);
+        }
+    }
+
+    /// Mutes or unmutes a track right away; `index` counts the tracks of the capture, in order.
+    pub(super) fn set_track_muted(&self, index: usize, muted: bool) {
+        if let Some(live) = self.capture() {
+            live.capture.stats().set_track_muted(index, muted);
+        }
+    }
+
+    /// A snapshot of the live counters; all zero without a capture.
+    pub(super) fn stats(&self) -> StatsSnapshot {
+        self.capture().map_or_else(|| Stats::new(&[]).snapshot(), |live| live.capture.stats().snapshot())
+    }
+
+    /// The bytes written to the take's files and the mux queue depth.
+    pub(super) fn counters(&self) -> TakeCounters {
+        let (Some(live), Some(take)) = (self.capture(), self.take()) else { return TakeCounters::default() };
+        let stats = live.capture.stats();
+        TakeCounters {
+            mux_bytes: take.mux.bytes_written(),
+            cam_bytes: stats.cam.bytes(),
+            wav_bytes: stats.take_wav_bytes(),
+            queue_depth: take.mux.queue_depth(),
+        }
     }
 }
 

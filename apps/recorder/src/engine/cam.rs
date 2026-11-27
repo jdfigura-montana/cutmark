@@ -208,6 +208,10 @@ pub(super) struct CamCounters {
     dropped: AtomicU64,
     /// Packet bytes the camera mux thread has written.
     bytes: AtomicU64,
+    /// The frame, repeated and dropped counts when the take started; they count for the whole capture.
+    base: [AtomicU64; 3],
+    /// The camera thread's average and 95th percentile time per frame in ms.
+    encode_ms: Mutex<(f64, f64)>,
 }
 
 impl CamCounters {
@@ -221,7 +225,39 @@ impl CamCounters {
             duplicated: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
             bytes: AtomicU64::new(0),
+            base: Default::default(),
+            encode_ms: Mutex::new((0.0, 0.0)),
         }
+    }
+
+    /// Starts the counters of a take that joins a running capture.
+    pub(super) fn begin_take(&self) {
+        for (base, now) in self.base.iter().zip([&self.frames, &self.duplicated, &self.dropped]) {
+            base.store(now.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
+        self.bytes.store(0, Ordering::Relaxed);
+    }
+
+    /// The take's frames, repeated frames and dropped frames.
+    pub(super) fn take_frames(&self) -> (u64, u64, u64) {
+        let [frames, duplicated, dropped] = [(&self.frames, 0), (&self.duplicated, 1), (&self.dropped, 2)]
+            .map(|(now, at)| now.load(Ordering::Relaxed).saturating_sub(self.base[at].load(Ordering::Relaxed)));
+        (frames, duplicated, dropped)
+    }
+
+    /// Whether the camera thread is encoding right now.
+    pub(super) fn is_running(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
+
+    /// Whether the camera was lost, which ends its thread until the next capture.
+    pub(super) fn is_lost(&self) -> bool {
+        self.lost.load(Ordering::Relaxed)
+    }
+
+    /// The camera thread's average and 95th percentile time per frame in ms.
+    pub(super) fn encode_times(&self) -> (f64, f64) {
+        self.encode_ms.lock().map(|slot| *slot).unwrap_or_default()
     }
 
     /// A plain copy of the counters, or none when the take has no camera file.
@@ -229,13 +265,8 @@ impl CamCounters {
         if !self.started.load(Ordering::Relaxed) {
             return None;
         }
-        Some(CamSnapshot {
-            frames: self.frames.load(Ordering::Relaxed),
-            duplicated: self.duplicated.load(Ordering::Relaxed),
-            dropped: self.dropped.load(Ordering::Relaxed),
-            running: self.running.load(Ordering::Relaxed),
-            lost: self.lost.load(Ordering::Relaxed),
-        })
+        let (frames, duplicated, dropped) = self.take_frames();
+        Some(CamSnapshot { frames, duplicated, dropped, running: self.running.load(Ordering::Relaxed), lost: self.lost.load(Ordering::Relaxed) })
     }
 
     /// Packet bytes the camera mux thread has written so far.
@@ -502,6 +533,12 @@ impl Recorder<'_> {
             self.pacer.record(n, seq, sent.is_ok());
         }
         self.stats.cam.store(&self.pacer, self.output.camera_bytes());
+        // About once a second, for a take that ends while the camera thread goes on.
+        if n.is_multiple_of(u64::from((self.plan.encoder.fps_num / self.plan.encoder.fps_den.max(1)).max(1)))
+            && let Ok(mut slot) = self.stats.cam.encode_ms.lock()
+        {
+            *slot = (self.times.average_ms(), self.times.p95_ms());
+        }
         self.failures < MAX_CONSECUTIVE_FAILURES
     }
 }

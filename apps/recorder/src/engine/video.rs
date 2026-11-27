@@ -191,6 +191,10 @@ fn record(cfg: &SessionConfig, stats: &Stats, stop: &AtomicBool, mut pipeline: P
                 pacer.record(n, frame.content_seq, encoded.is_ok());
             }
             store_pacer_counters(stats, &pacer, frame.screen_received);
+            // About once a second, for a take that ends while the capture goes on.
+            if n.is_multiple_of(u64::from(profile.fps.max(1))) {
+                stats.set_encode_times(times.average_ms(), times.p95_ms());
+            }
             match encoded {
                 Ok(()) => {
                     consecutive_failures = 0;
