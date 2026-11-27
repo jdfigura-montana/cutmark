@@ -281,6 +281,10 @@ impl ModeState {
 pub struct Settings {
     /// Folder that recordings go into, once the user has picked one.
     pub root_folder: Option<PathBuf>,
+    /// Folder that replays go into, or none to save them inside each project.
+    pub replays_root: Option<PathBuf>,
+    /// Whether the first-launch dialog about the recordings folder has been answered.
+    pub folders_confirmed: bool,
     /// Name of the profile in use.
     pub active_profile: String,
     /// The project name: the folder under the root that holds the project's takes.
@@ -422,6 +426,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             root_folder: None,
+            replays_root: None,
+            folders_confirmed: false,
             active_profile: DEFAULT_PROFILE.to_owned(),
             project: DEFAULT_PROJECT.to_owned(),
             naming_template: DEFAULT_NAMING_TEMPLATE.to_owned(),
@@ -1472,6 +1478,26 @@ mod tests {
             fs::write(&path, text)?;
             assert_eq!(load_settings(&path)?.0.replay_length_s, 60, "{text}");
         }
+        fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn the_folder_settings_round_trip_and_old_files_load_with_the_defaults() -> Result<(), Box<dyn Error>> {
+        let dir = fresh_dir("folders")?;
+        let path = dir.join("settings.json");
+        // An old settings file without the folder keys loads with the defaults and keeps its other values.
+        fs::write(&path, r#"{ "countdown_secs": 3 }"#)?;
+        let (old, _) = load_settings(&path)?;
+        assert_eq!(old.root_folder, None);
+        assert_eq!(old.replays_root, None);
+        assert!(!old.folders_confirmed);
+        assert_eq!(old.countdown_secs, 3);
+        // Both folders set and confirmed round-trip through a save and a load.
+        let settings =
+            Settings { root_folder: Some(dir.join("recordings")), replays_root: Some(dir.join("replays")), folders_confirmed: true, ..Settings::default() };
+        write_json(&path, &settings)?;
+        assert_eq!(load_settings(&path)?.0, settings);
         fs::remove_dir_all(&dir)?;
         Ok(())
     }

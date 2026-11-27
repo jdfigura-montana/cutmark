@@ -23,7 +23,7 @@ use super::replay_save::{self, ReplayWriter, SaveJob, SaveMerge};
 use super::script::{PositionMsg, ScriptMsg, ScriptSnapshot, TakeScript};
 use super::session::{AppSpec, EngineError, RecordingSession, SessionConfig, StatsSnapshot, Summary, TrackSpec, take_title};
 use super::stats::{self, GIB, StatsTracker, TakeStats};
-use crate::config::{AudioCodecChoice, CompositeMode, Profile, Settings, TrackKind, TrackSettings};
+use crate::config::{AudioCodecChoice, CompositeMode, Profile, Settings, TrackKind, TrackSettings, takes_root};
 use crate::countdown::CountdownHandle;
 use crate::label_popup::PopupHandle;
 use crate::profiles;
@@ -1077,6 +1077,9 @@ impl Worker {
     /// Picks the take folder, builds the session config from the active profile and starts the take. While the replay
     /// buffer is on, the take joins its capture, so the capture's profile and tracks are the take's.
     fn start_take_inner(&mut self) -> Result<(), StartError> {
+        // The recordings folder must be writable, or the take is refused with the reason.
+        let root = takes_root(&self.settings);
+        takes::check_folder(&root).map_err(|err| StartError::Take(format!("Can't save to {}: {err}", root.display())))?;
         let held = self.session.capture_config().map(|cfg| (cfg.profile.clone(), cfg.tracks.clone()));
         let (profile, tracks, missing) = match held {
             Some((profile, tracks)) => {
@@ -1147,6 +1150,14 @@ impl Worker {
     fn replay_start(&mut self) {
         if self.session.replay_on() {
             log::info!("replay start ignored: the buffer is already on");
+            return;
+        }
+        // The replays folder must be writable, or the buffer does not start: the first save would go nowhere.
+        let folder = takes::replays_folder(&self.settings);
+        if let Err(err) = takes::check_folder(&folder) {
+            let reason = format!("Can't save to {}: {err}", folder.display());
+            log::error!("could not start the replay buffer: {reason}");
+            self.update(|state| state.error = Some(reason));
             return;
         }
         let profile = profiles::find(&self.settings.active_profile).unwrap_or_else(Profile::tutorial_av1_1440p60);
@@ -1380,7 +1391,23 @@ impl Worker {
         let waiting = preflight::waiting_apps(&run.apps, &self.session.stats().tracks);
         // The report is built from the summary before the folder goes.
         let (stopped, cam) = self.session.stop_with_cam();
-        let report = stopped.map(|summary| preflight::judge_with_cam(&summary, cam.as_ref(), &waiting, fps));
+        // Both output folders are checked as their own rows, whatever the test take found.
+        let folders = [("Recordings folder", takes_root(&self.settings)), ("Replays folder", takes::replays_folder(&self.settings))];
+        let folder_checks: Vec<preflight::FolderCheck> = folders
+            .into_iter()
+            .map(|(label, folder)| preflight::FolderCheck {
+                label: label.to_owned(),
+                path: folder.display().to_string(),
+                not_writable: takes::check_folder(&folder).err().map(|err| err.to_string()),
+                free_bytes: stats::free_space(&folder, 0),
+            })
+            .collect();
+        let report = stopped.map(|summary| {
+            let mut report = preflight::judge_with_cam(&summary, cam.as_ref(), &waiting, fps);
+            report.lines.extend(preflight::folder_lines(&folder_checks));
+            report.overall = report.lines.iter().map(|line| line.status).max().unwrap_or(preflight::Status::Pass);
+            report
+        });
         let keep = run.keep_files && report.is_ok();
         if !keep {
             remove_folder(&run.folder);
@@ -2003,7 +2030,7 @@ impl Worker {
             return;
         }
         self.last_idle_check = Some(now);
-        let free = stats::free_space(&crate::config::takes_root(&self.settings), 0);
+        let free = stats::free_space(&takes_root(&self.settings), 0);
         if lock(&self.shared).idle_free_bytes != free {
             self.update(|state| state.idle_free_bytes = free);
         }

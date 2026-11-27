@@ -4,6 +4,7 @@
 
 use super::cam::CamSummary;
 use super::session::{Summary, TrackPeak, TrackSnapshot};
+use super::stats::GIB;
 
 /// The text the controller state shows while a pre-flight runs.
 pub const RUNNING: &str = "Pre-flight running";
@@ -121,6 +122,44 @@ pub fn dnd_line() -> CheckLine {
         detail: "Reminder: turn on Do Not Disturb (Win+N) so notifications stay out of your recording".to_owned(),
         stats: Vec::new(),
     }
+}
+
+/// One output folder the pre-flight checked: whether it can be written to and how much free space its drive has.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderCheck {
+    /// The row's label, such as "Recordings folder".
+    pub label: String,
+    /// The folder that was checked.
+    pub path: String,
+    /// Why the folder cannot be written to, or none when it can.
+    pub not_writable: Option<String>,
+    /// Free space on the folder's drive in bytes, or none when it could not be read.
+    pub free_bytes: Option<u64>,
+}
+
+/// Below this much free space on an output folder's drive the folder check warns.
+pub const LOW_FREE_BYTES: u64 = 10 * GIB;
+
+/// The line for one checked output folder: a folder that cannot be written to fails, and low free space warns.
+pub fn folder_line(check: &FolderCheck) -> CheckLine {
+    let status = match &check.not_writable {
+        Some(_) => Status::Fail,
+        None if check.free_bytes.is_some_and(|free| free < LOW_FREE_BYTES) => Status::Warn,
+        None => Status::Pass,
+    };
+    let detail = match &check.not_writable {
+        Some(reason) => format!("Can't save to {}: {reason}", check.path),
+        None => match check.free_bytes {
+            Some(free) => format!("{:.1} GB free on {}", free as f64 / GIB as f64, check.path),
+            None => format!("{}: the free space could not be read", check.path),
+        },
+    };
+    CheckLine { label: check.label.clone(), status, detail, stats: Vec::new() }
+}
+
+/// The lines for the checked output folders, in the order they are given.
+pub fn folder_lines(checks: &[FolderCheck]) -> Vec<CheckLine> {
+    checks.iter().map(folder_line).collect()
 }
 
 /// The status of the 95th percentile encode time against the frame budget, both in milliseconds.
@@ -414,5 +453,26 @@ mod tests {
         };
         let apps = [None, Some("Discord".to_owned()), Some("Spotify".to_owned())];
         assert_eq!(waiting_apps(&apps, &[track(false), track(false), track(true)]), [None, Some("Discord".to_owned()), None]);
+    }
+
+    #[test]
+    fn the_folder_rows_fail_on_a_bad_folder_warn_on_low_free_space_and_name_the_numbers() {
+        let ok = FolderCheck { label: "Recordings folder".to_owned(), path: "C:\\Videos\\CutMark".to_owned(), not_writable: None, free_bytes: Some(50 * GIB) };
+        let line = folder_line(&ok);
+        assert_eq!(line.status, Status::Pass);
+        assert_eq!(line.detail, "50.0 GB free on C:\\Videos\\CutMark");
+        // Free space below the threshold warns.
+        let low = FolderCheck { free_bytes: Some(9 * GIB), ..ok.clone() };
+        assert_eq!(folder_line(&low).status, Status::Warn);
+        // A folder that cannot be written to fails and names the path.
+        let bad = FolderCheck { not_writable: Some("access denied".to_owned()), ..ok.clone() };
+        let line = folder_line(&bad);
+        assert_eq!(line.status, Status::Fail);
+        assert_eq!(line.detail, "Can't save to C:\\Videos\\CutMark: access denied");
+        // Free space that cannot be read is a pass with a note.
+        let unknown = FolderCheck { free_bytes: None, ..ok.clone() };
+        assert_eq!(folder_line(&unknown).status, Status::Pass);
+        assert_eq!(folder_line(&unknown).detail, "C:\\Videos\\CutMark: the free space could not be read");
+        assert_eq!(folder_lines(&[ok, bad, low]).len(), 3);
     }
 }

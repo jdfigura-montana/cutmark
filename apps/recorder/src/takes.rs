@@ -1,11 +1,12 @@
-//! Take folders: the naming template, take numbering and creation under the recording root.
+﻿//! Take folders: the naming template, take numbering and creation under the recording root.
 //!
-//! A take lives in `{root}/{project}/{name}/`, where `{name}` is the naming template expanded.
+//! A take lives in `{root}/{project}/{name}/`, where `{name}` is the naming template expanded. A replay lives in its
+//! own folder, so replays and takes never share a number.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use chrono::{DateTime, Datelike, Local, Timelike};
 
@@ -207,22 +208,34 @@ fn next_number(project_folder: &Path, naming: &Naming, now: DateTime<Local>) -> 
 ///
 /// The folder is `{root}/{project}/{name}` and the video file is `{name}.{ext}` inside it, with the extension of `container`.
 pub fn plan_take(root: &Path, now: DateTime<Local>, container: Container, naming: &Naming) -> Result<TakePaths, io::Error> {
-    let project_folder = root.join(project_dir(naming.project));
-    let take = next_number(&project_folder, naming, now)?;
+    plan_take_in(&root.join(project_dir(naming.project)), now, container, naming)
+}
+
+/// Works out the next take's paths directly inside `folder` for `now` without creating anything; no project folder is added.
+fn plan_take_in(folder: &Path, now: DateTime<Local>, container: Container, naming: &Naming) -> Result<TakePaths, io::Error> {
+    let take = next_number(folder, naming, now)?;
     let base_name = expand(naming, now, take);
-    let folder = project_folder.join(&base_name);
+    let folder = folder.join(&base_name);
     let video_file = folder.join(format!("{base_name}.{}", container.extension()));
     Ok(TakePaths { folder, base_name, video_file })
 }
 
-/// Picks the next take folder under `root` for `now` by the naming template, creates it and returns its paths.
-pub fn next_take_with(root: &Path, now: DateTime<Local>, container: Container, naming: &Naming) -> Result<TakePaths, io::Error> {
-    // Held until the folder exists, so a replay being saved and a recording that starts cannot pick the same number.
+/// The lock every take folder is picked under, so two picks cannot read the same numbering and share a folder.
+fn claim_folder() -> MutexGuard<'static, ()> {
     static CLAIM: Mutex<()> = Mutex::new(());
-    let _claim = CLAIM.lock().unwrap_or_else(PoisonError::into_inner);
-    let take = plan_take(root, now, container, naming)?;
+    CLAIM.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Creates the take folder of `take`.
+fn make_take_folder(take: TakePaths) -> Result<TakePaths, io::Error> {
     fs::create_dir_all(&take.folder).map_err(|source| with_path(&take.folder, source))?;
     Ok(take)
+}
+
+/// Picks the next take folder under `root` for `now` by the naming template, creates it and returns its paths.
+pub fn next_take_with(root: &Path, now: DateTime<Local>, container: Container, naming: &Naming) -> Result<TakePaths, io::Error> {
+    let _claim = claim_folder();
+    make_take_folder(plan_take(root, now, container, naming)?)
 }
 
 /// Works out the next take's paths for the settings' root folder, project and naming template without creating anything.
@@ -236,6 +249,35 @@ pub fn plan_take_for(settings: &Settings, now: DateTime<Local>, container: Conta
 /// Picks the next take folder for the settings' root folder, project and naming template, creates it and returns its paths.
 pub fn next_take_for(settings: &Settings, now: DateTime<Local>, container: Container) -> Result<TakePaths, io::Error> {
     next_take_with(&takes_root(settings), now, container, &naming_of(settings))
+}
+
+/// The folder a replay take is planned in: the settings' replays root, or else the project's Replays folder.
+///
+/// With no replays root a replay goes to `{root}/{project}/Replays/{name}`; with one, to `{replays_root}/{project}/{name}`.
+/// The same naming template is used, and the number counts only replays, because the folder is separate.
+pub fn replays_folder(settings: &Settings) -> PathBuf {
+    let project = project_dir(&settings.project);
+    match &settings.replays_root {
+        Some(root) => root.join(project),
+        None => takes_root(settings).join(project).join("Replays"),
+    }
+}
+
+/// Picks the next replay folder for the settings' replays folder, project and naming template, creates it and returns its paths.
+pub fn next_replay_for(settings: &Settings, now: DateTime<Local>, container: Container) -> Result<TakePaths, io::Error> {
+    let _claim = claim_folder();
+    make_take_folder(plan_take_in(&replays_folder(settings), now, container, &naming_of(settings))?)
+}
+
+/// Checks that `folder` exists or can be created and is writable, by creating and deleting a temp file in it.
+///
+/// The check creates the folder, so a folder that is missing because nothing has been written yet passes.
+pub fn check_folder(folder: &Path) -> Result<(), io::Error> {
+    fs::create_dir_all(folder).map_err(|source| with_path(folder, source))?;
+    let probe = folder.join(format!(".cutmark-write-probe-{}", std::process::id()));
+    fs::write(&probe, b"").map_err(|source| with_path(&probe, source))?;
+    fs::remove_file(&probe).map_err(|source| with_path(&probe, source))?;
+    Ok(())
 }
 
 /// The naming the settings ask for: their project, template and active profile.
@@ -482,6 +524,56 @@ mod tests {
         fs::create_dir_all(root.join("Show").join("Show AV1 #03"))?;
         fs::create_dir_all(root.join("Show").join("Show Other profile #11"))?;
         assert_eq!(next_take_with(&root, now, Container::Mkv, &naming)?.base_name, "Show AV1 #12");
+        fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_replay_goes_to_the_replays_folder_for_both_settings() -> Result<(), Box<dyn Error>> {
+        let root = fresh_dir("replay-folder")?;
+        let now = at(2026, 11, 17, 14, 30, 5)?;
+        // With no replays root, the replay goes into the project's Replays folder.
+        let settings = Settings { root_folder: Some(root.clone()), ..Settings::default() };
+        let replay = next_replay_for(&settings, now, Container::Mkv)?;
+        assert_eq!(replay.folder, root.join("Cutmark").join("Replays").join("2026-11-17_14-30-05_take01"));
+        // With a replays root, the replay goes under that root with the project.
+        let other = fresh_dir("replay-folder-root")?;
+        let settings = Settings { root_folder: Some(root.clone()), replays_root: Some(other.clone()), ..Settings::default() };
+        let replay = next_replay_for(&settings, now, Container::Mkv)?;
+        assert_eq!(replay.folder, other.join("Cutmark").join("2026-11-17_14-30-05_take01"));
+        fs::remove_dir_all(&root)?;
+        fs::remove_dir_all(&other)?;
+        Ok(())
+    }
+
+    #[test]
+    fn replays_and_takes_count_their_numbers_separately() -> Result<(), Box<dyn Error>> {
+        let root = fresh_dir("replay-numbering")?;
+        let now = at(2026, 11, 17, 14, 30, 5)?;
+        let settings = Settings { root_folder: Some(root.clone()), ..Settings::default() };
+        // A take and the first replay both take number 1, each in its own folder.
+        assert_eq!(next_take_for(&settings, now, Container::Mkv)?.base_name, "2026-11-17_14-30-05_take01");
+        assert_eq!(next_replay_for(&settings, now, Container::Mkv)?.base_name, "2026-11-17_14-30-05_take01");
+        // The second replay continues the replay numbering, not the take numbering.
+        assert_eq!(next_replay_for(&settings, now, Container::Mkv)?.base_name, "2026-11-17_14-30-05_take02");
+        // The second take continues the take numbering, not the replay numbering.
+        assert_eq!(next_take_for(&settings, now, Container::Mkv)?.base_name, "2026-11-17_14-30-05_take02");
+        fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_written_is_refused_and_a_good_one_passes() -> Result<(), Box<dyn Error>> {
+        let root = fresh_dir("folder-check")?;
+        // A file in the place of the folder cannot be created as a folder.
+        let blocked = root.join("not-a-folder");
+        fs::write(&blocked, b"")?;
+        assert!(check_folder(&blocked).is_err());
+        // A missing folder is created by the check, and the probe file is gone afterwards.
+        let missing = root.join("made").join("here");
+        check_folder(&missing)?;
+        assert!(missing.is_dir());
+        assert!(fs::read_dir(&missing)?.next().is_none());
         fs::remove_dir_all(&root)?;
         Ok(())
     }

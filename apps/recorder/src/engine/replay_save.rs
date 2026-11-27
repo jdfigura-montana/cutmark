@@ -14,6 +14,7 @@ use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTAT
 use super::audio::{OUT_CHANNELS, OUT_RATE};
 use super::replay::{self, ReplaySnapshot, ReplayTake};
 use super::session::{EngineError, SessionConfig};
+use super::stats;
 use crate::config::{RateControl, Settings};
 use crate::takes;
 
@@ -101,11 +102,20 @@ pub(super) struct SaveJob {
 /// The writer thread of the replay buffer.
 pub(super) type ReplayWriter = SaveQueue<SaveJob, Result<ReplayTake, EngineError>>;
 
-/// Picks the next take by the naming template and writes the saved buffer into it. The number is picked here, when the
-/// save's turn comes, so every earlier save already has its folder.
+/// Below this much free space on the save's drive a replay save is refused, the same threshold that stops a take.
+const STOP_FREE_BYTES: u64 = 2 * stats::GIB;
+
+/// Picks the next replay take by the naming template and writes the saved buffer into it. The number is picked here,
+/// when the save's turn comes, so every earlier save already has its folder.
 pub(super) fn write_job(job: SaveJob) -> Result<ReplayTake, EngineError> {
-    let take = takes::next_take_for(&job.settings, job.pressed_at, job.cfg.profile.container)
+    let take = takes::next_replay_for(&job.settings, job.pressed_at, job.cfg.profile.container)
         .map_err(|err| EngineError::Failed(format!("could not make the take folder: {err}")))?;
+    // The low-disk rule uses the drive the save writes to, which can be another one than a take's.
+    if let Some(free) = stats::free_space(&take.folder, 0)
+        && free < STOP_FREE_BYTES
+    {
+        return Err(EngineError::Failed(format!("the disk is almost full: {:.1} GB free", free as f64 / stats::GIB as f64)));
+    }
     let paths = replay::TakePaths { folder: take.folder, base_name: take.base_name, output_file: take.video_file };
     replay::write_replay(job.snapshot, &job.cfg, &paths)
 }

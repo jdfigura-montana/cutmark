@@ -1,6 +1,7 @@
 # Progress
 
 ## Done
+- Recorder output folders (2026-11-27): settings gained `replays_root: Option<PathBuf>` (None = `{root}/{project}/Replays`) and `folders_confirmed: bool`; old settings files load unchanged with the defaults. Replays plan into the replays folder with the same naming template and separate numbering; folder checks (exists/creatable, writable via a probe file) refuse a take start on a bad recordings folder and a replay buffer turn-on on a bad replays folder; pre-flight shows both folders as separate rows. cargo test -p cutmark-recorder 403 passed, 3 ignored; fmt + clippy -D warnings clean. check.ps1, release build, settings UI and a real-app run not done.
 - media-io decoder close fix (2026-11-27): closing the video decoder can no longer miss its wake-up, and it waits at most 2 s for the decode thread. cargo test media-io 65 passed, 1 ignored; fmt + clippy clean. check.ps1 and release build not run.
 - Recorder Review fix, video freeze (2026-11-27): the video decoder now wakes when `frame_at` frees room in its queue, so playback no longer freezes. cargo test media-io 64, cutmark-recorder 398 passed; fmt + clippy clean. check.ps1, release build and a real-app run not done. Details in activeContext.md.
 - Recorder Phase 12 fix (2026-11-27): Save replay hotkey is now Ctrl+Alt+F9, and a stored old default Ctrl+Alt+S moves to it on load. Tests green (recorder 398, hotkeys 18), fmt + clippy clean; check.ps1, release build and a real-app run not done.
