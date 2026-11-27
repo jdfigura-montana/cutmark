@@ -27,9 +27,9 @@ use super::session::{AppEvent, AudioStreamSpec, EngineError, Instances, Stats, T
 /// The audio thread's tick, about one AAC frame.
 const TICK: Duration = Duration::from_millis(10);
 /// The sample rate of every track, stream and WAV sidecar.
-const OUT_RATE: u32 = 48_000;
+pub(super) const OUT_RATE: u32 = 48_000;
 /// The channel count of every track, stream and WAV sidecar.
-const OUT_CHANNELS: u16 = 2;
+pub(super) const OUT_CHANNELS: u16 = 2;
 /// The WAV sidecars' bit depth.
 const WAV_BITS: u16 = 24;
 /// Full scale of a 24-bit sample, the target of every WAV write.
@@ -270,12 +270,37 @@ fn record(
 }
 
 /// One WAV sidecar: the hound writer and the file it lands in.
-struct SidecarWav {
+pub(super) struct SidecarWav {
     /// The file the track is written to.
     path: PathBuf,
     /// The 48 kHz 24-bit stereo writer.
     writer: WavWriter<BufWriter<File>>,
 }
+
+impl SidecarWav {
+    /// Creates the sidecar of the track at `index` in track order, named `{base_name}_t{n}_{track}.wav`.
+    pub(super) fn create(take_folder: &Path, base_name: &str, index: usize, track_name: &str) -> Result<Self, EngineError> {
+        let path = take_folder.join(format!("{base_name}_t{}_{}.wav", index + 1, safe_file_name(track_name)));
+        let writer = WavWriter::create(&path, wav_spec()).map_err(|err| EngineError::Failed(format!("could not create {}: {err}", path.display())))?;
+        Ok(Self { path, writer })
+    }
+
+    /// Appends interleaved stereo samples.
+    pub(super) fn write(&mut self, samples: &[f32]) -> Result<(), EngineError> {
+        for &sample in samples {
+            let scaled = (sample.clamp(-1.0, 1.0) * WAV_FULL_SCALE) as i32;
+            self.writer.write_sample(scaled).map_err(|err| EngineError::Failed(format!("the WAV sidecar write failed: {err}")))?;
+        }
+        Ok(())
+    }
+
+    /// Completes the header and returns the file written.
+    pub(super) fn finalize(self) -> Result<PathBuf, EngineError> {
+        self.writer.finalize().map_err(|err| EngineError::Failed(format!("the WAV sidecar could not be finished: {err}")))?;
+        Ok(self.path)
+    }
+}
+
 /// Everything the audio thread owns while a take runs.
 struct AudioRig {
     /// One capture per track, in track order; None while the track's device is missing.
@@ -333,13 +358,7 @@ impl AudioRig {
             let _ = std::fs::create_dir_all(take_folder);
         }
         for (n, track) in tracks.iter().enumerate() {
-            let wav = if wav_sidecars {
-                let path = take_folder.join(format!("{base_name}_t{}_{}.wav", n + 1, safe_file_name(&track.name)));
-                let writer = WavWriter::create(&path, wav_spec()).map_err(|err| EngineError::Failed(format!("could not create {}: {err}", path.display())))?;
-                Some(SidecarWav { path, writer })
-            } else {
-                None
-            };
+            let wav = if wav_sidecars { Some(SidecarWav::create(take_folder, base_name, n, &track.name)?) } else { None };
             wavs.push(wav);
         }
         let apps = app_links(&tracks);
@@ -531,10 +550,7 @@ impl AudioRig {
         }
         for ((block, wav), taken) in blocks.iter().zip(self.wavs.iter_mut()).zip(self.taken.iter_mut()) {
             if let Some(wav) = wav {
-                for &sample in block {
-                    let scaled = (sample.clamp(-1.0, 1.0) * WAV_FULL_SCALE) as i32;
-                    wav.writer.write_sample(scaled).map_err(|err| EngineError::Failed(format!("the WAV sidecar write failed: {err}")))?;
-                }
+                wav.write(block)?;
             }
             *taken += common as u64;
         }

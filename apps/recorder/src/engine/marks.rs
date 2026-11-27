@@ -8,7 +8,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use ::marks::{AutoInfo, Mark, MarkType, NewMark, ScriptRef, SessionWriter, Sidecar, Source, SystemClock, WriterInfo};
+use ::marks::{AutoInfo, Clock, Mark, MarkType, NewMark, ScriptRef, SessionWriter, Sidecar, Source, SystemClock, WriterInfo};
 
 use super::clock::MediaClock;
 
@@ -64,8 +64,21 @@ impl TakeMarks {
     ///
     /// When the sidecar cannot be started the take carries on without marks and `warning` says why.
     pub fn begin(dir: &Path, base_name: &str, video_file: &Path, fps: u32, clock: MediaClock, warning: MarksWarning) -> Self {
+        Self::begin_with_wall(dir, base_name, video_file, fps, clock, warning, Box::new(SystemClock))
+    }
+
+    /// Like `begin`, with `wall` giving the wall-clock times the sidecar records, for a take written after the fact.
+    pub(super) fn begin_with_wall(
+        dir: &Path,
+        base_name: &str,
+        video_file: &Path,
+        fps: u32,
+        clock: MediaClock,
+        warning: MarksWarning,
+        wall: Box<dyn Clock>,
+    ) -> Self {
         let info = WriterInfo { app: "cutmark-recorder".to_owned(), version: env!("CARGO_PKG_VERSION").to_owned() };
-        let writer = match SessionWriter::begin(dir, base_name, info, video_file, Box::new(SystemClock)) {
+        let writer = match SessionWriter::begin(dir, base_name, info, video_file, wall) {
             Ok(writer) => Some(writer),
             Err(err) => {
                 log::error!("the marks file could not be started: {err}");
@@ -165,6 +178,14 @@ impl TakeMarks {
             (true, false) => format!("{app_name} closed, capturing all desktop audio"),
         };
         self.add_system(kind, &label, t_ms);
+    }
+
+    /// Adds a mark made earlier, its times already in ms on the take's clock, snapped to the take's frame rate.
+    pub(super) fn keep(&mut self, mut mark: NewMark) {
+        mark.media = Some(0);
+        mark.t_ms = ::marks::snap_to_frame(mark.t_ms, self.fps, 1);
+        mark.end_ms = mark.end_ms.map(|end| ::marks::snap_to_frame(end, self.fps, 1));
+        self.add(mark);
     }
 
     /// Ends the take's marks: writes the sidecar with the Markdown and CSV logs, and returns the chapters for the MKV.

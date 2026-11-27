@@ -14,6 +14,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use capture::{qpc_frequency, qpc_now};
+use ffmpeg_next::codec::Parameters;
 use media_io::encode::{Codec, ComboError, EncoderConfig, aligned_1080_value, check_combo_with};
 use media_io::mux::{MuxSender, MuxThread, Muxer};
 use media_io::{AmfEncoder, AudioCodec, D3d11Device, D3d11FramePool, EncodedPacket, Encoder, HwFrame, MediaError};
@@ -348,7 +349,7 @@ pub(super) fn plan(cfg: &SessionConfig) -> Result<Option<CamPlan>, String> {
         }
         set_info_line(Some(line));
     }
-    let file = cfg.take_folder.join(format!("{}_cam.{}", cfg.base_name, cfg.profile.container.extension()));
+    let file = file_path(&cfg.take_folder, &cfg.base_name, cfg.profile.container);
     Ok(Some(CamPlan { share, encoder, container: cfg.profile.container, file, offset_ms: webcam.offset_clamped() }))
 }
 
@@ -466,13 +467,23 @@ fn setup(plan: &CamPlan) -> Result<Pipeline, String> {
     let device = D3d11Device::from_device(plan.share.gpu.device()).map_err(|err| err.to_string())?;
     let pool = D3d11FramePool::new(&device, plan.encoder.width, plan.encoder.height, 8).map_err(|err| err.to_string())?;
     let encoder = AmfEncoder::open(&plan.encoder, &pool).map_err(|err| err.to_string())?;
-    let mut muxer = Muxer::create(&plan.file, plan.container).map_err(|err| err.to_string())?;
     let fps = (plan.encoder.fps_num as i32, plan.encoder.fps_den as i32);
-    muxer.set_tags(&take_title(&plan.file), ENCODER_TAG);
-    muxer.add_video_titled(encoder.parameters(), encoder.time_base(), fps, "Camera").map_err(|err| err.to_string())?;
-    muxer.start().map_err(|err| err.to_string())?;
-    let mux = MuxThread::start(muxer).map_err(|err| err.to_string())?;
+    let mux = open_muxer(&plan.file, plan.container, encoder.parameters(), encoder.time_base(), fps)?;
     Ok(Pipeline { pool, encoder, mux })
+}
+
+/// The name of a take's camera ISO file: `{base_name}_cam` with the container's extension, in the take folder.
+pub(super) fn file_path(take_folder: &Path, base_name: &str, container: Container) -> PathBuf {
+    take_folder.join(format!("{base_name}_cam.{}", container.extension()))
+}
+
+/// Creates the camera file's muxer with its one video stream and starts its mux thread.
+pub(super) fn open_muxer(file: &Path, container: Container, params: Parameters, time_base: (i32, i32), fps: (i32, i32)) -> Result<MuxThread, String> {
+    let mut muxer = Muxer::create(file, container).map_err(|err| err.to_string())?;
+    muxer.set_tags(&take_title(file), ENCODER_TAG);
+    muxer.add_video_titled(params, time_base, fps, "Camera").map_err(|err| err.to_string())?;
+    muxer.start().map_err(|err| err.to_string())?;
+    MuxThread::start(muxer).map_err(|err| err.to_string())
 }
 
 /// The recording loop's state: the pipeline, its pacer and the per-frame bookkeeping.

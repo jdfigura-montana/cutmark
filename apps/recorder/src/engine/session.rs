@@ -18,7 +18,7 @@ use super::audio::{self, AudioMessage, AudioStart};
 use super::cam::{self, CamCounters, CamHandle, CamSnapshot, CamSummary};
 use super::clock::MediaClock;
 use super::composite::CompositeBlock;
-use super::marks::{MarksWarning, TakeMarks, wav_length_ms};
+use super::marks::{MarksWarning, MkvChapter, TakeMarks, wav_length_ms};
 use super::video;
 use crate::config::{Container, Profile};
 
@@ -109,6 +109,7 @@ pub(super) struct AppEvent {
 }
 
 /// Everything the video thread needs to record one take.
+#[derive(Clone)]
 pub struct SessionConfig {
     /// DXGI adapter index for the shared D3D11 device.
     pub adapter: usize,
@@ -476,7 +477,7 @@ pub(super) struct AudioStreamSpec {
 }
 
 /// The take's session.json: what was recorded with, written at start and again at stop with the totals.
-struct SessionFile {
+pub(super) struct SessionFile {
     /// Where the file is written: `{base_name}_session.json` in the take folder.
     path: PathBuf,
     /// The JSON written to the file.
@@ -485,7 +486,7 @@ struct SessionFile {
 
 impl SessionFile {
     /// Describes the take from its config: the app, the profile and the audio tracks with their devices.
-    fn begin(cfg: &SessionConfig) -> Self {
+    pub(super) fn begin(cfg: &SessionConfig) -> Self {
         let tracks: Vec<serde_json::Value> = cfg.tracks.iter().map(track_entry).collect();
         let doc = serde_json::json!({
             "app": "CutMark Recorder",
@@ -517,7 +518,7 @@ impl SessionFile {
     }
 
     /// Lists the camera ISO file, or the reason the take has none although the profile asked for one.
-    fn set_cam(&mut self, file: Option<&Path>, notice: Option<&str>) {
+    pub(super) fn set_cam(&mut self, file: Option<&Path>, notice: Option<&str>) {
         if let Some(doc) = self.doc.as_object_mut() {
             doc.insert("cam_file".to_owned(), serde_json::json!(file.and_then(Path::file_name).map(|name| name.to_string_lossy().into_owned())));
             doc.insert("cam_notice".to_owned(), serde_json::json!(notice));
@@ -525,19 +526,28 @@ impl SessionFile {
     }
 
     /// Adds the composite block: what the main video holds and how an editor rebuilds the look.
-    fn set_composite(&mut self, block: &CompositeBlock) {
+    pub(super) fn set_composite(&mut self, block: &CompositeBlock) {
         if let Some(doc) = self.doc.as_object_mut() {
             doc.insert("composite".to_owned(), serde_json::to_value(block).unwrap_or(serde_json::Value::Null));
         }
     }
 
+    /// Marks the take as a saved replay of the buffer: `length` is the replay length setting, `started_at` the clip's start.
+    pub(super) fn set_replay(&mut self, started_at: chrono::DateTime<chrono::Local>, length: std::time::Duration) {
+        if let Some(doc) = self.doc.as_object_mut() {
+            doc.insert("started_at".to_owned(), serde_json::json!(started_at.to_rfc3339()));
+            doc.insert("capture".to_owned(), serde_json::json!("replay"));
+            doc.insert("replay_length_s".to_owned(), serde_json::json!(length.as_secs()));
+        }
+    }
+
     /// Writes the file through a temp file in the same folder, then renames it over the target.
-    fn write(&self) -> Result<(), String> {
+    pub(super) fn write(&self) -> Result<(), String> {
         crate::config::write_json(&self.path, &self.doc).map_err(|err| err.to_string())
     }
 
     /// Fills in how the take ended: the totals, with the camera file's, when it finished, or the error and the counters so far when it did not.
-    fn finish(&mut self, outcome: &Result<Summary, EngineError>, so_far: &StatsSnapshot, cam: Option<&CamSummary>) {
+    pub(super) fn finish(&mut self, outcome: &Result<Summary, EngineError>, so_far: &StatsSnapshot, cam: Option<&CamSummary>) {
         let result = match outcome {
             Ok(summary) => serde_json::json!({
                 "finished": true,
@@ -906,15 +916,10 @@ impl RecordingSession {
             && let Some(mux) = self.mux.take()
         {
             // The marks are finished before the trailer, so the chapters go into the file.
-            if let (Some(mut marks), Ok(summary)) = (self.marks.take(), &outcome) {
+            if let (Some(marks), Ok(summary)) = (self.marks.take(), &outcome) {
                 let wav_files = audio.as_ref().map(|finished| finished.wav_files.clone()).unwrap_or_default();
                 let video_ms = u64::try_from(u128::from(summary.frames) * 1000 / u128::from(self.fps.max(1))).unwrap_or(u64::MAX);
-                let mut durations_ms = vec![video_ms];
-                durations_ms.extend(wav_files.iter().map(|wav| wav_length_ms(wav).unwrap_or(video_ms)));
-                if let Some(cam) = &cam {
-                    marks.set_cam(cam.file.clone(), cam.duration_ms);
-                }
-                mux.set_chapters(marks.finish(&wav_files, &durations_ms));
+                mux.set_chapters(finish_marks(marks, &wav_files, video_ms, cam.as_ref()));
             }
             outcome = match mux.finish() {
                 Ok(mux_summary) => outcome.map(|mut summary| {
@@ -954,8 +959,19 @@ impl RecordingSession {
     }
 }
 
+/// Ends a take's marks once its other files are written: lists the WAV and camera files as media with their lengths,
+/// and returns the MKV chapters.
+pub(super) fn finish_marks(mut marks: TakeMarks, wav_files: &[PathBuf], video_ms: u64, cam: Option<&CamSummary>) -> Vec<MkvChapter> {
+    let mut durations_ms = vec![video_ms];
+    durations_ms.extend(wav_files.iter().map(|wav| wav_length_ms(wav).unwrap_or(video_ms)));
+    if let Some(cam) = cam {
+        marks.set_cam(cam.file.clone(), cam.duration_ms);
+    }
+    marks.finish(wav_files, &durations_ms)
+}
+
 /// A path's file name as text; empty when it has none.
-fn file_name(path: &Path) -> String {
+pub(super) fn file_name(path: &Path) -> String {
     path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
@@ -969,7 +985,7 @@ pub(super) fn take_title(file: &Path) -> String {
 
 /// Creates the muxer, adds the video stream then the audio streams, starts it,
 /// and returns the mux thread plus the stream index per audio stream.
-fn build_muxer(
+pub(super) fn build_muxer(
     output_file: &Path,
     container: Container,
     fps: u32,
