@@ -21,7 +21,7 @@ const POPOVER_GAP: f32 = space::SCALE_4;
 
 /// One top-level menu: the title in the bar and the closure that fills its
 /// popover. The closure runs every frame the menu is open; put the items in it
-/// with `ui.button(..)` (call `ui.close()` after a click to close the menu).
+/// with [`crate::MenuItem`] (call `ui.close()` after a click to close the menu).
 pub struct Menu<'a> {
     /// The title shown in the bar. Alt plus its first letter opens the menu.
     pub title: &'a str,

@@ -11,8 +11,7 @@ use crate::ui::dialogs::export::ExportDialog;
 use crate::ui::dialogs::project_settings::ProjectSettingsDialog;
 use crate::ui::dialogs::save_as::SaveAsDialog;
 use crate::ui::timeline::ViewMenuAction;
-use ui_kit::fonts;
-use ui_kit::tokens::{space, typography};
+use ui_kit::tokens::space;
 
 /// What the user chose in the Project menu this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,12 +55,10 @@ fn menu_sep(ui: &mut egui::Ui) {
     ui.add_space(space::SCALE_4);
 }
 
-/// A menu item button with a right-aligned type.value shortcut hint. The hint
-/// is the shortcut table's text for `id`, so menus and the sheet never drift.
-fn item(ctx: &egui::Context, label: impl Into<String>, id: &str) -> egui::Button<'static> {
-    let neutral = crate::ui::neutrals(ctx);
-    egui::Button::new(label.into())
-        .right_text(egui::RichText::new(crate::shortcuts::text(ctx, id)).font(fonts::mono(typography::VALUE_SIZE)).color(neutral.text_tertiary))
+/// A menu item with a shortcut hint. The hint is the shortcut table's text for
+/// `id`, so menus and the sheet never drift.
+fn item(ctx: &egui::Context, label: impl Into<String>, id: &str) -> ui_kit::MenuItem {
+    ui_kit::MenuItem::new(label).shortcut(crate::shortcuts::text(ctx, id))
 }
 
 /// The start screen's menu bar: File with New project and Open project, the
@@ -146,12 +143,12 @@ pub fn menu_bar(
                 help_action.set(HelpMenuAction::Shortcuts);
                 ui.close();
             }
-            if ui.button("Show the tour").clicked() {
+            if ui.add(ui_kit::MenuItem::new("Show the tour")).clicked() {
                 help_action.set(HelpMenuAction::Tour);
                 ui.close();
             }
             menu_sep(ui);
-            if ui.button("About CutMark Audio").clicked() {
+            if ui.add(ui_kit::MenuItem::new("About CutMark Audio")).clicked() {
                 help_action.set(HelpMenuAction::About);
                 ui.close();
             }
@@ -212,15 +209,15 @@ impl ProjectMenu {
         } else {
             menu.add_enabled(false, item(&ctx, "Export...", "export"));
         }
-        if menu.button("Close").clicked() {
+        if menu.add(ui_kit::MenuItem::new("Close")).clicked() {
             action = ProjectMenuAction::Close;
             menu.close();
         }
-        if menu.add_enabled(!recording, egui::Button::new("Project Settings...")).clicked() {
+        if menu.add_enabled(!recording, ui_kit::MenuItem::new("Project Settings...")).clicked() {
             self.open_settings(editor);
             menu.close();
         }
-        if menu.add_enabled(!recording, egui::Button::new("Audio Settings...")).clicked() {
+        if menu.add_enabled(!recording, ui_kit::MenuItem::new("Audio Settings...")).clicked() {
             self.audio_settings_dialog = Some(AudioSettingsDialog::new_open(editor));
             menu.close();
         }
@@ -230,6 +227,7 @@ impl ProjectMenu {
     /// The Edit menu's items.
     fn edit_menu(menu: &mut egui::Ui, editor: &mut Editor, recording: bool) {
         let ctx = menu.ctx().clone();
+        ui_kit::menu_check_slot(menu);
         if recording {
             menu.disable();
         }
@@ -354,12 +352,10 @@ impl ProjectMenu {
             menu.add_enabled(false, item(&ctx, "Clear Selection", "clear_selection"));
         }
         menu_sep(menu);
-        let mut ripple = editor.view.ripple;
-        if menu.add(egui::Checkbox::new(&mut ripple, format!("Ripple ({})", crate::shortcuts::text(&ctx, "toggle_ripple")))).changed() {
+        if menu.add(item(&ctx, "Ripple", "toggle_ripple").checked(editor.view.ripple)).clicked() {
             editor.toggle_ripple();
         }
-        let mut snap = editor.view.snap;
-        if menu.add(egui::Checkbox::new(&mut snap, format!("Snap ({})", crate::shortcuts::text(&ctx, "toggle_snap")))).changed() {
+        if menu.add(item(&ctx, "Snap", "toggle_snap").checked(editor.view.snap)).clicked() {
             editor.toggle_snap();
         }
     }
@@ -475,7 +471,7 @@ impl ProjectMenu {
             menu.close();
         }
         menu_sep(menu);
-        if menu.add(egui::Button::new("Appearance...")).clicked() {
+        if menu.add(ui_kit::MenuItem::new("Appearance...")).clicked() {
             self.appearance_open = true;
             menu.close();
         }
@@ -668,8 +664,8 @@ mod tests {
                 ("Trim to Selection", "Ctrl+T"),
                 ("Select All", "Ctrl+A"),
                 ("Clear Selection", "Escape"),
-                ("Ripple (R)", ""),
-                ("Snap (N)", ""),
+                ("Ripple", "R"),
+                ("Snap", "N"),
             ],
         ),
         ("Markers", &[("Add Marker", "M"), ("Previous Marker", "Comma"), ("Next Marker", "Period"), ("Delete Marker", "Delete")]),
@@ -864,7 +860,7 @@ mod tests {
         let _ = choose(&mut editor, "Edit", "Clear Selection");
         assert!(matches!(editor.selection(), crate::editor::selection::Selection::None));
         editor.select_all();
-        let _ = choose(&mut editor, "Edit", "Ripple (R)");
+        let _ = choose(&mut editor, "Edit", "Ripple");
         assert!(editor.view.ripple, "Ripple toggled");
         let (menu, _) = choose(&mut editor, "Process", "Silence");
         assert!(menu.error_dialog.is_none());
@@ -877,7 +873,7 @@ mod tests {
         let ripple = editor.view.ripple;
         let _ = choose(&mut editor, "Edit", "Clear Selection");
         assert!(!matches!(editor.selection(), crate::editor::selection::Selection::None), "Clear Selection did nothing");
-        let _ = choose(&mut editor, "Edit", "Ripple (R)");
+        let _ = choose(&mut editor, "Edit", "Ripple");
         assert_eq!(editor.view.ripple, ripple, "Ripple did nothing");
         let _ = choose(&mut editor, "Edit", "Select All");
         let (menu, _) = choose(&mut editor, "Process", "Silence");

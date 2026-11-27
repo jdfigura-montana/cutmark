@@ -753,6 +753,7 @@ impl RecorderApp {
                     }
                 });
                 let capture = ui_kit::Menu::new("Capture", |ui| {
+                    ui_kit::menu_check_slot(ui);
                     if menu_item(ui, "Start or Stop recording", &chords.start_stop).clicked() {
                         send(&bus, CommandKind::StartStop);
                         ui.close();
@@ -1892,25 +1893,15 @@ fn column_divider(ui: &mut egui::Ui, rect: egui::Rect, id_salt: &'static str, wi
     (new_width != width).then_some(new_width)
 }
 
-/// One menu item: the label in the body font, then the hotkey in the mono value style
-/// (spec "Menus": the items show the existing hotkeys as their shortcuts).
+/// One menu item with its hotkey as the shortcut (spec "Menus": the items show the existing
+/// hotkeys as their shortcuts).
 fn menu_item(ui: &mut egui::Ui, label: &str, chord: &str) -> egui::Response {
-    ui.add(menu_button(label, chord))
+    ui.add(ui_kit::MenuItem::new(label).shortcut(chord))
 }
 
 /// [`menu_item`] that draws faded and reports no clicks unless `enabled`.
 pub(crate) fn menu_item_enabled(ui: &mut egui::Ui, enabled: bool, label: &str, chord: &str) -> egui::Response {
-    ui.add_enabled(enabled, menu_button(label, chord))
-}
-
-/// A menu item's button: the label, then its chord if it has one.
-pub(crate) fn menu_button(label: &str, chord: &str) -> egui::Button<'static> {
-    let mut job = egui::text::LayoutJob::default();
-    job.append(label, 0.0, egui::TextFormat::simple(ui_kit::fonts::medium(typography::BODY_SIZE), color::TEXT_PRIMARY));
-    if !chord.is_empty() {
-        job.append(chord, space::SCALE_12, egui::TextFormat::simple(ui_kit::fonts::mono(typography::VALUE_SIZE), color::TEXT_TERTIARY));
-    }
-    egui::Button::new(job)
+    ui.add_enabled(enabled, ui_kit::MenuItem::new(label).shortcut(chord))
 }
 
 /// Whether Ctrl+, must open the Settings dialog right now: the chord is pressed this frame,

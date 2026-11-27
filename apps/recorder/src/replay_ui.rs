@@ -5,7 +5,7 @@
 
 use egui::Ui;
 
-use crate::app::{Chords, menu_button, menu_item_enabled};
+use crate::app::{Chords, menu_item_enabled};
 use crate::engine::bus::CommandKind;
 use crate::engine::controller::{ControllerState, ReplayEvent};
 use crate::engine::stats::GIB;
@@ -49,7 +49,7 @@ pub(crate) fn new_notices(state: &ControllerState, seen: &mut u64) -> Vec<Notice
 /// replay, enabled only then. Returns the command of the clicked item.
 pub(crate) fn menu_items(ui: &mut Ui, on: bool, chords: &Chords) -> Option<CommandKind> {
     let mut clicked = None;
-    if ui.add(menu_button("Replay buffer", &chords.replay_toggle).selected(on)).clicked() {
+    if ui.add(ui_kit::MenuItem::new("Replay buffer").shortcut(chords.replay_toggle.as_str()).checked(on)).clicked() {
         clicked = Some(CommandKind::ReplayToggle);
     }
     if menu_item_enabled(ui, on, "Save replay", &chords.replay_save).clicked() {
