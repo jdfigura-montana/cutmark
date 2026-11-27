@@ -136,11 +136,11 @@ export abstract class DialBase extends SingletonAction<DialSettings> {
 		const conn = this.conn;
 		if (!conn) return;
 		if (conn.updateMode) {
-			void dial.setFeedback({ title: "Update", value: "", bar: 0 });
+			void dial.setFeedback({ title: "Update", value: "", indicator: 0 });
 			return;
 		}
 		if (!conn.running) {
-			void dial.setFeedback({ title: "Not running", value: "", bar: 0 });
+			void dial.setFeedback({ title: "Not running", value: "", indicator: 0 });
 			return;
 		}
 		this.renderRunning(dial, conn.state ?? {});

@@ -260,8 +260,14 @@ pub fn state_value(state: &ControllerState, settings: &Settings) -> Value {
             })
         })
         .collect();
+    // The seconds left, only while the countdown runs.
+    let countdown_s = match state.phase {
+        Phase::Countdown(seconds) => Some(seconds),
+        _ => None,
+    };
     json!({
         "phase": phase,
+        "countdown_s": countdown_s,
         "elapsed_ms": elapsed_ms,
         "replay_on": state.replay_on,
         "mic_muted": settings.audio.tracks.first().is_some_and(|track| track.muted),
@@ -401,6 +407,7 @@ mod tests {
             state_value(&state, &settings),
             json!({
                 "phase": "idle",
+                "countdown_s": null,
                 "elapsed_ms": 0,
                 "replay_on": true,
                 "mic_muted": false,
@@ -415,6 +422,7 @@ mod tests {
         let value = state_value(&paused, &settings);
         assert_eq!((&value["phase"], &value["marks"]), (&json!("paused"), &json!(4)));
         let countdown = ControllerState { phase: Phase::Countdown(3), ..ControllerState::default() };
-        assert_eq!(state_value(&countdown, &settings)["phase"], json!("countdown"));
+        let value = state_value(&countdown, &settings);
+        assert_eq!((&value["phase"], &value["countdown_s"]), (&json!("countdown"), &json!(3)));
     }
 }

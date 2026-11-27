@@ -17,7 +17,7 @@ const LEVEL_FLOOR_DBFS = -60;
 type RecorderTrack = { index?: number; name?: string; muted?: boolean; gain_db?: number; peak_dbfs?: number };
 
 /** What the strip shows; the keys are the items of `layouts/recorder-gain.json`. */
-type Strip = { title: string; value: { value: string; color: string }; bar: number };
+type Strip = { title: string; value: { value: string; color: string }; indicator: number };
 
 /** The track's gain as a signed dB text. */
 function gainText(db: number | undefined): string {
@@ -35,10 +35,10 @@ function levelPercent(peakDbfs: number | undefined): number {
 function stripFor(state: AppState, number: number): Strip {
 	const tracks = (state.tracks ?? []) as unknown as RecorderTrack[];
 	const track = tracks.find((candidate) => candidate.index === number);
-	if (!track) return { title: `No track ${number}`, value: { value: "", color: NORMAL_COLOR }, bar: 0 };
+	if (!track) return { title: `No track ${number}`, value: { value: "", color: NORMAL_COLOR }, indicator: 0 };
 	const title = track.name ?? `Track ${number}`;
-	if (track.muted === true) return { title, value: { value: "Muted", color: DIM_COLOR }, bar: 0 };
-	return { title, value: { value: gainText(track.gain_db), color: NORMAL_COLOR }, bar: levelPercent(track.peak_dbfs) };
+	if (track.muted === true) return { title, value: { value: "Muted", color: DIM_COLOR }, indicator: 0 };
+	return { title, value: { value: gainText(track.gain_db), color: NORMAL_COLOR }, indicator: levelPercent(track.peak_dbfs) };
 }
 
 /** Track gain dial: rotate changes the track's gain, press mutes it; the strip shows its live level. */

@@ -1,6 +1,6 @@
 {
 	"Name": "CutMark Creator Suite",
-	"Version": "1.1.0.0",
+	"Version": "1.2.0.0",
 	"Author": "CutMark",
 	"Actions": [
 		{
@@ -567,6 +567,16 @@
 		},
 		{
 			"Name": "profiles/CutMark Audio Plus",
+			"DeviceType": 7,
+			"DontAutoSwitchWhenInstalled": true
+		},
+		{
+			"Name": "profiles/CutMark Recorder",
+			"DeviceType": 0,
+			"DontAutoSwitchWhenInstalled": true
+		},
+		{
+			"Name": "profiles/CutMark Recorder Plus",
 			"DeviceType": 7,
 			"DontAutoSwitchWhenInstalled": true
 		}

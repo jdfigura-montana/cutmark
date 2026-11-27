@@ -70,7 +70,7 @@ export class ZoomDial extends DialBase {
 
 	/** The strip: "Zoom", the app's zoom label and the percent as a bar. */
 	protected override renderRunning(dial: Dial, state: AppState): void {
-		void dial.setFeedback({ title: "Zoom", value: state.zoom_label ?? "", bar: zoomFraction(state.zoom_label) });
+		void dial.setFeedback({ title: "Zoom", value: state.zoom_label ?? "", indicator: zoomFraction(state.zoom_label) });
 	}
 }
 
@@ -162,7 +162,7 @@ export class TrackVolumeDial extends DialBase {
 		const n = this.trackByDial.get(dial) ?? 1;
 		const track = findTrack(state, n);
 		if (!track) {
-			void dial.setFeedback({ title: `No track ${n}`, value: "", bar: 0 });
+			void dial.setFeedback({ title: `No track ${n}`, value: "", indicator: 0 });
 			return;
 		}
 		const muted = track.mute === true;
@@ -170,7 +170,7 @@ export class TrackVolumeDial extends DialBase {
 		void dial.setFeedback({
 			title: track.name ?? `Track ${n}`,
 			value: { value: dbText(track.volume_db), color },
-			bar: { value: volumeFraction(track.volume_db), bar_fill_c: color },
+			indicator: { value: volumeFraction(track.volume_db), bar_fill_c: color },
 		});
 	}
 }

@@ -18,6 +18,7 @@ import { trackNumber } from "./track-key";
 type RecorderState = {
 	phase?: "idle" | "countdown" | "recording" | "paused";
 	elapsed_ms?: number;
+	countdown_s?: number | null;
 	replay_on?: boolean;
 	mic_muted?: boolean;
 	tracks?: { index?: number; name?: string; muted?: boolean }[];
@@ -160,8 +161,8 @@ export class RecorderRecordKey extends RecorderKeyAction {
 
 	protected override face(state: RecorderState): Face {
 		if (isIdle(state)) return { state: 0 };
-		// The published state carries no countdown number.
-		if (state.phase === "countdown") return { state: 0, title: "..." };
+		// A Recorder that publishes no countdown number gets "...".
+		if (state.phase === "countdown") return { state: 0, title: String(state.countdown_s ?? "...") };
 		return { state: 1, title: formatElapsed(state.elapsed_ms ?? 0) };
 	}
 }

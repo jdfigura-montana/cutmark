@@ -19,7 +19,7 @@
 			"alignment": "right"
 		},
 		{
-			"key": "bar",
+			"key": "indicator",
 			"type": "bar",
 			"rect": [16, 76, 168, 12],
 			"value": 0,
