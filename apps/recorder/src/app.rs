@@ -30,6 +30,7 @@ use crate::record_ui;
 use crate::recovery::{self, RecoveryReport};
 use crate::remote::{self, Remote};
 use crate::replay_ui::{self, Notice};
+use crate::review::bake::Capturing;
 use crate::review::{self, ReviewTarget, ReviewView};
 use crate::review_ui;
 use crate::settings_ui::{self, ApiUi, NextTake, Section, SettingsDialog};
@@ -818,6 +819,17 @@ impl RecorderApp {
         if let Some(report) = self.take_panel.poll_bake() {
             self.review_dirty = true;
             self.notices.push_back(Notice { text: report.text, review: None, show: report.file });
+        }
+    }
+
+    /// Cancels a running bake when a recording starts or the replay buffer is turned on, and says so.
+    fn cancel_bake_for_capture(&mut self) {
+        let shared = self.controller.shared();
+        let state = lock(&shared);
+        let now = Capturing { take: state.phase != Phase::Idle, replay: state.replay_on };
+        drop(state);
+        if self.take_panel.watch_capture(now) {
+            self.notices.push_back(Notice { text: "Bake cancelled: recording started".to_owned(), review: None, show: None });
         }
     }
 
@@ -2191,10 +2203,12 @@ fn same_drive(a: &std::path::Path, b: &std::path::Path) -> bool {
 
 impl eframe::App for RecorderApp {
     // The remote runs here, not in `ui`: eframe draws no frame while the window is hidden in
-    // the tray, and the Stream Deck keys must work then too.
+    // the tray, and the Stream Deck keys must work then too. So must the bake's cancel, for a
+    // recording started by a hotkey or the tray.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.sync_remote(ctx);
         self.poll_remote(ctx);
+        self.cancel_bake_for_capture();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

@@ -36,7 +36,7 @@ use crate::config::CompositeMode;
 use crate::data_text;
 use crate::layout_ui;
 use crate::playback::Playback;
-use crate::review::bake::{self, BakeJob, BakeRequest, Baked};
+use crate::review::bake::{self, BakeJob, BakeRequest, Baked, Capturing};
 use crate::review::{self, Day, ReviewView, Take, TrackSummary};
 
 /// The Takes panel's two views, in the order the segmented control shows them.
@@ -148,11 +148,22 @@ pub struct TakePanelState {
     track: Option<TrackInfo>,
     /// The running bake. It goes on while another take or mode is on screen.
     bake: Option<BakeJob>,
+    /// What the app was capturing when last told, so a recording that starts is noticed once.
+    capturing: Capturing,
 }
 
 impl Default for TakePanelState {
     fn default() -> Self {
-        Self { renaming: None, rename_focused: false, rename_error: None, confirm_delete: false, show_cursor: true, track: None, bake: None }
+        Self {
+            renaming: None,
+            rename_focused: false,
+            rename_error: None,
+            confirm_delete: false,
+            show_cursor: true,
+            track: None,
+            bake: None,
+            capturing: Capturing::default(),
+        }
     }
 }
 
@@ -173,6 +184,13 @@ impl TakePanelState {
             }
             Err(err) => Some(BakeReport::of(&take.name, Err(err.to_string()))),
         }
+    }
+
+    /// Takes in what the app captures now and cancels a running bake when a recording has just started or the replay
+    /// buffer was just turned on. Returns whether it cancelled one.
+    pub fn watch_capture(&mut self, now: Capturing) -> bool {
+        let before = std::mem::replace(&mut self.capturing, now);
+        self.bake.as_ref().is_some_and(|job| job.give_way(before, now))
     }
 
     /// Takes in the end of the running bake: the report to show, if it ended with one. A cancelled bake has none.

@@ -3,9 +3,9 @@
 //! [`VideoDecoder::open`] tries D3D11VA on its own D3D11 device and falls back to
 //! software decoding the way `bgvideo` does. Every decoded frame is moved into
 //! system memory when needed, scaled with swscale to RGBA at most `max_width`
-//! wide and queued for the caller, who pulls frames with [`VideoDecoder::frame_at`]
-//! as its own clock advances. The queue holds a few frames, so memory stays flat
-//! on long takes.
+//! wide, in the stream's colour standard (BT.709 for untagged HD), and queued for
+//! the caller, who pulls frames with [`VideoDecoder::frame_at`] as its own clock
+//! advances. The queue holds a few frames, so memory stays flat on long takes.
 #![allow(unsafe_code)]
 
 use std::collections::VecDeque;
@@ -32,6 +32,9 @@ const JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The swscale flag set: bilinear, a good middle ground for downscaling.
 const SWS_BILINEAR: c_int = 2;
+
+/// The smallest picture that counts as HD: 720 lines, or this wide when the picture is cropped to a cinema shape.
+const HD_SIZE: (u32, u32) = (1280, 720);
 
 /// The AVERROR code for EAGAIN, which the decoder returns when it wants to hand out a frame first.
 const AVERROR_EAGAIN: c_int = -11;
@@ -441,6 +444,8 @@ struct Session {
     sws: *mut ffi::SwsContext,
     /// The source format and size the sws context was built for.
     sws_src: Option<(ffi::AVPixelFormat, u32, u32)>,
+    /// The colorspace tag of the stream, often unspecified.
+    colorspace: ffi::AVColorSpace,
     /// Whether end of input was read and the decoder was flushed.
     input_done: bool,
     /// The length of the file in milliseconds, from its headers.
@@ -636,10 +641,49 @@ impl Session {
             if sws.is_null() {
                 return Err(MediaError::Null("sws_getContext"));
             }
+            set_colour_standard(sws, colour_standard(self.colorspace, src_w, src_h));
             self.sws = sws;
             self.sws_src = Some(key);
         }
         Ok(self.sws)
+    }
+}
+
+/// The swscale colour standard of a picture: the one its stream is tagged with, and without a tag BT.709 for HD and
+/// larger and BT.601 below, as other players assume.
+fn colour_standard(tag: ffi::AVColorSpace, width: u32, height: u32) -> c_int {
+    use ffi::AVColorSpace as Tag;
+    match tag {
+        Tag::AVCOL_SPC_BT709 => ffi::SWS_CS_ITU709,
+        Tag::AVCOL_SPC_BT470BG | Tag::AVCOL_SPC_SMPTE170M => ffi::SWS_CS_ITU601,
+        Tag::AVCOL_SPC_FCC => ffi::SWS_CS_FCC,
+        Tag::AVCOL_SPC_SMPTE240M => ffi::SWS_CS_SMPTE240M,
+        Tag::AVCOL_SPC_BT2020_NCL | Tag::AVCOL_SPC_BT2020_CL => ffi::SWS_CS_BT2020,
+        _ if width >= HD_SIZE.0 || height >= HD_SIZE.1 => ffi::SWS_CS_ITU709,
+        _ => ffi::SWS_CS_ITU601,
+    }
+}
+
+/// Sets the matrix a scale context reads YUV with; swscale's default is BT.601. The ranges and the picture controls
+/// stay as swscale chose them for the pixel formats. A context with no YUV side refuses, and has no matrix to set.
+fn set_colour_standard(sws: *mut ffi::SwsContext, standard: c_int) {
+    let (mut source, mut target): (*mut c_int, *mut c_int) = (std::ptr::null_mut(), std::ptr::null_mut());
+    let (mut source_range, mut target_range, mut brightness, mut contrast, mut saturation): (c_int, c_int, c_int, c_int, c_int) = (0, 0, 0, 0, 0);
+    // SAFETY: the context is live and every out pointer is valid.
+    let read = unsafe {
+        ffi::sws_getColorspaceDetails(sws, &mut source, &mut source_range, &mut target, &mut target_range, &mut brightness, &mut contrast, &mut saturation)
+    };
+    if read < 0 {
+        return;
+    }
+    // SAFETY: the target table points into the live context, so it is copied before the context is written to.
+    let target = unsafe { *target.cast::<[c_int; 4]>() };
+    // SAFETY: the context is live; the coefficient table of the standard is static and only read.
+    let set = unsafe {
+        ffi::sws_setColorspaceDetails(sws, ffi::sws_getCoefficients(standard), source_range, target.as_ptr(), target_range, brightness, contrast, saturation)
+    };
+    if set < 0 {
+        log::warn!("video decode: swscale refused colour standard {standard}");
     }
 }
 
@@ -676,7 +720,8 @@ fn open_session_rest(fmt: *mut ffi::AVFormatContext, max_width: u32, device: Opt
         return Err(MediaError::Null("the video stream has no codec parameters"));
     }
     // SAFETY: the codec parameters are live.
-    let (codec_id, width, height) = unsafe { ((*codecpar).codec_id, (*codecpar).width.max(0) as u32, (*codecpar).height.max(0) as u32) };
+    let (codec_id, width, height, colorspace) =
+        unsafe { ((*codecpar).codec_id, (*codecpar).width.max(0) as u32, (*codecpar).height.max(0) as u32, (*codecpar).color_space) };
     if width == 0 || height == 0 {
         return Err(MediaError::Null("the video stream has no size"));
     }
@@ -708,6 +753,7 @@ fn open_session_rest(fmt: *mut ffi::AVFormatContext, max_width: u32, device: Opt
         sw_frame: std::ptr::null_mut(),
         sws: std::ptr::null_mut(),
         sws_src: None,
+        colorspace,
         input_done: false,
         duration_ms,
         hardware,
@@ -760,7 +806,7 @@ mod tests {
     use std::sync::{Arc, OnceLock};
     use std::time::{Duration, Instant};
 
-    use super::{JOIN_TIMEOUT, QUEUE_LEN, RgbaFrame, VideoDecoder, lock, newest_at_or_before};
+    use super::{JOIN_TIMEOUT, QUEUE_LEN, RgbaFrame, Session, VideoDecoder, colour_standard, ffi, lock, newest_at_or_before};
     use crate::amf::AmfEncoder;
     use crate::encode::{Codec, Encoder, EncoderConfig, Preset, RateControl};
     use crate::hw::{D3d11Device, D3d11FramePool, HwFrame};
@@ -996,6 +1042,68 @@ mod tests {
         assert!(elapsed < JOIN_TIMEOUT / 2, "drop took {elapsed:?}");
         // The thread let go of its share of the queue, so it ended and was not left behind.
         assert_eq!(Arc::strong_count(&queue), 1);
+        Ok(())
+    }
+
+    /// A session with no file or decoder behind it, enough to make a scale context.
+    fn bare_session(width: u32, height: u32, colorspace: ffi::AVColorSpace) -> Session {
+        Session {
+            fmt: std::ptr::null_mut(),
+            codec: std::ptr::null_mut(),
+            stream_index: 0,
+            time_base: (1, 1000),
+            width,
+            height,
+            out_size: (1280, 720),
+            packet: std::ptr::null_mut(),
+            frame: std::ptr::null_mut(),
+            sw_frame: std::ptr::null_mut(),
+            sws: std::ptr::null_mut(),
+            sws_src: None,
+            colorspace,
+            input_done: false,
+            duration_ms: 0,
+            hardware: false,
+            _hw: None,
+        }
+    }
+
+    /// The coefficients a scale context reads YUV with.
+    fn source_matrix(sws: *mut ffi::SwsContext) -> Option<[i32; 4]> {
+        let (mut source, mut target) = (std::ptr::null_mut::<i32>(), std::ptr::null_mut::<i32>());
+        let mut values = [0i32; 5];
+        let [source_range, target_range, brightness, contrast, saturation] = &mut values;
+        // SAFETY: the context is live and every out pointer is valid.
+        let read = unsafe { ffi::sws_getColorspaceDetails(sws, &mut source, source_range, &mut target, target_range, brightness, contrast, saturation) };
+        // SAFETY: on success the pointer is the context's table of four coefficients.
+        (read >= 0).then(|| unsafe { *source.cast::<[i32; 4]>() })
+    }
+
+    /// The coefficients of one of swscale's colour standards.
+    fn matrix_of(standard: i32) -> [i32; 4] {
+        // SAFETY: the table is static and holds at least four coefficients.
+        unsafe { *ffi::sws_getCoefficients(standard).cast::<[i32; 4]>() }
+    }
+
+    #[test]
+    fn the_scaler_reads_an_untagged_1080p_stream_as_bt709() -> Result<(), Box<dyn std::error::Error>> {
+        crate::init()?;
+        let untagged = ffi::AVColorSpace::AVCOL_SPC_UNSPECIFIED;
+        let (bt709, bt601) = (matrix_of(ffi::SWS_CS_ITU709), matrix_of(ffi::SWS_CS_ITU601));
+        assert_ne!(bt709, bt601);
+        for (width, height, tag, expected) in [
+            (1920, 1080, untagged, bt709),
+            (640, 480, untagged, bt601),
+            // A tag wins over the size.
+            (1920, 1080, ffi::AVColorSpace::AVCOL_SPC_SMPTE170M, bt601),
+            (640, 480, ffi::AVColorSpace::AVCOL_SPC_BT709, bt709),
+        ] {
+            let mut session = bare_session(width, height, tag);
+            let sws = session.scale_context(ffi::AVPixelFormat::AV_PIX_FMT_NV12, width, height)?;
+            assert_eq!(source_matrix(sws), Some(expected), "{width}x{height} {tag:?}");
+        }
+        // A cropped cinema picture is HD by its width.
+        assert_eq!(colour_standard(untagged, 1280, 544), ffi::SWS_CS_ITU709);
         Ok(())
     }
 

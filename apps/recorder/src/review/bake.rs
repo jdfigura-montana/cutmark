@@ -480,6 +480,22 @@ struct Shared {
     cancel: AtomicBool,
 }
 
+/// What the app is capturing, as far as a running bake cares.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Capturing {
+    /// A take is under way, its countdown included.
+    pub take: bool,
+    /// The replay buffer is on.
+    pub replay: bool,
+}
+
+impl Capturing {
+    /// Whether going from `before` to this starts a recording or turns the replay buffer on.
+    fn starts_after(self, before: Self) -> bool {
+        (self.take && !before.take) || (self.replay && !before.replay)
+    }
+}
+
 /// A bake running on its own thread. Dropping it cancels the bake and waits for it, so no partial file stays behind
 /// when the app closes.
 pub struct BakeJob {
@@ -531,6 +547,17 @@ impl BakeJob {
     /// Asks the bake to stop; [`BakeJob::poll`] tells when it has.
     pub fn cancel(&self) {
         self.shared.cancel.store(true, Ordering::Relaxed);
+    }
+
+    /// Cancels the bake when a recording starts or the replay buffer is turned on between `before` and `now`, so the
+    /// capture gets the GPU. Returns whether this call stopped a running bake.
+    pub fn give_way(&self, before: Capturing, now: Capturing) -> bool {
+        let over = self.thread.as_ref().is_none_or(JoinHandle::is_finished);
+        if over || !now.starts_after(before) || self.shared.cancel.load(Ordering::Relaxed) {
+            return false;
+        }
+        self.cancel();
+        true
     }
 
     /// None while the bake runs. Then how it ended: Some(None) after a cancel.

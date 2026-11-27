@@ -358,6 +358,46 @@ fn a_cancelled_bake_leaves_no_partial_file() -> TestResult {
 }
 
 #[test]
+fn a_take_that_starts_cancels_the_running_bake() -> TestResult {
+    let take = match TestTake::new("gives-way")? {
+        Ok(take) => take,
+        Err(reason) => {
+            eprintln!("skipped: {reason}");
+            return Ok(());
+        }
+    };
+    let before = take.file_names()?;
+    let idle = Capturing::default();
+    let recording = Capturing { take: true, replay: false };
+    let buffering = Capturing { take: false, replay: true };
+
+    let job = BakeJob::start("take01".to_owned(), take.request(), || {})?;
+    // A buffer that was on already when the bake started does not stop it, and neither does a take ending.
+    assert!(!job.give_way(buffering, buffering));
+    assert!(!job.give_way(recording, idle));
+    assert!(job.give_way(idle, recording));
+    assert!(!job.give_way(idle, recording), "one cancel, so one toast");
+    let waiting = std::time::Instant::now();
+    let ended = loop {
+        if let Some(ended) = job.poll() {
+            break ended;
+        }
+        assert!(waiting.elapsed() < std::time::Duration::from_secs(10), "the bake did not stop");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    };
+    assert_eq!(ended, None, "a cancelled bake has no report");
+    assert_eq!(take.file_names()?, before);
+
+    // Turning the replay buffer on cancels too.
+    let job = BakeJob::start("take01".to_owned(), take.request(), || {})?;
+    assert!(job.give_way(idle, buffering));
+    drop(job);
+    assert_eq!(take.file_names()?, before);
+    fs::remove_dir_all(&take.folder)?;
+    Ok(())
+}
+
+#[test]
 fn a_bake_that_fails_leaves_no_file() -> TestResult {
     let folder = std::env::temp_dir().join(format!("cutmark-recorder-test-{}-bake-broken", std::process::id()));
     fs::create_dir_all(&folder)?;
