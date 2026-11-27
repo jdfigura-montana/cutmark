@@ -11,7 +11,7 @@ use thiserror::Error;
 use crate::config::{CompositeMode, TrackKind};
 #[cfg(test)]
 use crate::engine::controller::WarningNote;
-use crate::engine::controller::{ControllerState, Phase};
+use crate::engine::controller::{ControllerState, Phase, ReplayEvent};
 
 /// The longest mark label the API keeps, in bytes.
 const LABEL_MAX_BYTES: usize = 200;
@@ -56,6 +56,12 @@ pub enum Op {
     },
     /// Ask for the current status.
     GetStatus,
+    /// Turn the replay buffer on.
+    ReplayStart,
+    /// Turn the replay buffer off.
+    ReplayStop,
+    /// Save what the replay buffer holds as a take.
+    ReplaySave,
     /// The Prompter's script, kept for the script file of the next take that gets a position.
     ScriptSnapshot {
         /// Identifies the script across messages.
@@ -212,6 +218,9 @@ fn parse_op(object: &Map<String, Value>) -> Result<Op, ParseError> {
         "mute" => Ok(Op::Mute { track: args.string(&["track"])?.filter(|track| !track.trim().is_empty()) }),
         "setProfile" => Ok(Op::SetProfile { name: args.required(&["name"])? }),
         "getStatus" => Ok(Op::GetStatus),
+        "replay.start" => Ok(Op::ReplayStart),
+        "replay.stop" => Ok(Op::ReplayStop),
+        "replay.save" => Ok(Op::ReplaySave),
         "scriptSnapshot" => {
             let markdown = args.string(&["markdown"])?.unwrap_or_default();
             if markdown.len() > MARKDOWN_MAX_BYTES {
@@ -276,6 +285,8 @@ pub enum EventKind {
     Warning,
     /// The once-a-second status while recording.
     Status,
+    /// The replay buffer was saved as a take.
+    ReplaySaved,
 }
 
 impl EventKind {
@@ -291,6 +302,7 @@ impl EventKind {
             Self::MarkAdded => "markAdded",
             Self::Warning => "warning",
             Self::Status => "status",
+            Self::ReplaySaved => "replay.saved",
         }
     }
 }
@@ -332,6 +344,20 @@ pub fn warning_events(state: &ControllerState, after: u64) -> Vec<(u64, String)>
         .collect()
 }
 
+/// The `replay.saved` events for the replays saved after replay event number `after`, oldest first, each with its
+/// number. The other replay events are not announced here; a failed save is a `warning` event.
+pub fn replay_saved_events(state: &ControllerState, after: u64) -> Vec<(u64, String)> {
+    state
+        .replay_events
+        .iter()
+        .filter(|note| note.seq > after)
+        .filter_map(|note| match &note.event {
+            ReplayEvent::Saved(saved) => Some((note.seq, event(EventKind::ReplaySaved, json!({ "take": saved.take_path.display().to_string() })))),
+            ReplayEvent::SaveFailed(_) | ReplayEvent::RamWarning(_) => None,
+        })
+        .collect()
+}
+
 /// The recorder's status as clients see it, in `getStatus` and in the `status` and phase events.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -364,6 +390,10 @@ pub struct StatusData {
     pub composite_mode: CompositeMode,
     /// The audio tracks in the settings, in settings order.
     pub tracks: Vec<TrackStatus>,
+    /// Whether the replay buffer is on: `on` or `off`.
+    pub replay: &'static str,
+    /// The running replay buffer's length in seconds, or the length the next one gets while it is off.
+    pub replay_length: u32,
 }
 
 /// One audio track as clients see it in the status.
@@ -433,6 +463,8 @@ impl StatusData {
             queue_depth: state.take_stats.as_ref().map_or(0, |live| live.queue_depth),
             composite_mode: state.composite_mode,
             tracks: track_statuses(state),
+            replay: if state.replay_on { "on" } else { "off" },
+            replay_length: state.replay_length_s,
         }
     }
 
@@ -517,6 +549,16 @@ mod tests {
             StatusData::from_state(&state).to_value()["tracks"],
             json!([{ "name": "Desktop", "kind": "desktop_except", "exe": "spotify.exe", "attached": true }])
         );
+    }
+
+    #[test]
+    fn the_status_says_whether_replay_is_on_and_its_length() {
+        let mut state = ControllerState { replay_length_s: 90, ..ControllerState::default() };
+        let off = StatusData::from_state(&state).to_value();
+        assert_eq!((&off["replay"], &off["replayLength"]), (&json!("off"), &json!(90)));
+        state.replay_on = true;
+        let on = StatusData::from_state(&state).to_value();
+        assert_eq!((&on["replay"], &on["replayLength"]), (&json!("on"), &json!(90)));
     }
 
     #[test]

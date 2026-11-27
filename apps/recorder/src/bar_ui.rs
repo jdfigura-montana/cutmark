@@ -26,6 +26,10 @@ const IDLE_TIMECODE: &str = "00:00:00";
 const IDLE_TIMECODE_FRACTION: &str = ":00";
 /// The label over the next take's name.
 const NEXT_TAKE_LABEL: &str = "Next take";
+/// The fill of a button that is on: the accent at this opacity, over the button.
+const PRESSED_FILL_OPACITY: f32 = 0.2;
+/// The width of the accent ring of a button that is on.
+const PRESSED_RING_WIDTH: f32 = 1.5;
 
 /// How the bar's left side draws its timecode, from the widest to nothing. Nothing in the bar
 /// is ever cut off: what does not fit whole is left out.
@@ -136,12 +140,21 @@ pub struct BarButton<A> {
 /// narrow side leaves out the readout first, then closes up the buttons, then leaves out
 /// buttons from the end. Returns the clicked button's action.
 pub fn right_side<A: Clone>(ui: &mut Ui, buttons: &[BarButton<A>], readout: Option<LayoutJob>) -> Option<A> {
+    right_side_pressed(ui, buttons, None, readout)
+}
+
+/// [`right_side`] with the button at `pressed`, if any, drawn as on.
+fn right_side_pressed<A: Clone>(ui: &mut Ui, buttons: &[BarButton<A>], pressed: Option<usize>, readout: Option<LayoutJob>) -> Option<A> {
     let readout_width = readout.as_ref().map_or(0.0, |job| ui.painter().layout_job(job.clone()).size().x);
     let fit = right_fit(ui.available_width(), buttons.len(), readout_width);
     ui.spacing_mut().item_spacing.x = fit.gap;
     let mut clicked = None;
-    for button in buttons.iter().take(fit.shown) {
-        if bar_button(ui, button.icon, &button.tooltip, button.enabled).clicked() {
+    for (index, button) in buttons.iter().take(fit.shown).enumerate() {
+        let response = bar_button(ui, button.icon, &button.tooltip, button.enabled);
+        if pressed == Some(index) {
+            mark_pressed(ui, &response);
+        }
+        if response.clicked() {
             clicked = Some(button.action.clone());
         }
     }
@@ -151,6 +164,14 @@ pub fn right_side<A: Clone>(ui: &mut Ui, buttons: &[BarButton<A>], readout: Opti
         ui.add(egui::Label::new(job).extend().selectable(false));
     }
     clicked
+}
+
+/// Draws a bar button as on: an accent tint and ring over it, and the toggled state for screen readers.
+fn mark_pressed(ui: &Ui, response: &Response) {
+    let accent = Theme::get(ui.ctx()).accent.accent;
+    let ring = egui::Stroke::new(PRESSED_RING_WIDTH, accent);
+    ui.painter().circle(response.rect.center(), (STAGE_BAR_BUTTON_DIAMETER - PRESSED_RING_WIDTH) / 2.0, accent.gamma_multiply(PRESSED_FILL_OPACITY), ring);
+    ui.ctx().accesskit_node_builder(response.id, |node| node.set_toggled(egui::accesskit::Toggled::True));
 }
 
 /// A ui-kit bar button that can be disabled.
@@ -173,6 +194,8 @@ pub struct TakeBar<'a> {
     pub frames: Option<u64>,
     /// The countdown setting in seconds; 0 is off.
     pub countdown_secs: u8,
+    /// Whether the replay buffer is on.
+    pub replay_on: bool,
     /// The hotkey chords the tooltips show.
     pub chords: &'a Chords,
     /// The next take's short name, shown while no take runs; None when it is unknown.
@@ -200,7 +223,9 @@ pub fn take_stage(ui: &mut Ui, bar: &TakeBar<'_>, bus: &BusSender, add_content: 
         add_content,
         |ui| take_left(ui, bar, bus),
         |ui| {
-            if let Some(command) = right_side(ui, &take_buttons(bar), countdown_readout(ui, bar)) {
+            let buttons = take_buttons(bar);
+            let pressed = buttons.iter().position(|button| bar.replay_on && button.action == CommandKind::ReplayToggle);
+            if let Some(command) = right_side_pressed(ui, &buttons, pressed, countdown_readout(ui, bar)) {
                 send(bus, command);
             }
         },
@@ -213,22 +238,33 @@ pub fn take_stage(ui: &mut Ui, bar: &TakeBar<'_>, bus: &BusSender, add_content: 
     stage
 }
 
-/// The right side's buttons, each with the command it sends: Pause or Resume and Mute mic
-/// while a take runs; Add mark (which the left side holds during a take) and the disabled
-/// Pause while idle.
-fn take_buttons(bar: &TakeBar<'_>) -> [BarButton<CommandKind>; 2] {
+/// The right side's buttons, each with the command it sends. The first is beside Record: Save
+/// replay while the replay buffer is on. Then Pause or Resume and Mute mic while a take runs, or
+/// Add mark (which the left side holds during a take) and the disabled Pause while idle. The
+/// replay buffer toggle is last. While idle with the buffer on, Save replay takes the disabled
+/// Pause's place: the narrowest bar has no room for both.
+fn take_buttons(bar: &TakeBar<'_>) -> Vec<BarButton<CommandKind>> {
     let running = bar.phase.has_take();
     let (icon, action) = if bar.phase == Phase::Paused { (ui_kit::icons::fill::PLAY, "Resume") } else { (ui_kit::icons::fill::PAUSE, "Pause") };
     let button = |icon, action: &str, chord: &str, enabled, command| BarButton { icon, tooltip: tip(action, chord), enabled, action: command };
     let pause = button(icon, action, &bar.chords.pause_resume, running, CommandKind::PauseResume);
+    let mut buttons = Vec::new();
+    if bar.replay_on {
+        buttons.push(button(ui_kit::icons::fill::FLOPPY_DISK, "Save replay", &bar.chords.replay_save, true, CommandKind::ReplaySave));
+    }
     if running {
         // The mic is assumed to sit on track 0, like the hotkey does.
         let mute = button(ui_kit::icons::fill::MICROPHONE_SLASH, "Mute mic", &bar.chords.mute_mic, true, CommandKind::Mute { track: 0 });
-        [pause, mute]
+        buttons.extend([pause, mute]);
     } else {
         let mark = button(ui_kit::icons::fill::FLAG, "Add mark", &bar.chords.mark, true, CommandKind::Mark(MarkKind::Silent));
-        [mark, pause]
+        buttons.push(mark);
+        if !bar.replay_on {
+            buttons.push(pause);
+        }
     }
+    buttons.push(button(ui_kit::icons::fill::CLOCK_COUNTER_CLOCKWISE, "Replay buffer", &bar.chords.replay_toggle, true, CommandKind::ReplayToggle));
+    buttons
 }
 
 /// The left side: the timecode, then Add mark while a take runs, or the next take's name.
@@ -419,7 +455,7 @@ mod tests {
     use std::rc::Rc;
     use std::time::Duration;
 
-    use egui_kittest::kittest::Queryable;
+    use egui_kittest::kittest::{NodeT, Queryable};
 
     use super::bar_checks::{self, assert_bar_is_clean, stage_harness, stage_width};
     use super::*;
@@ -433,11 +469,23 @@ mod tests {
             mark: "F9".to_owned(),
             mark_label: "Shift+F9".to_owned(),
             mute_mic: "F8".to_owned(),
+            replay_toggle: "Ctrl+Alt+B".to_owned(),
+            replay_save: "Ctrl+Alt+S".to_owned(),
         }
     }
 
     /// One take stage over a command bus with no controller behind it, so nothing is captured.
     fn take_harness(width: f32, phase: Rc<Cell<Phase>>, countdown_secs: u8) -> (egui_kittest::Harness<'static>, bar_checks::Drawn, Bus) {
+        replay_harness(width, phase, countdown_secs, Rc::default())
+    }
+
+    /// [`take_harness`] with the replay buffer on or off.
+    fn replay_harness(
+        width: f32,
+        phase: Rc<Cell<Phase>>,
+        countdown_secs: u8,
+        replay_on: Rc<Cell<bool>>,
+    ) -> (egui_kittest::Harness<'static>, bar_checks::Drawn, Bus) {
         let bus = Bus::default();
         let sender = bus.sender();
         let chords = chords();
@@ -447,6 +495,7 @@ mod tests {
                 fps: 60,
                 frames: phase.get().has_take().then_some(60 * 3601 + 1),
                 countdown_secs,
+                replay_on: replay_on.get(),
                 chords: &chords,
                 next_take: Some("take07"),
                 next_take_path: "D:\\Takes\\take07.mkv",
@@ -565,6 +614,54 @@ mod tests {
                     let (harness, drawn, _bus) = take_harness(width, Rc::new(Cell::new(*phase)), 3);
                     for label in *labels {
                         assert!(harness.query_by_label(label).is_some(), "{label} is shown at {width} in {mode:?}");
+                    }
+                    let stage = drawn.borrow().clone().expect("the stage was drawn");
+                    assert_bar_is_clean(&harness, &stage, width);
+                }
+            }
+        }
+    }
+
+    /// The Replay toggle is always on the bar and reads as pressed while the buffer is on; Save
+    /// replay is there only then.
+    #[test]
+    fn the_replay_buttons_follow_the_buffer() {
+        let replay_on = Rc::new(Cell::new(false));
+        let (mut harness, _, bus) = replay_harness(900.0, Rc::new(Cell::new(Phase::Idle)), 0, Rc::clone(&replay_on));
+        let toggled = |harness: &egui_kittest::Harness<'_>| harness.get_by_label("Replay buffer (Ctrl+Alt+B)").accesskit_node().toggled();
+        assert!(harness.query_by_label("Save replay (Ctrl+Alt+S)").is_none());
+        assert_ne!(toggled(&harness), Some(egui::accesskit::Toggled::True));
+        click(&mut harness, "Replay buffer (Ctrl+Alt+B)");
+        assert_eq!(sent(&bus), [CommandKind::ReplayToggle]);
+
+        replay_on.set(true);
+        harness.run();
+        assert!(harness.query_by_label("Pause (F11)").is_none(), "Save replay takes the disabled Pause's place");
+        assert_eq!(toggled(&harness), Some(egui::accesskit::Toggled::True));
+        click(&mut harness, "Save replay (Ctrl+Alt+S)");
+        assert_eq!(sent(&bus), [CommandKind::ReplaySave]);
+        click(&mut harness, "Replay buffer (Ctrl+Alt+B)");
+        assert_eq!(sent(&bus), [CommandKind::ReplayToggle]);
+    }
+
+    /// With the replay buffer on, the narrowest window still shows every action, and nothing is cut off.
+    #[test]
+    fn the_narrowest_window_shows_every_action_with_the_replay_buffer_on() {
+        for mode in [Mode::Setup, Mode::Record] {
+            for width in bar_checks::narrowest_stage_widths(mode) {
+                for phase in [Phase::Idle, Phase::Countdown(2), Phase::Recording, Phase::Paused] {
+                    if mode == Mode::Setup && phase.has_take() {
+                        continue;
+                    }
+                    let (harness, drawn, _bus) = replay_harness(width, Rc::new(Cell::new(phase)), 3, Rc::new(Cell::new(true)));
+                    for label in ["Save replay (Ctrl+Alt+S)", "Replay buffer (Ctrl+Alt+B)", "Add mark (F9)"] {
+                        assert!(harness.query_by_label(label).is_some(), "{label} is shown at {width} in {mode:?} {phase:?}");
+                    }
+                    if phase.has_take() {
+                        let pause = if phase == Phase::Paused { "Resume (F11)" } else { "Pause (F11)" };
+                        for label in [pause, "Mute mic (F8)"] {
+                            assert!(harness.query_by_label(label).is_some(), "{label} is shown at {width} in {phase:?}");
+                        }
                     }
                     let stage = drawn.borrow().clone().expect("the stage was drawn");
                     assert_bar_is_clean(&harness, &stage, width);

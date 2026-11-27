@@ -1,6 +1,6 @@
 //! The status bar at the bottom of the window (docs/suite/Recorder-E3.md, section 4): the
-//! state and the free disk space on the left, the camera warning and the Control API
-//! clients on the right, and an empty center under the stage's notch button.
+//! state and the free disk space on the left, the camera warning, the replay buffer and the
+//! Control API clients on the right, and an empty center under the stage's notch button.
 
 use egui::text::TextWrapping;
 use egui::{Color32, Galley, Pos2, Rangef, Rect, Sense, Ui, Vec2};
@@ -60,12 +60,22 @@ pub fn show(ui: &mut Ui, state: &ControllerState, api_clients: Option<usize>, bl
     }
 
     // The right items read left to right and end at the right edge, so they are placed from
-    // the Control API clients inwards. The warning is shortened to the room that is left.
+    // the Control API clients inwards. The replay item is here because a narrow left side has
+    // no room for it. The warning is shortened to the room that is left.
     let right_start = gap.max.max(rect.left() + space::SCALE_4);
     let mut right = rect.right() - space::SCALE_4;
     if let Some(clients) = api_clients {
         let count = clients.to_string();
         let galley = ui.painter().layout_job(data_text::with_data(&clients_label(clients), &[&count], text));
+        let start = right - galley.size().x;
+        if start >= right_start {
+            place(start, galley);
+            right = start - ITEM_SPACING;
+        }
+    }
+    if state.replay_on {
+        let length = format!("{} s", state.replay_length_s);
+        let galley = ui.painter().layout_job(data_text::with_data(&format!("Replay {length}"), &[&length], text));
         let start = right - galley.size().x;
         if start >= right_start {
             place(start, galley);
@@ -119,6 +129,11 @@ mod tests {
 
     /// Every text a status bar `width` wide paints, with the notch at `notch_x`.
     fn painted(width: f32, phase: Phase, notch_x: f32) -> Vec<(String, Rect)> {
+        painted_state(width, move || ControllerState { phase, idle_free_bytes: Some(9999 * GIB), ..ControllerState::default() }, notch_x)
+    }
+
+    /// [`painted`] for any controller state.
+    fn painted_state(width: f32, state: impl Fn() -> ControllerState + 'static, notch_x: f32) -> Vec<(String, Rect)> {
         let first_pass = Rc::new(Cell::new(true));
         let mut harness = Harness::builder().with_size(vec2(width, 60.0)).build_ui(move |ui| {
             // The fonts a style asks for are only there from the next pass on.
@@ -129,8 +144,7 @@ mod tests {
             let window = ui.ctx().content_rect();
             let mut bar = ui.new_child(egui::UiBuilder::new().max_rect(window));
             bar.set_clip_rect(window);
-            let state = ControllerState { phase, idle_free_bytes: Some(9999 * GIB), ..ControllerState::default() };
-            show(&mut bar, &state, Some(12), false, Some("Camera ISO: HEVC (AV1 1080p not supported in MP4 on this GPU)"), notch_x);
+            show(&mut bar, &state(), Some(12), false, Some("Camera ISO: HEVC (AV1 1080p not supported in MP4 on this GPU)"), notch_x);
         });
         harness.run();
         let texts = harness.output().shapes.iter().filter_map(|clipped| match &clipped.shape {
@@ -171,6 +185,43 @@ mod tests {
                     }
                     assert_eq!(texts.len(), 4, "the state, the free space, the warning and the clients are separate items: {texts:?}");
                     assert!(texts.iter().all(|(text, _)| !text.contains('\u{b7}')));
+                }
+            }
+        }
+    }
+
+    /// The replay item is there only while the buffer is on, with the buffer's length. In the
+    /// narrowest window it stays clear of the notch and of every other text.
+    #[test]
+    fn the_status_bar_shows_the_replay_length_while_the_buffer_is_on() {
+        let width = config::MIN_WINDOW_WIDTH;
+        let window = Rect::from_min_size(Pos2::ZERO, vec2(width, 600.0));
+        let widest = PanelWidths { left: config::LEFT_PANEL_MAX, right: config::RIGHT_PANEL_MAX };
+        let narrow_left = PanelWidths { left: config::LEFT_PANEL_MIN, right: config::RIGHT_PANEL_MAX };
+        let narrow_right = PanelWidths { left: config::LEFT_PANEL_MAX, right: config::RIGHT_PANEL_MIN };
+        for mode in Mode::ALL {
+            for widths in [PanelWidths::default(), widest, narrow_left, narrow_right] {
+                let notch_x = stage_center_x(window, mode, widths);
+                for phase in [Phase::Idle, Phase::Countdown(3), Phase::Recording, Phase::Paused] {
+                    let texts = |replay_on| {
+                        let state =
+                            move || ControllerState { phase, replay_on, replay_length_s: 60, idle_free_bytes: Some(9999 * GIB), ..ControllerState::default() };
+                        painted_state(width, state, notch_x)
+                    };
+                    assert!(texts(false).iter().all(|(text, _)| !text.starts_with("Replay")), "hidden while off");
+                    let on = texts(true);
+                    for wanted in ["Replay 60 s", "9999.0 GB free", "Control API: 12 clients"] {
+                        assert!(on.iter().any(|(text, _)| text == wanted), "{wanted} is shown in {mode:?} {phase:?} with {widths:?}: {on:?}");
+                    }
+                    let half = ui_kit::STATUS_BAR_CENTER_GAP / 2.0;
+                    for (index, (text, rect)) in on.iter().enumerate() {
+                        assert!(
+                            rect.right() <= notch_x - half + 0.5 || rect.left() >= notch_x + half - 0.5,
+                            "{text:?} is under the notch at {notch_x}: {rect:?}"
+                        );
+                        assert!(rect.left() >= 0.0 && rect.right() <= width, "{text:?} leaves the window: {rect:?}");
+                        assert!(on[index + 1..].iter().all(|(_, other)| !rect.intersects(*other)), "{text:?} overlaps another text: {on:?}");
+                    }
                 }
             }
         }

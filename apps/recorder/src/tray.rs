@@ -1,4 +1,5 @@
-//! The tray icon: a grey or red dot with a menu to show the window, start or stop and quit.
+//! The tray icon: a grey or red dot (with a small amber one while only the replay buffer runs) with a menu to
+//! show the window, start or stop and quit.
 //!
 //! The icon lives on its own thread with a Win32 message loop, so it changes while the window is hidden
 //! and no frames run.
@@ -25,6 +26,12 @@ const ICON_SIZE: u32 = 32;
 const IDLE_RGB: egui::Color32 = color::TEXT_TERTIARY;
 /// Tray icon colour while recording (`sem.record`).
 const RECORDING_RGB: egui::Color32 = color::SEM_RECORD;
+/// Colour of the small dot while the replay buffer is on and nothing records (`sem.meter.warn`, amber).
+const REPLAY_RGB: egui::Color32 = color::SEM_METER_WARN;
+/// Radius of the replay dot in pixels.
+const REPLAY_DOT_RADIUS: f32 = 6.0;
+/// Tooltip text while only the replay buffer runs.
+const TOOLTIP_REPLAY: &str = "CutMark Recorder - replay buffer on";
 /// Tooltip text while idle.
 const TOOLTIP_IDLE: &str = "CutMark Recorder";
 /// Tooltip text while recording.
@@ -37,6 +44,8 @@ const TOOLTIP_PAUSED: &str = "Paused";
 pub enum TrayState {
     /// No take is running: the grey dot.
     Idle,
+    /// No take is running and the replay buffer is on: the grey dot with a small amber one.
+    Replay,
     /// A take is running: the red dot.
     Recording,
     /// A take is paused: the red dot with a "Paused" tooltip.
@@ -123,11 +132,12 @@ fn wake(thread_id: u32, message: u32) {
     }
 }
 
-/// The tray icon with the two pictures it switches between.
+/// The tray icon with the pictures it switches between.
 struct TrayIcons {
     icon: TrayIcon,
     idle_icon: Icon,
     recording_icon: Icon,
+    replay_icon: Icon,
 }
 
 impl TrayIcons {
@@ -135,6 +145,7 @@ impl TrayIcons {
     fn apply(&self, state: TrayState) {
         let (icon, tooltip) = match state {
             TrayState::Idle => (&self.idle_icon, TOOLTIP_IDLE),
+            TrayState::Replay => (&self.replay_icon, TOOLTIP_REPLAY),
             TrayState::Recording => (&self.recording_icon, TOOLTIP_RECORDING),
             TrayState::Paused => (&self.recording_icon, TOOLTIP_PAUSED),
         };
@@ -216,6 +227,7 @@ fn message_loop(icons: &TrayIcons, state_rx: &Receiver<TrayState>) {
 fn build_icons(ctx: &egui::Context, hwnd: Option<isize>, bus: BusSender, control: ControlSender) -> Result<TrayIcons, String> {
     let idle_icon = circle_icon(rgb_bytes(IDLE_RGB))?;
     let recording_icon = circle_icon(rgb_bytes(RECORDING_RGB))?;
+    let replay_icon = icon_from(replay_rgba())?;
 
     let show = MenuItem::new("Show window", true, None);
     let start_stop = MenuItem::new("Start or stop recording", true, None);
@@ -253,7 +265,7 @@ fn build_icons(ctx: &egui::Context, hwnd: Option<isize>, bus: BusSender, control
         .with_tooltip(TOOLTIP_IDLE)
         .build()
         .map_err(|err| format!("could not create the tray icon: {err}"))?;
-    Ok(TrayIcons { icon, idle_icon, recording_icon })
+    Ok(TrayIcons { icon, idle_icon, recording_icon, replay_icon })
 }
 
 /// A token color as the RGB bytes a tray icon pixel row needs.
@@ -263,7 +275,29 @@ fn rgb_bytes(color: egui::Color32) -> [u8; 3] {
 
 /// Draws a filled circle with a soft edge as a 32x32 RGBA icon.
 fn circle_icon(rgb: [u8; 3]) -> Result<Icon, String> {
-    Icon::from_rgba(circle_rgba(rgb), ICON_SIZE, ICON_SIZE).map_err(|err| format!("could not build the tray icon image: {err}"))
+    icon_from(circle_rgba(rgb))
+}
+
+/// A tray icon from 32x32 RGBA pixels.
+fn icon_from(pixels: Vec<u8>) -> Result<Icon, String> {
+    Icon::from_rgba(pixels, ICON_SIZE, ICON_SIZE).map_err(|err| format!("could not build the tray icon image: {err}"))
+}
+
+/// The idle circle with a small amber dot in its lower right corner.
+fn replay_rgba() -> Vec<u8> {
+    let mut pixels = circle_rgba(rgb_bytes(IDLE_RGB));
+    let amber = rgb_bytes(REPLAY_RGB);
+    let centre = ICON_SIZE as f32 - 1.0 - REPLAY_DOT_RADIUS;
+    let positions = (0..ICON_SIZE).flat_map(|y| (0..ICON_SIZE).map(move |x| (x, y)));
+    for (pixel, (x, y)) in pixels.as_chunks_mut::<4>().0.iter_mut().zip(positions) {
+        let distance = ((x as f32 - centre).powi(2) + (y as f32 - centre).powi(2)).sqrt();
+        let coverage = (REPLAY_DOT_RADIUS + 0.5 - distance).clamp(0.0, 1.0);
+        for (channel, dot) in pixel.iter_mut().zip(amber) {
+            *channel = (f32::from(*channel) * (1.0 - coverage) + f32::from(dot) * coverage).round() as u8;
+        }
+        pixel[3] = pixel[3].max((coverage * 255.0).round() as u8);
+    }
+    pixels
 }
 
 /// The RGBA pixels of a filled circle that touches a one pixel margin around the icon.
@@ -293,5 +327,17 @@ mod tests {
         let alpha_at = |x: u32, y: u32| pixels[((y * ICON_SIZE + x) * 4 + 3) as usize];
         assert_eq!(alpha_at(16, 16), 255);
         assert_eq!(alpha_at(0, 0), 0);
+    }
+
+    #[test]
+    fn the_replay_icon_is_the_idle_circle_with_a_small_amber_dot() {
+        let pixels = replay_rgba();
+        let rgb_at = |x: u32, y: u32| {
+            let at = ((y * ICON_SIZE + x) * 4) as usize;
+            [pixels[at], pixels[at + 1], pixels[at + 2]]
+        };
+        assert_eq!(rgb_at(25, 25), rgb_bytes(REPLAY_RGB));
+        assert_eq!(rgb_at(16, 16), rgb_bytes(IDLE_RGB));
+        assert_eq!(rgb_at(8, 8), rgb_bytes(IDLE_RGB));
     }
 }

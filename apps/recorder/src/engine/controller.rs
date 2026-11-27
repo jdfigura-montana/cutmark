@@ -212,6 +212,8 @@ pub struct ReplayRamWarning {
 pub enum ReplayEvent {
     /// A save finished.
     Saved(ReplaySaved),
+    /// A save wrote no take; the text says why.
+    SaveFailed(String),
     /// The buffer turned on although it is large for the free memory.
     RamWarning(ReplayRamWarning),
 }
@@ -232,6 +234,8 @@ pub struct ControllerState {
     pub phase: Phase,
     /// Whether the replay buffer is on, which it can be in any phase.
     pub replay_on: bool,
+    /// The running buffer's length in seconds; while it is off, the length the settings ask for.
+    pub replay_length_s: u32,
     /// The replay events raised most recently, newest last.
     pub replay_events: VecDeque<ReplayNote>,
     /// How many replay events were raised so far; the newest note carries this number.
@@ -310,7 +314,7 @@ pub struct ControllerState {
 
 impl ControllerState {
     /// Numbers a replay event and keeps it with the recent ones.
-    fn push_replay_event(&mut self, event: ReplayEvent) {
+    pub(crate) fn push_replay_event(&mut self, event: ReplayEvent) {
         self.replay_event_seq += 1;
         if self.replay_events.len() >= REPLAY_EVENT_LIMIT {
             self.replay_events.pop_front();
@@ -510,6 +514,7 @@ impl Controller {
         let shared = Arc::new(Mutex::new(ControllerState {
             fps: 60,
             active_profile: settings.active_profile.clone(),
+            replay_length_s: length_secs(settings.replay_length()),
             track_muted: settings.audio.tracks.iter().map(|track| track.muted).collect(),
             track_names: settings.audio.tracks.iter().map(|track| track.name.clone()).collect(),
             track_kinds: settings.audio.tracks.iter().map(|track| track.kind.clone()).collect(),
@@ -855,7 +860,11 @@ impl Worker {
             let names: Vec<String> = self.settings.audio.tracks.iter().map(|track| track.name.clone()).collect();
             let kinds = self.settings.audio.tracks.iter().map(|track| track.kind.clone()).collect();
             let enabled = self.settings.audio.tracks.iter().map(|track| track.enabled).collect();
+            let replay_length_s = length_secs(self.settings.replay_length());
             self.update_quietly(|state| {
+                if !state.replay_on {
+                    state.replay_length_s = replay_length_s;
+                }
                 state.track_names = names;
                 state.track_kinds = kinds;
                 state.track_enabled = enabled;
@@ -1154,6 +1163,7 @@ impl Worker {
                 self.forward_live_controls();
                 self.update(|state| {
                     state.replay_on = true;
+                    state.replay_length_s = length_secs(length);
                     state.error = None;
                 });
                 self.check_replay_ram(length);
@@ -1174,7 +1184,11 @@ impl Worker {
         // A save from the next buffer holds other footage, so it is never merged with one from this buffer.
         self.save_merge = SaveMerge::default();
         self.last_idle_check = None;
-        self.update(|state| state.replay_on = false);
+        let replay_length_s = length_secs(self.settings.replay_length());
+        self.update(|state| {
+            state.replay_on = false;
+            state.replay_length_s = replay_length_s;
+        });
     }
 
     /// Raises the RAM warning when the buffer that has just turned on is large for the free memory; it stays on.
@@ -1613,7 +1627,13 @@ impl Worker {
         let (stopped, cam) = self.session.stop_with_cam();
         // A capture that had died takes the replay buffer with it.
         let replay_on = self.session.replay_on();
-        self.update_quietly(|state| state.replay_on = replay_on);
+        let replay_length_s = length_secs(self.settings.replay_length());
+        self.update_quietly(|state| {
+            state.replay_on = replay_on;
+            if !replay_on {
+                state.replay_length_s = replay_length_s;
+            }
+        });
         let cam_file = cam.as_ref().map(|cam| cam.file.clone());
         // Finishing the marks happens inside stop and may leave a warning.
         if let Some(text) = marks_warning.take() {
@@ -1935,6 +1955,10 @@ impl Worker {
             log::info!("replay saved: {}", take_path.display());
             self.update(|state| state.push_replay_event(ReplayEvent::Saved(ReplaySaved { take_path, name })));
         }
+        if let Err(err) = saved {
+            let reason = err.to_string();
+            self.update(|state| state.push_replay_event(ReplayEvent::SaveFailed(reason)));
+        }
         self.raise(replay_alerts(saved));
     }
 
@@ -1989,6 +2013,11 @@ impl Worker {
             self.update(|state| state.composite_mode = composite_mode);
         }
     }
+}
+
+/// A replay length in whole seconds.
+fn length_secs(length: Duration) -> u32 {
+    u32::try_from(length.as_secs()).unwrap_or(u32::MAX)
 }
 
 /// A warning the monitor found, and what to do about it.

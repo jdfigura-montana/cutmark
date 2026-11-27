@@ -11,7 +11,7 @@ use ui_kit::fonts;
 use ui_kit::tokens::{color, radius, space, typography};
 
 use crate::api::ApiServer;
-use crate::config::Settings;
+use crate::config::{REPLAY_LENGTHS_S, Settings};
 use crate::engine::bus::Command;
 use crate::hotkeys::Hotkeys;
 
@@ -253,7 +253,7 @@ fn caption(ui: &mut Ui, text: &str) {
 }
 
 /// The Recording section: the naming template with its tokens hint and the next-take path,
-/// the countdown length and the prompter switch (spec "Settings dialog").
+/// the countdown length, the replay length and the prompter switch (spec "Settings dialog").
 fn recording_section(ui: &mut Ui, settings: &mut Settings, next_take: &NextTake, outcome: &mut Outcome) {
     ui_kit::inspector_group(ui, |ui| {
         ui.add_space(space::SCALE_4);
@@ -283,6 +283,7 @@ fn recording_section(ui: &mut Ui, settings: &mut Settings, next_take: &NextTake,
     ui.add_space(space::SCALE_8);
     let before = settings.countdown_secs;
     let before_switch = settings.hide_countdown_when_linked;
+    let before_replay = settings.replay_length_s;
     ui_kit::inspector_group(ui, |ui| {
         ui.add_space(space::SCALE_4);
         ui_kit::inspector_row(
@@ -303,6 +304,23 @@ fn recording_section(ui: &mut Ui, settings: &mut Settings, next_take: &NextTake,
         );
         ui_kit::inspector_row(
             ui,
+            "Replay length",
+            |ui| {
+                let _combo =
+                    egui::ComboBox::from_id_salt("settings-replay-length").selected_text(replay_length_job(settings.replay_length_s)).show_ui(ui, |ui| {
+                        for secs in REPLAY_LENGTHS_S {
+                            let _choice = ui.selectable_value(&mut settings.replay_length_s, secs, replay_length_job(secs));
+                            #[cfg(test)]
+                            test_record_control(TestControl::ReplayLengthChoice(secs), _choice.rect);
+                        }
+                    });
+                #[cfg(test)]
+                test_record_control(TestControl::ReplayLength, _combo.response.rect);
+            },
+            None,
+        );
+        ui_kit::inspector_row(
+            ui,
             "Hide my countdown when a prompter is linked",
             |ui| {
                 let _switch = ui_kit::switch(ui, &mut settings.hide_countdown_when_linked);
@@ -313,7 +331,7 @@ fn recording_section(ui: &mut Ui, settings: &mut Settings, next_take: &NextTake,
         );
         ui.add_space(space::SCALE_4);
     });
-    if settings.countdown_secs != before {
+    if settings.countdown_secs != before || settings.replay_length_s != before_replay {
         outcome.settings_changed = true;
     }
     // The flip is detected by comparing the setting before and after the row.
@@ -519,6 +537,11 @@ fn countdown_job(secs: u8) -> egui::text::LayoutJob {
     crate::data_text::with_data(&countdown_label(secs), &[&secs.to_string()], egui::Color32::PLACEHOLDER)
 }
 
+/// A replay length as the dropdown draws it, with the number in Martian Mono.
+fn replay_length_job(secs: u32) -> egui::text::LayoutJob {
+    crate::data_text::with_data(&format!("{secs} seconds"), &[&secs.to_string()], egui::Color32::PLACEHOLDER)
+}
+
 // The interactive controls the tests record each frame, keyed by the Settings
 // control they belong to; never built outside tests.
 #[cfg(test)]
@@ -532,6 +555,10 @@ enum TestControl {
     Countdown,
     /// One row of the countdown dropdown's popup, by its length in seconds.
     CountdownChoice(u8),
+    /// The Recording section's replay length dropdown button.
+    ReplayLength,
+    /// One row of the replay length dropdown's popup, by its length in seconds.
+    ReplayLengthChoice(u32),
     /// The Recording section's hide-my-countdown switch.
     HideCountdown,
     /// The Control API section's On switch.
@@ -946,6 +973,28 @@ mod tests {
         assert_eq!(settings.countdown_secs, 3, "the countdown choice did not reach the settings field");
         interact_frame(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
         assert!(!outcome.get().settings_changed, "the change repeated in the frame after");
+    }
+
+    /// Choosing a replay length from the dropdown reports the change and reaches the settings
+    /// field.
+    #[test]
+    fn choosing_a_replay_length_reports_the_change() {
+        let (ctx, raw, outcome) = test_setup();
+        let mut dialog = SettingsDialog { open: true, section: Section::Recording };
+        let mut settings = Settings::default();
+        let mut port_edit = 8765u16;
+        warm_frames(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        let combo = test_control_rect(TestControl::ReplayLength).center();
+        interact_frame(&ctx, &click_at(&raw, combo), &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        interact_frame(&ctx, &raw, &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        for secs in REPLAY_LENGTHS_S {
+            let _drawn = test_control_rect(TestControl::ReplayLengthChoice(secs));
+        }
+        let ninety = test_control_rect(TestControl::ReplayLengthChoice(90)).center();
+        assert_eq!(settings.replay_length_s, 60, "the dialog changed the replay length on its own");
+        interact_frame(&ctx, &click_at(&raw, ninety), &mut dialog, &mut settings, &mut port_edit, None, &outcome);
+        assert!(outcome.get().settings_changed, "the length choice did not report settings_changed");
+        assert_eq!(settings.replay_length_s, 90, "the length choice did not reach the settings field");
     }
 
     /// Flipping the Recording section's hide-my-countdown switch reports the change and

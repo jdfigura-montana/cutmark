@@ -1,6 +1,7 @@
 # Progress
 
 ## Done
+- Recorder Phase 12 B3 (2026-11-27): replay UI (deck, Capture menu, Settings length, status bar, tray dot, toasts) and Control API (replay.start, replay.stop, replay.save, replay.saved, status fields). cargo test -p cutmark-recorder 392 passed, fmt + clippy -D warnings clean. check.ps1, release build and a look at the running app not done. Details in activeContext.md.
 - Recorder Phase 12 B2b (2026-11-27): replay saves on a writer thread, length setting, hotkeys Ctrl+Alt+B and Ctrl+Alt+S, RAM warning, track list locked while the buffer is on. No UI. cargo test -p cutmark-recorder 381 passed, fmt + clippy -D warnings clean. The real capture hand test, check.ps1 and release build not run. Details in activeContext.md.
 - Recorder Phase 12 B1 (2026-11-26): replay buffer engine (packet, PCM and mark rings, snapshot, writer that saves a snapshot as a take). No UI, no controller. cargo test -p cutmark-recorder 353 passed, fmt + clippy -D warnings clean. check.ps1, release build and a real AMF clip not done. Details in activeContext.md.
 - Review playback audio fix (2026-11-26): the playback resampler is now initialized (`swr_init` was missing), and a failing audio decoder leaves video playing on the wall clock with an "Audio could not be played" message. cargo test: media-io 63, cutmark-recorder 349; fmt + clippy -D warnings clean. Caption drawing in Review not checked; check.ps1, release build and a real-app run not done. Details in activeContext.md.

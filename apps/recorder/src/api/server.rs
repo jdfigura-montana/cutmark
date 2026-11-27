@@ -16,7 +16,7 @@ use thiserror::Error;
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{Error as WsError, Message};
 
-use super::protocol::{EventKind, Op, Request, StatusData, auth_ok, error_message, event, parse, result_error, result_ok, warning_events};
+use super::protocol::{EventKind, Op, Request, StatusData, auth_ok, error_message, event, parse, replay_saved_events, result_error, result_ok, warning_events};
 use super::token;
 use crate::engine::bus::CommandKind;
 use crate::engine::controller::{ApiIntent, ApiLink, ControllerState, LastTake, Phase};
@@ -165,6 +165,8 @@ struct EventTracker {
     warning_seq: u64,
     /// How many cancelled countdowns were already announced.
     countdown_cancels: u64,
+    /// The number of the newest replay event already looked at.
+    replay_event_seq: u64,
 }
 
 impl EventTracker {
@@ -179,6 +181,7 @@ impl EventTracker {
             marks_warning: state.marks_warning.clone(),
             warning_seq: state.warning_seq,
             countdown_cancels: state.countdown_cancels,
+            replay_event_seq: state.replay_event_seq,
         }
     }
 
@@ -221,6 +224,8 @@ impl EventTracker {
             events.push(message);
             self.warning_seq = self.warning_seq.max(seq);
         }
+        events.extend(replay_saved_events(state, self.replay_event_seq).into_iter().map(|(_, message)| message));
+        self.replay_event_seq = state.replay_event_seq;
         events
     }
 
@@ -621,6 +626,9 @@ fn execute(link: &ApiLink, op: Op, press_qpc: i64, limiter: &mut PositionLimiter
             Ok(json!({}))
         }
         Op::Mute { track } => execute_mute(link, track, press_qpc),
+        Op::ReplayStart => execute_replay(link, CommandKind::ReplayStart, false, press_qpc),
+        Op::ReplayStop => execute_replay(link, CommandKind::ReplayStop, true, press_qpc),
+        Op::ReplaySave => execute_replay(link, CommandKind::ReplaySave, true, press_qpc),
         Op::SetProfile { name } => {
             if phase != Phase::Idle {
                 return Err("the profile cannot change while a take is running".to_owned());
@@ -632,6 +640,16 @@ fn execute(link: &ApiLink, op: Op, press_qpc: i64, limiter: &mut PositionLimiter
             Ok(json!({ "profile": profile.name }))
         }
     }
+}
+
+/// Sends a replay command when the buffer is in the state it needs: on for stop and save, off for start.
+fn execute_replay(link: &ApiLink, command: CommandKind, needs_on: bool, press_qpc: i64) -> Result<Value, String> {
+    if link.read_state(|state| state.replay_on) != needs_on {
+        let reason = if needs_on { "the replay buffer is off" } else { "the replay buffer is already on" };
+        return Err(reason.to_owned());
+    }
+    link.send(command, None, press_qpc)?;
+    Ok(json!({}))
 }
 
 /// Toggles mute on the named track, or on the mic track when none is named.
@@ -661,7 +679,7 @@ mod tests {
     use tungstenite::{Message, WebSocket};
 
     use super::*;
-    use crate::engine::controller::WarningNote;
+    use crate::engine::controller::{ReplayEvent, ReplaySaved, WarningNote};
 
     type Client = WebSocket<MaybeTlsStream<TcpStream>>;
 
@@ -1029,5 +1047,51 @@ mod tests {
         mid_take.error = Some("old".to_owned());
         let mut tracker = EventTracker::baseline(&mid_take);
         assert!(tracker.observe(&mid_take).is_empty());
+    }
+
+    #[test]
+    fn the_replay_commands_reach_the_bus_when_the_buffer_allows_them() -> Result<(), Box<dyn Error>> {
+        for (on, accepted, refused) in [
+            (
+                false,
+                vec![("replay.start", CommandKind::ReplayStart)],
+                vec![("replay.stop", "the replay buffer is off"), ("replay.save", "the replay buffer is off")],
+            ),
+            (
+                true,
+                vec![("replay.stop", CommandKind::ReplayStop), ("replay.save", CommandKind::ReplaySave)],
+                vec![("replay.start", "the replay buffer is already on")],
+            ),
+        ] {
+            let (link, bus) = ApiLink::detached(ControllerState { replay_on: on, ..ControllerState::default() });
+            let server = ApiServer::start(0, "right".to_owned(), link, no_repaint())?;
+            let mut client = signed_in(server.port(), "right")?;
+            for (op, kind) in accepted {
+                say(&mut client, &json!({ "op": op, "id": 1 }))?;
+                assert_eq!(hear(&mut client)?["ok"], json!(true), "{op}");
+                assert_eq!(bus.recv_timeout(WAIT).map(|command| command.kind), Some(kind), "{op}");
+            }
+            for (op, reason) in refused {
+                say(&mut client, &json!({ "op": op, "id": 2 }))?;
+                assert_eq!(hear(&mut client)?["error"], json!(reason), "{op}");
+            }
+            assert!(bus.recv_timeout(Duration::from_millis(100)).is_none(), "a refused command reaches no bus");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_saved_replay_is_announced_once_with_its_take_path() {
+        let mut state = ControllerState::default();
+        let saved = |name: &str| ReplayEvent::Saved(ReplaySaved { take_path: std::path::PathBuf::from(name), name: name.to_owned() });
+        state.push_replay_event(saved("take01.mkv"));
+        // A server started now has nothing to say about the earlier save.
+        let mut tracker = EventTracker::baseline(&state);
+        assert!(tracker.observe(&state).is_empty());
+        state.push_replay_event(ReplayEvent::SaveFailed("the disk is full".to_owned()));
+        state.push_replay_event(saved("take02.mkv"));
+        let events: Vec<Value> = tracker.observe(&state).iter().map(|text| serde_json::from_str(text).unwrap_or(Value::Null)).collect();
+        assert_eq!(events, [json!({ "op": "event", "event": "replay.saved", "data": { "take": "take02.mkv" } })]);
+        assert!(tracker.observe(&state).is_empty());
     }
 }

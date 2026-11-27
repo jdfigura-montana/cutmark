@@ -26,6 +26,7 @@ mod profile_ui;
 mod profiles;
 mod record_ui;
 mod recovery;
+mod replay_ui;
 mod review;
 mod review_ui;
 mod settings_ui;

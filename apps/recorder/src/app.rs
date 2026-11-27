@@ -28,6 +28,7 @@ use crate::profile_ui::{self, ProfileOutcome, ProfileSection};
 use crate::profiles::ProfileStore;
 use crate::record_ui;
 use crate::recovery::{self, RecoveryReport};
+use crate::replay_ui::{self, Notice};
 use crate::review;
 use crate::review_ui;
 use crate::settings_ui::{self, ApiUi, NextTake, Section, SettingsDialog};
@@ -162,8 +163,14 @@ pub struct RecorderApp {
     review_selected: Option<String>,
     /// Whether the Review scan must run again before the Review panels draw.
     review_dirty: bool,
-    /// The finished take the stop toast offers a Review action for, until the toast is gone.
+    /// The take the toast on screen offers a Review action for, until the toast is gone.
     review_take_pending: Option<String>,
+    /// The toasts not shown yet, oldest first; each waits until the one before it is gone.
+    notices: VecDeque<Notice>,
+    /// Whether a toast was on screen on the previous frame.
+    toast_up: bool,
+    /// The number of the newest replay event already turned into a toast.
+    seen_replay_seq: u64,
     /// The Review take panel's editing state: the rename field and the delete dialog.
     take_panel: review_ui::TakePanelState,
     /// The Review playback of the selected take, closed when Review is left or a take starts.
@@ -204,7 +211,7 @@ impl RecorderApp {
         let listener_ctx = cc.egui_ctx.clone();
         let listener = Box::new(move |state: &ControllerState| {
             if let Some(handle) = listener_slot.get() {
-                handle.set_state(tray_state(state.phase));
+                handle.set_state(tray_state(state.phase, state.replay_on));
             }
             listener_ctx.request_repaint();
         });
@@ -285,6 +292,9 @@ impl RecorderApp {
             review_selected: None,
             review_dirty: true,
             review_take_pending: None,
+            notices: VecDeque::new(),
+            toast_up: false,
+            seen_replay_seq: 0,
             take_panel: review_ui::TakePanelState::default(),
             review_playback: None,
             review_playback_for: None,
@@ -528,6 +538,11 @@ impl RecorderApp {
             }
             self.settings_dirty = true;
         }
+        for notice in replay_ui::new_notices(state, &mut self.seen_replay_seq) {
+            // A saved replay is a new take for the Review list.
+            self.review_dirty |= notice.review.is_some();
+            self.notices.push_back(notice);
+        }
         let active = state.phase.has_take();
         if active != self.was_active {
             self.live_tracks.clear();
@@ -595,17 +610,17 @@ impl RecorderApp {
     /// Follows the controller phase (spec "Mode rules"): a take starting, countdown included,
     /// switches to Record and remembers the mode that was open; the take ending returns to it,
     /// shows the "takeNN saved" toast with its Review action, and flags the Review scan.
-    fn sync_mode(&mut self, state: &ControllerState, ctx: &egui::Context) {
+    fn sync_mode(&mut self, state: &ControllerState) {
         let running = state.phase != Phase::Idle;
         if running && !self.was_running {
             self.modes.start();
         } else if !running && self.was_running {
             self.modes.stop();
             if let Some(base_name) = self.running_take.take() {
-                ui_kit::toast(ctx, format!("{} saved", crate::profile_ui::take_label(&base_name)));
                 // The finished take joins the Review list, and the toast offers to open it there.
                 self.review_dirty = true;
-                self.review_take_pending = Some(base_name);
+                let text = format!("{} saved", crate::profile_ui::take_label(&base_name));
+                self.notices.push_back(Notice { text, review: Some(base_name) });
             }
         }
         self.running_take = state.take.as_ref().filter(|_| running).map(|take| take.base_name.clone());
@@ -638,11 +653,28 @@ impl RecorderApp {
         }
     }
 
-    /// Draws the stop toast's Review button beside the toast capsule and opens
+    /// Shows the next waiting toast once no other is on screen, with its Review action.
+    fn show_notices(&mut self, ctx: &egui::Context, running: bool) {
+        if !self.toast_up
+            && let Some(notice) = self.notices.pop_front()
+        {
+            ui_kit::toast(ctx, notice.text);
+            self.review_take_pending = notice.review;
+        }
+        let shown = ui_kit::show_toasts(ctx);
+        self.toast_up = shown.is_some();
+        if !self.toast_up && !self.notices.is_empty() {
+            ctx.request_repaint();
+        }
+        self.toast_review_action(ctx, shown, running);
+    }
+
+    /// Draws a toast's Review button beside the toast capsule and opens
     /// Review with that take selected when it is clicked; the button lives only
-    /// as long as the toast shows (spec "Mode rules" 2). `ui_kit::toast` carries
+    /// as long as the toast shows (spec "Mode rules" 2). While a take runs the mode
+    /// rules keep Review closed, so the button is disabled. `ui_kit::toast` carries
     /// no action, so the button is drawn in its own area next to the capsule.
-    fn toast_review_action(&mut self, ctx: &egui::Context, shown: Option<egui::Response>) {
+    fn toast_review_action(&mut self, ctx: &egui::Context, shown: Option<egui::Response>, running: bool) {
         let pending = self.review_take_pending.clone();
         match (pending, shown) {
             (Some(take), Some(toast)) => {
@@ -651,14 +683,17 @@ impl RecorderApp {
                     .order(egui::Order::Foreground)
                     .fixed_pos(egui::pos2(toast.rect.right() + space::SCALE_8, toast.rect.center().y - TOAST_BUTTON_HALF_HEIGHT))
                     .show(ctx, |ui| {
-                        if ui.small_button("Review").clicked() {
+                        let button = ui.add_enabled(!running, egui::Button::new("Review").small());
+                        if button.on_disabled_hover_text("Review opens after the recording stops").clicked() {
                             clicked.set(true);
                         }
                     });
                 if clicked.get() {
                     self.review_take_pending = None;
                     self.review_selected = Some(take);
-                    self.set_mode(false, Mode::Review);
+                    // Also when Review is already open, so a take saved there is in the list.
+                    self.review_dirty = true;
+                    self.set_mode(running, Mode::Review);
                 }
             }
             // The toast is gone; the Review action goes with it.
@@ -689,6 +724,7 @@ impl RecorderApp {
         let idle = state.phase == Phase::Idle && state.preflight.is_none();
         let sync_ready = idle && state.sync_test.is_none() && self.webcam.settings(&self.profile_store).is_some_and(|settings| settings.iso);
         let keep_files = self.preflight_section.keep_files();
+        let replay_on = state.replay_on;
         let mode = self.modes.mode;
         // In Review the menu's Add mark goes to the selected take, which needs its playback.
         let can_mark = mode != Mode::Review || self.review_playback.is_some();
@@ -743,6 +779,11 @@ impl RecorderApp {
                     if menu_item(ui, "Mute mic", &chords.mute_mic).clicked() {
                         // The mic is assumed to sit on track 0, like the hotkey does.
                         send(&bus, CommandKind::Mute { track: 0 });
+                        ui.close();
+                    }
+                    ui.separator();
+                    if let Some(command) = replay_ui::menu_items(ui, replay_on, &chords) {
+                        send(&bus, command);
                         ui.close();
                     }
                     ui.separator();
@@ -997,6 +1038,7 @@ impl RecorderApp {
             fps: state.fps,
             frames: state.stats.as_ref().map(|stats| stats.frames),
             countdown_secs: self.settings.countdown_secs,
+            replay_on: state.replay_on,
             chords: &chords,
             next_take: next_take.as_deref(),
             next_take_path: &next_take_path,
@@ -1355,9 +1397,10 @@ fn apply_capture_exclusion(hwnd: Option<isize>, exclude: bool) -> bool {
     }
 }
 
-/// The tray icon state that matches a controller phase.
-fn tray_state(phase: Phase) -> TrayState {
+/// The tray icon state that matches a controller phase and the replay buffer.
+fn tray_state(phase: Phase, replay_on: bool) -> TrayState {
     match phase {
+        Phase::Idle | Phase::Countdown(_) if replay_on => TrayState::Replay,
         Phase::Idle | Phase::Countdown(_) => TrayState::Idle,
         Phase::Recording => TrayState::Recording,
         Phase::Paused => TrayState::Paused,
@@ -1453,6 +1496,7 @@ fn new_mark_press(recent: &VecDeque<Command>, seen: &mut i64) -> bool {
 
 /// The hotkey chords the Capture menu and the bar's tooltips show as their shortcuts; empty
 /// when a chord is not registered.
+#[derive(Default)]
 pub(crate) struct Chords {
     /// The start or stop recording chord.
     pub(crate) start_stop: String,
@@ -1464,6 +1508,10 @@ pub(crate) struct Chords {
     pub(crate) mark_label: String,
     /// The mute mic chord.
     pub(crate) mute_mic: String,
+    /// The replay buffer on or off chord.
+    pub(crate) replay_toggle: String,
+    /// The save replay chord.
+    pub(crate) replay_save: String,
 }
 
 impl Chords {
@@ -1476,6 +1524,8 @@ impl Chords {
             mark: chord("mark"),
             mark_label: chord("mark_label"),
             mute_mic: chord("mute_mic"),
+            replay_toggle: chord("replay_toggle"),
+            replay_save: chord("replay_save"),
         }
     }
 }
@@ -1834,12 +1884,22 @@ fn column_divider(ui: &mut egui::Ui, rect: egui::Rect, id_salt: &'static str, wi
 /// One menu item: the label in the body font, then the hotkey in the mono value style
 /// (spec "Menus": the items show the existing hotkeys as their shortcuts).
 fn menu_item(ui: &mut egui::Ui, label: &str, chord: &str) -> egui::Response {
+    ui.add(menu_button(label, chord))
+}
+
+/// [`menu_item`] that draws faded and reports no clicks unless `enabled`.
+pub(crate) fn menu_item_enabled(ui: &mut egui::Ui, enabled: bool, label: &str, chord: &str) -> egui::Response {
+    ui.add_enabled(enabled, menu_button(label, chord))
+}
+
+/// A menu item's button: the label, then its chord if it has one.
+pub(crate) fn menu_button(label: &str, chord: &str) -> egui::Button<'static> {
     let mut job = egui::text::LayoutJob::default();
     job.append(label, 0.0, egui::TextFormat::simple(ui_kit::fonts::medium(typography::BODY_SIZE), color::TEXT_PRIMARY));
     if !chord.is_empty() {
         job.append(chord, space::SCALE_12, egui::TextFormat::simple(ui_kit::fonts::mono(typography::VALUE_SIZE), color::TEXT_TERTIARY));
     }
-    ui.add(egui::Button::new(job))
+    egui::Button::new(job)
 }
 
 /// Whether Ctrl+, must open the Settings dialog right now: the chord is pressed this frame,
@@ -1907,7 +1967,7 @@ impl eframe::App for RecorderApp {
         self.review_mark_hotkey(&ctx, &state);
         // The mode rules (spec "Modes"): a take starting or ending moves the mode; ending
         // also queues the "takeNN saved" toast.
-        self.sync_mode(&state, &ctx);
+        self.sync_mode(&state);
 
         // The status bar (docs/suite/Recorder-E3.md, section 4): state, disk free, camera note, API clients.
         // The notch button reaches into the status bar, so its text stays clear of it.
@@ -1944,10 +2004,9 @@ impl eframe::App for RecorderApp {
         // The Review keys (spec "Review mode"): play, seek steps and mark jumps.
         self.review_keys(&ctx);
 
-        // The toasts (spec "Mode rules"): one glass capsule at a time; the stop
-        // toast carries a Review action that opens Review on that take.
-        let shown_toast = ui_kit::show_toasts(&ctx);
-        self.toast_review_action(&ctx, shown_toast);
+        // The toasts (spec "Mode rules"): one glass capsule at a time; a saved
+        // take's toast carries a Review action that opens Review on that take.
+        self.show_notices(&ctx, running);
 
         // The Settings dialog (spec "Settings dialog"): File > Settings (Ctrl+,) and
         // View > Appearance open it, Esc closes it.
@@ -2205,6 +2264,16 @@ mod tests {
     }
 
     /// Each mark press counts once; other commands do not count.
+    #[test]
+    fn the_tray_shows_replay_only_while_nothing_records() {
+        for phase in [Phase::Idle, Phase::Countdown(3)] {
+            assert_eq!((tray_state(phase, true), tray_state(phase, false)), (TrayState::Replay, TrayState::Idle));
+        }
+        for replay_on in [false, true] {
+            assert_eq!((tray_state(Phase::Recording, replay_on), tray_state(Phase::Paused, replay_on)), (TrayState::Recording, TrayState::Paused));
+        }
+    }
+
     #[test]
     fn a_mark_press_is_seen_once() {
         let mut seen = 0;
