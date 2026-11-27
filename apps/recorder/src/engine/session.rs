@@ -21,7 +21,7 @@ use super::capture_part::{Capture, CaptureStreams, PreparedCapture};
 use super::clock::MediaClock;
 use super::composite::CompositeBlock;
 use super::marks::{self, MarksWarning, MkvChapter, TakeMarks, wav_length_ms};
-use super::replay::{CamStream, ReplayRings, RingSink};
+use super::replay::{CamStream, ReplayRings, ReplaySnapshot, RingSink};
 use super::share::{SharedCapture, Sharing};
 use super::sink::{CaptureOutput, PacketSink};
 use super::take_part::{Take, TakeFiles};
@@ -771,6 +771,24 @@ fn new_rings(cfg: &SessionConfig, streams: &CaptureStreams, camera_size: Option<
     Arc::new(RingSink::new(ReplayRings::new(cfg, streams.video_setup(), camera, streams.audio_specs(), length)))
 }
 
+impl LiveCapture {
+    /// The capture's config with the tracks' gains and mutes as they are now; they may have changed since it started.
+    fn live_config(&self) -> SessionConfig {
+        let mut cfg = self.cfg.clone();
+        for (index, track) in cfg.tracks.iter_mut().enumerate() {
+            if let Some((gain_db, muted)) = self.capture.stats().track_controls(index) {
+                (track.gain_db, track.muted) = (gain_db, muted);
+            }
+        }
+        cfg
+    }
+
+    /// The time of `qpc` on the capture's clock in ms. That clock never pauses, so neither does the replay buffer's.
+    fn buffer_ms(&self, qpc: i64) -> u64 {
+        MediaClock::new(self.capture.start_qpc(), qpc_frequency()).media_ms(qpc)
+    }
+}
+
 impl SharedCapture for LiveCapture {
     type Config = SessionConfig;
     type Take = Take;
@@ -812,16 +830,10 @@ impl SharedCapture for LiveCapture {
 
     /// Only the take's file names come from `cfg`: its streams, tracks and profile are the running capture's.
     fn join_take(&mut self, cfg: SessionConfig, press_qpc: i64) -> Result<Take, EngineError> {
-        let mut take_cfg = self.cfg.clone();
+        let mut take_cfg = self.live_config();
         take_cfg.output_file = cfg.output_file;
         take_cfg.take_folder = cfg.take_folder;
         take_cfg.base_name = cfg.base_name;
-        // The gains and mutes may have changed since the capture started.
-        for (index, track) in take_cfg.tracks.iter_mut().enumerate() {
-            if let Some((gain_db, muted)) = self.capture.stats().track_controls(index) {
-                (track.gain_db, track.muted) = (gain_db, muted);
-            }
-        }
         Take::start_on(&self.capture, &take_cfg, self.camera_size, press_qpc)
     }
 
@@ -895,9 +907,15 @@ impl Sharing<LiveCapture> {
     pub(super) fn buffer_mark(&self, press_qpc: i64, build: impl FnOnce(u64) -> NewMark) {
         let Some(live) = self.capture() else { return };
         let Some(rings) = &live.rings else { return };
-        // The capture's clock never pauses, so neither does the buffer's.
-        let t_ms = MediaClock::new(live.capture.start_qpc(), qpc_frequency()).media_ms(press_qpc);
-        rings.rings().push_mark(build(t_ms));
+        rings.rings().push_mark(build(live.buffer_ms(press_qpc)));
+    }
+
+    /// What a save pressed at `press_qpc` writes: a snapshot of the replay buffer and the config of its streams. The
+    /// buffer and a running take go on untouched. None while the buffer is off or holds no video yet.
+    pub(super) fn replay_snapshot(&self, press_qpc: i64) -> Option<(ReplaySnapshot, SessionConfig)> {
+        let live = self.capture()?;
+        let snapshot = live.rings.as_ref()?.rings().snapshot(live.buffer_ms(press_qpc))?;
+        Some((snapshot, live.live_config()))
     }
 
     /// Moves the app tracks' attach and detach events into the replay buffer's marks, and into the take's marks and

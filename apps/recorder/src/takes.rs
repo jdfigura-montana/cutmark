@@ -5,6 +5,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use chrono::{DateTime, Datelike, Local, Timelike};
 
@@ -216,6 +217,9 @@ pub fn plan_take(root: &Path, now: DateTime<Local>, container: Container, naming
 
 /// Picks the next take folder under `root` for `now` by the naming template, creates it and returns its paths.
 pub fn next_take_with(root: &Path, now: DateTime<Local>, container: Container, naming: &Naming) -> Result<TakePaths, io::Error> {
+    // Held until the folder exists, so a replay being saved and a recording that starts cannot pick the same number.
+    static CLAIM: Mutex<()> = Mutex::new(());
+    let _claim = CLAIM.lock().unwrap_or_else(PoisonError::into_inner);
     let take = plan_take(root, now, container, naming)?;
     fs::create_dir_all(&take.folder).map_err(|source| with_path(&take.folder, source))?;
     Ok(take)

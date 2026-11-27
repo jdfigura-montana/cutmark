@@ -552,8 +552,10 @@ pub(super) struct ReplayTake {
     /// The totals of the take.
     pub(super) summary: Summary,
     /// The totals of the camera ISO file, when one was written.
+    #[allow(dead_code, reason = "only tests read it; the save logs a skipped camera file itself")]
     pub(super) cam: Option<CamSummary>,
     /// Why the camera file is missing although the setup has a camera.
+    #[allow(dead_code, reason = "only tests read it; the save logs a skipped camera file itself")]
     pub(super) cam_notice: Option<String>,
     /// One line per MP4 or MOV file that could not be finalized; such a file stays fragmented and playable.
     pub(super) finalize_warnings: Vec<String>,

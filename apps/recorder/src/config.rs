@@ -3,6 +3,7 @@
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use capture::{AudioDevice, CaptureError, ControlProp, DeviceKind};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -291,6 +292,8 @@ pub struct Settings {
     /// Hide the Recorder's countdown while a prompter is linked and shows its own.
     #[serde(alias = "hide_countdown_when_prompter_linked")]
     pub hide_countdown_when_linked: bool,
+    /// How much the replay buffer keeps, in seconds: one of [`REPLAY_LENGTHS_S`]. Read when the buffer turns on.
+    pub replay_length_s: u32,
     /// The local control API.
     pub api: ApiSettings,
     /// The audio tracks, the WAV sidecar switch and the audio codec.
@@ -306,6 +309,20 @@ pub struct Settings {
     /// The shipped profile names this install has already written, so a deleted shipped profile is never recreated.
     #[serde(default)]
     pub shipped_written: Vec<String>,
+}
+
+/// The replay lengths the settings offer, in seconds.
+pub const REPLAY_LENGTHS_S: [u32; 4] = [30, 60, 90, 120];
+
+/// The replay length until the user picks one, in seconds.
+const DEFAULT_REPLAY_LENGTH_S: u32 = 60;
+
+impl Settings {
+    /// How much the replay buffer keeps: the length setting, or the default for a length that is not offered.
+    pub fn replay_length(&self) -> Duration {
+        let seconds = if REPLAY_LENGTHS_S.contains(&self.replay_length_s) { self.replay_length_s } else { DEFAULT_REPLAY_LENGTH_S };
+        Duration::from_secs(u64::from(seconds))
+    }
 }
 
 /// The narrowest the Recorder's window may be, in points; wider than the suite's own minimum.
@@ -410,6 +427,7 @@ impl Default for Settings {
             naming_template: DEFAULT_NAMING_TEMPLATE.to_owned(),
             countdown_secs: 0,
             hide_countdown_when_linked: true,
+            replay_length_s: DEFAULT_REPLAY_LENGTH_S,
             api: ApiSettings::default(),
             audio: AudioSettings::default(),
             hide_from_capture: true,
@@ -1155,6 +1173,11 @@ fn load_settings(path: &Path) -> Result<(Settings, bool), ConfigError> {
                 Ok(mut settings) => {
                     settings.audio.normalize();
                     settings.panel_widths.clamp_to_ranges();
+                    let offered = u32::try_from(settings.replay_length().as_secs()).unwrap_or(DEFAULT_REPLAY_LENGTH_S);
+                    if settings.replay_length_s != offered {
+                        log::warn!("a replay length of {} s is not offered, using {offered} s", settings.replay_length_s);
+                        settings.replay_length_s = offered;
+                    }
                     (settings, true)
                 }
                 Err(err) => {
@@ -1431,6 +1454,24 @@ mod tests {
         assert_eq!(settings.naming_template, "{date}_{time}_take{take}");
         assert_eq!(settings.project, "Cutmark");
         assert!(settings.hide_from_capture);
+        fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn the_replay_length_round_trips_and_only_offered_lengths_are_kept() -> Result<(), Box<dyn Error>> {
+        let dir = fresh_dir("replay-length")?;
+        let path = dir.join("settings.json");
+        assert_eq!(Settings::default().replay_length(), Duration::from_secs(60));
+        for seconds in REPLAY_LENGTHS_S {
+            write_json(&path, &Settings { replay_length_s: seconds, ..Settings::default() })?;
+            let (loaded, _) = load_settings(&path)?;
+            assert_eq!((loaded.replay_length_s, loaded.replay_length()), (seconds, Duration::from_secs(u64::from(seconds))));
+        }
+        for text in [r#"{}"#, r#"{ "replay_length_s": 45 }"#, r#"{ "replay_length_s": 0 }"#] {
+            fs::write(&path, text)?;
+            assert_eq!(load_settings(&path)?.0.replay_length_s, 60, "{text}");
+        }
         fs::remove_dir_all(&dir)?;
         Ok(())
     }

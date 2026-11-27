@@ -42,9 +42,10 @@ pub mod pacer;
 pub mod preflight;
 
 /// The replay buffer: rings of encoded packets, PCM and marks, and the writer that saves a snapshot as a take.
-/// Saving is wired up in a later phase 12 prompt.
-#[allow(dead_code)]
 pub mod replay;
+
+/// Saving the replay buffer: the writer thread's queue, the 2 s rule and the RAM estimate.
+mod replay_save;
 
 /// The Prompter link's files for one take: the script snapshot and the script position log.
 pub mod script;

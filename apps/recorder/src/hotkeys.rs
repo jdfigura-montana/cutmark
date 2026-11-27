@@ -15,13 +15,15 @@ const OWNER: &str = "recorder";
 const MIC_TRACK: usize = 0;
 
 /// The Recorder's default `(action, chord)` pairs.
-const DEFAULTS: [(&str, &str); 6] = [
+const DEFAULTS: [(&str, &str); 8] = [
     ("start_stop", "Ctrl+Alt+R"),
     ("pause_resume", "Ctrl+Alt+P"),
     ("mark", "F9"),
     ("mark_label", "Shift+F9"),
     ("highlight_last", "Ctrl+F9"),
     ("mute_mic", "Ctrl+Alt+M"),
+    ("replay_toggle", "Ctrl+Alt+B"),
+    ("replay_save", "Ctrl+Alt+S"),
 ];
 
 /// A hotkey that Windows accepted.
@@ -175,6 +177,8 @@ fn command_for(action: &str) -> Option<CommandKind> {
         "mark_label" => CommandKind::Mark(MarkKind::WithLabel),
         "highlight_last" => CommandKind::Mark(MarkKind::HighlightLast),
         "mute_mic" => CommandKind::Mute { track: MIC_TRACK },
+        "replay_toggle" => CommandKind::ReplayToggle,
+        "replay_save" => CommandKind::ReplaySave,
         _ => return None,
     })
 }
