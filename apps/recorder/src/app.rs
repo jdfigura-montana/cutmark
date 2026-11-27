@@ -930,7 +930,7 @@ impl RecorderApp {
             self.settings_dirty = true;
         }
         ui.add_space(space::SCALE_8);
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("setup-tool").auto_shrink(false).show(ui, |ui| {
             ui.set_max_width(ui.available_width());
             match self.tool {
                 Tool::Camera => {

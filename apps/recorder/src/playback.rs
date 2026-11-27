@@ -21,6 +21,8 @@ use media_io::player::probe::probe;
 use media_io::player::video::{RgbaFrame, VideoDecoder};
 use thiserror::Error;
 
+use crate::review;
+
 /// Errors from opening a take for playback.
 #[derive(Debug, Error)]
 pub enum PlaybackError {
@@ -170,7 +172,7 @@ pub struct Playback {
     shared: Arc<DeviceShared>,
     /// What the position is measured from.
     clock: Clock,
-    /// The length of the take in milliseconds, from its headers.
+    /// The length of the take in milliseconds (see [`review::take_duration`]); 0 when unknown.
     duration_ms: u64,
     /// Whether the clock runs.
     playing: bool,
@@ -209,7 +211,8 @@ impl Playback {
             (Some(_), Some(rate)) => Clock::Audio(SampleClock::new(Arc::clone(&shared), rate)),
             _ => Clock::Wall(WallClock::new()),
         };
-        Ok(Self { stream, audio, video, shared, clock, duration_ms: info.duration_ms, playing: false, fallback: false, device_error })
+        let duration_ms = review::take_duration(path, Some(info.duration_ms), review::load_sidecar(path).as_ref()).unwrap_or(0);
+        Ok(Self { stream, audio, video, shared, clock, duration_ms, playing: false, fallback: false, device_error })
     }
 
     /// Resumes the clock and both decoders.
@@ -270,7 +273,7 @@ impl Playback {
         if self.duration_ms > 0 { position.min(self.duration_ms) } else { position }
     }
 
-    /// The take's length in milliseconds, from its headers.
+    /// The take's length in milliseconds, the one the File group shows.
     pub fn duration_ms(&self) -> u64 {
         self.duration_ms
     }

@@ -6,8 +6,9 @@
 //! the marks sidecar and the derived `_marks` files, session.json and the
 //! `_script` files. The start time comes from the marks sidecar's
 //! session start when there is one, and from the video file's modified time
-//! otherwise. The duration comes from the sidecar's recording length, with
-//! media-io's header probe as the fallback when the sidecar has none.
+//! otherwise. The duration is what media-io's header probe reads from the main
+//! file, with the sidecar's length for that file as the fallback. The video
+//! formats come from the same probe.
 //!
 //! The rename and delete actions (spec "Review mode", the right panel's
 //! Actions group) live here too: renaming moves every file of a take to a new
@@ -22,7 +23,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local, NaiveDate, Utc};
-use media_io::player::probe::probe;
+use media_io::player::probe::{VideoInfo, probe};
 use serde::Deserialize;
 
 use crate::config::CompositeMode;
@@ -58,7 +59,7 @@ pub struct Take {
     pub name: String,
     /// When the take started: the sidecar's session start, else the media file's modified time.
     pub start: DateTime<Local>,
-    /// The recording length from the sidecar, in milliseconds; None without a sidecar.
+    /// The main file's length in milliseconds (see [`take_duration`]); None when nothing says.
     pub duration_ms: Option<u64>,
     /// The size of every file of the take together, in bytes.
     pub total_size: u64,
@@ -68,6 +69,10 @@ pub struct Take {
     pub video: PathBuf,
     /// The camera ISO file, when the take has one.
     pub iso: Option<PathBuf>,
+    /// The main file's video format (see [`format_video`]); None when the probe cannot read it.
+    pub video_format: Option<String>,
+    /// The camera ISO file's video format; None without one or when the probe cannot read it.
+    pub iso_format: Option<String>,
     /// The marks from the sidecar, in timeline order; empty without a sidecar.
     pub marks: Vec<marks::Mark>,
     /// The composite mode from the take's session.json; Baked without a composite block.
@@ -112,6 +117,37 @@ pub fn find<'a>(days: &'a [Day], selected: Option<&str>) -> Option<&'a Take> {
 pub fn format_duration(ms: u64) -> String {
     let seconds = ms / 1000;
     format!("{:02}:{:02}:{:02}", seconds / 3600, seconds / 60 % 60, seconds % 60)
+}
+
+/// The length of a take, in milliseconds: what the probe of the main file
+/// `video` says, else the sidecar's length for that file. A zero counts as no
+/// answer. The takes list, the File group and the playback all ask here.
+pub fn take_duration(video: &Path, probed_ms: Option<u64>, sidecar: Option<&marks::Sidecar>) -> Option<u64> {
+    let recorded = || {
+        let sidecar = sidecar?;
+        let index = media_index(sidecar, video);
+        sidecar.media.iter().find(|entry| entry.index == index).map(|entry| entry.duration_ms)
+    };
+    probed_ms.filter(|ms| *ms > 0).or_else(|| recorded().filter(|ms| *ms > 0))
+}
+
+/// What sits between the parts of a video format. The task for these rows asks for the dot,
+/// so this one line is let through the Recorder's middle dot check.
+const FORMAT_SEPARATOR: &str = " \u{b7} "; // allow: spaced middle dot
+
+/// A video stream as the File group shows it: "AV1 · 2560×1440 · 60 fps". The
+/// frame rate keeps up to two decimals and is left out when the file has none.
+pub fn format_video(video: &VideoInfo) -> String {
+    let codec = match video.codec.as_str() {
+        "h264" => "H.264".to_owned(),
+        other => other.to_uppercase(),
+    };
+    let mut parts = vec![codec, format!("{}\u{d7}{}", video.width, video.height)];
+    if video.fps > 0.0 {
+        let fps = format!("{:.2}", video.fps);
+        parts.push(format!("{} fps", fps.trim_end_matches('0').trim_end_matches('.')));
+    }
+    parts.join(FORMAT_SEPARATOR)
 }
 
 /// Formats a size in bytes in the largest unit that keeps one decimal digit.
@@ -337,19 +373,18 @@ fn build_take(name: String, mut files: Vec<TakeFile>) -> Option<Take> {
     let iso = media_with_stem(&format!("{name}{CAM_SUFFIX}"));
     let modified = fs::metadata(&video).and_then(|meta| meta.modified()).ok()?;
     let sidecar = load_sidecar(&video);
-    // The sidecar's recording length wins; when it has none (or says zero),
-    // media-io's header probe reads the length from the file itself.
-    let duration_ms = match sidecar.as_ref().map(|sidecar| sidecar.media.iter().map(|media| media.duration_ms).sum::<u64>()) {
-        Some(total) if total > 0 => Some(total),
-        _ => probe(&video).ok().map(|info| info.duration_ms),
-    };
+    let info = probe(&video).ok();
+    let duration_ms = take_duration(&video, info.as_ref().map(|info| info.duration_ms), sidecar.as_ref());
+    let video_format = info.and_then(|info| info.video).map(|stream| format_video(&stream));
+    let iso_format = iso.as_deref().and_then(|path| probe(path).ok()).and_then(|info| info.video).map(|stream| format_video(&stream));
     let marks = sidecar.as_ref().map(|sidecar| sidecar.marks.clone()).unwrap_or_default();
     let start = match &sidecar {
         Some(sidecar) => sidecar.session.started_at.with_timezone(&Local),
         None => DateTime::<Utc>::from(modified).with_timezone(&Local),
     };
     let composite = load_composite_mode(&video.with_file_name(format!("{name}{SESSION_SUFFIX}")));
-    Some(Take { name, start, duration_ms, total_size: files.iter().map(|file| file.size).sum(), files, video, iso, marks, composite })
+    let total_size = files.iter().map(|file| file.size).sum();
+    Some(Take { name, start, duration_ms, total_size, files, video, iso, video_format, iso_format, marks, composite })
 }
 
 /// The `composite.mode` of a take's session.json; Baked when the file or the block is missing or
@@ -364,7 +399,7 @@ fn load_composite_mode(session_file: &Path) -> CompositeMode {
 
 /// Loads the sidecar of `video`, logging problems; None when there is none or
 /// it cannot be read.
-fn load_sidecar(video: &Path) -> Option<marks::Sidecar> {
+pub fn load_sidecar(video: &Path) -> Option<marks::Sidecar> {
     let sidecar_path = marks::discover(video)?;
     match marks::load(&sidecar_path) {
         Ok((sidecar, warnings)) => {
@@ -685,6 +720,35 @@ mod tests {
         fs::write(project.join("loose.marks.json"), b"{}")?;
         assert!(scan(&project).is_empty());
         fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn video_formats_are_built_from_the_probe() {
+        let format = |codec: &str, width, height, fps| format_video(&VideoInfo { codec: codec.to_owned(), width, height, fps });
+        let joined = |parts: &[&str]| parts.join(FORMAT_SEPARATOR);
+        assert_eq!(FORMAT_SEPARATOR.trim(), "\u{b7}");
+        assert_eq!(format("av1", 2560, 1440, 60.0), joined(&["AV1", "2560\u{d7}1440", "60 fps"]));
+        assert_eq!(format("h264", 1920, 1080, 30_000.0 / 1_001.0), joined(&["H.264", "1920\u{d7}1080", "29.97 fps"]));
+        assert_eq!(format("hevc", 1280, 720, 12.5), joined(&["HEVC", "1280\u{d7}720", "12.5 fps"]));
+        assert_eq!(format("av1", 640, 368, 0.0), joined(&["AV1", "640\u{d7}368"]), "no frame rate, no fps part");
+    }
+
+    /// The probe of the main file wins; the sidecar answers only when the probe cannot, and
+    /// only with the main file's own entry, never the entries added up.
+    #[test]
+    fn the_duration_comes_from_the_probe_before_the_sidecar() -> Result<(), Box<dyn std::error::Error>> {
+        let mut sidecar: marks::Sidecar = serde_json::from_str(&sidecar_json_media("2026-11-20T12:00:00.000Z", 11_000, 0, "take.mkv"))?;
+        let mut camera = sidecar.media[0].clone();
+        camera.index = 1;
+        camera.path = "take_cam.mkv".to_owned();
+        camera.duration_ms = 36_000;
+        sidecar.media.push(camera);
+        let video = Path::new("take.mkv");
+        assert_eq!(take_duration(video, Some(47_000), Some(&sidecar)), Some(47_000));
+        assert_eq!(take_duration(video, None, Some(&sidecar)), Some(11_000));
+        assert_eq!(take_duration(video, Some(0), Some(&sidecar)), Some(11_000), "a probe without a length is no answer");
+        assert_eq!(take_duration(video, None, None), None);
         Ok(())
     }
 

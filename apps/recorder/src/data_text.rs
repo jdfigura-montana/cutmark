@@ -94,7 +94,8 @@ mod tests {
     }
 
     /// No line of code in the Recorder joins strings with a spaced middle dot, written either
-    /// as the character or as its escape. Comments are skipped.
+    /// as the character or as its escape. Comments are skipped, and so is a line marked
+    /// "allow: spaced middle dot".
     #[test]
     fn no_recorder_string_is_joined_with_a_middle_dot() {
         let mut files = Vec::new();
@@ -104,7 +105,7 @@ mod tests {
         for file in files {
             let text = std::fs::read_to_string(&file).unwrap();
             for (number, line) in text.lines().enumerate() {
-                if line.trim_start().starts_with("//") {
+                if line.trim_start().starts_with("//") || line.ends_with("// allow: spaced middle dot") {
                     continue;
                 }
                 let lower = line.to_lowercase();

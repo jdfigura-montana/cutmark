@@ -157,7 +157,7 @@ impl CenterState {
 pub fn takes_panel(ui: &mut Ui, days: &[Day], selected: &mut Option<String>) -> TakesAction {
     let action = takes_header(ui);
     ui.add_space(space::SCALE_8);
-    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+    egui::ScrollArea::vertical().id_salt("review-takes").auto_shrink(false).show(ui, |ui| {
         ui.set_max_width(ui.available_width());
         let mut picked = None;
         for day in days {
@@ -580,7 +580,7 @@ pub fn take_panel(
     let mut action = take_header(ui, take, state).map_or(TakeAction::None, TakeAction::Rename);
     ui.add_space(space::SCALE_8);
     let Some(take) = take else { return action };
-    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+    egui::ScrollArea::vertical().id_salt("review-info").auto_shrink(false).show(ui, |ui| {
         ui.set_max_width(ui.available_width());
         group_caption(ui, "File");
         inspector_group(ui, |ui| {
@@ -588,9 +588,9 @@ pub fn take_panel(
             row(ui, "Duration", &duration);
             // The hover names every file of the take with its own size.
             row(ui, "Size", &review::format_size(take.total_size)).on_hover_ui(|ui| file_list(ui, take));
-            row(ui, "Video format", &format_label(&take.video));
-            if let Some(iso) = &take.iso {
-                row(ui, "Camera ISO format", &format_label(iso));
+            row(ui, "Video format", take.video_format.as_deref().unwrap_or("\u{2014}"));
+            if take.iso.is_some() {
+                row(ui, "Camera ISO format", take.iso_format.as_deref().unwrap_or("\u{2014}"));
             }
             let composite = match take.composite {
                 CompositeMode::Baked => "Baked",
@@ -735,11 +735,6 @@ fn row(ui: &mut Ui, label: &str, value: &str) -> egui::Response {
     inspector_row(ui, label, |_ui| {}, Some(value))
 }
 
-/// The format of a take file: its extension uppercased, or a dash when it has none.
-fn format_label(path: &std::path::Path) -> String {
-    path.extension().map(|extension| extension.to_string_lossy().to_uppercase()).unwrap_or_else(|| "\u{2014}".to_owned())
-}
-
 /// The dot color of a sidecar mark: the marker palette has no Highlight or
 /// Chapter tokens, so they take the Retake and Note colors (the same mapping
 /// the live marks list uses).
@@ -800,7 +795,7 @@ pub fn delete_dialog(ctx: &egui::Context, take: Option<&Take>, open: &mut bool) 
         |ui| {
             ui.label(format!("Move the files of \u{201c}{}\u{201d} to the Recycle Bin?", take.name));
             ui.add_space(space::SCALE_8);
-            egui::ScrollArea::vertical().max_height(220.0).auto_shrink(false).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("review-delete-files").max_height(220.0).auto_shrink(false).show(ui, |ui| {
                 ui.set_max_width(ui.available_width());
                 file_list(ui, take);
             });
@@ -850,6 +845,8 @@ mod tests {
             files: Vec::new(),
             video: PathBuf::new(),
             iso: None,
+            video_format: None,
+            iso_format: None,
             marks: vec![mark; marks],
             composite: CompositeMode::Baked,
         }
@@ -1033,6 +1030,8 @@ mod tests {
                 files: Vec::new(),
                 video: PathBuf::new(),
                 iso: None,
+                video_format: None,
+                iso_format: None,
                 marks: Vec::new(),
                 composite: CompositeMode::Baked,
             }],

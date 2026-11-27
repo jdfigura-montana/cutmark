@@ -31,7 +31,7 @@ pub(crate) fn pill_label(paused: bool) -> &'static str {
 pub fn live_panel(ui: &mut Ui, state: &ControllerState, audio: &AudioSettings, apps: &AppSources, live: Option<&LiveTrackStats>) {
     live_header(ui, state);
     ui.add_space(space::SCALE_8);
-    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+    egui::ScrollArea::vertical().id_salt("record-live").auto_shrink(false).show(ui, |ui| {
         ui.set_max_width(ui.available_width());
         caption(ui, "Levels");
         // One row per enabled track with its level meter and peak; these are
