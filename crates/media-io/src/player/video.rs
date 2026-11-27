@@ -149,9 +149,14 @@ impl VideoDecoder {
     /// The newest decoded frame with a presentation time at or before `clock_ms`, dropping the
     /// older ones; frames past the clock stay queued. `None` means nothing decoded yet.
     pub fn frame_at(&self, clock_ms: u64) -> Option<RgbaFrame> {
-        let (queue_lock, _) = &*self.queue;
+        let (queue_lock, space) = &*self.queue;
         let mut queue = lock(queue_lock);
+        let queued = queue.len();
         let best = newest_at_or_before(&mut queue, lock(&self.shown).take(), clock_ms);
+        if queue.len() < queued {
+            // The decode thread sleeps on a full queue until it hears there is room.
+            space.notify_all();
+        }
         *lock(&self.shown) = best.clone();
         best
     }
@@ -849,6 +854,90 @@ mod tests {
         assert_eq!(frame.width, 1280);
         assert_eq!(frame.height, 720);
         assert_eq!(frame.data.len(), usize::try_from(frame.width).unwrap_or(0) * usize::try_from(frame.height).unwrap_or(0) * 4);
+        Ok(())
+    }
+
+    /// Writes a 640x368 AV1 60 fps MP4 laid out like a replay clip: the video starts at zero
+    /// and the AAC audio one AAC frame (the encoder's priming) before it.
+    fn encode_replay_like_clip(path: &Path, frames: u32) -> Result<(), Box<dyn std::error::Error>> {
+        crate::init()?;
+        let device = super::create_device().ok_or(crate::MediaError::Null("D3D11CreateDevice"))?;
+        let hw_device = D3d11Device::from_device(&device)?;
+        let pool = D3d11FramePool::new(&hw_device, 640, 368, 8)?;
+        let config = EncoderConfig {
+            codec: Codec::Av1,
+            width: 640,
+            height: 368,
+            fps_num: 60,
+            fps_den: 1,
+            rate_control: RateControl::ConstantQp { qp_i: 28, qp_p: 30 },
+            preset: Preset::Speed,
+            keyframe_secs: 2.0,
+        };
+        let mut video = AmfEncoder::open(&config, &pool)?;
+        let mut audio = crate::AudioEncoder::open(crate::AudioCodec::Aac { kbps: 192 }, 48_000, 2)?;
+        let mut muxer = Muxer::create(path, Container::Mp4)?;
+        muxer.add_video(video.parameters(), video.time_base(), (60, 1))?;
+        muxer.add_audio(audio.parameters(), audio.time_base(), "Mixdown", true)?;
+        muxer.start()?;
+
+        // As long as the video: 800 stereo samples of silence per video frame.
+        let silence = vec![0.0f32; frames as usize * 800 * 2];
+        let mut packets = Vec::new();
+        for chunk in silence.chunks(2_048) {
+            audio.send(chunk)?;
+            audio.receive(&mut |packet| packets.push(packet))?;
+        }
+        audio.finish(&mut |packet| packets.push(packet))?;
+        assert_eq!(packets.first().and_then(|packet| packet.pts()), Some(-1_024), "the audio starts one AAC frame early");
+        for packet in packets {
+            muxer.write(1, &packet)?;
+        }
+
+        let mut packets = Vec::new();
+        for index in 0..frames {
+            let mut frame = HwFrame::from_pool(&pool)?;
+            frame.set_pts(i64::from(index));
+            video.send(frame)?;
+            video.receive(&mut |packet| packets.push(packet))?;
+            for packet in packets.drain(..) {
+                muxer.write(0, &packet)?;
+            }
+        }
+        video.finish(&mut |packet| packets.push(packet))?;
+        for packet in packets {
+            muxer.write(0, &packet)?;
+        }
+        muxer.finish()?;
+        Ok(())
+    }
+
+    #[test]
+    fn playing_a_replay_like_mp4_gives_a_new_frame_every_frame_period() -> Result<(), Box<dyn std::error::Error>> {
+        let path = std::env::temp_dir().join(format!("cutmark_player_test_{}__replay.mp4", std::process::id()));
+        // Five and a half seconds, so five seconds of clock stay inside the file.
+        if let Err(error) = encode_replay_like_clip(&path, 330) {
+            eprintln!("skipped: {error}");
+            return Ok(());
+        }
+        let decoder = VideoDecoder::open(&path, 640)?;
+        decoder.play();
+        // The decoder runs ahead of the clock until the queue is full, which is where it stalled.
+        std::thread::sleep(Duration::from_millis(500));
+        for index in 0..300u64 {
+            let clock = index * 1000 / 60;
+            let waiting = Instant::now();
+            loop {
+                let pts = decoder.frame_at(clock).map(|frame| frame.pts_ms);
+                if pts == Some(clock) {
+                    break;
+                }
+                assert!(waiting.elapsed() < Duration::from_secs(2), "stalled at frame {index}: clock {clock} ms, frame {pts:?}");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        drop(decoder);
+        let _ = std::fs::remove_file(path);
         Ok(())
     }
 
