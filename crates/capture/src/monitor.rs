@@ -3,6 +3,7 @@
 use crate::{CaptureError, utf16_to_string};
 use windows::Win32::Foundation::{LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW};
+use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::core::BOOL;
 
 /// Value of MONITORINFOF_PRIMARY from winuser.h; kept local to avoid a whole feature.
@@ -38,6 +39,15 @@ pub fn list_monitors() -> Result<Vec<MonitorInfo>, CaptureError> {
         monitor.index = index;
     }
     Ok(monitors)
+}
+
+/// A monitor's effective DPI; 96, which is 100% scaling, when Windows cannot say.
+#[allow(unsafe_code)]
+pub(crate) fn monitor_dpi(handle: isize) -> u32 {
+    let (mut x, mut y) = (0u32, 0u32);
+    // SAFETY: both out pointers point at locals; a stale handle only makes the call fail.
+    let read = unsafe { GetDpiForMonitor(HMONITOR(handle as *mut core::ffi::c_void), MDT_EFFECTIVE_DPI, &mut x, &mut y) };
+    if read.is_ok() && x > 0 { x } else { 96 }
 }
 
 /// Runs the monitor enumeration, filling `monitors`.
