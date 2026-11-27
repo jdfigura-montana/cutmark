@@ -953,11 +953,6 @@ fn the_favorites_chip_lists_only_favorites() {
     library.add_script("Alpha", "shared words");
     library.app.workspace.as_mut().unwrap().create_folder("Ads").unwrap();
     library.settle();
-    // The header has room for the title, the chip and New folder side by side.
-    let [title, chip] = ["Scripts", "Favorites"].map(|text| library.row(text));
-    let button = format!("{}{}", ui_kit::icons::regular::FOLDER_PLUS, Item::NewFolder.label());
-    let button = library.find_text(&button).unwrap();
-    assert!(title.right() < chip.left() && chip.right() < button.left() && button.right() < SCRIPTS_WIDTH, "{title:?} {chip:?} {button:?}");
     library.click_text("Favorites");
     assert!(library.find_text("No favorites yet").is_some());
     library.click_text("Favorites");
@@ -2357,4 +2352,149 @@ fn text_replaced_from_outside_takes_the_caret_out_of_its_hidden_syntax() {
     library.app.workspace.as_mut().unwrap().open_script_mut().unwrap().text = "# Title".to_owned();
     library.settle();
     assert_eq!(selection(&library), (2, 2));
+}
+
+/// The fill of the chip labeled `label`: the chip-high box around its text.
+fn chip_rect(shapes: &[egui::epaint::ClippedShape], label: Rect) -> Rect {
+    let boxes = shapes.iter().filter_map(|clipped| match &clipped.shape {
+        egui::Shape::Rect(painted) => Some(painted.rect),
+        _ => None,
+    });
+    boxes.into_iter().find(|rect| rect.height() == size::CHIP_HEIGHT && rect.contains(label.center())).unwrap()
+}
+
+#[test]
+fn the_scripts_header_title_chip_and_button_do_not_overlap() {
+    for width in [900.0, 1100.0] {
+        let mut library = Library::with_script("words");
+        library.size.x = width;
+        library.settle();
+        let title = library.row("Scripts");
+        let chip = chip_rect(&library.shapes, library.row("Favorites"));
+        let icon = library.row(ui_kit::icons::regular::FOLDER_PLUS);
+        let button = Rect::from_center_size(icon.center(), egui::Vec2::splat(size::ICON_BUTTON));
+        assert!(!title.intersects(chip) && !title.intersects(button) && !chip.intersects(button), "{width}: {title:?} {chip:?} {button:?}");
+        assert!(title.right() < chip.left() && chip.right() <= button.left() && button.right() <= SCRIPTS_WIDTH, "{width}: {title:?} {chip:?} {button:?}");
+        // The panel's left edge is 8 in, and the title 14 in from that.
+        assert!((title.left() - 22.0).abs() <= 2.0, "{width}: {title:?}");
+        library.click(button.center(), PointerButton::Primary);
+        assert!(matches!(library.app.dialog, Some(Dialog::Name { naming: Naming::NewFolder, .. })), "{width}");
+    }
+}
+
+#[test]
+fn a_header_title_with_too_little_room_ends_in_an_ellipsis_before_the_controls() {
+    let ctx = egui::Context::default();
+    ui_kit::apply(&ctx);
+    let long = "A panel title far too long for its header";
+    let mut chip = Rect::NOTHING;
+    let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(260.0, 200.0))), ..Default::default() };
+    let mut output = ctx.run_ui(input, |ui| {
+        panel_header(ui, long, |ui| chip = ui_kit::chip(ui, &mut false, "Favorites").rect);
+    });
+    output.textures_delta.clear();
+    let title = output.shapes.iter().find_map(|clipped| match &clipped.shape {
+        egui::Shape::Text(painted) if painted.galley.text() == long => Some((painted.galley.elided, painted.visual_bounding_rect())),
+        _ => None,
+    });
+    let (elided, title) = title.unwrap();
+    assert!(elided && title.right() < chip.left(), "{title:?} {chip:?}");
+}
+
+#[test]
+fn a_script_row_shows_its_edited_time_as_a_caption() {
+    let library = Library::with_script("words");
+    let row = library.row("Test");
+    let is_time = |text: &str| text.len() == 5 && text.as_bytes()[2] == b':';
+    let formats: Vec<egui::TextFormat> = library
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(painted) if is_time(painted.galley.text()) && (painted.visual_bounding_rect().center().y - row.center().y).abs() < 4.0 => {
+                painted.galley.job.sections.first().map(|section| section.format.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(formats.len(), 1, "{formats:?}");
+    assert_eq!(formats[0].font_id, egui::FontId::new(typography::CAPTION_SIZE, egui::FontFamily::Proportional));
+    assert_eq!(formats[0].color, color::TEXT_TERTIARY);
+}
+
+impl Library {
+    /// Where the stats bar, under the editor, shows exactly `text`.
+    fn in_stats_bar(&self, text: &str) -> Option<Rect> {
+        let body = Rect::from_min_max(egui::pos2(0.0, size::TOOLBAR_MAIN_HEIGHT), egui::pos2(self.size.x, self.size.y - size::STATUS_BAR_HEIGHT));
+        let [_, editor, _] = columns(body.shrink(space::SCALE_8));
+        let bottom = Rect::from_min_max(egui::pos2(editor.left(), editor.bottom() - 2.0 * size::STATUS_BAR_HEIGHT), editor.max);
+        self.find_text_in(text, bottom)
+    }
+
+    /// Runs frames until the word count, made on another thread, reaches the stats bar.
+    fn await_stats(&mut self, text: &str) {
+        for _ in 0..200 {
+            if self.in_stats_bar(text).is_some() {
+                return;
+            }
+            // The count ticks in `App::logic`, which the harness does not run.
+            self.app.keep_saved(&self.ctx);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            self.step(Vec::new());
+        }
+        panic!("the stats bar never showed \"{text}\"");
+    }
+}
+
+#[test]
+fn the_stats_bar_counts_the_script_and_with_text_selected_the_selection() {
+    let mut library = Library::with_script("one two [[note: not spoken]] three [[pause]]");
+    library.await_stats("3 words · 1 min");
+    library.focus_editor();
+
+    library.key(CTRL, Key::A);
+    assert!(library.in_stats_bar("Selection: 3 words · 2 s").is_some());
+    // The title bar goes on showing the whole script.
+    assert!(library.find_text("3 words · 1 min").is_some());
+
+    library.key(Modifiers::NONE, Key::ArrowRight);
+    assert!(library.in_stats_bar("3 words · 1 min").is_some());
+    library.key(CTRL_SHIFT, Key::ArrowLeft);
+    assert!(library.in_stats_bar("3 words · 1 min").is_none(), "a selection shows the whole script's count");
+
+    // It follows the text, and stays under both halves with the preview on.
+    library.key(CTRL, Key::A);
+    library.type_text("alone");
+    library.await_stats("1 word · 1 min");
+    library.app.preview.open = true;
+    library.settle();
+    assert!(library.in_stats_bar("1 word · 1 min").is_some());
+}
+
+#[test]
+fn view_preview_and_its_keys_toggle_the_preview_chip() {
+    let mut library = Library::with_script("words");
+    library.focus_editor();
+    let chip_is_on = |library: &Library| {
+        let chip = chip_rect(&library.shapes, library.find_text("Preview").unwrap());
+        library.shapes.iter().any(|clipped| matches!(&clipped.shape, egui::Shape::Rect(painted) if painted.rect == chip && painted.fill == color::TEXT_PRIMARY))
+    };
+    assert!(!chip_is_on(&library));
+    library.key(CTRL_SHIFT, Key::P);
+    assert!(library.app.preview.open && chip_is_on(&library));
+    assert_eq!((library.script(), library.focused()), ("words", Some(library.editor_id())));
+    library.pick("View", Item::Preview);
+    assert!(!library.app.preview.open && !chip_is_on(&library));
+    library.pick("View", Item::Preview);
+    assert!(library.app.preview.open && chip_is_on(&library));
+}
+
+#[test]
+fn the_run_panel_shows_diagnostics_only_with_the_developer_switch() {
+    let mut library = Library::with_script("words");
+    let line = diagnostics(None, None);
+    assert!(library.find_text(&line).is_none());
+    library.app.show_in_capture = true;
+    library.settle();
+    // The line wraps in the panel, but its galley holds all of it.
+    assert!(library.find_text(&line).is_some());
 }

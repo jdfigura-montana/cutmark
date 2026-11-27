@@ -185,6 +185,7 @@ impl PrompterApp {
             script_open,
             several_tabs: workspace.is_some_and(|workspace| workspace.tabs().len() > 1),
             show_markdown: self.prefs.show_markdown(),
+            preview: self.preview.open,
             editor: if script_open { self.editor.status() } else { Default::default() },
             clipboard_has_text: self.menu_clipboard.has_text(),
             clipboard_has_html: self.menu_clipboard.has_html(),
@@ -248,6 +249,11 @@ impl PrompterApp {
             Item::HideView => self.view = None,
             Item::ClickThrough => self.click_through = !self.click_through,
             Item::ShowMarkdown => self.toggle_show_markdown(ctx),
+            // The toolbar's chip shows this.
+            Item::Preview => {
+                self.preview.open = !self.preview.open;
+                ctx.request_repaint();
+            }
             Item::Appearance => self.appearance_open = true,
             Item::About => self.about_open = true,
             _ => {}
@@ -436,7 +442,9 @@ impl PrompterApp {
             let menu_open = self.editor.menu_open();
             panel_row(ui, |ui| self.find.show(ui, &open.text, id, menu_open));
         }
-        let (left, right) = split(ui.available_rect_before_wrap(), self.preview.open);
+        let space_left = ui.available_rect_before_wrap();
+        let (above, stats_rect) = space_left.split_top_bottom_at_y(space_left.bottom() - size::STATUS_BAR_HEIGHT);
+        let (left, right) = split(above, self.preview.open);
         // Both layouts go through this scope, so that the editor keeps its scroll position.
         let left = egui::UiBuilder::new().id_salt("editor-half").max_rect(left);
         self.editor.show_markdown(self.prefs.show_markdown());
@@ -449,6 +457,9 @@ impl PrompterApp {
             }
             None => self.preview.forget(),
         }
+        // After the editor, so that it shows this frame's selection.
+        let selected = self.editor.selected_words().map(stats::selection_caption);
+        stats_bar(ui, stats_rect, selected.or_else(|| open.count.words().map(stats::caption)).as_deref());
         if shown.changed || formatted {
             workspace.text_changed(Instant::now());
             // The title bar and the find bar, already drawn, have to catch up.
@@ -677,7 +688,7 @@ impl PrompterApp {
         Some(Document { title: workspace.title(&open.id).to_owned(), unsaved: open.unsaved(), caption: open.count.words().map(stats::caption) })
     }
 
-    /// The Run panel's view controls and diagnostics line.
+    /// The Run panel's view controls and, with the developer switch on, a diagnostics line.
     fn view_controls(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame) {
         let state = self.menu_state();
         let mut picked = None;
@@ -696,9 +707,11 @@ impl PrompterApp {
         if let Some(item) = picked {
             self.run(ui.ctx(), frame, item);
         }
-        ui.add_space(space::SCALE_8);
-        let status = self.view.as_ref().map(|view| view.status());
-        ui.label(diagnostics(self.alpha.get().map(|mode| format!("{mode:?}")), status));
+        if self.show_in_capture {
+            ui.add_space(space::SCALE_8);
+            let status = self.view.as_ref().map(|view| view.status());
+            ui.label(diagnostics(self.alpha.get().map(|mode| format!("{mode:?}")), status));
+        }
     }
 }
 
@@ -807,6 +820,7 @@ fn shortcut(ui: &egui::Ui) -> Option<Item> {
         (ctrl, egui::Key::F, Item::FindInScript),
         (ctrl_shift, egui::Key::N, Item::NewFolder),
         (ctrl, egui::Key::N, Item::NewScript),
+        (ctrl_shift, egui::Key::P, Item::Preview),
     ];
     ui.input_mut(|i| {
         // AltGr is Ctrl with Alt, and types characters on some layouts.
@@ -962,7 +976,8 @@ fn menu_rows(ui: &mut egui::Ui, groups: &[&[Item]], state: MenuState, click_thro
         }
         for &item in *group {
             let formatted = matches!(item, Item::Format(action) if state.editor.format.has(action));
-            let checked = (item == Item::ClickThrough && click_through) || (item == Item::ShowMarkdown && state.show_markdown) || formatted;
+            let shown = (item == Item::ShowMarkdown && state.show_markdown) || (item == Item::Preview && state.preview);
+            let checked = (item == Item::ClickThrough && click_through) || shown || formatted;
             if ui.add_enabled(item.enabled(state), menu_button(item).selected(checked)).clicked() {
                 picked = Some(item);
                 ui.close();
@@ -1038,25 +1053,25 @@ pub(crate) fn panel_row(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::
 }
 
 /// A side panel's header row (rev 3 "Panel header"). `trailing` adds to its right end, from
-/// right to left.
+/// right to left. The title gets the room that leaves, and is cut with an ellipsis to fit.
 fn panel_header(ui: &mut egui::Ui, title: &str, trailing: impl FnOnce(&mut egui::Ui)) {
     panel_row(ui, |ui| {
-        ui.add_space(HEADER_PAD);
-        let text = egui::RichText::new(title).font(ui_kit::fonts::semibold(typography::BODY_SIZE)).color(color::TEXT_PRIMARY);
-        ui.add(egui::Label::new(text).selectable(false));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), trailing);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            trailing(ui);
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add_space(HEADER_PAD);
+                let text = egui::RichText::new(title).font(ui_kit::fonts::semibold(typography::BODY_SIZE)).color(color::TEXT_PRIMARY);
+                ui.add(egui::Label::new(text).selectable(false).truncate());
+            });
+        });
     });
 }
 
-/// The Scripts header's button. True if it was clicked.
+/// The Scripts header's button, an icon as rev 3 has panel headers. True if it was clicked.
 fn new_folder_button(ui: &mut egui::Ui, state: MenuState) -> bool {
     let item = Item::NewFolder;
-    let icon = egui::TextFormat::simple(ui_kit::fonts::icon_regular(typography::BODY_SIZE), color::TEXT_SECONDARY);
-    let text = egui::TextFormat::simple(ui_kit::fonts::medium(typography::BODY_SIZE), color::TEXT_PRIMARY);
-    let mut job = egui::text::LayoutJob::default();
-    job.append(ui_kit::icons::regular::FOLDER_PLUS, 0.0, icon);
-    job.append(item.label(), space::SCALE_4, text);
-    ui.add_enabled(item.enabled(state), egui::Button::new(job)).on_hover_text(item.chord()).clicked()
+    let tooltip = format!("{} ({})", item.label(), item.chord());
+    ui.add_enabled_ui(item.enabled(state), |ui| ui_kit::icon_button(ui, ui_kit::icons::regular::FOLDER_PLUS, &tooltip).clicked()).inner
 }
 
 /// The editor's space, and with the preview on, the preview's to its right.
@@ -1070,6 +1085,15 @@ fn split(area: egui::Rect, preview: bool) -> (egui::Rect, Option<egui::Rect>) {
     let mut right = area;
     right.min.x = area.right() - half;
     (left, Some(right))
+}
+
+/// The strip under the editor, with a hairline along its top that runs edge to edge. `text`
+/// is `None` until the first word count is in.
+fn stats_bar(ui: &mut egui::Ui, rect: egui::Rect, text: Option<&str>) {
+    ui.painter().hline(rect.x_range().expand(space::PANEL_PADDING), rect.top(), egui::Stroke::new(HAIRLINE, color::STROKE_HAIRLINE));
+    ui.scope_builder(egui::UiBuilder::new().id_salt("stats-bar").max_rect(rect), |ui| {
+        ui_kit::status_bar(ui, text.as_slice());
+    });
 }
 
 /// The editor panel with no scripts at all. True if New was clicked.

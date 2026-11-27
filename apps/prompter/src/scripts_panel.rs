@@ -475,15 +475,19 @@ fn row(
     action: &mut Option<Action>,
 ) -> (egui::Response, bool) {
     let time = edited_label(&script.edited.with_timezone(&Local), now);
-    let time_width = ui.painter().layout_no_wrap(time.clone(), ui_kit::fonts::mono(typography::VALUE_SIZE), color::TEXT_TERTIARY).size().x;
-    let room = ui.available_width() - STAR_ROOM - time_width - 2.0 * ROW_INSET - ROW_GAP;
+    // The time is a caption. `ui_kit::list_row` sets its trailing text in monospace, so the
+    // row draws the time itself.
+    let time = ui.painter().layout_no_wrap(time, time_font(), color::TEXT_TERTIARY);
+    let room = ui.available_width() - STAR_ROOM - time.size().x - 2.0 * ROW_INSET - ROW_GAP;
     let title = elided(ui, &script.title, room);
     let cut = title != script.title;
     // A place under the row, for its hover fill while the pointer is on the star.
     let under = ui.painter().add(egui::Shape::Noop);
     // A clear dot makes the room for the star.
-    let response = ui_kit::list_row(ui, selected, Some(egui::Color32::TRANSPARENT), &title, Some(&time));
+    let response = ui_kit::list_row(ui, selected, Some(egui::Color32::TRANSPARENT), &title, None);
     let rect = response.rect;
+    let at = egui::pos2(rect.right() - ROW_INSET - time.size().x, rect.center().y - time.size().y / 2.0);
+    ui.painter().galley(at, time, color::TEXT_TERTIARY);
     let response = if cut { response.on_hover_text(&script.title) } else { response };
 
     let mut area = rect;
@@ -537,6 +541,11 @@ fn row(
     });
     let menu_asked = both.secondary_clicked();
     (response, menu_asked)
+}
+
+/// The ui-kit caption style (`type.caption`), in Inter Regular.
+fn time_font() -> egui::FontId {
+    egui::FontId::new(typography::CAPTION_SIZE, egui::FontFamily::Proportional)
 }
 
 /// `title`, cut with an ellipsis if it is wider than `room` in a list row or a tab.

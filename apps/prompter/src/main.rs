@@ -11,6 +11,7 @@ mod drag;
 mod editor;
 mod file_drop;
 mod find;
+mod fonts;
 mod formatting;
 mod keys;
 mod lines;
@@ -72,6 +73,8 @@ fn main() -> anyhow::Result<()> {
         options,
         Box::new(|cc| {
             ui_kit::apply_for(&cc.egui_ctx, app::APPEARANCE);
+            // Over the fonts that call set, before the first frame.
+            cc.egui_ctx.set_fonts(fonts::definitions());
             ui_kit::chrome::install(cc);
             Ok(Box::new(app::PrompterApp::new(prompter_platform::os::check_windows_11(), alpha, instance)))
         }),

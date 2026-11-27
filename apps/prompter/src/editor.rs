@@ -17,6 +17,7 @@ use crate::keys::Keys;
 use crate::markup::Markup;
 use crate::menu::Item;
 use crate::slash;
+use crate::stats;
 use crate::styled::{self, ParseCache};
 
 /// How strongly the accent color backs a find match, and the current one.
@@ -180,6 +181,8 @@ pub struct Editor {
     /// The selection the undo flags were last read at.
     seen: Option<CCursorRange>,
     status: Status,
+    /// The spoken words selected, with text selected.
+    selected_words: Option<usize>,
     /// The 1-based line of the text the cursor is on.
     cursor_line: u32,
     look: Look,
@@ -204,6 +207,12 @@ struct Look {
 impl Editor {
     pub fn status(&self) -> Status {
         self.status
+    }
+
+    /// The spoken words selected as of the last [`Editor::show`], or `None` with no text
+    /// selected.
+    pub fn selected_words(&self) -> Option<usize> {
+        self.selected_words
     }
 
     /// The cursor's 1-based line as of the last [`Editor::show`].
@@ -273,6 +282,7 @@ impl Editor {
         if self.serial != serial {
             (self.serial, self.seen, self.status) = (serial, None, Status::default());
             (self.keys, self.placed, self.left, self.used_at) = (Keys::default(), None, None, None);
+            self.selected_words = None;
         }
         let id = id(serial);
         if self.shown.insert(serial) {
@@ -311,7 +321,9 @@ impl Editor {
             let [first, last] = range.sorted_cursors();
             let selection = byte_of(text, first.index)..byte_of(text, last.index);
             let caret = byte_of(text, range.primary.index);
-            self.status.format = formatting::active(text, &self.look.cache.get(text), selection, caret);
+            let markup = self.look.cache.get(text);
+            self.selected_words = (!range.is_empty()).then(|| stats::selected_words(&markup, selection.clone()));
+            self.status.format = formatting::active(text, &markup, selection, caret);
             let undoer = state.undoer();
             let now = (range, text.clone());
             // Before the first change, the history holds only where the cursor was.
@@ -336,7 +348,8 @@ impl Editor {
         // Text put there from outside, as a restored snapshot is, may leave the caret in
         // syntax that is now hidden.
         if self.left.take().is_some_and(|left| !Rc::ptr_eq(&left, &self.look.cache.get(text))) {
-            self.placed = None;
+            // The status is read again too, though the cursor may not have moved.
+            (self.placed, self.seen) = (None, None);
         }
         let focused = ui.memory(|memory| memory.has_focus(id));
         let pasting = focused && ui.input(|i| i.events.iter().any(|event| matches!(event, egui::Event::Paste(_) | egui::Event::Cut)));

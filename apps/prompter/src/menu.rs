@@ -37,6 +37,7 @@ pub enum Item {
     HideView,
     ClickThrough,
     Outline,
+    Preview,
     ShowMarkdown,
     NextTab,
     PreviousTab,
@@ -58,6 +59,8 @@ pub struct MenuState {
     pub several_tabs: bool,
     /// The editor shows all its Markdown syntax.
     pub show_markdown: bool,
+    /// The live preview is beside the editor.
+    pub preview: bool,
     /// All false with no script open.
     pub editor: editor::Status,
     pub clipboard_has_text: bool,
@@ -118,7 +121,7 @@ pub const MENUS: [(&str, &[&[Item]]); 6] = [
         "View",
         &[
             &[Item::Views, Item::ShowView, Item::HideView, Item::ClickThrough],
-            &[Item::Outline, Item::ShowMarkdown],
+            &[Item::Outline, Item::Preview, Item::ShowMarkdown],
             &[Item::NextTab, Item::PreviousTab],
             &[Item::Appearance],
         ],
@@ -167,6 +170,7 @@ impl Item {
             Self::HideView => "Hide view",
             Self::ClickThrough => "Click-through",
             Self::Outline => "Outline",
+            Self::Preview => "Preview",
             Self::ShowMarkdown => "Show Markdown",
             Self::Appearance => "Appearance",
             Self::Help => "Help",
@@ -192,6 +196,7 @@ impl Item {
             Self::SearchAll => "Ctrl+Shift+F",
             Self::Format(action) => action.chord(),
             Self::ClickThrough => "Ctrl+Alt+C",
+            Self::Preview => "Ctrl+Shift+P",
             Self::CloseTab => "Ctrl+W",
             Self::NextTab => "Ctrl+Tab",
             Self::PreviousTab => "Ctrl+Shift+Tab",
@@ -206,7 +211,7 @@ impl Item {
             Self::ShowView => !state.view_open,
             Self::HideView => state.view_open,
             Self::NewScript | Self::NewFolder | Self::Import | Self::SearchAll => state.library_open,
-            Self::Export | Self::Duplicate | Self::Delete | Self::Snapshots | Self::CloseTab | Self::FindInScript => state.script_open,
+            Self::Export | Self::Duplicate | Self::Delete | Self::Snapshots | Self::CloseTab | Self::FindInScript | Self::Preview => state.script_open,
             Self::NextTab | Self::PreviousTab => state.several_tabs,
             Self::Undo => state.editor.can_undo,
             Self::Redo => state.editor.can_redo,
@@ -253,8 +258,18 @@ mod tests {
         let mut expected = vec![NewScript, NewFolder, Import, Export, Duplicate, Delete, Snapshots, CloseTab, Exit];
         expected.extend([FindInScript, SearchAll]);
         expected.extend(format_items().into_iter().filter(|item| !nesting().contains(item)));
-        expected.extend([ShowView, ClickThrough, ShowMarkdown, Appearance, About]);
+        expected.extend([ShowView, ClickThrough, Preview, ShowMarkdown, Appearance, About]);
         assert_eq!(enabled(false, true), expected);
+    }
+
+    #[test]
+    fn preview_needs_an_open_script_whether_it_is_on_or_off() {
+        for preview in [false, true] {
+            let closed = MenuState { library_open: true, preview, ..Default::default() };
+            let open = MenuState { script_open: true, ..closed };
+            assert!(!Item::Preview.enabled(closed) && Item::Preview.enabled(open), "{preview}");
+        }
+        assert_eq!((Item::Preview.label(), Item::Preview.chord()), ("Preview", "Ctrl+Shift+P"));
     }
 
     fn format_items() -> Vec<Item> {
@@ -368,7 +383,7 @@ mod tests {
     #[test]
     fn every_item_from_the_spec_is_listed_once() {
         let counts: Vec<(&str, usize)> = MENUS.iter().map(|(title, groups)| (*title, groups.iter().map(|group| group.len()).sum())).collect();
-        assert_eq!(counts, [("File", 10), ("Edit", 9), ("Format", 18), ("Script", 4), ("View", 9), ("Help", 4)]);
+        assert_eq!(counts, [("File", 10), ("Edit", 9), ("Format", 18), ("Script", 4), ("View", 10), ("Help", 4)]);
         let items = all();
         for (index, item) in items.iter().enumerate() {
             assert!(!items[..index].contains(item), "{item:?} is listed twice");

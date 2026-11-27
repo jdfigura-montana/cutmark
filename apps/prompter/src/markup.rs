@@ -92,6 +92,17 @@ pub struct InlineSpan {
     pub close: Range<usize>,
 }
 
+/// Text as the parser reads it: no Markdown syntax, link targets or cues. It is the text
+/// that prompter-core makes spoken words from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Said {
+    /// The byte of the source where `text` starts.
+    pub at: usize,
+    /// Text with the same number runs together. A word cannot cross to another number.
+    pub block: usize,
+    pub text: String,
+}
+
 /// One parse of a script.
 #[derive(Debug, Default)]
 pub struct Markup {
@@ -112,6 +123,8 @@ pub struct Markup {
     pub hangs: Vec<(usize, usize)>,
     /// The hidden syntax of headings, lists and quotes, in no set order.
     pub edges: Vec<(Range<usize>, Edge)>,
+    /// In order.
+    pub said: Vec<Said>,
 }
 
 impl Markup {
@@ -178,6 +191,9 @@ struct Scan<'a> {
     joined: String,
     searchable: String,
     pieces: Vec<Piece>,
+    said: Vec<Said>,
+    /// The number the next [`Said`] gets.
+    said_block: usize,
 }
 
 impl<'a> Scan<'a> {
@@ -202,6 +218,8 @@ impl<'a> Scan<'a> {
             joined: String::new(),
             searchable: String::new(),
             pieces: Vec::new(),
+            said: Vec::new(),
+            said_block: 0,
         }
     }
 
@@ -215,7 +233,9 @@ impl<'a> Scan<'a> {
             }
             Event::Code(text) => {
                 self.text_end = range.end;
-                self.collect(&text, range.start, true);
+                // The text starts after the backticks.
+                let inside = self.text[range.clone()].find(&*text).unwrap_or(0);
+                self.collect(&text, range.start + inside, true);
                 self.solid.push(range);
             }
             Event::InlineHtml(html) => self.inline_html(&html, range),
@@ -425,6 +445,8 @@ impl<'a> Scan<'a> {
     /// brackets. The same rules as prompter-core's.
     fn find_cues(&mut self) {
         let mut from = 0;
+        // Where each cue is in the joined text.
+        let mut found = Vec::new();
         while let Some(open) = self.searchable[from..].find("[[").map(|at| from + at) {
             let Some(mut close) = self.searchable[open + 2..].find("]]").map(|at| open + 2 + at) else {
                 break;
@@ -437,14 +459,40 @@ impl<'a> Scan<'a> {
             match kind {
                 Some(kind) => {
                     self.add_cue([open, open + 1, close, close + 1], kind);
+                    found.push(open..close + 2);
                     from = close + 2;
                 }
                 None => from = open + 1,
             }
         }
+        self.keep_said(&found);
         self.joined.clear();
         self.searchable.clear();
         self.pieces.clear();
+    }
+
+    /// Keeps the block's text around `cues`, which are in order. As in the views, a cue
+    /// ends the text before it, even in the middle of a word.
+    fn keep_said(&mut self, cues: &[Range<usize>]) {
+        let ends = self.pieces.iter().skip(1).map(|piece| piece.at).chain(std::iter::once(self.joined.len()));
+        for (piece, end) in self.pieces.iter().zip(ends) {
+            let mut from = piece.at;
+            let mut keep = |range: Range<usize>, block: usize| {
+                if !range.is_empty() {
+                    self.said.push(Said { at: piece.offset + (range.start - piece.at), block, text: self.joined[range].to_owned() });
+                }
+            };
+            for (index, cue) in cues.iter().enumerate() {
+                if cue.end <= from || cue.start >= end {
+                    continue;
+                }
+                keep(from..cue.start.max(from), self.said_block + index);
+                from = cue.end.min(end);
+            }
+            let passed = cues.iter().take_while(|cue| cue.end <= from).count();
+            keep(from..end, self.said_block + passed);
+        }
+        self.said_block += cues.len() + 1;
     }
 
     /// Takes the positions of a cue's four brackets in the joined text.
@@ -508,7 +556,8 @@ impl<'a> Scan<'a> {
         self.quote_lines.sort_unstable();
         self.quote_lines.dedup();
         let hangs = self.hangs.into_iter().collect();
-        Markup { runs, items: self.items, quote_lines: self.quote_lines, cues, spans: self.spans, solid: self.solid, hangs, edges: self.edges }
+        let (items, quote_lines, spans, solid, edges, said) = (self.items, self.quote_lines, self.spans, self.solid, self.edges, self.said);
+        Markup { runs, items, quote_lines, cues, spans, solid, hangs, edges, said }
     }
 }
 

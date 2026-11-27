@@ -8,7 +8,7 @@
 ## Done
 - Phase 1 (V4 passed): DX12, Floating view, white fix, Library shell. Minimum 900 x 480.
 - Phase 2 (pending JD's check): C1 to C5.
-- Phase 3: E1 to E4 core, platform; E5 wiring, file drop; E6 tabs, folders; E7 drags, menus; E8, E8b styled editor; E9a underline, strike; E9b layout, toolbar, Format menu; E9c hidden markers, "/" menu.
+- Phase 3: E1 to E4 core, platform; E5 wiring, file drop; E6 tabs, folders; E7 drags, menus; E8, E8b styled editor; E9a underline, strike; E9b layout, toolbar, Format menu; E9c hidden markers, "/" menu; E9d stats bar.
 
 ## Platform (E1)
 - ViewWindow::cursor_position (JD approved): winit has no pointer position in a file drag.
@@ -29,25 +29,23 @@
 - Not read: .docx styles.xml and w:dstrike, .odt paragraph styles, automatic heading numbers. Table paragraphs are kept.
 
 ## App
-- Screenshots: CUTMARK_PROMPTER_SHOW_IN_CAPTURE=1.
+- Screenshots and the diagnostics line: CUTMARK_PROMPTER_SHOW_IN_CAPTURE=1.
 - Caret at first text and focus on a tab's first showing only.
 - E9c: caret.rs, typing.rs; keys.rs takes editing keys before TextEdit; egui's moves are snapped. IME is not marker-aware.
 - No key may make a setext underline (an empty item under text parses as one).
 - Open: a letter typed after "**word.**" or editing "[[pause]]" shows the marks; Enter in a quote adds no ">".
-- E9b: formatting.rs actions are text in, text out; Editor::format makes one undo step. Format keys run before the editor, only while it has the keyboard.
 - Ctrl+Shift+X arrives as Event::Cut.
 - markup.rs uses pulldown-cmark (JD approved); keep options and cue rules in step with script.rs. Show Markdown is in editor.txt.
 - Typing, 10,301 words (release, headless): 1.9 ms median, 2.3 p95.
 - Data folder: BaseDirs config_dir + Cutmark\prompter (not ProjectDirs).
-- Edit menu picks run a frame late.
 - Autosave runs in App::logic. A failed save retries every 500 ms, one toast; on close it cancels the close once.
 - egui-winit sends Ctrl+V as Event::Paste, no key press; with no clipboard text, only V's release. editor::PasteKeys pastes on it.
 - Tabs: serial keys egui state. LRU order not stored: restored tabs count left to right, active last.
-- Copies use app.rs write_copies; tests fake it.
 - Esc clears egui focus before the frame, so find.rs notes focus after each frame.
 - Preview follows the cursor's block only (tall: from its top). Not remembered. About 208 px of text at default size.
 - Panel: Unfiled first (even empty, if folders exist), then store order. Drag starts at 4 px (egui clicks to 6). No folder moves while filtering; no edge scroll.
-- No stats bar.
+- E9d: selection stats count Markup.said with core's WordIndex. fonts.rs puts Inter behind ui-kit's icon families (egui warned: no "◻" or "?"); fix belongs in ui-kit.
+- Read time is fixed at 150 wpm; no pace setting yet.
 - Open: Unfiled's collapse is not saved. Live tabs can still close (see Notes).
 - Not timed on long scripts: Find, preview, Snapshots, paste.
 
@@ -55,7 +53,7 @@
 - E8 to E9c by hand: click, drag, double-click, IME, format keys (non-US layout too), toolbar and "/" menu look.
 - JD's Phase 2 check; E5: second launch focuses the first window; paste from Google Docs, Word, browser.
 - By hand: E6, E7 drags, wheel, Shift+F10; Explorer drop (also scaled); Word, Google Docs, LibreOffice imports; HTML-only Ctrl+V; relaunch, preview, Snapshots, dialogs, menus, empty and image Paste, Ctrl+Shift+F, autosave; see-through, flash on open (not ruled out), other monitor or DPI, lock and sleep, minimized scroll, OBS capture.
-- Open: no Preview menu item; most shortcuts outside Edit and Format missing; About notices by hand.
+- Open: most shortcuts outside Edit and Format missing; About notices by hand.
 ## White layer
 - After a show the view's GDI surface is white under the DirectComposition visual (painter unknown), only over the area then present.
 - PatBlt BLACKNESS on the window DC fixes it (class brush is 0), not on a hidden window. An outside hide and show needs a new clear; the once-a-second read-back catches it.
