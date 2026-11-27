@@ -11,7 +11,12 @@
 //! through [`CenterAction`]; the app does the sidecar work.
 //! The Actions group and the delete confirmation dialog report through
 //! [`TakeAction`] and the app does the file work.
+//!
+//! A take with an input track has a cursor icon in its row, a Show cursor switch
+//! and the track's counts in the File group, and Bake with cursor in Actions
+//! (input track spec, "Review"). The running bake lives in [`TakePanelState`].
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use egui::{
@@ -31,7 +36,8 @@ use crate::config::CompositeMode;
 use crate::data_text;
 use crate::layout_ui;
 use crate::playback::Playback;
-use crate::review::{self, Day, ReviewView, Take};
+use crate::review::bake::{self, BakeJob, BakeRequest, Baked};
+use crate::review::{self, Day, ReviewView, Take, TrackSummary};
 
 /// The Takes panel's two views, in the order the segmented control shows them.
 const VIEWS: [(ReviewView, &str); 2] = [(ReviewView::Takes, "Takes"), (ReviewView::Replays, "Replays")];
@@ -87,10 +93,46 @@ pub enum TakeAction {
     Rename(String),
     /// Seek the playback to this position, in milliseconds from a mark row click.
     Seek(u64),
+    /// The Show cursor switch was set to this.
+    ShowCursor(bool),
+    /// Bake the selected take with its cursor.
+    Bake,
 }
 
-/// The take panel's editing state: the open rename field and the delete dialog.
-#[derive(Default)]
+/// What the panel knows about the selected take's input track, read once per file.
+struct TrackInfo {
+    path: PathBuf,
+    /// The file's size at the scan, so a file that changed since is read again.
+    size: u64,
+    /// Whether the take's video shows the screen, where the cursor belongs.
+    screen: bool,
+    /// None when the file could not be read.
+    summary: Option<TrackSummary>,
+}
+
+/// What to tell the user when a bake has ended.
+#[derive(Debug, PartialEq, Eq)]
+pub struct BakeReport {
+    /// The toast's text.
+    pub text: String,
+    /// The baked file, for the toast's Show in folder button; None when the bake failed.
+    pub file: Option<PathBuf>,
+}
+
+impl BakeReport {
+    /// The report of a bake of the take named `take`.
+    fn of(take: &str, outcome: Result<Baked, String>) -> Self {
+        match outcome {
+            Ok(baked) => {
+                let note = baked.note.map(|note| format!(". {note}")).unwrap_or_default();
+                Self { text: format!("Baked {}{note}", crate::profile_ui::take_label(take)), file: Some(baked.file) }
+            }
+            Err(reason) => Self { text: format!("Bake failed: {reason}"), file: None },
+        }
+    }
+}
+
+/// The take panel's state: the open rename field, the delete dialog, the Show cursor switch and the running bake.
 pub struct TakePanelState {
     /// The rename buffer while the take's name is being edited.
     pub renaming: Option<String>,
@@ -100,9 +142,60 @@ pub struct TakePanelState {
     pub rename_error: Option<String>,
     /// Whether the delete confirmation dialog is open.
     pub confirm_delete: bool,
+    /// Whether playback draws the cursor; on until the switch is turned off, and the same for every take.
+    pub show_cursor: bool,
+    /// The selected take's input track.
+    track: Option<TrackInfo>,
+    /// The running bake. It goes on while another take or mode is on screen.
+    bake: Option<BakeJob>,
+}
+
+impl Default for TakePanelState {
+    fn default() -> Self {
+        Self { renaming: None, rename_focused: false, rename_error: None, confirm_delete: false, show_cursor: true, track: None, bake: None }
+    }
 }
 
 impl TakePanelState {
+    /// Starts baking the take, unless a bake is running already or the take has no input track. `wake` asks the
+    /// window to draw again. The report is an error when the bake could not even start.
+    pub fn start_bake(&mut self, take: &Take, wake: impl Fn() + Send + 'static) -> Option<BakeReport> {
+        let events = take.events.clone()?;
+        if self.bake.is_some() {
+            return None;
+        }
+        // The current style: v1 has no control for it yet, so it is the default.
+        let request = BakeRequest { video: take.video.clone(), events, style: cursor_render::CursorStyle::default() };
+        match BakeJob::start(take.name.clone(), request, wake) {
+            Ok(job) => {
+                self.bake = Some(job);
+                None
+            }
+            Err(err) => Some(BakeReport::of(&take.name, Err(err.to_string()))),
+        }
+    }
+
+    /// Takes in the end of the running bake: the report to show, if it ended with one. A cancelled bake has none.
+    pub fn poll_bake(&mut self) -> Option<BakeReport> {
+        let outcome = self.bake.as_ref()?.poll()?;
+        let job = self.bake.take()?;
+        outcome.map(|outcome| BakeReport::of(job.take(), outcome))
+    }
+
+    /// Reads the take's input track unless it is the one already read.
+    fn read_track(&mut self, take: &Take) {
+        let Some(path) = &take.events else {
+            self.track = None;
+            return;
+        };
+        let size = take.files.iter().find(|file| &file.path == path).map_or(0, |file| file.size);
+        if self.track.as_ref().is_some_and(|track| &track.path == path && track.size == size) {
+            return;
+        }
+        let summary = review::load_track(path).map(|track| TrackSummary::of(&track));
+        self.track = Some(TrackInfo { path: path.clone(), size, screen: bake::shows_screen(&take.video), summary });
+    }
+
     /// Closes the rename field and clears its reason, after a rename or when the take goes away.
     pub fn close_rename(&mut self) {
         self.renaming = None;
@@ -235,13 +328,17 @@ fn take_row(ui: &mut Ui, selected: bool, take: &Take) -> Response {
     let name = painter.layout_no_wrap(shown, body.clone(), name_color);
     // The word after the mark count is not data; the time, the count and the length are.
     let count = take.marks.len().to_string();
-    let details: Vec<_> = take_row_details(take)
-        .iter()
-        .map(|text| {
-            let data = if text.ends_with(" marks") { count.as_str() } else { text.as_str() };
-            painter.layout_job(data_text::with_data(text, &[data], neutrals.text_tertiary))
-        })
-        .collect();
+    // A take with an input track has the cursor icon ahead of its details.
+    let cursor = take.events.is_some().then(|| {
+        let font = ui_kit::fonts::icon_regular(typography::BODY_SIZE);
+        painter.layout_no_wrap(ui_kit::icons::regular::CURSOR.to_owned(), font, neutrals.text_tertiary)
+    });
+    let texts = take_row_details(take);
+    let words = texts.iter().map(|text| {
+        let data = if text.ends_with(" marks") { count.as_str() } else { text.as_str() };
+        painter.layout_job(data_text::with_data(text, &[data], neutrals.text_tertiary))
+    });
+    let details: Vec<_> = cursor.into_iter().chain(words).collect();
     let details_height = details.iter().map(|galley| galley.size().y).fold(0.0, f32::max);
     let top = response.rect.center().y - (name.size().y + details_height) / 2.0;
     let details_top = top + name.size().y;
@@ -593,6 +690,7 @@ pub fn take_panel(
     let mut action = take_header(ui, take, state).map_or(TakeAction::None, TakeAction::Rename);
     ui.add_space(space::SCALE_8);
     let Some(take) = take else { return action };
+    state.read_track(take);
     egui::ScrollArea::vertical().id_salt("review-info").auto_shrink(false).show(ui, |ui| {
         ui.set_max_width(ui.available_width());
         group_caption(ui, "File");
@@ -610,6 +708,9 @@ pub fn take_panel(
                 CompositeMode::Clean => "Clean",
             };
             row(ui, "Composite", composite);
+            if let Some(track) = &state.track {
+                track_rows(ui, track, &mut state.show_cursor, &mut action);
+            }
         });
         ui.add_space(space::SCALE_8);
         group_caption(ui, "Marks");
@@ -637,17 +738,64 @@ pub fn take_panel(
     action
 }
 
+/// The File group's rows about the input track: the Show cursor switch and the counts, with a warning when the
+/// track is incomplete.
+fn track_rows(ui: &mut Ui, track: &TrackInfo, show_cursor: &mut bool, action: &mut TakeAction) {
+    let Some(summary) = track.summary else {
+        row(ui, "Input track", "Could not be read");
+        return;
+    };
+    if track.screen {
+        inspector_row(
+            ui,
+            "Show cursor",
+            |ui| {
+                if ui_kit::switch(ui, show_cursor).changed() {
+                    *action = TakeAction::ShowCursor(*show_cursor);
+                }
+            },
+            None,
+        );
+    }
+    for (label, count) in [("Clicks", summary.clicks), ("Shortcuts", summary.shortcuts), ("App switches", summary.app_switches)] {
+        row(ui, label, &count.map_or_else(|| "Not recorded".to_owned(), |count| count.to_string()));
+    }
+    if !summary.complete {
+        ui.colored_label(ui.visuals().warn_fg_color, "Input track incomplete");
+    }
+}
+
+/// Why Bake with cursor cannot start for the selected take, if it cannot.
+fn bake_blocked(state: &TakePanelState, recording: bool) -> Option<&'static str> {
+    let track = state.track.as_ref()?;
+    if recording {
+        Some("Stop the recording to bake")
+    } else if state.bake.is_some() {
+        Some("Another bake is running")
+    } else if track.summary.is_none() {
+        Some("The input track could not be read")
+    } else if !track.screen {
+        Some("This take shows only the camera")
+    } else {
+        None
+    }
+}
+
 /// The Actions group at the bottom of the take panel (spec "Review mode"):
 /// Show in folder, Rename and Delete take as text buttons; Rename and Delete
-/// are disabled while a take runs.
+/// are disabled while a take runs, and for the take being baked. Under them
+/// Bake with cursor, for a take with an input track, and the running bake's
+/// progress with Cancel.
 fn actions_group(ui: &mut Ui, take: &Take, state: &mut TakePanelState, recording: bool, action: &mut TakeAction) {
+    let baking_this = state.bake.as_ref().is_some_and(|job| job.take() == take.name);
     inspector_group(ui, |ui| {
         ui.add_space(space::SCALE_4);
         ui.horizontal(|ui| {
             if ui.button("Show in folder").clicked() {
                 *action = TakeAction::ShowInFolder;
             }
-            ui.add_enabled_ui(!recording, |ui| {
+            // A bake reads the take's files, so they stay where they are until it ends.
+            ui.add_enabled_ui(!recording && !baking_this, |ui| {
                 if ui.button("Rename").clicked() {
                     state.renaming = Some(take.name.clone());
                     state.rename_focused = false;
@@ -659,6 +807,26 @@ fn actions_group(ui: &mut Ui, take: &Take, state: &mut TakePanelState, recording
                 }
             });
         });
+        if take.events.is_some() && !baking_this {
+            let blocked = bake_blocked(state, recording);
+            let button = ui.add_enabled(blocked.is_none(), Button::new("Bake with cursor"));
+            if button.on_disabled_hover_text(blocked.unwrap_or_default()).clicked() {
+                *action = TakeAction::Bake;
+            }
+        }
+        if let Some(job) = &state.bake {
+            if !baking_this {
+                ui.add(egui::Label::new(format!("Baking {}", job.take())).truncate());
+            }
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.button("Cancel").clicked() {
+                        job.cancel();
+                    }
+                    ui.add(egui::ProgressBar::new(job.progress()).show_percentage());
+                });
+            });
+        }
         ui.add_space(space::SCALE_4);
     });
 }
@@ -858,6 +1026,7 @@ mod tests {
             files: Vec::new(),
             video: PathBuf::new(),
             iso: None,
+            events: None,
             video_format: None,
             iso_format: None,
             marks: vec![mark; marks],
@@ -872,7 +1041,7 @@ mod tests {
         let days = vec![Day {
             date: Local::now().date_naive(),
             takes: vec![
-                row_take("2026-11-20_10-00-00_take01", 12, Some(3_698_784)),
+                Take { events: Some(PathBuf::from("take01.events")), ..row_take("2026-11-20_10-00-00_take01", 12, Some(3_698_784)) },
                 row_take("Interview with the whole product team, second try take 12", 123, Some(359_999_000)),
                 row_take("A renamed take with a long name and no number at the end", 0, None),
             ],
@@ -887,8 +1056,80 @@ mod tests {
         for whole in ["2026-11-20_10-00-00_take01", "12 marks", "123 marks", "0 marks", "01:01:38", "99:59:59"] {
             assert!(shown(whole), "{whole} is shown whole");
         }
+        let icons = texts.iter().filter(|painted| painted.text == ui_kit::icons::regular::CURSOR).count();
+        assert_eq!(icons, 1, "only the take with an input track has the cursor icon");
         assert!(texts.iter().any(|painted| painted.text.starts_with("Interview") && painted.text.ends_with("\u{2026} take 12")));
         assert!(texts.iter().any(|painted| painted.text.starts_with("A renamed") && painted.text.ends_with('\u{2026}')));
+    }
+
+    /// An events file with two clicks and no keyboard stream; without its tail when it is to be incomplete.
+    fn events_file(path: &std::path::Path, complete: bool) -> Result<(), events::EventsError> {
+        use events::{CaptureSource, EventsWriter, Header, InputEvent, MouseAction, MouseButton, MouseEvent, ScreenRect, Streams};
+
+        let header = Header {
+            qpc_frequency: 1_000_000,
+            first_frame_qpc: 0,
+            source: CaptureSource::Monitor(ScreenRect::default()),
+            displays: Vec::new(),
+            cursor_size: 32,
+            streams: Streams { cursor: true, clicks: true, keys: false, apps: true },
+        };
+        let mut writer = EventsWriter::create(path, &header)?;
+        for qpc in [10, 20] {
+            writer.push(InputEvent::Mouse(MouseEvent { qpc, x: 0, y: 0, action: MouseAction::Down(MouseButton::Left) }))?;
+        }
+        if complete {
+            writer.finish(1_000)?;
+        } else {
+            writer.flush_second()?;
+        }
+        Ok(())
+    }
+
+    /// The take panel of a take with an input track has the switch, the counts and Bake with cursor, which recording
+    /// disables; a track without its tail says it is incomplete, and a take without a track has none of it.
+    #[test]
+    fn the_take_panel_shows_the_input_track_and_offers_the_bake() -> Result<(), Box<dyn std::error::Error>> {
+        let folder = std::env::temp_dir().join(format!("cutmark-recorder-test-{}-panel-track", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder)?;
+        for (name, complete, recording) in [("whole", true, false), ("cut", false, true)] {
+            let events = folder.join(format!("{name}.events"));
+            events_file(&events, complete)?;
+            let take = Take { events: Some(events), video: folder.join(format!("{name}.mkv")), ..row_take(name, 0, None) };
+            let days = vec![Day { date: Local::now().date_naive(), takes: vec![take] }];
+            let asked = Rc::new(RefCell::new(Vec::new()));
+            let record = Rc::clone(&asked);
+            let mut state = TakePanelState::default();
+            assert!(state.show_cursor, "the cursor shows until the switch is turned off");
+            let mut harness = panel_harness(300.0, move |ui| {
+                let action = take_panel(ui, &days, Some(name), &mut state, recording, None);
+                if action != TakeAction::None {
+                    record.borrow_mut().push(action);
+                }
+            });
+            let texts: Vec<String> = painted(&harness).into_iter().map(|painted| painted.text).collect();
+            for wanted in ["Show cursor", "Clicks", "2", "Shortcuts", "Not recorded", "App switches", "0"] {
+                assert!(texts.iter().any(|text| text == wanted), "{name}: {wanted} is shown in {texts:?}");
+            }
+            assert_eq!(texts.iter().any(|text| text == "Input track incomplete"), !complete, "{name}");
+            assert_eq!(harness.get_by_label("Bake with cursor").accesskit_node().is_disabled(), recording, "{name}");
+            harness.get_by_label("Switch").click();
+            harness.run();
+            harness.get_by_label("Bake with cursor").click();
+            harness.run();
+            let expected: &[TakeAction] = if recording { &[TakeAction::ShowCursor(false)] } else { &[TakeAction::ShowCursor(false), TakeAction::Bake] };
+            assert_eq!(*asked.borrow(), expected, "{name}");
+        }
+
+        let days = vec![Day { date: Local::now().date_naive(), takes: vec![row_take("plain", 0, None)] }];
+        let mut state = TakePanelState::default();
+        let harness = panel_harness(300.0, move |ui| {
+            take_panel(ui, &days, Some("plain"), &mut state, false, None);
+        });
+        assert!(harness.query_by_label("Bake with cursor").is_none() && harness.query_by_label("Switch").is_none());
+        std::fs::remove_dir_all(&folder)?;
+        Ok(())
     }
 
     /// A long name loses its middle when it ends in a take number and its end otherwise. Widths
@@ -1043,6 +1284,7 @@ mod tests {
                 files: Vec::new(),
                 video: PathBuf::new(),
                 iso: None,
+                events: None,
                 video_format: None,
                 iso_format: None,
                 marks: Vec::new(),

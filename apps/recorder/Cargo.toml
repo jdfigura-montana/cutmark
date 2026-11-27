@@ -27,6 +27,7 @@ anyhow = "1.0.104"
 capture = { version = "0.1.0", path = "../../crates/capture" }
 chrono = { workspace = true, features = ["clock"] }
 cpal = "0.18.2"
+cursor-render = { version = "0.1.0", path = "../../crates/cursor-render" }
 cutmark-hotkeys = { version = "0.1.0", path = "../../crates/cutmark-hotkeys" }
 cutmark-remote = { version = "0.1.0", path = "../../crates/cutmark-remote" }
 directories = "6.0.0"
@@ -34,7 +35,7 @@ eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }
 egui.workspace = true
 env_logger = "0.11.11"
 events = { version = "0.1.0", path = "../../crates/events" }
-ffmpeg-next.workspace = true
+ffmpeg-next = { workspace = true, features = ["codec", "format", "software-scaling"] }
 global-hotkey = "0.10.0"
 hound = { workspace = true }
 log.workspace = true
@@ -55,6 +56,7 @@ uuid.workspace = true
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Gdi",
     "Win32_Media_Audio",
     "Win32_Security_Credentials",

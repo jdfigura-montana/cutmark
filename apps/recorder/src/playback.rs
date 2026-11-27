@@ -6,6 +6,9 @@
 //! clock counts the stereo frames the callback actually hands to the device minus the
 //! latency the device reports; without one, or when the device or the audio decoder fails,
 //! it falls back to an `Instant` clock and keeps the video playing.
+//!
+//! A take with an input track gets its cursor drawn back onto each frame, in the default style
+//! (input track spec, "Review").
 
 use std::cell::Cell;
 use std::path::Path;
@@ -15,13 +18,15 @@ use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{OutputCallbackInfo, SampleFormat, Stream, StreamConfig, SupportedStreamConfig, SupportedStreamConfigRange};
+use cursor_render::{CaptureMap, CursorStyle};
+use events::EventsReader;
 use media_io::MediaError;
 use media_io::player::audio::AudioDecoder;
-use media_io::player::probe::probe;
+use media_io::player::probe::{VideoInfo, probe};
 use media_io::player::video::{RgbaFrame, VideoDecoder};
 use thiserror::Error;
 
-use crate::review;
+use crate::review::{self, bake};
 
 /// Errors from opening a take for playback.
 #[derive(Debug, Error)]
@@ -159,6 +164,35 @@ impl WallClock {
     }
 }
 
+/// What draws a take's cursor back onto its frames.
+struct CursorOverlay {
+    track: EventsReader,
+    map: CaptureMap,
+    /// When the first video frame is, in microseconds from the file's start; the track counts from that frame.
+    video_start_us: i64,
+}
+
+impl CursorOverlay {
+    /// The overlay of the take whose main file is `video`; None when it has no readable input track or its video does
+    /// not show the screen.
+    fn load(video: &Path, stream: &VideoInfo) -> Option<Self> {
+        let path = video.with_extension("events");
+        if !path.is_file() || !bake::shows_screen(video) {
+            return None;
+        }
+        let track = review::load_track(&path)?;
+        let video_start_us = bake::video_start_us(video).map_err(|err| log::warn!("the cursor of {} is not drawn: {err}", video.display())).ok()?;
+        Some(Self { track, map: CaptureMap::new(stream.width, stream.height), video_start_us })
+    }
+
+    /// Draws the cursor of the frame's time onto the frame.
+    fn draw(&self, frame: &mut RgbaFrame) {
+        let from_start = i64::try_from(frame.pts_ms).unwrap_or(i64::MAX).saturating_mul(1000);
+        let time_us = from_start.saturating_sub(self.video_start_us);
+        cursor_render::render(frame, &self.track, time_us, &self.map, &CursorStyle::default());
+    }
+}
+
 /// One take playing back: its video decoder, its mixdown audio decoder and the output stream
 /// that drives the shared clock. Dropping it stops the stream and joins both decoders.
 pub struct Playback {
@@ -180,6 +214,10 @@ pub struct Playback {
     fallback: bool,
     /// The audio problem that made playback fall back to the wall clock, to report once.
     device_error: Option<String>,
+    /// The take's cursor, when it has an input track.
+    cursor: Option<CursorOverlay>,
+    /// Whether the cursor is drawn.
+    show_cursor: bool,
 }
 
 impl Playback {
@@ -212,7 +250,14 @@ impl Playback {
             _ => Clock::Wall(WallClock::new()),
         };
         let duration_ms = review::take_duration(path, Some(info.duration_ms), review::load_sidecar(path).as_ref()).unwrap_or(0);
-        Ok(Self { stream, audio, video, shared, clock, duration_ms, playing: false, fallback: false, device_error })
+        let cursor = info.video.as_ref().and_then(|stream| CursorOverlay::load(path, stream));
+        Ok(Self { stream, audio, video, shared, clock, duration_ms, playing: false, fallback: false, device_error, cursor, show_cursor: true })
+    }
+
+    /// Draws the take's cursor from the next frame on, or leaves it out. A take without an input track shows the same
+    /// either way.
+    pub fn set_show_cursor(&mut self, show: bool) {
+        self.show_cursor = show;
     }
 
     /// Resumes the clock and both decoders.
@@ -299,7 +344,14 @@ impl Playback {
         if self.playing && end_of_file(position, self.duration_ms) {
             self.pause();
         }
-        self.video.as_ref().and_then(|video| video.frame_at(position))
+        // The decoder hands out a copy of the frame it keeps, so drawing on it leaves that one clean.
+        let mut frame = self.video.as_ref().and_then(|video| video.frame_at(position))?;
+        if self.show_cursor
+            && let Some(cursor) = &self.cursor
+        {
+            cursor.draw(&mut frame);
+        }
+        Some(frame)
     }
 
     /// The caption for the audio problem (device or decoder) that made playback fall back to
@@ -650,6 +702,69 @@ pub(crate) mod tests {
         assert_eq!(playback.position_ms(), playback.duration_ms());
         assert!(playback.current_frame().is_some(), "the last frame stays shown");
         drop(frame);
+        Ok(())
+    }
+
+    /// The track counts from the first video frame, so the cursor must move on exactly the frame it moved in the
+    /// recording, also in a video that starts 100 ms into its file. The switch takes it away again.
+    #[test]
+    fn playback_draws_the_cursor_on_the_frame_of_its_time() -> Result<(), Box<dyn std::error::Error>> {
+        for (name, late) in [("playback", 0), ("playback-late", crate::review::bake::tests::LATE_FRAMES)] {
+            check_playback_cursor(name, late)?;
+        }
+        Ok(())
+    }
+
+    fn check_playback_cursor(name: &str, late: u32) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::review::bake::tests::{HEIGHT, MOVE_FRAME, TestTake, WIDTH};
+
+        let take = match TestTake::starting(name, late)? {
+            Ok(take) => take,
+            Err(reason) => {
+                eprintln!("skipped: {reason}");
+                return Ok(());
+            }
+        };
+        let green = |frame: &RgbaFrame, x: u32, y: u32| {
+            let at = ((y * frame.width + x) * 4) as usize;
+            frame.data[at..at + 4] == [0, 255, 0, 255]
+        };
+        // The middle of the cursor at its first and at its second place.
+        let (first, second) = ((108, 108), (408, 208));
+
+        let info = probe(&take.video)?;
+        let overlay = CursorOverlay::load(&take.video, info.video.as_ref().ok_or("no video")?).ok_or("no overlay")?;
+        // Matroska's millisecond times of the frame before the move and of the frame of the move.
+        let before = u64::from(late + MOVE_FRAME - 1) * 1000 / 60;
+        let moved = u64::from(late + MOVE_FRAME) * 1000 / 60;
+        for (pts_ms, here, gone) in [(before, first, second), (moved, second, first)] {
+            let mut frame = RgbaFrame { width: WIDTH, height: HEIGHT, pts_ms, data: vec![0; (WIDTH * HEIGHT * 4) as usize] };
+            overlay.draw(&mut frame);
+            assert!(green(&frame, here.0, here.1) && !green(&frame, gone.0, gone.1), "at {pts_ms} ms");
+        }
+
+        let mut playback = Playback::open(&take.video)?;
+        // The wall clock stands exactly where a seek puts it, with or without an output device here.
+        playback.stream = None;
+        playback.audio = None;
+        playback.clock = Clock::Wall(WallClock::new());
+        playback.seek(moved);
+        let started = std::time::Instant::now();
+        let shown = loop {
+            if let Some(frame) = playback.current_frame() {
+                break frame;
+            }
+            assert!(started.elapsed() < Duration::from_secs(10), "no frame arrived");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(green(&shown, second.0, second.1), "the cursor is drawn by default");
+        playback.set_show_cursor(false);
+        let hidden = playback.current_frame().ok_or("the frame stays shown")?;
+        assert!(!green(&hidden, second.0, second.1), "the switch leaves the cursor out");
+        playback.set_show_cursor(true);
+        assert!(green(&playback.current_frame().ok_or("the frame stays shown")?, second.0, second.1));
+        playback.close();
+        std::fs::remove_dir_all(&take.folder)?;
         Ok(())
     }
 

@@ -17,6 +17,11 @@
 //! hands the files to the Recycle Bin through the `trash` crate. Adding a mark
 //! writes a Note to the sidecar through the marks crate and regenerates the
 //! derived `_marks` files from the marks exports.
+//!
+//! What Review shows of a take's input track is summed up here too; writing the
+//! copy with the cursor burned in is [`bake`].
+
+pub mod bake;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -30,6 +35,9 @@ use crate::config::CompositeMode;
 
 /// The file extensions that make a file group a take (spec "Review mode").
 const MEDIA_EXTENSIONS: [&str; 3] = ["mkv", "mp4", "mov"];
+
+/// The extension of a take's input track.
+const EVENTS_EXTENSION: &str = "events";
 
 /// The end of the marks sidecar's file name, after the take's stem.
 const MARKS_SUFFIX: &str = ".marks.json";
@@ -72,6 +80,8 @@ pub struct Take {
     pub video: PathBuf,
     /// The camera ISO file, when the take has one.
     pub iso: Option<PathBuf>,
+    /// The input track, `{stem}.events`, when the take has one.
+    pub events: Option<PathBuf>,
     /// The main file's video format (see [`format_video`]); None when the probe cannot read it.
     pub video_format: Option<String>,
     /// The camera ISO file's video format; None without one or when the probe cannot read it.
@@ -414,7 +424,41 @@ fn build_take(name: String, mut files: Vec<TakeFile>) -> Option<Take> {
     };
     let composite = load_composite_mode(&video.with_file_name(format!("{name}{SESSION_SUFFIX}")));
     let total_size = files.iter().map(|file| file.size).sum();
-    Some(Take { name, start, duration_ms, total_size, files, video, iso, video_format, iso_format, marks, composite })
+    let events_path = video.with_extension(EVENTS_EXTENSION);
+    let events = files.iter().any(|file| file.path == events_path).then_some(events_path);
+    Some(Take { name, start, duration_ms, total_size, files, video, iso, events, video_format, iso_format, marks, composite })
+}
+
+/// What the File group says about a take's input track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrackSummary {
+    /// Mouse buttons that went down; None when clicks were not recorded.
+    pub clicks: Option<usize>,
+    /// Keyboard shortcuts; None when they were not recorded.
+    pub shortcuts: Option<usize>,
+    /// Changes of the app in front during the take; None when they were not recorded.
+    pub app_switches: Option<usize>,
+    /// False when the file has no `TAIL` chunk: the recording or its logger ended early.
+    pub complete: bool,
+}
+
+impl TrackSummary {
+    /// Sums up a track.
+    pub fn of(track: &events::EventsReader) -> Self {
+        let streams = track.header().streams;
+        Self {
+            clicks: streams.clicks.then(|| track.clicks().count()),
+            shortcuts: streams.keys.then(|| track.chords().len()),
+            // The app in front when the take began is stated at time zero; it is no switch.
+            app_switches: streams.apps.then(|| track.apps().iter().filter(|app| app.time_us > 0).count()),
+            complete: track.is_complete(),
+        }
+    }
+}
+
+/// Loads a take's input track, logging why when it cannot be read.
+pub fn load_track(path: &Path) -> Option<events::EventsReader> {
+    events::EventsReader::open(path).map_err(|err| log::warn!("could not read {}: {err}", path.display())).ok()
 }
 
 /// The `composite.mode` of a take's session.json; Baked when the file or the block is missing or
@@ -747,6 +791,59 @@ mod tests {
         for name in ["take01.mp4", "take01.events", "take01.baked.mp4"] {
             assert_eq!(take_stem(name, &videos), "take01", "{name}");
         }
+    }
+
+    /// A take knows its own events file, and a bake's unfinished temp file never makes or joins a take.
+    #[test]
+    fn a_take_finds_its_events_file() -> Result<(), Box<dyn std::error::Error>> {
+        let root = fresh_dir("review-events")?;
+        for name in ["with.mkv", "with.events", "with.baked.mp4.tmp", "without.mkv"] {
+            fs::write(root.join(name), b"data")?;
+        }
+        let days = scan(&root);
+        let take = |name| find(&days, Some(name)).ok_or("the take is missing");
+        assert_eq!(take("with")?.events, Some(root.join("with.events")));
+        assert_eq!(take("with")?.files.len(), 2);
+        assert_eq!(take("without")?.events, None);
+        assert_eq!(days.iter().map(|day| day.takes.len()).sum::<usize>(), 2);
+        fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    /// The counts leave out the app that was in front from the start and say so for a stream that was off, and a
+    /// track without its tail is incomplete.
+    #[test]
+    fn the_input_track_is_summed_up() -> Result<(), Box<dyn std::error::Error>> {
+        use events::{AppSwitch, CaptureSource, EventsReader, EventsWriter, Header, InputEvent, MouseAction, MouseButton, MouseEvent, ScreenRect, Streams};
+
+        let header = Header {
+            qpc_frequency: 1_000_000,
+            first_frame_qpc: 0,
+            source: CaptureSource::Monitor(ScreenRect::default()),
+            displays: Vec::new(),
+            cursor_size: 32,
+            streams: Streams { cursor: true, clicks: true, keys: false, apps: true },
+        };
+        let click = |qpc, action| InputEvent::Mouse(MouseEvent { qpc, x: 0, y: 0, action });
+        let app = |qpc, exe: &str| InputEvent::App(AppSwitch { qpc, exe: exe.to_owned(), display_name: exe.to_owned() });
+        let mut writer = EventsWriter::new(Vec::new(), &header)?;
+        for event in [
+            app(0, "one.exe"),
+            app(500, "two.exe"),
+            click(10, MouseAction::Down(MouseButton::Left)),
+            click(20, MouseAction::Up(MouseButton::Left)),
+            click(30, MouseAction::Down(MouseButton::Right)),
+            click(40, MouseAction::Wheel(120)),
+        ] {
+            writer.push(event)?;
+        }
+        writer.flush_second()?;
+        let cut_short = writer.get_ref().clone();
+        let whole = writer.finish(1_000)?;
+        let expected = TrackSummary { clicks: Some(2), shortcuts: None, app_switches: Some(1), complete: true };
+        assert_eq!(TrackSummary::of(&EventsReader::from_bytes(&whole)?), expected);
+        assert_eq!(TrackSummary::of(&EventsReader::from_bytes(&cut_short)?), TrackSummary { complete: false, ..expected });
+        Ok(())
     }
 
     #[test]

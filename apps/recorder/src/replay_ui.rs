@@ -19,6 +19,8 @@ pub(crate) struct Notice {
     pub text: String,
     /// What its Review button opens, for a toast that has one.
     pub review: Option<ReviewTarget>,
+    /// The file its Show in folder button selects, for a toast that has one. No toast has both buttons.
+    pub show: Option<std::path::PathBuf>,
 }
 
 /// The toast for one replay event.
@@ -27,9 +29,10 @@ fn notice(event: &ReplayEvent) -> Notice {
         ReplayEvent::Saved(saved) => Notice {
             text: format!("Replay saved: {}", take_label(&saved.name)),
             review: Some(ReviewTarget { view: ReviewView::Replays, take: saved.name.clone() }),
+            show: None,
         },
-        ReplayEvent::InputTrack(text) => Notice { text: text.clone(), review: None },
-        ReplayEvent::SaveFailed(reason) => Notice { text: format!("Replay could not be saved: {reason}"), review: None },
+        ReplayEvent::InputTrack(text) => Notice { text: text.clone(), review: None, show: None },
+        ReplayEvent::SaveFailed(reason) => Notice { text: format!("Replay could not be saved: {reason}"), review: None, show: None },
         ReplayEvent::RamWarning(warning) => {
             let gb = |bytes: u64| bytes as f64 / GIB as f64;
             let text = format!(
@@ -37,7 +40,7 @@ fn notice(event: &ReplayEvent) -> Notice {
                 gb(warning.need_bytes),
                 gb(warning.free_bytes)
             );
-            Notice { text, review: None }
+            Notice { text, review: None, show: None }
         }
     }
 }
@@ -135,8 +138,8 @@ mod tests {
         assert_eq!(
             new_notices(&state, &mut seen),
             [
-                Notice { text: "Replay saved: take07".to_owned(), review: Some(target) },
-                Notice { text: "Replay could not be saved: the disk is full".to_owned(), review: None },
+                Notice { text: "Replay saved: take07".to_owned(), review: Some(target), show: None },
+                Notice { text: "Replay could not be saved: the disk is full".to_owned(), review: None, show: None },
             ]
         );
         assert!(new_notices(&state, &mut seen).is_empty(), "an event is shown once");
@@ -144,7 +147,7 @@ mod tests {
         state.push_replay_event(ReplayEvent::RamWarning(ReplayRamWarning { need_bytes: 3 * GIB, free_bytes: 8 * GIB }));
         assert_eq!(
             new_notices(&state, &mut seen),
-            [Notice { text: "The replay buffer may use 3.0 GB of RAM, more than 25% of the 8.0 GB that is free".to_owned(), review: None }]
+            [Notice { text: "The replay buffer may use 3.0 GB of RAM, more than 25% of the 8.0 GB that is free".to_owned(), review: None, show: None }]
         );
     }
 }

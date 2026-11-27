@@ -77,6 +77,8 @@ pub struct Muxer {
     held: Vec<(usize, Packet)>,
     /// The chapters added just before the trailer, as start ms, end ms and title.
     chapters: Vec<(u64, u64, String)>,
+    /// Whether MP4 and MOV are written as standard files instead of fragmented ones.
+    standard_layout: bool,
 }
 
 impl Muxer {
@@ -97,7 +99,16 @@ impl Muxer {
             missing_headers: Vec::new(),
             held: Vec::new(),
             chapters: Vec::new(),
+            standard_layout: false,
         })
+    }
+
+    /// Writes MP4 and MOV as standard files with the index at the front, instead of fragmented ones; call before `start`.
+    ///
+    /// Only for a file that is thrown away when it does not finish, such as an export written to a temp file: one that
+    /// is cut short cannot be played. Matroska is not affected.
+    pub fn use_standard_layout(&mut self) {
+        self.standard_layout = true;
     }
 
     /// Sets the container tags: the encoder name, the title and the creation time (now, in UTC); call before `start`.
@@ -174,6 +185,45 @@ impl Muxer {
         Ok(index)
     }
 
+    /// Adds an audio stream that takes its packets unchanged from a stream of another file: codec, title and
+    /// disposition are kept. Feed it with `write_copied`.
+    pub fn add_copied_audio(&mut self, source: &ffmpeg_next::format::stream::Stream<'_>) -> Result<usize, MediaError> {
+        let parameters = source.parameters();
+        if parameters.medium() != Type::Audio {
+            return Err(MediaError::Null("muxer copied stream is not audio"));
+        }
+        let time_base = self.stream_time_base();
+        let title = {
+            let tags = source.metadata();
+            // MP4 and MOV keep a track's title in the handler name.
+            tags.get("title").or_else(|| tags.get("handler_name")).unwrap_or("Audio").to_owned()
+        };
+        let index = {
+            let mut stream = self.ctx.add_stream(parameters.id())?;
+            stream.set_parameters(parameters);
+            stream.set_time_base(time_base);
+            stream.set_metadata(stream_tags(&title, true));
+            carry_stream_flags(source, &mut stream);
+            stream.index()
+        };
+        self.streams.push(StreamInfo { encoder_time_base: source.time_base(), frame_step: None });
+        Ok(index)
+    }
+
+    /// Writes one packet of a stream added with `add_copied_audio`. Its time stamps and duration are in the source
+    /// stream's time base; its data, flags and side data are kept.
+    pub fn write_copied(&mut self, stream: usize, mut packet: Packet) -> Result<(), MediaError> {
+        if !self.started {
+            return Err(MediaError::Null("muxer write before start"));
+        }
+        if self.streams.get(stream).is_none_or(|info| info.frame_step.is_some()) {
+            return Err(MediaError::Null("muxer write_copied stream index"));
+        }
+        packet.set_stream(stream);
+        packet.set_position(-1);
+        if self.header_written { self.emit(stream, packet) } else { self.hold(stream, packet) }
+    }
+
     /// Writes the container header; call once after all streams are added.
     ///
     /// When a video stream the container wants a codec header for has none yet (AMF may
@@ -210,7 +260,7 @@ impl Muxer {
             }
             Container::Mp4 | Container::Mov => {
                 let mut options = Dictionary::new();
-                options.set("movflags", FRAGMENT_FLAGS);
+                options.set("movflags", if self.standard_layout { "faststart" } else { FRAGMENT_FLAGS });
                 self.ctx.write_header_with(options)?;
             }
         }
@@ -282,8 +332,8 @@ impl Muxer {
             out.set_dts(out.dts().map(on_grid));
             out.set_duration(1i64.rescale(frame_step, stream_tb));
         } else {
-            out.set_pts(out.pts().map(|pts| pts.rescale(info.encoder_time_base, stream_tb)));
-            out.set_dts(out.dts().map(|dts| dts.rescale(info.encoder_time_base, stream_tb)));
+            // Encoder packets carry no duration here; copied packets carry their source's.
+            out.rescale_ts(info.encoder_time_base, stream_tb);
         }
         out.write_interleaved(ctx)?;
         // Only video flushes on keyframes; audio packets interleave freely.

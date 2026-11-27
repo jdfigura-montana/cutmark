@@ -177,6 +177,8 @@ pub struct RecorderApp {
     review_dirty: bool,
     /// The take the toast on screen offers a Review action for, until the toast is gone.
     review_take_pending: Option<ReviewTarget>,
+    /// The file the toast on screen offers Show in folder for, until the toast is gone.
+    show_file_pending: Option<std::path::PathBuf>,
     /// The toasts not shown yet, oldest first; each waits until the one before it is gone.
     notices: VecDeque<Notice>,
     /// Whether a toast was on screen on the previous frame.
@@ -312,6 +314,7 @@ impl RecorderApp {
             review_selected: None,
             review_dirty: true,
             review_take_pending: None,
+            show_file_pending: None,
             notices: VecDeque::new(),
             toast_up: false,
             seen_replay_seq: 0,
@@ -739,7 +742,7 @@ impl RecorderApp {
                 // The finished take joins the Review list, and the toast offers to open it there.
                 self.review_dirty = true;
                 let text = format!("{} saved", crate::profile_ui::take_label(&base_name));
-                self.notices.push_back(Notice { text, review: Some(ReviewTarget { view: ReviewView::Takes, take: base_name }) });
+                self.notices.push_back(Notice { text, review: Some(ReviewTarget { view: ReviewView::Takes, take: base_name }), show: None });
             }
         }
         self.running_take = state.take.as_ref().filter(|_| running).map(|take| take.base_name.clone());
@@ -779,13 +782,54 @@ impl RecorderApp {
         {
             ui_kit::toast(ctx, notice.text);
             self.review_take_pending = notice.review;
+            self.show_file_pending = notice.show;
         }
         let shown = ui_kit::show_toasts(ctx);
         self.toast_up = shown.is_some();
         if !self.toast_up && !self.notices.is_empty() {
             ctx.request_repaint();
         }
+        self.toast_folder_action(ctx, shown.as_ref());
         self.toast_review_action(ctx, shown, running);
+    }
+
+    /// Draws a toast's Show in folder button beside the capsule, where a Review button would be; no toast has both.
+    fn toast_folder_action(&mut self, ctx: &egui::Context, shown: Option<&egui::Response>) {
+        let (Some(file), Some(toast)) = (self.show_file_pending.as_deref(), shown) else {
+            // The toast is gone; the action goes with it.
+            if shown.is_none() {
+                self.show_file_pending = None;
+            }
+            return;
+        };
+        egui::Area::new(egui::Id::new("toast-folder-action"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(toast.rect.right() + space::SCALE_8, toast.rect.center().y - TOAST_BUTTON_HALF_HEIGHT))
+            .show(ctx, |ui| {
+                if ui.add(egui::Button::new("Show in folder").small()).clicked() {
+                    platform::show_in_folder(file);
+                }
+            });
+    }
+
+    /// Queues the toast of a bake that ended, whichever mode is on screen, and has Review scan again: the take has
+    /// a new file.
+    fn take_in_bake(&mut self) {
+        if let Some(report) = self.take_panel.poll_bake() {
+            self.review_dirty = true;
+            self.notices.push_back(Notice { text: report.text, review: None, show: report.file });
+        }
+    }
+
+    /// Starts Bake with cursor on the selected take.
+    fn bake_selected_take(&mut self, ctx: &egui::Context) {
+        let Some(take) = review::find(&self.review_days, self.review_selected.as_deref()) else { return };
+        let wake = ctx.clone();
+        if let Some(report) = self.take_panel.start_bake(take, move || wake.request_repaint()) {
+            self.notices.push_back(Notice { text: report.text, review: None, show: report.file });
+        }
+        // The Actions group was drawn before the bake started.
+        ctx.request_repaint();
     }
 
     /// Draws a toast's Review button beside the toast capsule and opens
@@ -1320,6 +1364,15 @@ impl RecorderApp {
                             self.review_center.settle();
                         }
                     }
+                    review_ui::TakeAction::ShowCursor(show) => {
+                        if let Some(playback) = &mut self.review_playback {
+                            playback.set_show_cursor(show);
+                            self.review_center.settle();
+                            // The picture was drawn before the switch changed.
+                            ui.ctx().request_repaint();
+                        }
+                    }
+                    review_ui::TakeAction::Bake => self.bake_selected_take(ui.ctx()),
                     review_ui::TakeAction::None => {}
                 }
             });
@@ -1396,7 +1449,10 @@ impl RecorderApp {
         self.review_playback_error = None;
         let Some(path) = wanted else { return };
         match Playback::open(&path) {
-            Ok(playback) => self.review_playback = Some(playback),
+            Ok(mut playback) => {
+                playback.set_show_cursor(self.take_panel.show_cursor);
+                self.review_playback = Some(playback);
+            }
             Err(err) => {
                 log::warn!("the playback of {} could not open: {err}", path.display());
                 self.review_playback_error = Some(err.to_string());
@@ -2216,6 +2272,7 @@ impl eframe::App for RecorderApp {
         // The Review keys (spec "Review mode"): play, seek steps and mark jumps.
         self.review_keys(&ctx);
 
+        self.take_in_bake();
         // The toasts (spec "Mode rules"): one glass capsule at a time; a saved
         // take's toast carries a Review action that opens Review on that take.
         self.show_notices(&ctx, running);
