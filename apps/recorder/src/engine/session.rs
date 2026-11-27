@@ -1,26 +1,24 @@
 //! The recording session: session config, live stats, and the start, pause,
-//! resume and stop calls that drive the video thread.
+//! resume and stop calls. A session is a capture part ([`Capture`]) and the take part ([`Take`]) recording it.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 
-use capture::{AudioDevice, CaptureError, qpc_frequency, qpc_now};
+use capture::{AudioDevice, CaptureError};
 use media_io::AudioCodec;
 use media_io::MediaError;
 use media_io::encode::{ComboError, EncoderConfig, check_combo};
 use media_io::mux::{MuxThread, Muxer, SendParameters};
 
-use super::audio::{self, AudioMessage, AudioStart};
-use super::cam::{self, CamCounters, CamHandle, CamSnapshot, CamSummary};
-use super::clock::MediaClock;
+use super::cam::{self, CamCounters, CamSnapshot, CamSummary};
+use super::capture_part::{Capture, PreparedCapture};
 use super::composite::CompositeBlock;
 use super::marks::{MarksWarning, MkvChapter, TakeMarks, wav_length_ms};
-use super::sink::{PacketSink, TakeWriter, WavPlan};
-use super::video;
+use super::sink::CaptureOutput;
+use super::take_part::{Take, TakeFiles};
 use crate::config::{Container, Profile};
 
 /// Why starting, pausing or stopping a recording failed.
@@ -152,7 +150,7 @@ pub struct Stats {
     pub(super) bytes_written: AtomicU64,
     /// The QPC value at recording time 0.
     pub(super) started_qpc: AtomicU64,
-    /// Whether the session is paused; the video thread watches it every tick.
+    /// Whether the take is paused, for the snapshot; the capture goes on and its output leaves the pause out.
     pub(super) paused: AtomicBool,
     /// The text of the last frame error, if any.
     pub(super) last_error: Mutex<Option<String>>,
@@ -198,6 +196,11 @@ impl Stats {
                 .collect(),
             app_events: Mutex::new(Vec::new()),
         }
+    }
+
+    /// The track names, in track order.
+    pub(super) fn track_names(&self) -> impl Iterator<Item = &str> {
+        self.tracks.iter().map(|slot| slot.name.as_str())
     }
 
     /// Queues an app event for the session.
@@ -461,8 +464,8 @@ pub(super) struct VideoSetup {
 pub(super) struct StartCommand {
     /// The QPC value every stream counts its recording time 0 from.
     pub(super) start_qpc: i64,
-    /// Where the thread's packets go.
-    pub(super) sink: Arc<dyn PacketSink>,
+    /// Where the thread's packets go, and what decides the frames its take wants as keyframes.
+    pub(super) output: Arc<CaptureOutput>,
 }
 
 /// One audio stream to add to the muxer between the video stream and start.
@@ -511,7 +514,7 @@ impl SessionFile {
     }
 
     /// Adds an attach or detach time to the app track's entry.
-    fn app_event(&mut self, event: &AppEvent) {
+    pub(super) fn app_event(&mut self, event: &AppEvent) {
         let key = if event.attached { "attached_ms" } else { "detached_ms" };
         if let Some(times) = self.doc.pointer_mut(&format!("/audio/tracks/{}/{key}", event.track)).and_then(serde_json::Value::as_array_mut) {
             times.push(event.t_ms.into());
@@ -629,33 +632,15 @@ fn track_entry(track: &TrackSpec) -> serde_json::Value {
     entry
 }
 
-/// One running recording: talks to the video thread through atomics and a channel.
+/// One running recording: a capture and the take that records it, started and stopped together.
 pub struct RecordingSession {
-    stats: Arc<Stats>,
-    stop_flag: Arc<AtomicBool>,
-    rx: Receiver<ThreadMessage>,
-    handle: Option<std::thread::JoinHandle<()>>,
-    audio_rx: Receiver<AudioMessage>,
-    audio_handle: Option<std::thread::JoinHandle<()>>,
-    mux: Option<MuxThread>,
-    /// The marks of the take, until stop() finishes them.
-    marks: Option<TakeMarks>,
-    /// The last marks error, which never stops the recording.
-    marks_warning: MarksWarning,
-    /// Frames per second of the video, for the video's length at stop.
-    fps: u32,
-    /// The take's session.json, rewritten at stop.
-    session_file: SessionFile,
-    /// The camera ISO thread, until stop() finishes it.
-    cam: Option<CamHandle>,
-    /// Why the profile's camera file is not being recorded, for a banner.
-    cam_notice: Option<String>,
+    capture: Capture,
+    take: Take,
 }
 
 impl RecordingSession {
-    /// Starts a recording: the video and audio threads set up, the session
-    /// builds the muxer around their streams, then every stream starts from
-    /// one instant.
+    /// Starts a recording: the capture's encoders open, the take builds its files around their streams, then every
+    /// stream starts from one instant with the take already on it.
     pub fn start(mut cfg: SessionConfig) -> Result<Self, EngineError> {
         resolve_source_size(&mut cfg)?;
         let container = cfg.profile.container;
@@ -663,231 +648,95 @@ impl RecordingSession {
         encoder.validate().map_err(media_io::encode::EncoderError::Config)?;
         check_combo(container, encoder.codec, cfg.profile.height, cfg.audio_codec)?;
         media_io::init()?;
-        let output_file = cfg.output_file.clone();
-        let (take_folder, base_name) = (cfg.take_folder.clone(), cfg.base_name.clone());
-        let fps = cfg.profile.fps;
-        let mut session_file = SessionFile::begin(&cfg);
-        // The camera file is decided before the config moves to the video thread.
+        let session_file = SessionFile::begin(&cfg);
         let cam_plan = cam::plan(&cfg);
-        // So is what the composite block needs: the profile and the camera's size as they are at the start.
-        let profile = cfg.profile.clone();
+        // The composite block needs the camera's size as it is at the start.
         let cam_size = crate::webcam::shared().map(|share| share.capture.format()).map(|format| (format.width, format.height));
         let stats = Arc::new(Stats::new(&cfg.tracks));
-        let stop_flag = Arc::new(AtomicBool::new(false));
-        let (tx, rx) = mpsc::channel();
-        let (start_tx, start_rx) = mpsc::channel::<StartCommand>();
-        let thread_stats = Arc::clone(&stats);
-        let thread_stop = Arc::clone(&stop_flag);
-        let job = audio::AudioJob { tracks: cfg.tracks.clone(), codec: cfg.audio_codec, mixdown: cfg.mixdown, track_streams: cfg.track_streams };
-        let wav_plan = WavPlan {
-            enabled: cfg.wav_sidecars,
-            take_folder: take_folder.clone(),
-            base_name: base_name.clone(),
-            track_names: cfg.tracks.iter().map(|track| track.name.clone()).collect(),
-        };
-        let handle = std::thread::Builder::new()
-            .name("video".to_owned())
-            .spawn(move || video::run(cfg, thread_stats, thread_stop, tx, start_rx))
-            .map_err(|err| EngineError::Failed(format!("the video thread could not be started: {err}")))?;
-        // The audio thread reports the encoder facts of its streams, or its
-        // setup error, while the video thread sets up in parallel.
-        let (audio_tx, audio_rx) = mpsc::channel();
-        let (audio_start_tx, audio_start_rx) = mpsc::channel::<AudioStart>();
-        let audio_stats = Arc::clone(&stats);
-        let audio_stop = Arc::clone(&stop_flag);
-        let audio_handle =
-            match std::thread::Builder::new().name("audio".to_owned()).spawn(move || audio::run(job, audio_stats, audio_stop, audio_tx, audio_start_rx)) {
-                Ok(handle) => handle,
-                Err(err) => {
-                    wind_up(&stop_flag, &rx, handle);
-                    return Err(EngineError::Failed(format!("the audio thread could not be started: {err}")));
-                }
-            };
-        // The video thread reports the encoder facts, or its setup error.
-        let setup = match rx.recv() {
-            Ok(ThreadMessage::Setup(Ok(setup))) => setup,
-            Ok(ThreadMessage::Setup(Err(err))) => {
-                wind_up_audio(&stop_flag, audio_start_tx, &audio_rx, audio_handle);
-                let _ = handle.join();
-                return Err(err);
-            }
-            Ok(ThreadMessage::Finished(..)) | Err(_) => {
-                wind_up_audio(&stop_flag, audio_start_tx, &audio_rx, audio_handle);
-                let _ = handle.join();
-                return Err(EngineError::Failed("the video thread ended before reporting setup".into()));
-            }
-        };
-        // The audio thread reports its stream facts, or its setup error.
-        let audio_setup = match audio_rx.recv() {
-            Ok(AudioMessage::Setup(Ok(setup))) => setup,
-            Ok(AudioMessage::Setup(Err(err))) | Ok(AudioMessage::Finished(Err(err))) => {
-                wind_up_audio(&stop_flag, audio_start_tx, &audio_rx, audio_handle);
-                wind_up(&stop_flag, &rx, handle);
-                return Err(err);
-            }
-            Ok(AudioMessage::Finished(Ok(_))) | Err(_) => {
-                wind_up_audio(&stop_flag, audio_start_tx, &audio_rx, audio_handle);
-                wind_up(&stop_flag, &rx, handle);
-                return Err(EngineError::Failed("the audio thread ended before reporting setup".into()));
-            }
-        };
-        let mux = match build_muxer(&output_file, container, fps, setup, audio_setup.streams) {
-            Ok((mux, streams)) => (mux, streams),
+        let mut prepared = PreparedCapture::open(&cfg, cam_plan, stats)?;
+        let files = match TakeFiles::open(&cfg, prepared.streams()) {
+            Ok(files) => files,
             Err(err) => {
-                drop(start_tx);
-                wind_up_audio(&stop_flag, audio_start_tx, &audio_rx, audio_handle);
-                wind_up(&stop_flag, &rx, handle);
+                prepared.abort();
                 return Err(err);
             }
         };
-        // The camera file has its own encoder and mux thread; a camera file that cannot start never stops the recording.
-        let (cam, cam_sender, cam_notice) = match cam_plan {
-            Ok(Some(plan)) => match cam::spawn(plan, Arc::clone(&stats), Arc::clone(&stop_flag)) {
-                Ok((handle, sender)) => (Some(handle), Some(sender), None),
-                Err(notice) => (None, None, Some(notice)),
-            },
-            Ok(None) => (None, None, None),
-            Err(notice) => (None, None, Some(notice)),
+        // With no file to write, a recording does not encode the camera at all.
+        if let Some(notice) = files.camera_error() {
+            prepared.drop_camera(notice.to_owned());
+        }
+        let capture = match prepared.begin(Some(files.sink())) {
+            Ok(capture) => capture,
+            Err(err) => {
+                files.discard();
+                return Err(err);
+            }
         };
-        // Every stream thread writes the take through this. The session must not keep it: a mux thread finishes only
-        // once its sender is gone, so a failed start drops it before finishing them.
-        let sink: Arc<dyn PacketSink> = Arc::new(TakeWriter::new(mux.0.sender(), mux.1, cam_sender, wav_plan));
-        // One start instant for every stream: the video thread only begins
-        // pacing, and the audio thread only begins filling, once they receive
-        // their commands.
-        let start_qpc = qpc_now();
-        stats.started_qpc.store(start_qpc as u64, Ordering::Relaxed);
-        // The audio thread works in 100 ns units, the video pacer in QPC ticks.
-        let qpc_freq = qpc_frequency();
-        let start_100ns = (start_qpc / qpc_freq) * 10_000_000 + (start_qpc % qpc_freq) * 10_000_000 / qpc_freq;
-        let video_ended = start_tx.send(StartCommand { start_qpc, sink: Arc::clone(&sink) }).is_err();
-        drop(start_tx);
-        if video_ended {
-            drop(sink);
-            wind_up_audio(&stop_flag, audio_start_tx, &audio_rx, audio_handle);
-            wind_up(&stop_flag, &rx, handle);
-            let _ = mux.0.finish();
-            if let Some(cam) = cam {
-                cam.abort();
-            }
-            return Err(EngineError::Failed("the video thread ended before recording started".into()));
-        }
-        let audio_ended = audio_start_tx.send(AudioStart { start_qpc: start_100ns, sink: Arc::clone(&sink) }).is_err();
-        drop(audio_start_tx);
-        if audio_ended {
-            drop(sink);
-            wind_up(&stop_flag, &rx, handle);
-            let _ = mux.0.finish();
-            if let Some(cam) = cam {
-                cam.abort();
-            }
-            return Err(EngineError::Failed("the audio thread ended before recording started".into()));
-        }
-        // The camera thread starts from the same instant as every other stream.
-        let (cam, cam_notice) = match cam {
-            Some(handle) if !handle.begin(StartCommand { start_qpc, sink: Arc::clone(&sink) }) => {
-                handle.abort();
-                (None, Some("The camera file was skipped: its thread ended before recording started.".to_owned()))
-            }
-            other => (other, cam_notice),
-        };
-        drop(sink);
-        if let Some(notice) = &cam_notice {
-            log::warn!("{notice}");
-        }
-        session_file.set_cam(cam.as_ref().map(CamHandle::file), cam_notice.as_deref());
-        let cam_file = cam.as_ref().map(|handle| file_name(handle.file()));
-        session_file.set_composite(&CompositeBlock::new(&profile, cam_size, &file_name(&output_file), cam_file.as_deref()));
-        let marks_warning = MarksWarning::default();
-        let marks = TakeMarks::begin(&take_folder, &base_name, &output_file, fps, MediaClock::new(start_qpc, qpc_freq), marks_warning.clone());
-        // A session.json that cannot be written is a warning, never a reason to stop the recording.
-        if let Err(err) = session_file.write() {
-            log::warn!("could not write the session file: {err}");
-            stats.set_last_error(format!("The session file could not be written: {err}"));
-        }
-        Ok(Self {
-            stats,
-            stop_flag,
-            rx,
-            handle: Some(handle),
-            audio_rx,
-            audio_handle: Some(audio_handle),
-            mux: Some(mux.0),
-            marks: Some(marks),
-            marks_warning,
-            fps,
-            session_file,
-            cam,
-            cam_notice,
-        })
+        let start_qpc = capture.stats().started_qpc.load(Ordering::Relaxed) as i64;
+        let take = files.record(&cfg, session_file, &capture, cam_size, start_qpc);
+        Ok(Self { capture, take })
     }
 
     /// Why the profile's camera file is not being recorded in this take, if it asked for one.
     pub fn cam_notice(&self) -> Option<&str> {
-        self.cam_notice.as_deref()
+        self.take.camera_notice.as_deref()
     }
 
     /// The take's marks, until the take is stopped.
     pub fn marks_mut(&mut self) -> Option<&mut TakeMarks> {
-        self.marks.as_mut()
+        self.take.marks.as_mut()
     }
 
     /// Moves the app tracks' attach and detach events into the marks and session.json.
     ///
     /// The controller calls this while a take runs, so the marks appear when they happen. True when a mark was added.
     pub fn apply_app_events(&mut self) -> bool {
-        let mut marked = false;
-        for event in self.stats.take_app_events() {
-            self.session_file.app_event(&event);
-            if event.mark
-                && let Some(marks) = self.marks.as_mut()
-            {
-                marks.app(&event.app_name, event.except, event.attached, event.t_ms);
-                marked = true;
-            }
-        }
-        marked
+        let events = self.capture.stats().take_app_events();
+        self.take.apply_app_events(events)
     }
 
     /// A handle to the take's last marks error, which stays readable after the take is stopped.
     pub fn marks_warning(&self) -> MarksWarning {
-        self.marks_warning.clone()
+        self.take.marks_warning.clone()
     }
 
-    /// Stops feeding the pacer; recording continues from the same frame on resume.
-    pub fn pause(&self) {
-        self.stats.paused.store(true, Ordering::Relaxed);
+    /// Pauses the take at the moment of the press; the capture goes on.
+    pub fn pause(&self, press_qpc: i64) {
+        self.capture.stats().paused.store(true, Ordering::Relaxed);
+        self.capture.output().pause(press_qpc);
     }
 
-    /// Continues recording with no gap in the frame indexes.
-    pub fn resume(&self) {
-        self.stats.paused.store(false, Ordering::Relaxed);
+    /// Continues the take on a forced keyframe, with no gap in its frame indexes.
+    pub fn resume(&self, press_qpc: i64) {
+        self.capture.output().resume(press_qpc);
+        self.capture.stats().paused.store(false, Ordering::Relaxed);
     }
 
     /// Sets a track's gain in dB right away; `index` counts the tracks of this take, in order.
     pub fn set_track_gain_db(&self, index: usize, db: f32) {
         if db.is_finite() {
-            self.stats.set_track_gain_db(index, db);
+            self.capture.stats().set_track_gain_db(index, db);
         }
     }
 
     /// Mutes or unmutes a track right away; `index` counts the tracks of this take, in order.
     pub fn set_track_muted(&self, index: usize, muted: bool) {
-        self.stats.set_track_muted(index, muted);
+        self.capture.stats().set_track_muted(index, muted);
     }
 
     /// A snapshot of the live counters, safe to call from the UI thread at any time.
     pub fn stats(&self) -> StatsSnapshot {
-        self.stats.snapshot()
+        self.capture.stats().snapshot()
     }
 
     /// The bytes written to the take's files and the mux queue depth, safe to call from any thread at any time.
     pub fn counters(&self) -> TakeCounters {
+        let stats = self.capture.stats();
         TakeCounters {
-            mux_bytes: self.mux.as_ref().map_or(0, MuxThread::bytes_written),
-            cam_bytes: self.stats.cam.bytes(),
-            wav_bytes: self.stats.wav_bytes.load(Ordering::Relaxed),
-            queue_depth: self.mux.as_ref().map_or(0, MuxThread::queue_depth),
+            mux_bytes: self.take.mux.bytes_written(),
+            cam_bytes: stats.cam.bytes(),
+            wav_bytes: stats.wav_bytes.load(Ordering::Relaxed),
+            queue_depth: self.take.mux.queue_depth(),
         }
     }
 
@@ -897,87 +746,12 @@ impl RecordingSession {
     }
 
     /// Finishes the files and returns the summary of the take with the camera ISO file's totals, which are none when the
-    /// take had no camera file or the file could not be finished. The audio thread stops first, then the video thread,
-    /// the camera thread, and the mux thread.
-    pub fn stop_with_cam(mut self) -> (Result<Summary, EngineError>, Option<CamSummary>) {
-        self.stop_flag.store(true, Ordering::Relaxed);
-        // The audio thread stops first so every stream and WAV ends at the
-        // video's length.
-        let audio = match self.audio_rx.recv() {
-            Ok(AudioMessage::Finished(result)) => result,
-            Ok(AudioMessage::Setup(_)) | Err(_) => Err(EngineError::Failed("the audio thread ended without reporting a summary".into())),
-        };
-        if let Some(handle) = self.audio_handle.take() {
-            let _ = handle.join();
-        }
-        // The audio thread is done, so these are the take's last app events, in before the marks are finished.
-        self.apply_app_events();
-        let mut outcome = Err(EngineError::Failed("the video thread ended without reporting a summary".into()));
-        while let Ok(message) = self.rx.recv() {
-            if let ThreadMessage::Finished(result) = message {
-                outcome = result;
-                break;
-            }
-        }
-        // The video thread is done, so the queue holds its last packets.
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-        // The camera thread ends with the stop flag and finishes its own file; a camera file that fails here never fails the take.
-        let cam = match self.cam.take().map(CamHandle::finish) {
-            Some(Ok(summary)) => Some(summary),
-            Some(Err(err)) => {
-                log::warn!("the camera file could not be finished: {err}");
-                self.stats.set_last_error(format!("The camera file could not be finished: {err}"));
-                None
-            }
-            None => None,
-        };
-        // Finish the mux thread and fold its totals into the summary.
-        if outcome.is_ok()
-            && let Some(mux) = self.mux.take()
-        {
-            // The marks are finished before the trailer, so the chapters go into the file.
-            if let (Some(marks), Ok(summary)) = (self.marks.take(), &outcome) {
-                let wav_files = audio.as_ref().map(|finished| finished.wav_files.clone()).unwrap_or_default();
-                let video_ms = u64::try_from(u128::from(summary.frames) * 1000 / u128::from(self.fps.max(1))).unwrap_or(u64::MAX);
-                mux.set_chapters(finish_marks(marks, &wav_files, video_ms, cam.as_ref()));
-            }
-            outcome = match mux.finish() {
-                Ok(mux_summary) => outcome.map(|mut summary| {
-                    let seconds = summary.duration_ms as f64 / 1000.0;
-                    summary.bytes_written = mux_summary.bytes_written;
-                    summary.packets = mux_summary.packets;
-                    summary.average_mbps = if seconds > 0.0 { summary.bytes_written as f64 * 8.0 / seconds / 1_000_000.0 } else { 0.0 };
-                    summary
-                }),
-                Err(err) => Err(err.into()),
-            };
-        }
-        // The WAV paths land in the summary; an audio failure surfaces only
-        // when the video side finished.
-        outcome = match (audio, outcome) {
-            (Err(err), Ok(_)) => Err(err),
-            (Ok(finished), Ok(mut summary)) => {
-                summary.wav_files = finished.wav_files;
-                summary.track_peaks = self
-                    .stats
-                    .tracks
-                    .iter()
-                    .zip(&finished.track_peaks_dbfs)
-                    .map(|(slot, peak_dbfs)| TrackPeak { name: slot.name.clone(), peak_dbfs: *peak_dbfs })
-                    .collect();
-                Ok(summary)
-            }
-            (_, outcome) => outcome,
-        };
-        // The totals go into session.json; a failed write is logged and shown as a warning, and the take is still finished.
-        self.session_file.finish(&outcome, &self.stats.snapshot(), cam.as_ref());
-        if let Err(err) = self.session_file.write() {
-            log::warn!("could not update the session file: {err}");
-            self.stats.set_last_error(format!("The session file could not be updated: {err}"));
-        }
-        (outcome, cam)
+    /// take had no camera file or the file could not be finished. The capture stops first, then the take's mux thread.
+    pub fn stop_with_cam(self) -> (Result<Summary, EngineError>, Option<CamSummary>) {
+        let Self { capture, take } = self;
+        let stats = Arc::clone(capture.stats());
+        let end = capture.stop();
+        take.finish(end, &stats)
     }
 }
 
@@ -1026,37 +800,6 @@ pub(super) fn build_muxer(
     muxer.start()?;
     let thread = MuxThread::start(muxer)?;
     Ok((thread, indexes))
-}
-
-/// Shuts the audio thread down after a failed startup and waits for it.
-fn wind_up_audio(stop_flag: &Arc<AtomicBool>, start_tx: std::sync::mpsc::Sender<AudioStart>, rx: &Receiver<AudioMessage>, handle: std::thread::JoinHandle<()>) {
-    stop_flag.store(true, Ordering::Relaxed);
-    drop(start_tx);
-    while let Ok(message) = rx.recv() {
-        if matches!(message, AudioMessage::Finished(_)) {
-            break;
-        }
-    }
-    let _ = handle.join();
-}
-
-/// Shuts the video thread down after a failed startup and waits for it.
-fn wind_up(stop_flag: &Arc<AtomicBool>, rx: &Receiver<ThreadMessage>, handle: std::thread::JoinHandle<()>) {
-    stop_flag.store(true, Ordering::Relaxed);
-    while let Ok(message) = rx.recv() {
-        if matches!(message, ThreadMessage::Finished(_)) {
-            break;
-        }
-    }
-    let _ = handle.join();
-}
-
-impl Drop for RecordingSession {
-    fn drop(&mut self) {
-        // A dropped session asks the video and audio threads to wind down; the
-        // file is only finished properly through stop().
-        self.stop_flag.store(true, Ordering::Relaxed);
-    }
 }
 
 /// Replaces a profile's Source output size (0x0) with the size of the captured monitor, rounded down to even numbers.

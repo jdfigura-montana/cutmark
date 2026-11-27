@@ -23,7 +23,7 @@ use media_io::{AudioCodec, AudioEncoder};
 
 use super::audio_track::{AppChange, AppSource, AppSystem, TrackLink, TrackPipeline, app_pids};
 use super::session::{AppEvent, AudioStreamSpec, EngineError, Instances, Stats, TrackSpec};
-use super::sink::PacketSink;
+use super::sink::{CaptureOutput, PacketSink};
 
 /// The audio thread's tick, about one AAC frame.
 const TICK: Duration = Duration::from_millis(10);
@@ -76,7 +76,7 @@ pub(super) struct AudioStart {
     /// The QPC value recording time 0 maps to, in 100 nanosecond units.
     pub(super) start_qpc: i64,
     /// Where the thread's packets and PCM go.
-    pub(super) sink: Arc<dyn PacketSink>,
+    pub(super) output: Arc<CaptureOutput>,
 }
 /// The audio side of a take's configuration, handed to the audio thread.
 pub(super) struct AudioJob {
@@ -166,15 +166,15 @@ fn record(
         // The session gave up; leave quietly without writing any files.
         Err(_) => return Ok(AudioSummary { wav_files: Vec::new(), track_peaks_dbfs: Vec::new() }),
     };
-    let sink = start.sink.as_ref();
+    let output = start.output.as_ref();
+    let sink: &dyn PacketSink = output;
     sink.open_pcm()?;
     // Closes the PCM output however the take ends.
     let _pcm = PcmGuard(sink);
     let mut rig = AudioRig::new(tracks.clone(), captures, mix_encoder, track_encoders, mixdown_on, start.start_qpc);
     rig.attach_at_start(apps, stats);
-    let mut start_100ns = start.start_qpc;
-    let mut paused_at: Option<i64> = None;
-    let mut was_paused = false;
+    // The audio timeline is the capture's, which never pauses: the output removes the take's paused time.
+    let start_100ns = start.start_qpc;
     let mut next_tick = Instant::now();
     let mut last_flush = Instant::now();
     let mut last_reconnect = Instant::now();
@@ -185,27 +185,10 @@ fn record(
         }
         next_tick += TICK;
         let now = qpc_now();
-        // A pause shifts every pipeline's timeline, exactly like the video pacer.
-        let paused = stats.paused.load(Ordering::Relaxed);
-        if paused != was_paused {
-            if paused {
-                for pipeline in &mut rig.pipelines {
-                    pipeline.pause(now);
-                }
-                paused_at = Some(now);
-            } else {
-                let at = paused_at.take().unwrap_or(now);
-                start_100ns += now - at;
-                for pipeline in &mut rig.pipelines {
-                    pipeline.resume(now);
-                }
-            }
-            was_paused = paused;
-        }
         rig.apply_controls(stats);
-        let t_ms = take_ms(paused_at.unwrap_or(now), start_100ns);
+        let t_ms = output.take_ms(now - start_100ns);
         rig.drain_captures(now, t_ms, stats, &mut WindowsApps);
-        // After the drain, so a replaced capture's queued packets are already in. Pauses are polled too.
+        // After the drain, so a replaced capture's queued packets are already in.
         if let Some(listing) = app_listings.as_ref().and_then(|listings| listings.try_iter().last()) {
             rig.poll_apps(&listing, t_ms, stats, &mut WindowsApps);
         }
@@ -213,9 +196,6 @@ fn record(
         if last_reconnect.elapsed() >= RECONNECT_INTERVAL {
             rig.reconnect_lost();
             last_reconnect = Instant::now();
-        }
-        if paused {
-            continue;
         }
         let now_index = timeline_index(now, start_100ns);
         rig.fill_silence(now_index);
@@ -553,12 +533,12 @@ impl AudioRig {
                 *sample = sample.clamp(-1.0, 1.0);
             }
             // The mixdown is always the first stream.
-            encode_stream(self.mix_encoder.as_mut(), 0, &mix, sink, stats)?;
+            encode_stream(self.mix_encoder.as_mut(), 0, &mix, sink)?;
         }
         for (index, block) in blocks.iter().enumerate() {
             let slot = self.track_slot(index)?;
             let encoder = self.track_encoders.get_mut(index).and_then(Option::as_mut);
-            encode_stream(encoder, slot, block, sink, stats)?;
+            encode_stream(encoder, slot, block, sink)?;
         }
         Ok(())
     }
@@ -680,13 +660,8 @@ pub(super) fn spawn_app_lister() -> Receiver<Vec<AudioApp>> {
     receiver
 }
 
-/// The time on the take's clock in ms of a QPC stamp in 100 ns units; `start_100ns` is already shifted by earlier pauses.
-fn take_ms(now_100ns: i64, start_100ns: i64) -> u64 {
-    (now_100ns - start_100ns).max(0) as u64 / 10_000
-}
-
 /// Feeds one interleaved block into its encoder and hands on the packets of the stream in `slot`.
-fn encode_stream(encoder: Option<&mut AudioEncoder>, slot: usize, block: &[f32], sink: &dyn PacketSink, stats: &Stats) -> Result<(), EngineError> {
+fn encode_stream(encoder: Option<&mut AudioEncoder>, slot: usize, block: &[f32], sink: &dyn PacketSink) -> Result<(), EngineError> {
     let Some(encoder) = encoder else {
         return Ok(());
     };
@@ -697,7 +672,6 @@ fn encode_stream(encoder: Option<&mut AudioEncoder>, slot: usize, block: &[f32],
             send_error = Some(err);
         }
     })?;
-    stats.audio_frames.fetch_add(block.len() as u64 / u64::from(OUT_CHANNELS), Ordering::Relaxed);
     send_error.map_or(Ok(()), Err)
 }
 
@@ -774,7 +748,7 @@ mod tests {
         // The video encoders need the GPU, so their packets enter where each thread takes them from its encoder.
         let packet = || media_io::EncodedPacket::from_raw_packet(ffmpeg_next::Packet::copy(&[0; 4]));
         let (mut video_err, mut cam_err) = (None, None);
-        video::write_packet(packet(), &mut |packet| sink.video(packet), &stats, &mut video_err);
+        video::write_packet(packet(), &mut |packet| sink.video(packet), &mut video_err);
         cam::write_packet(packet(), &sink, &mut cam_err);
         assert!(video_err.is_none() && cam_err.is_none());
 

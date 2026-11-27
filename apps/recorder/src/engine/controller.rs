@@ -1455,7 +1455,7 @@ impl Worker {
         if active.paused {
             return;
         }
-        active.session.pause();
+        active.session.pause(press_qpc);
         active.paused = true;
         self.with_marks(|marks| marks.pause(press_qpc));
         self.update(|state| state.phase = Phase::Paused);
@@ -1467,7 +1467,7 @@ impl Worker {
         if !active.paused {
             return;
         }
-        active.session.resume();
+        active.session.resume(press_qpc);
         active.paused = false;
         self.with_marks(|marks| marks.resume(press_qpc));
         self.update(|state| state.phase = Phase::Recording);

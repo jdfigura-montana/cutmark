@@ -33,7 +33,6 @@ fn check(name: &str, mut profile: Profile) -> Result<(), Box<dyn std::error::Err
     };
     let (mut pipeline, facts) = setup(&cfg)?;
     let mut rings = ReplayRings::new(&cfg, facts, None, Vec::new(), KEPT);
-    let stats = Stats::new(&cfg.tracks);
     let mut pacer = Pacer::new(qpc_frequency(), cfg.profile.fps, 1, qpc_now());
     let began = Instant::now();
     while began.elapsed() < CAPTURE {
@@ -44,7 +43,7 @@ fn check(name: &str, mut profile: Profile) -> Result<(), Box<dyn std::error::Err
                 rings.push_video(packet);
                 Ok(())
             };
-            encode_one_frame(&mut pipeline, &mut sink, &stats, &frame, pts)?;
+            encode_one_frame(&mut pipeline, &mut sink, &frame, pts)?;
             pacer.record(n, frame.content_seq, true);
         }
         std::thread::sleep(Duration::from_millis(1));

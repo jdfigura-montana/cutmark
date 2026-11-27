@@ -16,6 +16,9 @@ pub mod audio_track;
 #[allow(dead_code)]
 pub mod audio;
 
+/// The capture part of a session: the capture, the compositor and the encoders, with or without a take.
+mod capture_part;
+
 /// The camera ISO file: its own pacer, encoder and mux thread, fed by the shared camera.
 pub mod cam;
 
@@ -48,6 +51,12 @@ pub mod script;
 
 /// Where a take's encoded output goes: the sink trait of the stream threads and the writer behind it.
 mod sink;
+
+/// Which of a capture's output belongs to the take, and on what time stamps. Pure logic.
+mod take_gate;
+
+/// The take part of a session: the files one take writes.
+mod take_part;
 
 /// Live numbers of a running take: bytes, bitrate, free disk space and time left.
 pub mod stats;
