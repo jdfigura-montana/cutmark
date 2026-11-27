@@ -3,16 +3,21 @@
 
 use std::collections::HashSet;
 use std::ops::Range;
+use std::rc::Rc;
 
 use egui::text::{CCursor, CCursorRange, CharIndex, LayoutJob, TextFormat};
 use egui::text_edit::TextEditState;
 use ui_kit::tokens::{color, space};
 
+use crate::caret::{Bias, Doc};
 use crate::clipboard::{self, Clipboard};
 use crate::find;
 use crate::formatting::{self, Action};
+use crate::keys::Keys;
+use crate::markup::Markup;
 use crate::menu::Item;
-use crate::styled::{self, ParseCache, Reveal};
+use crate::slash;
+use crate::styled::{self, ParseCache};
 
 /// How strongly the accent color backs a find match, and the current one.
 const MATCH_TINT: f32 = 0.3;
@@ -27,6 +32,9 @@ const BOTTOM_PAD: f32 = space::SCALE_8;
 pub const CARET_WIDTH: f32 = 1.5;
 /// What an empty script shows.
 pub const PLACEHOLDER: &str = "Enter text or type '/' for commands";
+/// How long the caret stays solid after a key the editor handled itself. The field only
+/// restarts the blink for the keys it handles.
+const CARET_HOLD: f64 = 0.5;
 
 /// The editor's id for one opening of a script. Its cursor and undo history are kept under it.
 pub fn id(serial: u64) -> egui::Id {
@@ -175,6 +183,14 @@ pub struct Editor {
     /// The 1-based line of the text the cursor is on.
     cursor_line: u32,
     look: Look,
+    keys: Keys,
+    /// The selection as of the end of the last frame. One that has changed since may be
+    /// somewhere the caret must not rest.
+    placed: Option<CCursorRange>,
+    /// The parse of the text as of the end of the last frame, to tell a change made since.
+    left: Option<Rc<Markup>>,
+    /// When the editor last handled a key itself.
+    used_at: Option<f64>,
 }
 
 /// What the styled layout needs besides the text.
@@ -183,48 +199,6 @@ struct Look {
     cache: ParseCache,
     /// The View menu's Show Markdown.
     show_markdown: bool,
-    /// The 0-based line whose syntax shows: the cursor's, as of the last time no mouse button
-    /// was held.
-    revealed: Option<usize>,
-    /// The latest click, or the first of a run of them.
-    click: Option<Click>,
-}
-
-#[derive(Clone, Copy)]
-struct Click {
-    at: egui::Pos2,
-    /// What was revealed in the layout it was aimed at.
-    revealed: Option<usize>,
-    /// When the button was last let go.
-    released: Option<f64>,
-}
-
-impl Look {
-    /// Picks the line to reveal in this frame's layout. Call it before the field is shown.
-    ///
-    /// A press places the cursor in the layout on screen. Showing the new line's syntax while
-    /// the button is held would move the text under the pointer, and so drag out a selection.
-    /// A double or triple click would also pick from text that has moved since its first
-    /// click, so a press that repeats a click goes back to that click's layout.
-    fn follow_cursor(&mut self, ui: &egui::Ui, id: egui::Id, text: &str) {
-        let (delay, distance) = ui.ctx().options(|options| (options.input_options.max_double_click_delay, options.input_options.max_click_dist));
-        let (pressed, released, held, at, now) = ui.input(|i| {
-            let held = i.pointer.any_down() || i.pointer.any_released();
-            (i.pointer.primary_pressed(), i.pointer.primary_released(), held, i.pointer.interact_pos(), i.time)
-        });
-        if let Some(at) = at.filter(|_| pressed) {
-            let repeated = self.click.filter(|click| click.released.is_some_and(|released| now - released <= delay) && click.at.distance(at) <= distance);
-            match repeated {
-                Some(first) => self.revealed = first.revealed,
-                None => self.click = Some(Click { at, revealed: self.revealed, released: None }),
-            }
-        } else if !held {
-            self.revealed = cursor_row(ui.ctx(), id, text);
-        }
-        if let Some(click) = self.click.as_mut().filter(|_| released) {
-            click.released = Some(now);
-        }
-    }
 }
 
 impl Editor {
@@ -249,8 +223,17 @@ impl Editor {
         });
     }
 
-    /// Shows every line's Markdown syntax, or hides it all but on the cursor's line.
+    /// True while the "/" menu is open, which Esc closes.
+    pub fn menu_open(&self) -> bool {
+        self.keys.menu.is_some()
+    }
+
+    /// Shows the Markdown syntax, dimmed, or hides all of it.
     pub fn show_markdown(&mut self, show: bool) {
+        // With its syntax hidden again, the caret may be somewhere it must not rest.
+        if self.look.show_markdown && !show {
+            self.placed = None;
+        }
         self.look.show_markdown = show;
     }
 
@@ -271,9 +254,12 @@ impl Editor {
         // A point on each side, so that the change is exactly one step.
         add_undo_point(ctx, id, text);
         *text = change.text;
-        select(ctx, id, char_range(text, change.selection));
+        let selected = char_range(text, change.selection);
+        select(ctx, id, selected);
         add_undo_point(ctx, id, text);
+        (self.keys, self.placed) = (Keys::default(), Some(selected));
         self.edited.insert(serial);
+        self.left = None;
         // The status is read again, though the caret may not have moved.
         self.seen = None;
         true
@@ -286,14 +272,13 @@ impl Editor {
     pub fn show(&mut self, ui: &mut egui::Ui, serial: u64, text: &mut String, highlight: Option<Highlight<'_>>) -> Shown {
         if self.serial != serial {
             (self.serial, self.seen, self.status) = (serial, None, Status::default());
-            (self.look.revealed, self.look.click) = (None, None);
+            (self.keys, self.placed, self.left, self.used_at) = (Keys::default(), None, None, None);
         }
         let id = id(serial);
         if self.shown.insert(serial) {
             select(ui.ctx(), id, CCursorRange::one(CCursor::new(CharIndex(0))));
             ui.memory_mut(|memory| memory.request_focus(id));
         }
-        let look = &mut self.look;
         // With the caret in a list, Tab is the editor's. Elsewhere it moves the keyboard on.
         let in_list = self.status.format.list.is_some();
         let area = egui::UiBuilder::new().max_rect(ui.available_rect_before_wrap());
@@ -305,7 +290,7 @@ impl Editor {
                 scroll
                     .show(ui, |ui| {
                         let column = column(ui.available_rect_before_wrap());
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(column), |ui| field(ui, id, text, highlight, look, in_list)).inner
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(column), |ui| self.field(ui, id, text, highlight, in_list)).inner
                     })
                     .inner
             })
@@ -335,18 +320,221 @@ impl Editor {
         }
         shown
     }
+
+    /// The text field inside its scroll area.
+    fn field(&mut self, ui: &mut egui::Ui, id: egui::Id, text: &mut String, highlight: Option<Highlight<'_>>, in_list: bool) -> Shown {
+        let revealed = highlight.filter(|highlight| highlight.reveal).and_then(|highlight| {
+            let found = find::matches(text, highlight.query).get(highlight.current)?.clone();
+            Some(char_range(text, found))
+        });
+        if let Some(range) = revealed {
+            select(ui.ctx(), id, range);
+        }
+
+        // The undo history takes points when the text has rested, so a paste or cut gets one on
+        // each side to be exactly one step.
+        // Text put there from outside, as a restored snapshot is, may leave the caret in
+        // syntax that is now hidden.
+        if self.left.take().is_some_and(|left| !Rc::ptr_eq(&left, &self.look.cache.get(text))) {
+            self.placed = None;
+        }
+        let focused = ui.memory(|memory| memory.has_focus(id));
+        let pasting = focused && ui.input(|i| i.events.iter().any(|event| matches!(event, egui::Event::Paste(_) | egui::Event::Cut)));
+        if pasting {
+            add_undo_point(ui.ctx(), id, text);
+        }
+        let now = ui.input(|i| i.time);
+        let taken = if focused { self.keys.take(ui, id, text, &mut self.look.cache, self.look.show_markdown) } else { Default::default() };
+        if taken.used {
+            self.used_at = Some(now);
+        }
+        if let Some(left) = self.used_at.map(|used| used + CARET_HOLD - now).filter(|&left| left > 0.0) {
+            ui.visuals_mut().text_cursor.blink = false;
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(left));
+        }
+        // egui drops the selection of a field without the keyboard, and a right-click moves the
+        // cursor. The selection is put back below, so that menus and the find bar can act on it.
+        let kept = TextEditState::load(ui.ctx(), id).and_then(|state| state.cursor.char_range());
+
+        let font = styled::body_font();
+        let line = ui.fonts_mut(|fonts| fonts.row_height(&font));
+        // Enough empty rows that a click anywhere down the column lands in the field.
+        let rows = ((ui.available_height() - TOP_PAD - BOTTOM_PAD) / line).floor().max(1.0) as usize;
+        let accent = ui_kit::Theme::get(ui.ctx()).accent.accent;
+        let show_markdown = self.look.show_markdown;
+        let cache = &mut self.look.cache;
+        let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, wrap_width: f32| {
+            let text = buffer.as_str();
+            let found = highlight.map_or_else(Vec::new, |highlight| find::matches(text, highlight.query));
+            let tinted: Vec<_> = found
+                .into_iter()
+                .enumerate()
+                .map(|(index, found)| {
+                    let current = highlight.is_some_and(|highlight| index == highlight.current);
+                    (found, accent.gamma_multiply(if current { CURRENT_TINT } else { MATCH_TINT }))
+                })
+                .collect();
+            let markup = cache.get(text);
+            let job = styled::layout_job(ui, text, &markup, show_markdown, &tinted, wrap_width);
+            styled::layout(ui, &markup, job)
+        };
+
+        let right_button = ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary) || i.pointer.button_released(egui::PointerButton::Secondary));
+        // A place under the text, for what is only known once the text is laid out.
+        let behind = ui.painter().add(egui::Shape::Noop);
+        let gutter = styled::GUTTER as i8;
+        let margin = egui::Margin { left: gutter, right: gutter, top: TOP_PAD as i8, bottom: BOTTOM_PAD as i8 };
+        let output = egui::TextEdit::multiline(text)
+            .id(id)
+            .lock_focus(in_list)
+            .font(font)
+            .text_color(color::TEXT_PRIMARY)
+            // The margin goes in the frame: egui ignores TextEdit::margin once a frame is given.
+            .frame(egui::Frame::NONE.inner_margin(margin))
+            .desired_width(f32::INFINITY)
+            .desired_rows(rows)
+            .layouter(&mut layouter)
+            .show(ui);
+        let response = output.response.response;
+        if pasting {
+            add_undo_point(ui.ctx(), id, text);
+        }
+        let markup = self.look.cache.get(text);
+        let decorations = styled::decorations(ui, &markup, &output.galley, output.galley_pos.to_vec2(), show_markdown);
+        ui.painter().set(behind, egui::Shape::Vec(decorations.behind));
+        ui.painter().extend(decorations.front);
+        if text.is_empty() {
+            placeholder(ui, &output.galley, output.galley_pos);
+        }
+
+        if let Some(range) = kept {
+            // A right-click inside the selection keeps it. Anywhere else, it moves the cursor.
+            let on_selection = right_button
+                && !range.is_empty()
+                && response.contains_pointer()
+                && ui.input(|i| i.pointer.interact_pos()).is_some_and(|pointer| {
+                    let at = output.galley.cursor_from_pos(pointer - output.galley_pos).index;
+                    let [first, last] = range.sorted_cursors();
+                    (first.index..=last.index).contains(&at)
+                });
+            if on_selection || !ui.memory(|memory| memory.has_focus(id)) {
+                select(ui.ctx(), id, range);
+            }
+        }
+        // The field moves the cursor with no care for what is hidden. A new place for it is
+        // moved to one it may rest at.
+        let field_changed = response.changed();
+        if !show_markdown && !field_changed && !taken.changed && revealed.is_none() {
+            self.snap(ui, id, text, &output.galley, output.galley_pos, response.interact_pointer_pos());
+        }
+        if let Some(range) = revealed {
+            let [first, _] = range.sorted_cursors();
+            let at = output.galley.pos_from_cursor(first).translate(output.galley_pos.to_vec2());
+            ui.scroll_to_rect(at, Some(egui::Align::Center));
+        }
+
+        let picked = self.slash_menu(ui, id, text, &output.galley, output.galley_pos);
+        self.placed = TextEditState::load(ui.ctx(), id).and_then(|state| state.cursor.char_range());
+        self.left = Some(self.look.cache.get(text));
+        if taken.used
+            && let Some(range) = self.placed
+        {
+            let at = output.galley.pos_from_cursor(range.primary).translate(output.galley_pos.to_vec2());
+            ui.scroll_to_rect(at, None);
+        }
+        Shown { changed: field_changed || taken.changed || picked, response }
+    }
+
+    /// Moves a selection that has changed to places the caret may rest. The places on either
+    /// side of hidden syntax look the same: a click takes the one on the side of the
+    /// character it was nearer. `pointer` is where the pointer is, if it is clicking or
+    /// dragging in the text.
+    fn snap(&mut self, ui: &egui::Ui, id: egui::Id, text: &str, galley: &egui::Galley, at: egui::Pos2, pointer: Option<egui::Pos2>) {
+        let Some(mut state) = TextEditState::load(ui.ctx(), id) else {
+            return;
+        };
+        let Some(range) = state.cursor.char_range() else {
+            return;
+        };
+        let same = |a: CCursor, b: CCursor| a.index == b.index;
+        if self.placed.is_some_and(|placed| same(placed.primary, range.primary) && same(placed.secondary, range.secondary)) {
+            return;
+        }
+        let [first, last] = range.sorted_cursors();
+        // Select all takes the marks at the very start too, so that all of the script can go.
+        if !range.is_empty() && first.index.0 == 0 && last.index.0 == text.chars().count() {
+            return;
+        }
+        let anchor_stayed = self.placed.is_some_and(|placed| same(placed.secondary, range.secondary));
+        // A double or triple click picks both ends at once, and they draw in to its words.
+        let picked = pointer.is_some() && !range.is_empty() && !anchor_stayed;
+        let markup = self.look.cache.get(text);
+        let doc = Doc::new(text, &markup);
+        let index = |byte: usize| CharIndex(text[..byte].chars().count());
+        let place = |cursor: CCursor, pointer: Option<egui::Pos2>| {
+            let bias = if picked && cursor.index == first.index { Bias::Forward } else { Bias::Back };
+            let rest = doc.rest(byte_of(text, cursor.index), bias);
+            let (before, after) = doc.cluster(rest);
+            let byte = match pointer {
+                Some(pointer) if before < after => {
+                    let edge = galley.pos_from_cursor(CCursor::new(index(before))).left() + at.x;
+                    if pointer.x <= edge + 0.5 { before } else { after }
+                }
+                _ => rest,
+            };
+            CCursor { index: index(byte), ..cursor }
+        };
+        let primary = place(range.primary, pointer.filter(|_| !picked));
+        let secondary = match () {
+            () if range.is_empty() => primary,
+            () if anchor_stayed => range.secondary,
+            () => place(range.secondary, None),
+        };
+        if !same(primary, range.primary) || !same(secondary, range.secondary) {
+            state.cursor.set_char_range(Some(CCursorRange { primary, secondary, h_pos: range.h_pos }));
+            state.store(ui.ctx(), id);
+            ui.ctx().request_repaint();
+        }
+    }
+
+    /// Draws the "/" menu at the caret and does a command clicked in it. True if that
+    /// changed the text.
+    fn slash_menu(&mut self, ui: &egui::Ui, id: egui::Id, text: &mut String, galley: &egui::Galley, at: egui::Pos2) -> bool {
+        let Some(range) = TextEditState::load(ui.ctx(), id).and_then(|state| state.cursor.char_range()) else {
+            return false;
+        };
+        let [first, last] = range.sorted_cursors();
+        let selection = byte_of(text, first.index)..byte_of(text, last.index);
+        self.keys.check_menu(text, &selection);
+        let Some(menu) = &mut self.keys.menu else {
+            return false;
+        };
+        let listed = menu.query(text, &selection).map(slash::matching).unwrap_or_default();
+        let caret = galley.pos_from_cursor(range.primary).translate(at.to_vec2());
+        let shown = slash::show(ui, id, menu, &listed, caret);
+        if let Some(index) = shown.clicked {
+            menu.selected = index;
+            ui.memory_mut(|memory| memory.request_focus(id));
+            ui.ctx().request_repaint();
+            return self.keys.pick(ui.ctx(), id, text, &mut self.look.cache);
+        }
+        let focused = ui.memory(|memory| memory.has_focus(id));
+        let pressed = ui.input(|i| i.pointer.any_pressed());
+        if !shown.pointed && (pressed || !focused) {
+            self.keys.menu = None;
+        } else if focused {
+            // Esc closes the menu, and must not take the keyboard from the editor.
+            let filter = egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, tab: self.status.format.list.is_some(), escape: true };
+            ui.memory_mut(|memory| memory.set_focus_lock_filter(id, filter));
+        }
+        false
+    }
 }
 
 /// The 1-based line of the character at `index`.
 fn line_of(text: &str, index: CharIndex) -> u32 {
     let breaks = text.chars().take(index.0).filter(|&c| c == '\n').count();
     u32::try_from(breaks).map_or(u32::MAX, |breaks| breaks.saturating_add(1))
-}
-
-/// The 0-based line the field's cursor is on, or `None` before it has had one.
-fn cursor_row(ctx: &egui::Context, id: egui::Id, text: &str) -> Option<usize> {
-    let range = TextEditState::load(ctx, id)?.cursor.char_range()?;
-    Some(line_of(text, range.primary.index) as usize - 1)
 }
 
 /// The byte at which the character at `index` starts.
@@ -360,104 +548,6 @@ fn column(area: egui::Rect) -> egui::Rect {
     let width = area.width().min(COLUMN_WIDTH + 2.0 * styled::GUTTER);
     let left = area.left() + ((area.width() - width) / 2.0).floor();
     egui::Rect::from_min_size(egui::pos2(left, area.top()), egui::vec2(width, area.height()))
-}
-
-/// The text field inside its scroll area.
-fn field(ui: &mut egui::Ui, id: egui::Id, text: &mut String, highlight: Option<Highlight<'_>>, look: &mut Look, in_list: bool) -> Shown {
-    // egui drops the selection of a field without the keyboard, and a right-click moves the
-    // cursor. The selection is put back below, so that menus and the find bar can act on it.
-    let mut kept = TextEditState::load(ui.ctx(), id).and_then(|state| state.cursor.char_range());
-    let revealed = highlight.filter(|highlight| highlight.reveal).and_then(|highlight| {
-        let found = find::matches(text, highlight.query).get(highlight.current)?.clone();
-        Some(char_range(text, found))
-    });
-    if let Some(range) = revealed {
-        select(ui.ctx(), id, range);
-        kept = Some(range);
-    }
-
-    look.follow_cursor(ui, id, text);
-    let reveal = Reveal { line: look.revealed, all: look.show_markdown };
-
-    let font = styled::body_font();
-    let line = ui.fonts_mut(|fonts| fonts.row_height(&font));
-    // Enough empty rows that a click anywhere down the column lands in the field.
-    let rows = ((ui.available_height() - TOP_PAD - BOTTOM_PAD) / line).floor().max(1.0) as usize;
-    let accent = ui_kit::Theme::get(ui.ctx()).accent.accent;
-    let cache = &mut look.cache;
-    let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, wrap_width: f32| {
-        let text = buffer.as_str();
-        let found = highlight.map_or_else(Vec::new, |highlight| find::matches(text, highlight.query));
-        let tinted: Vec<_> = found
-            .into_iter()
-            .enumerate()
-            .map(|(index, found)| {
-                let current = highlight.is_some_and(|highlight| index == highlight.current);
-                (found, accent.gamma_multiply(if current { CURRENT_TINT } else { MATCH_TINT }))
-            })
-            .collect();
-        let markup = cache.get(text);
-        let job = styled::layout_job(ui, text, &markup, reveal, &tinted, wrap_width);
-        styled::layout(ui, &markup, job)
-    };
-
-    // The undo history takes points when the text has rested, so a paste gets one on each side
-    // to be exactly one step.
-    let pasting = ui.memory(|memory| memory.has_focus(id)) && ui.input(|i| i.events.iter().any(|event| matches!(event, egui::Event::Paste(_))));
-    if pasting {
-        add_undo_point(ui.ctx(), id, text);
-    }
-    let right_button = ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary) || i.pointer.button_released(egui::PointerButton::Secondary));
-    // A place under the text, for what is only known once the text is laid out.
-    let behind = ui.painter().add(egui::Shape::Noop);
-    let gutter = styled::GUTTER as i8;
-    let margin = egui::Margin { left: gutter, right: gutter, top: TOP_PAD as i8, bottom: BOTTOM_PAD as i8 };
-    let output = egui::TextEdit::multiline(text)
-        .id(id)
-        .lock_focus(in_list)
-        .font(font)
-        .text_color(color::TEXT_PRIMARY)
-        // The margin goes in the frame: egui ignores TextEdit::margin once a frame is given.
-        .frame(egui::Frame::NONE.inner_margin(margin))
-        .desired_width(f32::INFINITY)
-        .desired_rows(rows)
-        .layouter(&mut layouter)
-        .show(ui);
-    let response = output.response.response;
-    if pasting {
-        add_undo_point(ui.ctx(), id, text);
-    }
-    let decorations = styled::decorations(ui, &look.cache.get(text), &output.galley, output.galley_pos.to_vec2(), reveal);
-    ui.painter().set(behind, egui::Shape::Vec(decorations.behind));
-    ui.painter().extend(decorations.front);
-    if text.is_empty() {
-        placeholder(ui, &output.galley, output.galley_pos);
-    }
-
-    if let Some(range) = kept {
-        // A right-click inside the selection keeps it. Anywhere else, it moves the cursor.
-        let on_selection = right_button
-            && !range.is_empty()
-            && response.contains_pointer()
-            && ui.input(|i| i.pointer.interact_pos()).is_some_and(|pointer| {
-                let at = output.galley.cursor_from_pos(pointer - output.galley_pos).index;
-                let [first, last] = range.sorted_cursors();
-                (first.index..=last.index).contains(&at)
-            });
-        if on_selection || !ui.memory(|memory| memory.has_focus(id)) {
-            select(ui.ctx(), id, range);
-        }
-    }
-    if let Some(range) = revealed {
-        let [first, _] = range.sorted_cursors();
-        let at = output.galley.pos_from_cursor(first).translate(output.galley_pos.to_vec2());
-        ui.scroll_to_rect(at, Some(egui::Align::Center));
-    }
-    // The cursor may have changed lines since the layout was made.
-    if !ui.input(|i| i.pointer.any_down()) && cursor_row(ui.ctx(), id, text) != reveal.line {
-        ui.ctx().request_repaint();
-    }
-    Shown { changed: response.changed(), response }
 }
 
 /// The hint in an empty script, where its first line would be.
@@ -476,7 +566,7 @@ fn select(ctx: &egui::Context, id: egui::Id, range: CCursorRange) {
 }
 
 /// Makes the text and cursor as they are now a step that Undo can return to.
-fn add_undo_point(ctx: &egui::Context, id: egui::Id, text: &str) {
+pub(crate) fn add_undo_point(ctx: &egui::Context, id: egui::Id, text: &str) {
     let mut state = TextEditState::load(ctx, id).unwrap_or_default();
     // A field that has had no cursor yet has it at the end.
     let end = || CCursorRange::one(CCursor::new(CharIndex(text.chars().count())));

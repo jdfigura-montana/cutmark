@@ -5,7 +5,7 @@
 use std::ops::Range;
 
 use crate::lines::{self, Kind, Line};
-use crate::markup::{CueKind, CueMarkup, Inline, InlineSpan, Markup};
+use crate::markup::{CueKind, CueMarkup, Edge, Inline, InlineSpan, Markup};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum BlockStyle {
@@ -519,7 +519,9 @@ fn nest(text: &str, lines: &[Line], selection: &Range<usize>, inward: bool) -> O
             splices.push(Splice::new(old.quote_end, old.indent_end - old.quote_end, " ".repeat(indents[line])));
         }
     }
-    splices.change(text, selection)
+    // An empty item right under its parent's text would be read as that text's underline.
+    let underlines = |markup: &Markup| markup.edges.iter().filter(|(_, edge)| *edge == Edge::Underline).count();
+    splices.change(text, selection).filter(|change| underlines(&Markup::parse(&change.text)) <= underlines(&Markup::parse(text)))
 }
 
 /// Puts a horizontal rule after the selection's last line, or in place of it if it is empty.

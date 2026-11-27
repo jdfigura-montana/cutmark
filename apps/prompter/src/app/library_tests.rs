@@ -1424,15 +1424,15 @@ fn is_hidden(library: &Library, at: usize) -> bool {
 const TWO_LINES: &str = "**first** line\n\n**second** line";
 
 #[test]
-fn syntax_shows_on_the_line_the_cursor_moves_to() {
+fn syntax_stays_hidden_on_the_cursor_line() {
     let mut library = Library::with_script(TWO_LINES);
-    assert!(!is_hidden(&library, 0) && is_hidden(&library, 16), "the cursor starts on the first line");
+    assert!(is_hidden(&library, 0) && is_hidden(&library, 16));
     let at = character_at(&library, 4);
     library.click(at, PointerButton::Primary);
-    assert!(!is_hidden(&library, 0) && is_hidden(&library, 16));
+    assert!(is_hidden(&library, 0) && is_hidden(&library, 16));
     library.key(Modifiers::NONE, Key::ArrowDown);
     library.key(Modifiers::NONE, Key::ArrowDown);
-    assert!(is_hidden(&library, 0) && !is_hidden(&library, 16));
+    assert!(is_hidden(&library, 0) && is_hidden(&library, 16));
 }
 
 #[test]
@@ -1442,14 +1442,13 @@ fn a_click_on_formatted_text_lands_on_that_character_and_selects_nothing() {
     let index = TWO_LINES.find("cond").unwrap();
     let at = character_at(&library, index);
     library.hold(at);
-    // Held still, the layout stays as it was, so no selection is dragged out.
+    // Held still, no selection is dragged out.
     for _ in 0..5 {
         library.step(Vec::new());
     }
-    assert!(is_hidden(&library, 16), "the syntax must wait for the button to be let go");
     assert_eq!(selection(&library), (index, index));
     library.let_go(at);
-    assert!(!is_hidden(&library, 16));
+    assert!(is_hidden(&library, 16));
     assert_eq!(selection(&library), (index, index));
 }
 
@@ -1483,7 +1482,7 @@ fn click_times(library: &mut Library, at: Pos2, times: usize) {
 }
 
 #[test]
-fn a_double_click_selects_the_word_aimed_at_on_a_line_that_then_shows_its_syntax() {
+fn a_double_click_selects_the_word_aimed_at_among_hidden_syntax() {
     let cases = [
         (
             "first
@@ -1517,24 +1516,8 @@ some **bold words** and more text here",
         click_times(&mut library, start + (end - start) / 2.0, 2);
         assert_eq!(selection(&library), (from, from + word.len()), "{word} in {text:?}");
         let first_syntax = text.find(['#', '*', '>']).unwrap();
-        assert!(!is_hidden(&library, first_syntax), "the line shows its syntax afterwards");
+        assert!(is_hidden(&library, first_syntax));
     }
-}
-
-#[test]
-fn a_later_click_in_the_same_place_uses_the_layout_on_screen() {
-    let mut library = Library::with_script(TWO_LINES);
-    let index = TWO_LINES.find("cond").unwrap();
-    let at = character_at(&library, index);
-    library.click(at, PointerButton::Primary);
-    // The line now shows its syntax, so the same place holds an earlier character.
-    let moved = (0..TWO_LINES.len()).min_by_key(|&n| (character_at(&library, n).distance(at) * 100.0) as u32).unwrap();
-    assert!(moved < index);
-    for _ in 0..5 {
-        library.step(Vec::new());
-    }
-    library.click(at, PointerButton::Primary);
-    assert_eq!(selection(&library), (moved, moved));
 }
 
 #[test]
@@ -1546,7 +1529,7 @@ fn typing_markdown_formats_it_and_keeps_the_text() {
     library.type_text("[[pause]]");
     assert_eq!(library.script(), "# T\n[[pause]]");
     assert!(is_hidden(&library, 0), "the cursor has left the heading");
-    assert!(!is_hidden(&library, 4));
+    assert!(is_hidden(&library, 4), "the cursor's line hides its brackets too");
 }
 
 #[test]
@@ -1561,8 +1544,7 @@ fn show_markdown_in_the_view_menu_shows_every_marker_and_is_remembered() {
     library.pick("View", Item::ShowMarkdown);
     library.restart();
     assert!(!library.app.menu_state().show_markdown);
-    // The first line has the caret, as at any launch.
-    assert!(!is_hidden(&library, 0) && is_hidden(&library, 16));
+    assert!(is_hidden(&library, 0) && is_hidden(&library, 16));
 }
 
 /// About 10,000 words with each Markdown and cue form the editor styles.
@@ -1675,7 +1657,7 @@ fn a_script_at_launch_has_no_box_and_a_thin_accent_caret_to_type_at() {
 
     let id = library.editor_id();
     assert_eq!(library.focused(), Some(id));
-    assert_eq!(selection(&library), (0, 0));
+    assert_eq!(selection(&library), (2, 2));
     assert!(is_unboxed(&library));
     assert!(caret_shows(&mut library));
 
@@ -2039,4 +2021,340 @@ fn a_click_in_a_wrapped_list_row_lands_on_that_character() {
     library.move_to(to);
     library.let_go(to);
     assert_eq!(selection(&library), (index, index + 9));
+}
+
+/// Puts the caret at character `at`.
+fn caret_to(library: &mut Library, at: usize) {
+    select_in_editor(library, at, at);
+}
+
+/// Where the caret is after each of `times` presses of a key.
+fn presses(library: &mut Library, modifiers: Modifiers, key: Key, times: usize) -> Vec<usize> {
+    (0..times)
+        .map(|_| {
+            library.key(modifiers, key);
+            selection(library).1
+        })
+        .collect()
+}
+
+#[test]
+fn the_arrow_keys_step_over_hidden_markers_both_ways() {
+    let mut library = Library::with_script("a **bold** c");
+    caret_to(&mut library, 0);
+    assert_eq!(presses(&mut library, Modifiers::NONE, Key::ArrowRight, 8), [1, 2, 5, 6, 7, 8, 11, 12]);
+    assert_eq!(presses(&mut library, Modifiers::NONE, Key::ArrowLeft, 8), [11, 10, 7, 6, 5, 4, 1, 0]);
+}
+
+#[test]
+fn shift_arrows_select_by_what_shows_and_a_plain_arrow_closes_the_selection() {
+    let mut library = Library::with_script("a **bold** c");
+    caret_to(&mut library, 2);
+    presses(&mut library, Modifiers::SHIFT, Key::ArrowRight, 2);
+    assert_eq!(selection(&library), (2, 6));
+    presses(&mut library, Modifiers::NONE, Key::ArrowRight, 1);
+    assert_eq!(selection(&library), (6, 6));
+    caret_to(&mut library, 11);
+    presses(&mut library, Modifiers::SHIFT, Key::ArrowLeft, 2);
+    assert_eq!(selection(&library), (11, 7));
+    presses(&mut library, Modifiers::NONE, Key::ArrowLeft, 1);
+    assert_eq!(selection(&library), (7, 7));
+}
+
+#[test]
+fn ctrl_arrows_step_over_hidden_markers() {
+    let mut library = Library::with_script("**bold** word [[pause]]");
+    caret_to(&mut library, 0);
+    assert_eq!(presses(&mut library, CTRL, Key::ArrowRight, 4), [6, 13, 21, 23]);
+    assert_eq!(presses(&mut library, CTRL, Key::ArrowLeft, 4), [16, 9, 2, 0]);
+    presses(&mut library, CTRL_SHIFT, Key::ArrowRight, 1);
+    assert_eq!(selection(&library), (0, 6));
+}
+
+#[test]
+fn home_end_up_and_down_stop_inside_a_lines_marks() {
+    let mut library = Library::with_script("## Head ##\nword\n- item\n**bold**");
+    caret_to(&mut library, 5);
+    assert_eq!(presses(&mut library, Modifiers::NONE, Key::Home, 1), [3]);
+    assert_eq!(presses(&mut library, Modifiers::NONE, Key::End, 1), [7]);
+    // Straight up or down from the left edge does not land ahead of a line's marks.
+    caret_to(&mut library, 11);
+    assert_eq!(presses(&mut library, Modifiers::NONE, Key::ArrowUp, 1), [3]);
+    caret_to(&mut library, 11);
+    assert_eq!(presses(&mut library, Modifiers::NONE, Key::ArrowDown, 1), [18]);
+    caret_to(&mut library, 20);
+    assert_eq!(presses(&mut library, Modifiers::NONE, Key::Home, 1), [18]);
+    // Home and End are outside a line's formatting.
+    caret_to(&mut library, 27);
+    assert_eq!(presses(&mut library, Modifiers::NONE, Key::Home, 1), [23]);
+    assert_eq!(presses(&mut library, Modifiers::NONE, Key::End, 1), [31]);
+    // Shift keeps the other end.
+    caret_to(&mut library, 20);
+    presses(&mut library, Modifiers::SHIFT, Key::Home, 1);
+    assert_eq!(selection(&library), (20, 18));
+}
+
+#[test]
+fn a_click_beside_a_hidden_marker_takes_the_side_it_was_aimed_at() {
+    let mut library = Library::with_script("a **bold** c");
+    caret_to(&mut library, 0);
+    // Where the bold ends: its two places look the same.
+    let end = character_at(&library, 8);
+    for (offset, wanted) in [(-1.5, 8), (1.5, 10)] {
+        library.click(end + egui::vec2(offset, 0.0), PointerButton::Primary);
+        assert_eq!(selection(&library), (wanted, wanted), "{offset}");
+        // Apart in time, so that the two are no double click.
+        library.time += 2.0;
+    }
+    let start = character_at(&library, 4);
+    for (offset, wanted) in [(-1.5, 2), (1.5, 4)] {
+        library.click(start + egui::vec2(offset, 0.0), PointerButton::Primary);
+        assert_eq!(selection(&library), (wanted, wanted), "{offset}");
+        library.time += 2.0;
+    }
+}
+
+#[test]
+fn a_click_ahead_of_a_lines_marks_lands_at_the_start_of_its_text() {
+    let mut library = Library::with_script("words\n\n# Title\n\n- item");
+    for (index, wanted) in [(7, 9), (16, 18)] {
+        let at = character_at(&library, index);
+        library.click(at - egui::vec2(8.0, 0.0), PointerButton::Primary);
+        assert_eq!(selection(&library), (wanted, wanted));
+        library.time += 2.0;
+    }
+    // Typing there lands in the item's text.
+    library.type_text("x");
+    assert_eq!(library.script(), "words\n\n# Title\n\n- xitem");
+}
+
+#[test]
+fn a_drag_ends_on_the_side_of_a_hidden_marker_it_reaches() {
+    let mut library = Library::with_script("a **bold** c");
+    caret_to(&mut library, 0);
+    let (from, bold_end) = (character_at(&library, 0), character_at(&library, 8));
+    for (offset, wanted) in [(-1.5, 8), (1.5, 10)] {
+        library.hold(from);
+        let to = bold_end + egui::vec2(offset, 0.0);
+        library.move_to(to);
+        library.let_go(to);
+        assert_eq!(selection(&library), (0, wanted), "{offset}");
+        library.time += 2.0;
+    }
+}
+
+#[test]
+fn typing_goes_on_with_bold_inside_it_and_not_after_it() {
+    let mut library = Library::with_script("**bold**");
+    caret_to(&mut library, 6);
+    library.type_text("er");
+    library.type_text(" ");
+    library.type_text("still");
+    assert_eq!(library.script(), "**bolder still**");
+    library.key(Modifiers::NONE, Key::End);
+    library.type_text(" no");
+    assert_eq!(library.script(), "**bolder still** no");
+    // Left from there comes to the outside of the bold, and Right from inside stays in it.
+    presses(&mut library, Modifiers::NONE, Key::ArrowLeft, 3);
+    library.type_text("!");
+    assert_eq!(library.script(), "**bolder still**! no");
+}
+
+#[test]
+fn backspace_and_enter_follow_the_rules_for_lists_and_headings() {
+    let mut library = Library::with_script("# Head\n- one");
+    caret_to(&mut library, 12);
+    library.key(Modifiers::NONE, Key::Enter);
+    library.type_text("two");
+    assert_eq!(library.script(), "# Head\n- one\n- two");
+    library.key(Modifiers::NONE, Key::Enter);
+    library.key(Modifiers::NONE, Key::Enter);
+    library.type_text("done");
+    assert_eq!(library.script(), "# Head\n- one\n- two\n\ndone");
+    caret_to(&mut library, 2);
+    library.key(Modifiers::NONE, Key::Backspace);
+    assert_eq!(library.script(), "Head\n- one\n- two\n\ndone");
+    assert_eq!(selection(&library), (0, 0));
+}
+
+#[test]
+fn a_cut_leaves_no_hidden_marker_without_its_pair() {
+    let mut library = Library::with_script("a **bold** c");
+    select_in_editor(&mut library, 6, 12);
+    library.step(vec![Event::Cut]);
+    library.settle();
+    assert_eq!(library.script(), "a **bo**");
+    assert_eq!(library.copied(), "ld** c");
+}
+
+#[test]
+fn with_show_markdown_the_caret_and_backspace_go_by_every_character() {
+    let mut library = Library::with_script("# **a**");
+    library.pick("View", Item::ShowMarkdown);
+    caret_to(&mut library, 0);
+    assert_eq!(presses(&mut library, Modifiers::NONE, Key::ArrowRight, 3), [1, 2, 3]);
+    library.key(Modifiers::NONE, Key::Backspace);
+    assert_eq!(library.script(), "# *a**");
+}
+
+/// The commands the "/" menu shows, of all there are.
+fn listed(library: &Library) -> Vec<&'static str> {
+    // The toolbar's dropdown has "Paragraph" and a caret after it, which does not count.
+    crate::slash::COMMANDS.iter().map(|(label, _)| *label).filter(|label| library.find_text(label).is_some()).collect()
+}
+
+/// Types a character at a time, as keys do.
+fn type_keys(library: &mut Library, text: &str) {
+    for c in text.chars() {
+        library.type_text(&c.to_string());
+    }
+}
+
+#[test]
+fn a_slash_opens_the_menu_at_the_start_of_a_line_or_after_a_space() {
+    for (start, opens) in [("", true), ("word ", true), ("# ", true), ("word", false)] {
+        let mut library = Library::with_script(start);
+        caret_to(&mut library, start.len());
+        assert!(listed(&library).is_empty());
+        type_keys(&mut library, "/");
+        assert_eq!(library.app.editor.menu_open(), opens, "{start:?}");
+        assert_eq!(listed(&library).len(), if opens { 12 } else { 0 }, "{start:?}");
+    }
+    // A "/" that is pasted is only text.
+    let mut library = Library::with_script("");
+    library.focus_editor();
+    library.step(vec![Event::Paste("/".to_owned())]);
+    library.settle();
+    assert!(!library.app.editor.menu_open());
+}
+
+#[test]
+fn the_menu_opens_at_the_caret() {
+    let mut library = Library::with_script("one\n\n");
+    caret_to(&mut library, 5);
+    type_keys(&mut library, "/");
+    let slash = character_at(&library, 6);
+    let first = library.find_text("Heading 1").unwrap();
+    assert!(first.top() > slash.y && first.top() < slash.y + 90.0, "{first:?} and the caret at {slash:?}");
+    assert!((first.left() - slash.x).abs() < 30.0, "{first:?} and the caret at {slash:?}");
+}
+
+#[test]
+fn typing_filters_the_menu_and_closes_it_when_nothing_matches() {
+    let mut library = Library::with_script("");
+    library.focus_editor();
+    type_keys(&mut library, "/h");
+    assert_eq!(listed(&library), ["Heading 1", "Heading 2", "Heading 3", "Horizontal rule"]);
+    type_keys(&mut library, "or");
+    assert_eq!(listed(&library), ["Horizontal rule"]);
+    library.key(Modifiers::NONE, Key::Backspace);
+    library.key(Modifiers::NONE, Key::Backspace);
+    assert_eq!(listed(&library).len(), 4);
+    type_keys(&mut library, "zz");
+    assert!(!library.app.editor.menu_open() && listed(&library).is_empty());
+    assert_eq!(library.script(), "/hzz");
+    // With the "/" gone, it closes too.
+    let mut library = Library::with_script("");
+    library.focus_editor();
+    type_keys(&mut library, "/");
+    library.key(Modifiers::NONE, Key::Backspace);
+    assert!(!library.app.editor.menu_open());
+}
+
+#[test]
+fn the_arrows_move_in_the_menu_and_enter_applies_and_removes_the_command() {
+    let mut library = Library::with_script("title");
+    caret_to(&mut library, 5);
+    library.time += 2.0;
+    library.settle();
+    type_keys(&mut library, " /head");
+    // Down twice and up once is the second heading. Up from the first goes to the last.
+    library.key(Modifiers::NONE, Key::ArrowDown);
+    library.key(Modifiers::NONE, Key::ArrowDown);
+    library.key(Modifiers::NONE, Key::ArrowUp);
+    assert_eq!(library.script(), "title /head");
+    library.key(Modifiers::NONE, Key::Enter);
+    assert_eq!(library.script(), "## title ");
+    assert!(!library.app.editor.menu_open());
+    assert_eq!(library.focused(), Some(library.editor_id()));
+    // The command is one step back, to what was typed.
+    library.key(CTRL, Key::Z);
+    assert_eq!(library.script(), "title /head");
+
+    let mut library = Library::with_script("");
+    library.focus_editor();
+    type_keys(&mut library, "/head");
+    library.key(Modifiers::NONE, Key::ArrowUp);
+    library.key(Modifiers::NONE, Key::Enter);
+    assert_eq!(library.script(), "### ");
+    type_keys(&mut library, "x");
+    assert_eq!(library.script(), "### x");
+}
+
+#[test]
+fn a_click_in_the_menu_applies_that_command() {
+    let mut library = Library::with_script("");
+    library.focus_editor();
+    type_keys(&mut library, "/");
+    library.click_text("Pause");
+    assert_eq!(library.script(), "[[pause]]");
+    assert!(!library.app.editor.menu_open());
+    assert_eq!(library.focused(), Some(library.editor_id()));
+    type_keys(&mut library, " on");
+    assert_eq!(library.script(), "[[pause]] on");
+}
+
+#[test]
+fn a_click_elsewhere_or_a_caret_key_closes_the_menu() {
+    let mut library = Library::with_script("one\n\n");
+    caret_to(&mut library, 5);
+    type_keys(&mut library, "/");
+    library.key(Modifiers::NONE, Key::ArrowLeft);
+    assert!(!library.app.editor.menu_open());
+    library.key(Modifiers::NONE, Key::ArrowRight);
+    type_keys(&mut library, " /");
+    assert!(library.app.editor.menu_open());
+    let at = character_at(&library, 1);
+    library.click(at, PointerButton::Primary);
+    assert!(!library.app.editor.menu_open());
+    assert_eq!(library.script(), "one\n\n/ /");
+}
+
+#[test]
+fn esc_closes_the_menu_and_keeps_the_text_and_the_keyboard() {
+    let mut library = Library::with_script("words");
+    // With the find bar open, Esc is still the menu's.
+    library.key(CTRL, Key::F);
+    library.focus_editor();
+    caret_to(&mut library, 5);
+    type_keys(&mut library, " /no");
+    assert!(library.app.editor.menu_open());
+    library.key(Modifiers::NONE, Key::Escape);
+    assert!(!library.app.editor.menu_open());
+    assert!(library.app.find.is_open());
+    assert_eq!(library.script(), "words /no");
+    assert_eq!(library.focused(), Some(library.editor_id()));
+    // Enter is a line break again, and typing on does not bring the menu back.
+    type_keys(&mut library, "te");
+    assert!(!library.app.editor.menu_open());
+    library.key(Modifiers::NONE, Key::Enter);
+    assert_eq!(library.script(), "words /note\n");
+}
+
+#[test]
+fn turning_show_markdown_off_takes_the_caret_out_of_what_is_hidden_again() {
+    let mut library = Library::with_script("# **a**");
+    library.pick("View", Item::ShowMarkdown);
+    caret_to(&mut library, 1);
+    library.pick("View", Item::ShowMarkdown);
+    assert_eq!(selection(&library), (2, 2));
+}
+
+#[test]
+fn text_replaced_from_outside_takes_the_caret_out_of_its_hidden_syntax() {
+    let mut library = Library::with_script("some words");
+    caret_to(&mut library, 1);
+    library.app.workspace.as_mut().unwrap().open_script_mut().unwrap().text = "# Title".to_owned();
+    library.settle();
+    assert_eq!(selection(&library), (2, 2));
 }

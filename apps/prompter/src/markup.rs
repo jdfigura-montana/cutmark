@@ -63,6 +63,17 @@ pub struct CueMarkup {
     pub kind: CueKind,
 }
 
+/// Where a block's hidden syntax is on its line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edge {
+    /// Ahead of the text: a list marker, a quote mark or a heading's `#`.
+    Prefix,
+    /// A heading's closing `#` run.
+    Suffix,
+    /// The `===` or `---` under a heading's text.
+    Underline,
+}
+
 /// A kind of formatting inside a line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Inline {
@@ -99,6 +110,8 @@ pub struct Markup {
     /// Each list item's and quote's line with the byte where its text starts, after the
     /// markers. Its wrapped rows line up there. In order.
     pub hangs: Vec<(usize, usize)>,
+    /// The hidden syntax of headings, lists and quotes, in no set order.
+    pub edges: Vec<(Range<usize>, Edge)>,
 }
 
 impl Markup {
@@ -151,6 +164,7 @@ struct Scan<'a> {
     solid: Vec<Range<usize>>,
     /// By line.
     hangs: BTreeMap<usize, usize>,
+    edges: Vec<(Range<usize>, Edge)>,
     /// The `<u>` tags of the current block that are still open.
     open_underlines: Vec<Range<usize>>,
     /// Where the current block's last text ends in the source.
@@ -179,6 +193,7 @@ impl<'a> Scan<'a> {
             spans: Vec::new(),
             solid: Vec::new(),
             hangs: BTreeMap::new(),
+            edges: Vec::new(),
             open_underlines: Vec::new(),
             text_end: 0,
             lists: Vec::new(),
@@ -256,6 +271,11 @@ impl<'a> Scan<'a> {
         }
     }
 
+    fn edge(&mut self, range: Range<usize>, edge: Edge) {
+        self.add(range.clone(), MARKER);
+        self.edges.push((range, edge));
+    }
+
     fn line_of(&self, offset: usize) -> usize {
         self.line_starts.partition_point(|&start| start <= offset).saturating_sub(1)
     }
@@ -328,21 +348,24 @@ impl<'a> Scan<'a> {
         let level = level << HEADING_SHIFT;
         if source.starts_with('#') {
             let hashes = source.len() - source.trim_start_matches('#').len();
-            let open_end = self.after_blanks(range.start + hashes).min(end);
+            // With no text yet, the space after the "#" is part of the marker.
+            let open_end = self.after_blanks(range.start + hashes);
             self.add(range.start..end, level);
-            self.add(range.start..open_end, MARKER);
+            self.edge(range.start..open_end, Edge::Prefix);
             // A closing run of "#" counts only with a space before it.
             let before = source.trim_end_matches('#');
             if before.len() < source.len() && before.ends_with([' ', '\t']) {
                 let close_start = (range.start + before.trim_end().len()).max(open_end);
-                self.add(close_start..end, MARKER);
+                if close_start < end {
+                    self.edge(close_start..end, Edge::Suffix);
+                }
             }
         } else if let Some(split) = source.rfind('\n') {
             // A setext heading: the last line is the underline, after any quote or list prefix.
             self.add(range.start..range.start + split, level);
             let last = &source[split + 1..];
             if let Some(at) = last.find(['=', '-']) {
-                self.add(range.start + split + 1 + at..end, MARKER);
+                self.edge(range.start + split + 1 + at..end, Edge::Underline);
             }
         }
     }
@@ -364,7 +387,7 @@ impl<'a> Scan<'a> {
             }
             _ => BULLET.to_owned(),
         };
-        self.add(range.clone(), MARKER);
+        self.edge(range.clone(), Edge::Prefix);
         self.hang(line, range.end);
         self.items.push(ListMarker { range, line, depth, label });
     }
@@ -376,7 +399,7 @@ impl<'a> Scan<'a> {
             self.quote_lines.push(line);
             if let Some(at) = quote_marker(&self.text[..self.line_end(line)], self.line_starts[line], self.quotes) {
                 let space = usize::from(self.text[at + 1..].starts_with(' '));
-                self.add(at..at + 1 + space, MARKER);
+                self.edge(at..at + 1 + space, Edge::Prefix);
                 self.hang(line, at + 1 + space);
             }
         }
@@ -485,7 +508,7 @@ impl<'a> Scan<'a> {
         self.quote_lines.sort_unstable();
         self.quote_lines.dedup();
         let hangs = self.hangs.into_iter().collect();
-        Markup { runs, items: self.items, quote_lines: self.quote_lines, cues, spans: self.spans, solid: self.solid, hangs }
+        Markup { runs, items: self.items, quote_lines: self.quote_lines, cues, spans: self.spans, solid: self.solid, hangs, edges: self.edges }
     }
 }
 

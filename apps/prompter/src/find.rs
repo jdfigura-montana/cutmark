@@ -91,10 +91,11 @@ impl FindBar {
 
     /// Draws the bar's contents in a row and handles its keys. Esc and Close give the
     /// keyboard back to `editor`.
-    pub fn show(&mut self, ui: &mut egui::Ui, text: &str, editor: egui::Id) {
+    /// With `menu_open`, the editor's "/" menu takes Esc.
+    pub fn show(&mut self, ui: &mut egui::Ui, text: &str, editor: egui::Id, menu_open: bool) {
         let count = matches(text, &self.query).len();
         self.current = self.current.min(count.saturating_sub(1));
-        let (mut step, mut close) = self.keys(ui);
+        let (mut step, mut close) = self.keys(ui, menu_open);
 
         ui.spacing_mut().item_spacing.x = space::SCALE_2;
         let reserved = COUNT_WIDTH + 3.0 * size::ICON_BUTTON + 4.0 * space::SCALE_2;
@@ -150,10 +151,10 @@ impl FindBar {
 
     /// The step the keys ask for (true is forward), and whether Esc closes the bar. The keys
     /// are consumed, so that Enter does not take the keyboard from the field.
-    fn keys(&self, ui: &egui::Ui) -> (Option<bool>, bool) {
+    fn keys(&self, ui: &egui::Ui, menu_open: bool) -> (Option<bool>, bool) {
         let in_field = self.field.is_some_and(|field| ui.memory(|memory| memory.has_focus(field)));
         // An open popup takes Esc for itself.
-        let escapes = self.had_keyboard && !egui::Popup::is_any_open(ui.ctx());
+        let escapes = self.had_keyboard && !menu_open && !egui::Popup::is_any_open(ui.ctx());
         ui.input_mut(|input| {
             let mut pressed = |modifiers, key| input.consume_key(modifiers, key);
             // A pattern without Shift also matches with it, so the Shift keys go first.

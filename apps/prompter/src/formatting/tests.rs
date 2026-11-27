@@ -379,3 +379,13 @@ fn every_action_takes_any_selection() {
         }
     }
 }
+
+#[test]
+fn an_empty_item_does_not_go_in_where_it_would_underline_the_text_above() {
+    let text = "- a\n- ";
+    assert_eq!(apply(text, &Markup::parse(text), 6..6, Action::Indent), None);
+    assert!(!active(text, &Markup::parse(text), 6..6, 6).can_indent);
+    // With text in it, it nests.
+    let text = "- a\n- b";
+    assert_eq!(apply(text, &Markup::parse(text), 7..7, Action::Indent).map(|change| change.text).as_deref(), Some("- a\n  - b"));
+}

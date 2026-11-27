@@ -4,6 +4,7 @@
 
 mod app;
 mod autosave;
+mod caret;
 mod clipboard;
 mod dialogs;
 mod drag;
@@ -11,6 +12,7 @@ mod editor;
 mod file_drop;
 mod find;
 mod formatting;
+mod keys;
 mod lines;
 mod markup;
 mod menu;
@@ -19,10 +21,12 @@ mod preview;
 mod renderer;
 mod scripts_panel;
 mod selection;
+mod slash;
 mod snapshots;
 mod stats;
 mod styled;
 mod tabs;
+mod typing;
 mod view;
 mod workspace;
 

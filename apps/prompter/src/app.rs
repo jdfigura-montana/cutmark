@@ -433,7 +433,8 @@ impl PrompterApp {
             None => {}
         }
         if self.find.is_open() {
-            panel_row(ui, |ui| self.find.show(ui, &open.text, id));
+            let menu_open = self.editor.menu_open();
+            panel_row(ui, |ui| self.find.show(ui, &open.text, id, menu_open));
         }
         let (left, right) = split(ui.available_rect_before_wrap(), self.preview.open);
         // Both layouts go through this scope, so that the editor keeps its scroll position.

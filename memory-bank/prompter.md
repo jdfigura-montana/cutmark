@@ -6,9 +6,9 @@
 - Spec: docs/suite/prompter.md
 
 ## Done
-- Phase 1 (V4 passed): DX12 (PreMultiplied on JD's PC), Floating view, white fix (JD approved), Library shell. Minimum 900 x 480.
-- Phase 2, pending JD's check: C1 to C3b core; C4 to C5 app.
-- Phase 3: E1 to E4 core, platform; E5 wiring, file drop; E6 tabs, folders; E7 drags, menus; E8, E8b styled editor; E9a underline, strike; E9b layout, toolbar, Format menu.
+- Phase 1 (V4 passed): DX12, Floating view, white fix, Library shell. Minimum 900 x 480.
+- Phase 2 (pending JD's check): C1 to C5.
+- Phase 3: E1 to E4 core, platform; E5 wiring, file drop; E6 tabs, folders; E7 drags, menus; E8, E8b styled editor; E9a underline, strike; E9b layout, toolbar, Format menu; E9c hidden markers, "/" menu.
 
 ## Platform (E1)
 - ViewWindow::cursor_position (JD approved): winit has no pointer position in a file drag.
@@ -29,16 +29,17 @@
 - Not read: .docx styles.xml and w:dstrike, .odt paragraph styles, automatic heading numbers. Table paragraphs are kept.
 
 ## App
-- Dev switch (screenshots): CUTMARK_PROMPTER_SHOW_IN_CAPTURE=1 skips capture exclusion.
-- Caret at top and focus on a tab's first showing only.
+- Screenshots: CUTMARK_PROMPTER_SHOW_IN_CAPTURE=1.
+- Caret at first text and focus on a tab's first showing only.
+- E9c: caret.rs, typing.rs; keys.rs takes editing keys before TextEdit; egui's moves are snapped. IME is not marker-aware.
+- No key may make a setext underline (an empty item under text parses as one).
+- Open: a letter typed after "**word.**" or editing "[[pause]]" shows the marks; Enter in a quote adds no ">".
 - E9b: formatting.rs actions are text in, text out; Editor::format makes one undo step. Format keys run before the editor, only while it has the keyboard.
-- Hanging indent: styled::layout lays out those lines alone, then Galley::concat.
 - Ctrl+Shift+X arrives as Event::Cut.
-- TextEdit::margin is ignored once .frame() is set: put the margin in the frame.
 - markup.rs uses pulldown-cmark (JD approved); keep options and cue rules in step with script.rs. Show Markdown is in editor.txt.
-- Typing, 10,301 words (release, headless): 2.2 ms median, 2.8 p95.
+- Typing, 10,301 words (release, headless): 1.9 ms median, 2.3 p95.
 - Data folder: BaseDirs config_dir + Cutmark\prompter (not ProjectDirs).
-- Edit menu picks run a frame late (injected events).
+- Edit menu picks run a frame late.
 - Autosave runs in App::logic. A failed save retries every 500 ms, one toast; on close it cancels the close once.
 - egui-winit sends Ctrl+V as Event::Paste, no key press; with no clipboard text, only V's release. editor::PasteKeys pastes on it.
 - Tabs: serial keys egui state. LRU order not stored: restored tabs count left to right, active last.
@@ -51,10 +52,9 @@
 - Not timed on long scripts: Find, preview, Snapshots, paste.
 
 ## Next
-- Not in E9b, still in the spec: "/" command menu; markers hidden on the cursor line too.
-- E8, E9b by hand: click, double-click, IME, format keys (non-US layout too), toolbar look.
+- E8 to E9c by hand: click, drag, double-click, IME, format keys (non-US layout too), toolbar and "/" menu look.
 - JD's Phase 2 check; E5: second launch focuses the first window; paste from Google Docs, Word, browser.
-- By hand: E7 drags, wheel, Shift+F10; Explorer drop (also scaled); Word, Google Docs, LibreOffice imports; E6 tabs, stars, keys, HTML-only Ctrl+V, relaunch; preview, Snapshots, dialogs, menus, empty and image Paste, Ctrl+Shift+F, autosave on switch and exit; see-through, flash on open (not ruled out), other monitor or DPI, lock and sleep, minimized scroll, OBS capture.
+- By hand: E6, E7 drags, wheel, Shift+F10; Explorer drop (also scaled); Word, Google Docs, LibreOffice imports; HTML-only Ctrl+V; relaunch, preview, Snapshots, dialogs, menus, empty and image Paste, Ctrl+Shift+F, autosave; see-through, flash on open (not ruled out), other monitor or DPI, lock and sleep, minimized scroll, OBS capture.
 - Open: no Preview menu item; most shortcuts outside Edit and Format missing; About notices by hand.
 ## White layer
 - After a show the view's GDI surface is white under the DirectComposition visual (painter unknown), only over the area then present.

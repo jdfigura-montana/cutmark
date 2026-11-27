@@ -34,22 +34,6 @@ const MIN_WRAP: f32 = 4.0 * typography::BODY_SIZE;
 const NOTE_TINT: f32 = 0.45;
 const ACCENT_TINT: f32 = 0.35;
 
-/// Which lines show their Markdown syntax.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Reveal {
-    /// The 0-based line the cursor is on.
-    pub line: Option<usize>,
-    /// The View menu's Show Markdown: every line shows its syntax.
-    pub all: bool,
-}
-
-impl Reveal {
-    /// True if a line's syntax is dimmed, false if it is hidden.
-    fn shows(self, line: usize) -> bool {
-        self.all || self.line == Some(line)
-    }
-}
-
 /// The parse of the text last asked for, so that each edit is parsed once.
 #[derive(Default)]
 pub struct ParseCache {
@@ -119,9 +103,10 @@ fn list_indent(ui: &egui::Ui, item: &ListMarker) -> f32 {
     level.max(width(ui, &body_font(), &item.label) + MARKER_GAP * em)
 }
 
-/// The layout of `text`, which `markup` is the parse of. `matches` are byte ranges to back
+/// The layout of `text`, which `markup` is the parse of. With `shown`, the Markdown syntax is
+/// dimmed, and otherwise hidden. `matches` are byte ranges to back
 /// with a color, in order and without overlaps.
-pub fn layout_job(ui: &egui::Ui, text: &str, markup: &Markup, reveal: Reveal, matches: &[(Range<usize>, Color32)], wrap_width: f32) -> LayoutJob {
+pub fn layout_job(ui: &egui::Ui, text: &str, markup: &Markup, shown: bool, matches: &[(Range<usize>, Color32)], wrap_width: f32) -> LayoutJob {
     let mut job = LayoutJob { text: text.to_owned(), keep_trailing_whitespace: true, ..Default::default() };
     job.wrap.max_width = wrap_width;
     job.sections.reserve(markup.runs.len() + 2 * matches.len());
@@ -130,7 +115,6 @@ pub fn layout_job(ui: &egui::Ui, text: &str, markup: &Markup, reveal: Reveal, ma
     let mut cues = markup.cues.iter().flat_map(|cue| [cue.range.start, cue.range.end]).peekable();
     let mut matches = matches.iter().peekable();
     for run in &markup.runs {
-        let shown = reveal.shows(run.line);
         let format = format(run.style, shown);
         let mut leading_space = 0.0;
         let mut item = None;
@@ -284,7 +268,7 @@ fn chip_color(kind: CueKind, accent: Color32) -> Color32 {
 
 /// The decorations of the rows that can be seen. `galley` is the layout of the text `markup`
 /// is the parse of, drawn at `at`.
-pub fn decorations(ui: &egui::Ui, markup: &Markup, galley: &egui::Galley, at: Vec2, reveal: Reveal) -> Decorations {
+pub fn decorations(ui: &egui::Ui, markup: &Markup, galley: &egui::Galley, at: Vec2, shown: bool) -> Decorations {
     let accent = ui_kit::Theme::get(ui.ctx()).accent.accent;
     let seen = ui.clip_rect().y_range();
     let mut drawn = Decorations::default();
@@ -302,7 +286,7 @@ pub fn decorations(ui: &egui::Ui, markup: &Markup, galley: &egui::Galley, at: Ve
                 let bar = Rect::from_min_size(pos2(at.x - GUTTER, rect.top()), vec2(QUOTE_BAR, rect.height()));
                 drawn.front.push(Shape::rect_filled(bar, 0.0, color::TEXT_TERTIARY));
             }
-            if line_begins && !reveal.shows(line) {
+            if line_begins && !shown {
                 let first = markup.items.partition_point(|item| item.line < line);
                 for item in markup.items[first..].iter().take_while(|item| item.line == line) {
                     let mut label = format(Style::default(), true);
