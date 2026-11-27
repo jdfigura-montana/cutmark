@@ -29,8 +29,12 @@ use ui_kit::{
 use crate::bar_ui::{self, BarButton, Companion};
 use crate::config::CompositeMode;
 use crate::data_text;
+use crate::layout_ui;
 use crate::playback::Playback;
-use crate::review::{self, Day, Take};
+use crate::review::{self, Day, ReviewView, Take};
+
+/// The Takes panel's two views, in the order the segmented control shows them.
+const VIEWS: [(ReviewView, &str); 2] = [(ReviewView::Takes, "Takes"), (ReviewView::Replays, "Replays")];
 
 /// Left padding of a panel header's title, the same inset the app's other
 /// headers use.
@@ -63,10 +67,12 @@ const SETTLE_DELAY: Duration = Duration::from_millis(50);
 pub enum TakesAction {
     /// Nothing was clicked.
     None,
-    /// Open the project folder.
+    /// Open the folder of the current view.
     OpenFolder,
     /// Rescan the takes.
     Refresh,
+    /// The other view was picked.
+    ViewChanged,
 }
 
 /// What the take panel's Actions group or Marks list did this frame
@@ -151,11 +157,12 @@ impl CenterState {
     }
 }
 
-/// The left Takes panel (spec "Review mode"): the header with the folder and
-/// refresh buttons, then the days with their takes, newest first. Returns
-/// what the header buttons did.
-pub fn takes_panel(ui: &mut Ui, days: &[Day], selected: &mut Option<String>) -> TakesAction {
-    let action = takes_header(ui);
+/// The left Takes panel (spec "Review mode"): the header with the Takes |
+/// Replays choice and the folder and refresh buttons, then the days with their
+/// takes, newest first. `days` is the scan of `view`'s folder. Returns what the
+/// header did.
+pub fn takes_panel(ui: &mut Ui, view: &mut ReviewView, days: &[Day], selected: &mut Option<String>) -> TakesAction {
+    let action = takes_header(ui, view);
     ui.add_space(space::SCALE_8);
     egui::ScrollArea::vertical().id_salt("review-takes").auto_shrink(false).show(ui, |ui| {
         ui.set_max_width(ui.available_width());
@@ -177,21 +184,27 @@ pub fn takes_panel(ui: &mut Ui, days: &[Day], selected: &mut Option<String>) -> 
     action
 }
 
-/// The takes panel's header row (44 tall): "Takes" and the open-folder and
-/// refresh icon buttons on the right, with the hairline along the bottom of
-/// the row.
-fn takes_header(ui: &mut Ui) -> TakesAction {
+/// The takes panel's header row (44 tall): the segmented Takes | Replays and
+/// the open-folder and refresh icon buttons on the right, with the hairline
+/// along the bottom of the row.
+fn takes_header(ui: &mut Ui, view: &mut ReviewView) -> TakesAction {
     let mut action = TakesAction::None;
     let row = vec2(ui.available_width(), size::PANEL_TOOLBAR_HEIGHT);
     let inner = ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Center), |ui| {
         ui.add_space(HEADER_PAD);
-        ui.add(egui::Label::new(RichText::new("Takes").font(ui_kit::fonts::semibold(typography::BODY_SIZE)).color(color::TEXT_PRIMARY)).selectable(false));
+        if layout_ui::choice(ui, "review-view", view, &VIEWS) {
+            action = TakesAction::ViewChanged;
+        }
+        let folder_tooltip = match view {
+            ReviewView::Takes => "Open project folder",
+            ReviewView::Replays => "Open replays folder",
+        };
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             // Right to left, so the pair still reads "open folder, refresh" left to right.
             if ui_kit::icon_button(ui, ui_kit::icons::regular::ARROWS_CLOCKWISE, "Refresh takes").clicked() {
                 action = TakesAction::Refresh;
             }
-            if ui_kit::icon_button(ui, ui_kit::icons::regular::FOLDER_OPEN, "Open project folder").clicked() {
+            if ui_kit::icon_button(ui, ui_kit::icons::regular::FOLDER_OPEN, folder_tooltip).clicked() {
                 action = TakesAction::OpenFolder;
             }
         });
@@ -865,7 +878,7 @@ mod tests {
             ],
         }];
         let harness = panel_harness(config::LEFT_PANEL_MIN, move |ui| {
-            takes_panel(ui, &days, &mut None);
+            takes_panel(ui, &mut ReviewView::Takes, &days, &mut None);
         });
         let texts = painted(&harness);
         let all: Vec<_> = texts.iter().collect();

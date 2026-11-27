@@ -87,15 +87,42 @@ pub struct Day {
     pub takes: Vec<Take>,
 }
 
-/// Scans the project folder for takes and returns its days, newest first.
+/// Which of the project's two take folders Review lists.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReviewView {
+    /// The normal takes.
+    #[default]
+    Takes,
+    /// The saved replays.
+    Replays,
+}
+
+/// What a toast's Review button opens: a take, in the view that lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewTarget {
+    /// The view that lists the take.
+    pub view: ReviewView,
+    /// The take's name.
+    pub take: String,
+}
+
+impl ReviewTarget {
+    /// Switches Review to the target's view and selects its take.
+    pub fn select(self, view: &mut ReviewView, selected: &mut Option<String>) {
+        *view = self.view;
+        *selected = Some(self.take);
+    }
+}
+
+/// Scans a takes folder (the project folder or its replays folder) and returns its days, newest first.
 ///
 /// The folder is read one level deep: a take lives in its own folder under
-/// the project folder, and stray media files directly in the project folder
-/// count too. Unreadable entries are logged and skipped.
-pub fn scan(project_folder: &Path) -> Vec<Day> {
+/// the scanned folder, and stray media files directly in it count too.
+/// Unreadable entries are logged and skipped.
+pub fn scan(folder: &Path) -> Vec<Day> {
     let mut groups: HashMap<String, Vec<TakeFile>> = HashMap::new();
-    collect_folder(project_folder, &mut groups);
-    if let Ok(entries) = fs::read_dir(project_folder) {
+    collect_folder(folder, &mut groups);
+    if let Ok(entries) = fs::read_dir(folder) {
         for entry in entries.flatten() {
             if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
                 collect_folder(&entry.path(), &mut groups);

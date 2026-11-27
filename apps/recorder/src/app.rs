@@ -29,7 +29,7 @@ use crate::profiles::ProfileStore;
 use crate::record_ui;
 use crate::recovery::{self, RecoveryReport};
 use crate::replay_ui::{self, Notice};
-use crate::review;
+use crate::review::{self, ReviewTarget, ReviewView};
 use crate::review_ui;
 use crate::settings_ui::{self, ApiUi, NextTake, Section, SettingsDialog};
 use crate::status_ui;
@@ -160,14 +160,16 @@ pub struct RecorderApp {
     running_take: Option<String>,
     /// The Settings dialog: whether it is open and the section its right side shows.
     settings_dialog: SettingsDialog,
-    /// The Review scan: the project's takes grouped by day, newest first.
+    /// Which folder Review lists, remembered while the app runs.
+    review_view: ReviewView,
+    /// The Review scan of that folder: its takes grouped by day, newest first.
     review_days: Vec<review::Day>,
     /// The selected take's name in Review, remembered while the app runs.
     review_selected: Option<String>,
     /// Whether the Review scan must run again before the Review panels draw.
     review_dirty: bool,
     /// The take the toast on screen offers a Review action for, until the toast is gone.
-    review_take_pending: Option<String>,
+    review_take_pending: Option<ReviewTarget>,
     /// The toasts not shown yet, oldest first; each waits until the one before it is gone.
     notices: VecDeque<Notice>,
     /// Whether a toast was on screen on the previous frame.
@@ -295,6 +297,7 @@ impl RecorderApp {
             was_running: false,
             running_take: None,
             settings_dialog: SettingsDialog::default(),
+            review_view: ReviewView::default(),
             review_days: Vec::new(),
             review_selected: None,
             review_dirty: true,
@@ -679,7 +682,7 @@ impl RecorderApp {
                 // The finished take joins the Review list, and the toast offers to open it there.
                 self.review_dirty = true;
                 let text = format!("{} saved", crate::profile_ui::take_label(&base_name));
-                self.notices.push_back(Notice { text, review: Some(base_name) });
+                self.notices.push_back(Notice { text, review: Some(ReviewTarget { view: ReviewView::Takes, take: base_name }) });
             }
         }
         self.running_take = state.take.as_ref().filter(|_| running).map(|take| take.base_name.clone());
@@ -736,7 +739,7 @@ impl RecorderApp {
     fn toast_review_action(&mut self, ctx: &egui::Context, shown: Option<egui::Response>, running: bool) {
         let pending = self.review_take_pending.clone();
         match (pending, shown) {
-            (Some(take), Some(toast)) => {
+            (Some(target), Some(toast)) => {
                 let clicked = Cell::new(false);
                 egui::Area::new(egui::Id::new("toast-review-action"))
                     .order(egui::Order::Foreground)
@@ -749,7 +752,9 @@ impl RecorderApp {
                     });
                 if clicked.get() {
                     self.review_take_pending = None;
-                    self.review_selected = Some(take);
+                    // An open rename field belongs to the take that was selected before.
+                    self.take_panel.close_rename();
+                    target.select(&mut self.review_view, &mut self.review_selected);
                     // Also when Review is already open, so a take saved there is in the list.
                     self.review_dirty = true;
                     self.set_mode(running, Mode::Review);
@@ -1205,9 +1210,22 @@ impl RecorderApp {
         }
         egui::CentralPanel::default().frame(window_frame(ui.ctx())).show(ui, |ui| {
             let [left, center, right] = three_columns(ui.max_rect(), self.settings.panel_widths.get(Mode::Review));
-            column(ui, left, |ui| match review_ui::takes_panel(ui, &self.review_days, &mut self.review_selected) {
-                review_ui::TakesAction::OpenFolder => platform::open_folder(&project_folder(&self.settings)),
+            column(ui, left, |ui| match review_ui::takes_panel(ui, &mut self.review_view, &self.review_days, &mut self.review_selected) {
+                review_ui::TakesAction::OpenFolder => {
+                    // Created on demand: Explorer opens another folder for a missing path.
+                    let folder = review_folder(&self.settings, self.review_view);
+                    if let Err(err) = std::fs::create_dir_all(&folder) {
+                        log::warn!("could not create {}: {err}", folder.display());
+                    }
+                    platform::open_folder(&folder);
+                }
                 review_ui::TakesAction::Refresh => self.review_dirty = true,
+                review_ui::TakesAction::ViewChanged => {
+                    self.take_panel.close_rename();
+                    // Scanned now, so the other panels never pair the new view with the old list.
+                    self.rescan_review();
+                    ui.ctx().request_repaint();
+                }
                 review_ui::TakesAction::None => {}
             });
             stage_column(ui, center, |ui| {
@@ -1343,10 +1361,10 @@ impl RecorderApp {
         }
     }
 
-    /// Rescans the project folder for takes and keeps the selected take when
-    /// it still exists, falling back to the newest one.
+    /// Rescans the current view's folder for takes and keeps the selected take
+    /// when it still exists, falling back to the newest one.
     fn rescan_review(&mut self) {
-        self.review_days = review::scan(&project_folder(&self.settings));
+        self.review_days = review::scan(&review_folder(&self.settings, self.review_view));
         let names: Vec<String> = self.review_days.iter().flat_map(|day| day.takes.iter().map(|take| take.name.clone())).collect();
         if !names.iter().any(|name| Some(name) == self.review_selected.as_ref()) {
             self.review_selected = names.first().cloned();
@@ -2023,6 +2041,14 @@ fn project_folder(settings: &Settings) -> std::path::PathBuf {
     config::takes_root(settings).join(name)
 }
 
+/// The folder Review lists in `view`, for the current project.
+fn review_folder(settings: &Settings, view: ReviewView) -> std::path::PathBuf {
+    match view {
+        ReviewView::Takes => project_folder(settings),
+        ReviewView::Replays => crate::takes::replays_folder(settings),
+    }
+}
+
 /// The folder a "Can't save to <path>: reason" refusal names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RefusedFolder {
@@ -2199,6 +2225,28 @@ mod tests {
         let mut inside = settings;
         inside.replays_root = None;
         assert_eq!(refusal_target("Can't save to D:\\Recordings\\Show\\Replays: the folder is not writable", &inside), RefusedFolder::Recordings);
+    }
+
+    #[test]
+    fn the_replays_view_scans_the_replays_folder() -> Result<(), std::io::Error> {
+        let root = std::env::temp_dir().join(format!("cutmark-recorder-test-{}-review-views", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut settings = Settings { root_folder: Some(root.join("Recordings")), replays_root: None, project: "Show".to_owned(), ..Settings::default() };
+        let inside = root.join("Recordings").join("Show");
+        let picked = root.join("Picked");
+        for (folder, name) in [(inside.clone(), "take01"), (inside.join("Replays"), "replay01"), (picked.join("Show"), "replay02")] {
+            std::fs::create_dir_all(folder.join(name))?;
+            std::fs::write(folder.join(name).join(format!("{name}.mkv")), b"video")?;
+        }
+        let names = |settings: &Settings, view| {
+            let days = review::scan(&review_folder(settings, view));
+            days.iter().flat_map(|day| day.takes.iter().map(|take| take.name.clone())).collect::<Vec<_>>()
+        };
+        assert_eq!(names(&settings, ReviewView::Takes), ["take01"], "the replays inside the project are not takes");
+        assert_eq!(names(&settings, ReviewView::Replays), ["replay01"]);
+        settings.replays_root = Some(picked);
+        assert_eq!(names(&settings, ReviewView::Replays), ["replay02"]);
+        std::fs::remove_dir_all(&root)
     }
 
     /// The Setup layout, headless at 1300 x 840: the right settings column ends at the window

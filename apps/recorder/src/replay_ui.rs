@@ -10,20 +10,24 @@ use crate::engine::bus::CommandKind;
 use crate::engine::controller::{ControllerState, ReplayEvent};
 use crate::engine::stats::GIB;
 use crate::profile_ui::take_label;
+use crate::review::{ReviewTarget, ReviewView};
 
 /// One toast waiting to be shown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Notice {
     /// The toast's text.
     pub text: String,
-    /// The take its Review button opens, for a toast that has one.
-    pub review: Option<String>,
+    /// What its Review button opens, for a toast that has one.
+    pub review: Option<ReviewTarget>,
 }
 
 /// The toast for one replay event.
 fn notice(event: &ReplayEvent) -> Notice {
     match event {
-        ReplayEvent::Saved(saved) => Notice { text: format!("Replay saved: {}", take_label(&saved.name)), review: Some(saved.name.clone()) },
+        ReplayEvent::Saved(saved) => Notice {
+            text: format!("Replay saved: {}", take_label(&saved.name)),
+            review: Some(ReviewTarget { view: ReviewView::Replays, take: saved.name.clone() }),
+        },
         ReplayEvent::SaveFailed(reason) => Notice { text: format!("Replay could not be saved: {reason}"), review: None },
         ReplayEvent::RamWarning(warning) => {
             let gb = |bytes: u64| bytes as f64 / GIB as f64;
@@ -107,16 +111,30 @@ mod tests {
         }
     }
 
+    /// The saved toast's Review action, from a view and a selection of normal takes.
+    #[test]
+    fn the_saved_toasts_review_action_selects_replays_and_the_take() {
+        let mut state = ControllerState::default();
+        state.push_replay_event(ReplayEvent::Saved(ReplaySaved { take_path: PathBuf::from("show_take07.mkv"), name: "show_take07".to_owned() }));
+        let notice = new_notices(&state, &mut 0).remove(0);
+        let mut view = ReviewView::Takes;
+        let mut selected = Some("show_take02".to_owned());
+        notice.review.expect("a saved replay offers Review").select(&mut view, &mut selected);
+        assert_eq!(view, ReviewView::Replays);
+        assert_eq!(selected.as_deref(), Some("show_take07"));
+    }
+
     #[test]
     fn each_replay_event_becomes_one_toast_and_only_a_saved_one_offers_review() {
         let mut state = ControllerState::default();
         state.push_replay_event(ReplayEvent::Saved(ReplaySaved { take_path: PathBuf::from("show_take07.mkv"), name: "show_take07".to_owned() }));
         state.push_replay_event(ReplayEvent::SaveFailed("the disk is full".to_owned()));
         let mut seen = 0;
+        let target = ReviewTarget { view: ReviewView::Replays, take: "show_take07".to_owned() };
         assert_eq!(
             new_notices(&state, &mut seen),
             [
-                Notice { text: "Replay saved: take07".to_owned(), review: Some("show_take07".to_owned()) },
+                Notice { text: "Replay saved: take07".to_owned(), review: Some(target) },
                 Notice { text: "Replay could not be saved: the disk is full".to_owned(), review: None },
             ]
         );
