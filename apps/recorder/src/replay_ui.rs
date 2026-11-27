@@ -75,7 +75,7 @@ mod tests {
     fn menu(on: bool) -> (Harness<'static>, Rc<RefCell<Vec<CommandKind>>>) {
         let sent = Rc::new(RefCell::new(Vec::new()));
         let clicks = Rc::clone(&sent);
-        let chords = Chords { replay_toggle: "Ctrl+Alt+B".to_owned(), replay_save: "Ctrl+Alt+S".to_owned(), ..Chords::default() };
+        let chords = Chords { replay_toggle: "Ctrl+Alt+B".to_owned(), replay_save: "Ctrl+Alt+F9".to_owned(), ..Chords::default() };
         let first_pass = Cell::new(true);
         let mut harness = Harness::new_ui(move |ui| {
             // The fonts a style asks for are only there from the next pass on.

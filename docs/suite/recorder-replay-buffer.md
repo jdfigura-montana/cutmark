@@ -7,7 +7,7 @@ Exported from the Claude Project "Creator Suite" ("Recorder Phase 12 Replay Buff
 ## What the user sees
 
 1. **Replay buffer on/off.** Capture menu, a toggle on the deck, hotkey Ctrl+Alt+B.
-2. **Save replay.** A button on the deck (only while the buffer is on), Capture menu, hotkey Ctrl+Alt+S. Saves the last N seconds as a normal take.
+2. **Save replay.** A button on the deck (only while the buffer is on), Capture menu, hotkey Ctrl+Alt+F9. Saves the last N seconds as a normal take.
 3. **Length.** Settings > Recording: 30, 60, 90 or 120 seconds. Default 60.
 
 That is all. Off by default. Ctrl+F9 stays "Highlight last 30 seconds" during a recording, unchanged.
@@ -36,7 +36,7 @@ That is all. Off by default. Ctrl+F9 stays "Highlight last 30 seconds" during a 
 | Step | Work | Done when |
 | --- | --- | --- |
 | B1 | Engine: packet, PCM and mark rings with keyframe trimming, and a writer that turns a ring snapshot into a take through the existing muxer, marks and session code. No UI, no state change | Unit tests: trim keeps a keyframe first; snapshot start picks the right keyframe; a clip written from a synthetic ring reads back with the right streams and duration |
-| B2 | Controller: buffer on/off independent of recording, encoders run while it is on, rings fed from the same packets a take writes, save queue, hotkeys Ctrl+Alt+B and Ctrl+Alt+S, profile lock, RAM warning | A 10 minute session with five saves, two of them during a recording, gives five playable takes; no dropped frames |
+| B2 | Controller: buffer on/off independent of recording, encoders run while it is on, rings fed from the same packets a take writes, save queue, hotkeys Ctrl+Alt+B and Ctrl+Alt+F9, profile lock, RAM warning | A 10 minute session with five saves, two of them during a recording, gives five playable takes; no dropped frames |
 | B3 | UI and API: deck toggle and Save button, Capture menu items, Settings length, status bar, tray dot, toast, Control API commands and event | JD saves replays from the hotkey, the deck and the API |
 
 ## Acceptance

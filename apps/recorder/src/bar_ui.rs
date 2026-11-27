@@ -470,7 +470,7 @@ mod tests {
             mark_label: "Shift+F9".to_owned(),
             mute_mic: "F8".to_owned(),
             replay_toggle: "Ctrl+Alt+B".to_owned(),
-            replay_save: "Ctrl+Alt+S".to_owned(),
+            replay_save: "Ctrl+Alt+F9".to_owned(),
         }
     }
 
@@ -629,7 +629,7 @@ mod tests {
         let replay_on = Rc::new(Cell::new(false));
         let (mut harness, _, bus) = replay_harness(900.0, Rc::new(Cell::new(Phase::Idle)), 0, Rc::clone(&replay_on));
         let toggled = |harness: &egui_kittest::Harness<'_>| harness.get_by_label("Replay buffer (Ctrl+Alt+B)").accesskit_node().toggled();
-        assert!(harness.query_by_label("Save replay (Ctrl+Alt+S)").is_none());
+        assert!(harness.query_by_label("Save replay (Ctrl+Alt+F9)").is_none());
         assert_ne!(toggled(&harness), Some(egui::accesskit::Toggled::True));
         click(&mut harness, "Replay buffer (Ctrl+Alt+B)");
         assert_eq!(sent(&bus), [CommandKind::ReplayToggle]);
@@ -638,7 +638,7 @@ mod tests {
         harness.run();
         assert!(harness.query_by_label("Pause (F11)").is_none(), "Save replay takes the disabled Pause's place");
         assert_eq!(toggled(&harness), Some(egui::accesskit::Toggled::True));
-        click(&mut harness, "Save replay (Ctrl+Alt+S)");
+        click(&mut harness, "Save replay (Ctrl+Alt+F9)");
         assert_eq!(sent(&bus), [CommandKind::ReplaySave]);
         click(&mut harness, "Replay buffer (Ctrl+Alt+B)");
         assert_eq!(sent(&bus), [CommandKind::ReplayToggle]);
@@ -654,7 +654,7 @@ mod tests {
                         continue;
                     }
                     let (harness, drawn, _bus) = replay_harness(width, Rc::new(Cell::new(phase)), 3, Rc::new(Cell::new(true)));
-                    for label in ["Save replay (Ctrl+Alt+S)", "Replay buffer (Ctrl+Alt+B)", "Add mark (F9)"] {
+                    for label in ["Save replay (Ctrl+Alt+F9)", "Replay buffer (Ctrl+Alt+B)", "Add mark (F9)"] {
                         assert!(harness.query_by_label(label).is_some(), "{label} is shown at {width} in {mode:?} {phase:?}");
                     }
                     if phase.has_take() {
