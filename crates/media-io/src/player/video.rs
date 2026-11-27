@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use ffmpeg_next::ffi;
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
@@ -25,6 +26,9 @@ use crate::hw::{MediaError, ff_error};
 
 /// How many scaled frames the queue holds while the caller has not taken them.
 const QUEUE_LEN: usize = 8;
+
+/// How long Drop waits for the decode thread to end before it leaves the thread behind.
+const JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The swscale flag set: bilinear, a good middle ground for downscaling.
 const SWS_BILINEAR: c_int = 2;
@@ -71,7 +75,7 @@ pub struct VideoDecoder {
     shown: Arc<Mutex<Option<RgbaFrame>>>,
     /// Set by Drop to end the decode thread.
     stop: Arc<AtomicBool>,
-    /// The decode thread, taken and joined by Drop.
+    /// The decode thread, taken by Drop and joined within `JOIN_TIMEOUT`.
     thread: Option<JoinHandle<()>>,
     /// The length of the file in milliseconds, from its headers.
     duration_ms: u64,
@@ -174,15 +178,39 @@ impl VideoDecoder {
 
 impl Drop for VideoDecoder {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        let (_, control_signal) = &*self.control;
-        control_signal.notify_all();
-        let (_, queue_signal) = &*self.queue;
-        queue_signal.notify_all();
+        // The thread checks `stop` under the lock it then waits on. Setting the flag and
+        // notifying under that lock means the wake-up cannot fall between check and wait.
+        {
+            let (state_lock, signal) = &*self.control;
+            let _state = lock(state_lock);
+            self.stop.store(true, Ordering::Relaxed);
+            signal.notify_all();
+        }
+        // The flag is set before this lock is taken, so a full queue's waiter either sees it
+        // or is already waiting. One lock at a time, so `push_frame`'s lock order holds.
+        {
+            let (queue_lock, space) = &*self.queue;
+            let _queued = lock(queue_lock);
+            space.notify_all();
+        }
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            join_within(thread, JOIN_TIMEOUT);
         }
     }
+}
+
+/// Joins `thread` if it ends within `timeout`; otherwise logs it and leaves it detached, which
+/// is safe because the thread owns everything it uses.
+fn join_within(thread: JoinHandle<()>, timeout: Duration) {
+    let started = Instant::now();
+    while !thread.is_finished() {
+        if started.elapsed() >= timeout {
+            log::warn!("video decode: the thread did not end within {timeout:?} and was left behind");
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let _ = thread.join();
 }
 
 /// Locks a mutex, carrying on with the data if a thread panicked while holding it.
@@ -234,7 +262,7 @@ fn mark_eof(control: &Control) {
 fn run(SendSession(mut session): SendSession, control: Arc<Control>, queue: Arc<Queue>, stop: Arc<AtomicBool>) {
     let mut seek_target: Option<u64> = None;
     loop {
-        {
+        let requested = {
             let (state_lock, signal) = &*control;
             let mut state = lock(state_lock);
             while !stop.load(Ordering::Relaxed) && state.pending_seek.is_none() && seek_target.is_none() && (!state.playing || state.eof) {
@@ -243,14 +271,16 @@ fn run(SendSession(mut session): SendSession, control: Arc<Control>, queue: Arc<
             if stop.load(Ordering::Relaxed) {
                 return;
             }
-            if let Some(target) = state.pending_seek.take() {
-                match session.seek(target) {
-                    Ok(()) => {
-                        seek_target = Some(target);
-                        state.eof = false;
-                    }
-                    Err(error) => log::warn!("video decode: the seek to {target} ms failed: {error}"),
+            state.pending_seek.take()
+        };
+        // The seek runs unlocked, so a slow one never holds up Drop or the caller.
+        if let Some(target) = requested {
+            match session.seek(target) {
+                Ok(()) => {
+                    seek_target = Some(target);
+                    lock(&control.0).eof = false;
                 }
+                Err(error) => log::warn!("video decode: the seek to {target} ms failed: {error}"),
             }
         }
         if session.input_done {
@@ -727,10 +757,10 @@ fn pts_to_ms(pts: i64, time_base: (u32, u32)) -> u64 {
 mod tests {
     use std::collections::VecDeque;
     use std::path::{Path, PathBuf};
-    use std::sync::OnceLock;
+    use std::sync::{Arc, OnceLock};
     use std::time::{Duration, Instant};
 
-    use super::{RgbaFrame, VideoDecoder, newest_at_or_before};
+    use super::{JOIN_TIMEOUT, QUEUE_LEN, RgbaFrame, VideoDecoder, lock, newest_at_or_before};
     use crate::amf::AmfEncoder;
     use crate::encode::{Codec, Encoder, EncoderConfig, Preset, RateControl};
     use crate::hw::{D3d11Device, D3d11FramePool, HwFrame};
@@ -938,6 +968,34 @@ mod tests {
         }
         drop(decoder);
         let _ = std::fs::remove_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn dropping_a_decoder_with_a_full_queue_returns_promptly() -> Result<(), Box<dyn std::error::Error>> {
+        let clip = match test_clip() {
+            Ok(clip) => clip,
+            Err(reason) => {
+                eprintln!("skipped: {reason}");
+                return Ok(());
+            }
+        };
+        let decoder = VideoDecoder::open(clip, 640)?;
+        decoder.play();
+        let filling = Instant::now();
+        while lock(&decoder.queue.0).len() < QUEUE_LEN {
+            assert!(filling.elapsed() < Duration::from_secs(10), "the queue never filled");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        // Time for the thread to decode one more frame and go to sleep on the full queue.
+        std::thread::sleep(Duration::from_millis(200));
+        let queue = Arc::clone(&decoder.queue);
+        let started = Instant::now();
+        drop(decoder);
+        let elapsed = started.elapsed();
+        assert!(elapsed < JOIN_TIMEOUT / 2, "drop took {elapsed:?}");
+        // The thread let go of its share of the queue, so it ended and was not left behind.
+        assert_eq!(Arc::strong_count(&queue), 1);
         Ok(())
     }
 
