@@ -20,7 +20,6 @@ use ui_kit::tokens::{radius, space};
 use ui_kit::{PlayKind, PrimaryButton, STAGE_BAR_BUTTON_DIAMETER, StageResponse, Theme};
 
 use crate::bar_ui::{self, BarButton, Companion};
-use crate::layout_ui;
 use crate::playback::Playback;
 use crate::review::{self, Day, ReviewView, Take, bake};
 use crate::review_ui;
@@ -68,6 +67,16 @@ impl StudioTool {
             Self::Zoom => Some("Coming in T5"),
             Self::Export => Some("Coming in T6"),
         }
+    }
+}
+
+/// The tool strip: a segmented control with equal cells across the column, so that all the tools
+/// fit the narrowest one.
+fn tool_choice(ui: &mut Ui, tool: &mut StudioTool) {
+    let mut index = TOOLS.iter().position(|(kind, _)| kind == tool).unwrap_or(0);
+    ui_kit::segmented_filled(ui, "studio-tools", &mut index, &TOOLS.map(|(_, label)| label), &[]);
+    if let Some((kind, _)) = TOOLS.get(index) {
+        *tool = *kind;
     }
 }
 
@@ -367,7 +376,7 @@ impl StudioState {
 
     /// The right column: the tool strip and the chosen panel for the open take.
     pub fn tool_panel(&mut self, ui: &mut Ui) {
-        layout_ui::choice(ui, "studio-tools", &mut self.tool, &TOOLS);
+        tool_choice(ui, &mut self.tool);
         ui.add_space(space::SCALE_8);
         if let Some(text) = self.tool.placeholder() {
             studio_panel_ui::caption(ui, text);
@@ -536,10 +545,49 @@ pub fn stage(ui: &mut Ui, transport: Option<Transport>, add_content: impl FnOnce
 #[cfg(test)]
 mod tests {
     use chrono::Local;
+    use egui_kittest::kittest::Queryable;
 
     use super::*;
     use crate::bar_ui::bar_checks;
-    use crate::config::{CompositeMode, Mode};
+    use crate::config::{self, CompositeMode, Mode};
+    use crate::tools_ui::row_checks::{painted, panel_harness};
+
+    /// The least room between a segment's text and each side of its cell.
+    const TEXT_ROOM: f32 = 3.0;
+
+    /// Fails unless each segment in `labels` ends inside the narrowest right column and holds its
+    /// text with room on both sides.
+    fn assert_segments_fit(harness: &egui_kittest::Harness<'_>, labels: &[&str]) {
+        let content_right = config::RIGHT_PANEL_MIN - space::PANEL_PADDING;
+        let texts = painted(harness);
+        for &label in labels {
+            let cell = harness.get_by_label(label).rect();
+            assert!(cell.left() >= space::PANEL_PADDING && cell.right() <= content_right + 0.5, "{label:?} leaves the column: {cell:?}");
+            // A row label can read the same as a segment, so the text is the one on the cell.
+            let text = texts.iter().find(|text| text.text == label && cell.contains(text.rect.center()));
+            assert!(
+                text.is_some_and(|text| cell.left() + TEXT_ROOM <= text.rect.left() && text.rect.right() <= cell.right() - TEXT_ROOM),
+                "{label:?} does not fit {cell:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_tool_strip_fits_the_narrowest_right_column() {
+        let mut state = StudioState::default();
+        let harness = panel_harness(config::RIGHT_PANEL_MIN, move |ui| state.tool_panel(ui));
+        assert_segments_fit(&harness, &TOOLS.map(|(_, label)| label));
+    }
+
+    #[test]
+    fn the_background_choices_fit_the_narrowest_right_column() {
+        let mut settings = crate::studio::settings::StudioSettings::default();
+        settings.frame.enabled = true;
+        let harness = panel_harness(config::RIGHT_PANEL_MIN, move |ui| {
+            studio_panel_ui::show(ui, StudioTool::Frame, &mut settings, PanelFacts { has_chords: false, image_note: None });
+        });
+        assert_segments_fit(&harness, &["Solid", "Gradient", "Image"]);
+    }
 
     /// The deck cuts nothing off and keeps the notch's column free, down to the narrowest window.
     #[test]

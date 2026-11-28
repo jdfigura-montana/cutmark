@@ -5,7 +5,7 @@
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 
-use egui::{RichText, Ui};
+use egui::{Align, Layout, RichText, Ui, UiBuilder};
 use ui_kit::tokens::{color, space, typography};
 use ui_kit::{SliderKind, inspector_group, inspector_row, segmented_filled, switch};
 
@@ -205,7 +205,12 @@ fn choice_row<T: Copy + PartialEq>(ui: &mut Ui, label: &str, id_salt: &'static s
         ui,
         label,
         |ui| {
-            segmented_filled(ui, id_salt, &mut index, &labels, &[]);
+            // With no value on the right, inspector_row ends the control area one gap short of the
+            // text inset. The cells take that gap, or "Gradient" is cramped in the narrowest column.
+            let mut area = ui.max_rect();
+            area.max.x += space::SCALE_8;
+            let mut wide = ui.new_child(UiBuilder::new().max_rect(area).layout(Layout::left_to_right(Align::Center)));
+            segmented_filled(&mut wide, id_salt, &mut index, &labels, &[]);
         },
         None,
     );
