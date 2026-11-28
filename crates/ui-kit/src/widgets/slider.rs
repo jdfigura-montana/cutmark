@@ -61,7 +61,8 @@ fn fill_span(kind: SliderKind, fraction: f32) -> (f32, f32) {
 /// The slider: a thin `bg.selected` track, the fill up to the value in the
 /// [`SliderKind`] color (from the range midpoint for [`SliderKind::Bipolar`]),
 /// a white knob. Pointer clicks and drags set the value;
-/// the arrow keys step it by 1% of the range when focused.
+/// the arrow keys step it by 1% of the range when focused. The response
+/// reports `changed()` on each frame the pointer or a key moves the value.
 ///
 /// Usage:
 ///
@@ -71,7 +72,8 @@ fn fill_span(kind: SliderKind, fraction: f32) -> (f32, f32) {
 /// ```
 pub fn slider(ui: &mut Ui, value: &mut f32, range: RangeInclusive<f32>, kind: SliderKind) -> Response {
     let neutrals = Theme::get(ui.ctx()).neutrals;
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), size::SEGMENT_HEIGHT), Sense::click_and_drag());
+    let (rect, mut response) = ui.allocate_exact_size(vec2(ui.available_width(), size::SEGMENT_HEIGHT), Sense::click_and_drag());
+    let before = *value;
     response.widget_info(|| WidgetInfo::slider(true, *value as f64, ""));
     if (response.clicked() || response.dragged())
         && let Some(pos) = response.interact_pointer_pos()
@@ -92,6 +94,9 @@ pub fn slider(ui: &mut Ui, value: &mut f32, range: RangeInclusive<f32>, kind: Sl
         if left && span > 0.0 {
             *value = (*value - step).max(*range.start());
         }
+    }
+    if *value != before {
+        response.mark_changed();
     }
     if ui.is_rect_visible(rect) {
         let accent = Theme::get(ui.ctx()).accent.accent;
@@ -116,7 +121,40 @@ pub fn slider(ui: &mut Ui, value: &mut f32, range: RangeInclusive<f32>, kind: Sl
 
 #[cfg(test)]
 mod tests {
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
     use super::*;
+
+    /// A drag that moves the value reports `changed()`; an untouched slider
+    /// and a pointer held still do not.
+    #[test]
+    fn dragging_the_slider_reports_changed() {
+        // The state is (value, frames that reported `changed`).
+        let mut harness = Harness::new_ui_state(
+            |ui, (value, changed_frames): &mut (f32, u32)| {
+                if slider(ui, value, 0.0..=1.0, SliderKind::Accent).changed() {
+                    *changed_frames += 1;
+                }
+            },
+            (0.25, 0),
+        );
+        harness.run();
+        assert_eq!(*harness.state(), (0.25, 0), "an untouched slider must not report a change");
+        let rect = harness.get_by_role(egui::accesskit::Role::Slider).rect();
+        let start = Pos2::new(rect.left() + rect.width() * 0.3, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * 0.9, rect.center().y);
+        harness.drag_at(start);
+        harness.run();
+        harness.hover_at(end);
+        harness.run();
+        let (value, changed_frames) = *harness.state();
+        assert!(value > 0.8 && changed_frames > 0, "the drag must move the value and report it, got {value} in {changed_frames} frames");
+        harness.run();
+        assert_eq!(harness.state().1, changed_frames, "a pointer held still is no change");
+        harness.drop_at(end);
+        harness.run();
+    }
 
     /// The knob fraction maps the ends and the middle of the range.
     #[test]

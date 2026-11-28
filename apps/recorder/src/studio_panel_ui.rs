@@ -242,8 +242,8 @@ fn count_row(ui: &mut Ui, label: &str, value: &mut u32, range: RangeInclusive<u3
 }
 
 /// An inspector row with a slider that moves in steps of `step`, and `text` as its value on the
-/// right; true when the value changed. The ui-kit slider does not mark its response as changed, so
-/// the value is compared.
+/// right; true when the value changed. The value is compared, because snapping can leave it where
+/// it was.
 fn slider_row(ui: &mut Ui, label: &str, value: &mut f32, range: RangeInclusive<f32>, step: f32, text: &str) -> bool {
     let before = *value;
     let mut raw = before;
