@@ -57,7 +57,7 @@ Studio is a fourth Recorder mode, next to Setup, Record and Review. It turns a T
 
 1. Activity points: clicks, shortcut chords, and cursor dwell (cursor still for 0.6 s or more after moving).
 2. Group points less than 3 s apart into a cluster.
-3. Each cluster becomes a segment from 0.5 s before its first point to 1.5 s after its last, merged with a neighbour closer than 1 s.
+3. Each cluster becomes a segment from 0.5 s before its first point to 1.5 s after its last, merged with a neighbour closer than 2 s (so the view never zooms out and straight back in).
 4. Segment zoom level: the panel's Amount (default 2.0x). Segments shorter than 1 s are dropped.
 5. While zoomed, the view follows the cursor with a dead zone (the middle 40% of the zoomed view) and smoothing, and never shows outside the captured frame.
 
