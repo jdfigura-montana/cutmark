@@ -10,6 +10,8 @@ ignore = [
   # marks and recorder use it too. Review when FilmCraft moves off chrono, or when our own crates
   # move to jiff or time (tracked in the S0 spec's deferred list).
   { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; required by the pinned FilmCraft engine" },
+  # RUSTSEC-2026-0192: ttf-parser is flagged unmaintained (informational; no safe upgrade).
+  { id = "RUSTSEC-2026-0192", reason = "Pulled in by ab_glyph via egui/epaint and studio-render; only parses fonts bundled with the app; no maintained drop-in yet. Revisit when egui moves off ab_glyph." },
 ]
 
 # Any ignore needs a comment with the advisory id and the reason.
