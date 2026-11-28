@@ -21,7 +21,7 @@ const LEAD_US: i64 = 500_000;
 /// How long after its last point a segment ends.
 const TRAIL_US: i64 = 1_500_000;
 /// Segments closer together than this become one.
-const MERGE_GAP_US: i64 = 1_000_000;
+const MERGE_GAP_US: i64 = 2_000_000;
 /// Shorter segments are dropped.
 const MIN_LENGTH_US: i64 = 1_000_000;
 
@@ -177,8 +177,8 @@ mod tests {
     }
 
     #[test]
-    fn spans_less_than_a_second_apart_are_merged() {
-        assert_eq!(merge([(0, 2 * S), (3 * S - 1, 5 * S), (6 * S, 8 * S), (6 * S + 1, 7 * S)]), [(0, 5 * S), (6 * S, 8 * S)]);
+    fn spans_less_than_two_seconds_apart_are_merged() {
+        assert_eq!(merge([(0, 2 * S), (4 * S - 1, 5 * S), (7 * S, 9 * S), (7 * S + 1, 8 * S)]), [(0, 5 * S), (7 * S, 9 * S)]);
     }
 
     #[test]

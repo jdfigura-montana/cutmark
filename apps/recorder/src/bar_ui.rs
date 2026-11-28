@@ -405,7 +405,7 @@ pub(crate) mod bar_checks {
         let body = Rect::from_min_size(pos2(0.0, 0.0), vec2(window_width, 400.0)).shrink(space::WINDOW_GAP);
         match mode {
             Mode::Record => two_columns(body, PanelWidths::default())[0].width(),
-            Mode::Setup | Mode::Review => three_columns(body, PanelWidths::default())[1].width(),
+            Mode::Setup | Mode::Review | Mode::Studio => three_columns(body, PanelWidths::default())[1].width(),
         }
     }
 
@@ -416,7 +416,7 @@ pub(crate) mod bar_checks {
         let widest = PanelWidths { left: config::LEFT_PANEL_MAX, right: config::RIGHT_PANEL_MAX };
         let dragged = match mode {
             Mode::Record => two_columns(body, widest)[0].width(),
-            Mode::Setup | Mode::Review => three_columns(body, widest)[1].width(),
+            Mode::Setup | Mode::Review | Mode::Studio => three_columns(body, widest)[1].width(),
         };
         [stage_width(mode, config::MIN_WINDOW_WIDTH), dragged]
     }

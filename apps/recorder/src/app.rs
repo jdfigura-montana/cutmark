@@ -35,6 +35,7 @@ use crate::review::{self, ReviewTarget, ReviewView};
 use crate::review_ui;
 use crate::settings_ui::{self, ApiUi, NextTake, Section, SettingsDialog};
 use crate::status_ui;
+use crate::studio_ui;
 use crate::tools_ui::{self, Tool};
 use crate::tracks_ui::{self, AppSources, LiveTrackStats, TracksChanged};
 
@@ -200,6 +201,8 @@ pub struct RecorderApp {
     review_playback_error: Option<String>,
     /// The review center's state: the frame texture, the scrub bar's drag state.
     review_center: review_ui::CenterState,
+    /// The Studio mode's list, open take and preview.
+    studio: studio_ui::StudioState,
 }
 
 impl RecorderApp {
@@ -326,6 +329,7 @@ impl RecorderApp {
             review_playback_for: None,
             review_playback_error: None,
             review_center: review_ui::CenterState::default(),
+            studio: studio_ui::StudioState::new(cc.wgpu_render_state.clone()),
         };
         app.sync_preview(&cc.egui_ctx);
         app.sync_api(&cc.egui_ctx);
@@ -664,6 +668,7 @@ impl RecorderApp {
         for notice in replay_ui::new_notices(state, &mut self.seen_replay_seq) {
             // A saved replay is a new take for the Review list.
             self.review_dirty |= notice.review.is_some();
+            self.studio.dirty |= notice.review.is_some();
             self.notices.push_back(notice);
         }
         let active = state.phase.has_take();
@@ -764,12 +769,16 @@ impl RecorderApp {
             if to == Mode::Review {
                 self.review_dirty = true;
             }
+            if to == Mode::Studio {
+                self.studio.dirty = true;
+            }
         }
     }
 
-    /// Ctrl+1, Ctrl+2 and Ctrl+3 switch to Setup, Record and Review (spec "Menus": View).
+    /// Ctrl+1 to Ctrl+4 switch to Setup, Record, Review and Studio (spec "Menus": View).
     fn handle_mode_keys(&mut self, ctx: &egui::Context, recording: bool) {
-        for (key, mode) in [(egui::Key::Num1, Mode::Setup), (egui::Key::Num2, Mode::Record), (egui::Key::Num3, Mode::Review)] {
+        let keys = [(egui::Key::Num1, Mode::Setup), (egui::Key::Num2, Mode::Record), (egui::Key::Num3, Mode::Review), (egui::Key::Num4, Mode::Studio)];
+        for (key, mode) in keys {
             if ctx.input(|input| input.modifiers.ctrl && input.key_pressed(key)) {
                 self.set_mode(recording, mode);
             }
@@ -1002,6 +1011,12 @@ impl RecorderApp {
                     ui.add_enabled_ui(!running, |ui| {
                         if menu_item(ui, "Review", "Ctrl+3").clicked() {
                             mode_picked.set(Some(Mode::Review));
+                            ui.close();
+                        }
+                    });
+                    ui.add_enabled_ui(!running, |ui| {
+                        if menu_item(ui, "Studio", "Ctrl+4").clicked() {
+                            mode_picked.set(Some(Mode::Studio));
                             ui.close();
                         }
                     });
@@ -1324,14 +1339,7 @@ impl RecorderApp {
         egui::CentralPanel::default().frame(window_frame(ui.ctx())).show(ui, |ui| {
             let [left, center, right] = three_columns(ui.max_rect(), self.settings.panel_widths.get(Mode::Review));
             column(ui, left, |ui| match review_ui::takes_panel(ui, &mut self.review_view, &self.review_days, &mut self.review_selected) {
-                review_ui::TakesAction::OpenFolder => {
-                    // Created on demand: Explorer opens another folder for a missing path.
-                    let folder = review_folder(&self.settings, self.review_view);
-                    if let Err(err) = std::fs::create_dir_all(&folder) {
-                        log::warn!("could not create {}: {err}", folder.display());
-                    }
-                    platform::open_folder(&folder);
-                }
+                review_ui::TakesAction::OpenFolder => open_review_folder(&self.settings, self.review_view),
                 review_ui::TakesAction::Refresh => self.review_dirty = true,
                 review_ui::TakesAction::ViewChanged => {
                     self.take_panel.close_rename();
@@ -1385,6 +1393,7 @@ impl RecorderApp {
                         }
                     }
                     review_ui::TakeAction::Bake => self.bake_selected_take(ui.ctx()),
+                    review_ui::TakeAction::OpenInStudio => self.open_in_studio(ui.ctx()),
                     review_ui::TakeAction::None => {}
                 }
             });
@@ -1397,6 +1406,78 @@ impl RecorderApp {
             if review_ui::delete_dialog(ui.ctx(), take, &mut self.take_panel.confirm_delete) {
                 self.delete_selected_take();
             }
+        }
+    }
+
+    /// Scans the Studio list's folder when it is due, then opens the selected take while Studio is
+    /// on screen and idle, and closes it otherwise.
+    fn sync_studio(&mut self, running: bool) {
+        let shown = self.modes.mode == Mode::Studio && !running;
+        if shown && std::mem::take(&mut self.studio.dirty) {
+            self.rescan_studio();
+        }
+        self.studio.sync(shown);
+    }
+
+    fn rescan_studio(&mut self) {
+        let days = review::scan(&review_folder(&self.settings, self.studio.view));
+        self.studio.set_days(days);
+    }
+
+    /// Review's Open in Studio: Studio with the same list and take.
+    fn open_in_studio(&mut self, ctx: &egui::Context) {
+        self.studio.view = self.review_view;
+        self.studio.selected.clone_from(&self.review_selected);
+        // The button is disabled while a take runs.
+        self.set_mode(false, Mode::Studio);
+        ctx.request_repaint();
+    }
+
+    /// The Studio layout (Studio spec "Layout"): the takes with an input track, the preview over the
+    /// deck and the tool strip.
+    fn studio_panels(&mut self, ui: &mut egui::Ui, state: &ControllerState) {
+        egui::CentralPanel::default().frame(window_frame(ui.ctx())).show(ui, |ui| {
+            let [left, center, right] = three_columns(ui.max_rect(), self.settings.panel_widths.get(Mode::Studio));
+            column(ui, left, |ui| match review_ui::takes_panel(ui, &mut self.studio.view, &self.studio.days, &mut self.studio.selected) {
+                review_ui::TakesAction::OpenFolder => open_review_folder(&self.settings, self.studio.view),
+                review_ui::TakesAction::Refresh => {
+                    self.studio.dirty = true;
+                    ui.ctx().request_repaint();
+                }
+                review_ui::TakesAction::ViewChanged => {
+                    // Scanned now, so the other panels never pair the new view with the old list.
+                    self.rescan_studio();
+                    ui.ctx().request_repaint();
+                }
+                review_ui::TakesAction::None => {}
+            });
+            stage_column(ui, center, |ui| {
+                let transport = self.studio.transport();
+                let (action, _) = studio_ui::stage(ui, transport, |ui| {
+                    if self.banner_strip(ui, state) {
+                        ui.add_space(space::SCALE_8);
+                    }
+                    self.studio.center(ui);
+                });
+                if let Some(action) = action {
+                    self.studio.run(action);
+                    // The deck was drawn before the click took effect.
+                    ui.ctx().request_repaint();
+                }
+            });
+            column(ui, right, |ui| studio_ui::tool_panel(ui, &mut self.studio.tool));
+            self.settings_dirty |= resize_dividers(ui, [left, center, right], self.settings.panel_widths.entry(Mode::Studio));
+        });
+    }
+
+    /// Space plays and pauses in Studio, while no dialog is over it and no widget holds the focus.
+    fn studio_keys(&mut self, ctx: &egui::Context) {
+        if self.modes.mode != Mode::Studio || self.settings_dialog.open || ctx.memory(|memory| memory.focused().is_some()) {
+            return;
+        }
+        if ctx.input(|input| input.key_pressed(egui::Key::Space)) {
+            self.studio.run(studio_ui::DeckAction::TogglePlay);
+            ctx.request_repaint();
         }
     }
 
@@ -1930,7 +2011,7 @@ pub(crate) fn stage_center_x(window: egui::Rect, mode: Mode, widths: PanelWidths
     let body = window.shrink(space::WINDOW_GAP);
     let center = match mode {
         Mode::Record => two_columns(body, widths)[0],
-        Mode::Setup | Mode::Review => three_columns(body, widths)[1],
+        Mode::Setup | Mode::Review | Mode::Studio => three_columns(body, widths)[1],
     };
     center.center().x
 }
@@ -2174,6 +2255,16 @@ fn review_folder(settings: &Settings, view: ReviewView) -> std::path::PathBuf {
     }
 }
 
+/// Opens the folder a takes list shows, creating it first: Explorer opens another folder for a
+/// missing path.
+fn open_review_folder(settings: &Settings, view: ReviewView) {
+    let folder = review_folder(settings, view);
+    if let Err(err) = std::fs::create_dir_all(&folder) {
+        log::warn!("could not create {}: {err}", folder.display());
+    }
+    platform::open_folder(&folder);
+}
+
 /// The folder a "Can't save to <path>: reason" refusal names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RefusedFolder {
@@ -2272,6 +2363,7 @@ impl eframe::App for RecorderApp {
         // while Review is open and idle, closed the moment Review is left or a
         // take starts (the decoder and the audio device are freed).
         self.sync_review_playback(running);
+        self.sync_studio(running);
         // File > Settings (Ctrl+,) opens the Settings dialog (spec "Menus"): only on the
         // press itself, never while the dialog is open or a text field holds the focus.
         if settings_key_pressed(&ctx, self.settings_dialog.open) {
@@ -2282,9 +2374,11 @@ impl eframe::App for RecorderApp {
             Mode::Setup => self.setup_panels(ui, &ctx, &state),
             Mode::Record => self.record_panels(ui, &ctx, &state),
             Mode::Review => self.review_panels(ui, &state),
+            Mode::Studio => self.studio_panels(ui, &state),
         }
         // The Review keys (spec "Review mode"): play, seek steps and mark jumps.
         self.review_keys(&ctx);
+        self.studio_keys(&ctx);
 
         self.take_in_bake();
         // The toasts (spec "Mode rules"): one glass capsule at a time; a saved

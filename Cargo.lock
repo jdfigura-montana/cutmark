@@ -1549,6 +1549,7 @@ dependencies = [
  "rubato",
  "serde",
  "serde_json",
+ "studio-render",
  "thiserror 2.0.21",
  "trash",
  "tray-icon",

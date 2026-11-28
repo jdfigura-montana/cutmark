@@ -28,6 +28,8 @@ Fonts and icons (embedded in the exe by the ui-kit crate):
 
 Rust crates (from the cutmark-recorder dependency tree; license as declared on crates.io):
 
+- ab_glyph 0.2.32 - Apache-2.0
+- ab_glyph_rasterizer 0.1.10 - Apache-2.0
 - accesskit 0.24.1 - MIT OR Apache-2.0
 - accesskit_consumer 0.35.0 - MIT OR Apache-2.0
 - accesskit_windows 0.32.1 - MIT OR Apache-2.0
@@ -150,6 +152,7 @@ Rust crates (from the cutmark-recorder dependency tree; license as declared on c
 - once_cell_polyfill 1.70.2 - MIT OR Apache-2.0
 - option-ext 0.2.0 - MPL-2.0
 - ordered-float 5.5.0 - MIT
+- owned_ttf_parser 0.25.1 - Apache-2.0
 - parking_lot 0.12.5 - MIT OR Apache-2.0
 - parking_lot_core 0.9.12 - MIT OR Apache-2.0
 - peniko 0.6.1 - Apache-2.0 OR MIT
@@ -208,6 +211,7 @@ Rust crates (from the cutmark-recorder dependency tree; license as declared on c
 - transpose 0.2.3 - MIT OR Apache-2.0
 - trash 5.4.0 - MIT
 - tray-icon 0.26.1 - MIT OR Apache-2.0
+- ttf-parser 0.25.1 - MIT OR Apache-2.0
 - tungstenite 0.30.0 - MIT OR Apache-2.0
 - type-map 0.5.1 - MIT/Apache-2.0
 - typenum 1.20.1 - MIT OR Apache-2.0

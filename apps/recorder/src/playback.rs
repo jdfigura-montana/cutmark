@@ -226,8 +226,13 @@ impl Playback {
     /// on another. A dead or missing output device only falls back to the wall clock; the
     /// reason is reported once through [`Playback::take_device_error`].
     pub fn open(path: &Path) -> Result<Self, PlaybackError> {
+        Self::open_scaled(path, PREVIEW_MAX_WIDTH)
+    }
+
+    /// As [`Playback::open`], with frames scaled to at most `max_width` pixels wide.
+    pub fn open_scaled(path: &Path, max_width: u32) -> Result<Self, PlaybackError> {
         let info = probe(path)?;
-        let video = if info.video.is_some() { Some(VideoDecoder::open(path, PREVIEW_MAX_WIDTH)?) } else { None };
+        let video = if info.video.is_some() { Some(VideoDecoder::open(path, max_width)?) } else { None };
         let shared = Arc::new(DeviceShared {
             handed: AtomicU64::new(0),
             latency_ns: AtomicU64::new(0),

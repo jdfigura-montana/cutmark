@@ -13,8 +13,9 @@
 //! [`TakeAction`] and the app does the file work.
 //!
 //! A take with an input track has a cursor icon in its row, a Show cursor switch
-//! and the track's counts in the File group, and Bake with cursor in Actions
-//! (input track spec, "Review"). The running bake lives in [`TakePanelState`].
+//! and the track's counts in the File group (input track spec, "Review"), and Open
+//! in Studio in Actions (Studio spec "Mode"). Open in Studio replaced Bake with
+//! cursor; the bake code stays until Studio's export lands in T6.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -96,7 +97,11 @@ pub enum TakeAction {
     /// The Show cursor switch was set to this.
     ShowCursor(bool),
     /// Bake the selected take with its cursor.
+    // No button asks for this any more. T6's export supersedes the bake: delete it there.
+    #[allow(dead_code)]
     Bake,
+    /// Open the selected take in Studio.
+    OpenInStudio,
 }
 
 /// What the panel knows about the selected take's input track, read once per file.
@@ -536,7 +541,7 @@ pub fn stage(ui: &mut Ui, transport: Option<ReviewTransport>, add_content: impl 
 }
 
 /// The take's total length as the bar draws it.
-fn length_readout(ui: &Ui, duration: u64) -> egui::text::LayoutJob {
+pub(crate) fn length_readout(ui: &Ui, duration: u64) -> egui::text::LayoutJob {
     let tint = Theme::get(ui.ctx()).neutrals.text_tertiary;
     ui_kit::fonts::tracked(review::format_duration(duration), ui_kit::fonts::mono(typography::VALUE_SIZE), tint, ui_kit::fonts::MONO_LETTER_SPACING_EM)
 }
@@ -638,7 +643,7 @@ fn scrub_bar(ui: &mut Ui, scrub_rect: Rect, playback: &mut Playback, marks: &[ma
 
 /// A centered caption pair inside the 16:9 box: the take's name, and the
 /// reason the playback is not showing under it.
-fn box_caption(ui: &mut Ui, box_rect: Rect, name: &str, why: Option<&str>) {
+pub(crate) fn box_caption(ui: &mut Ui, box_rect: Rect, name: &str, why: Option<&str>) {
     let painter = ui.painter();
     let name_galley =
         painter.layout(name.to_owned(), ui_kit::fonts::medium(typography::BODY_SIZE), color::TEXT_TERTIARY, box_rect.width() - 2.0 * space::SCALE_16);
@@ -652,7 +657,7 @@ fn box_caption(ui: &mut Ui, box_rect: Rect, name: &str, why: Option<&str>) {
 }
 
 /// A centered tertiary caption where the picture would be.
-fn placeholder_caption(ui: &Ui, at: egui::Pos2, text: &str) {
+pub(crate) fn placeholder_caption(ui: &Ui, at: egui::Pos2, text: &str) {
     let galley = ui.painter().layout_no_wrap(text.to_owned(), ui_kit::fonts::medium(typography::CAPTION_SIZE), color::TEXT_TERTIARY);
     ui.painter().galley(at - galley.size() / 2.0, galley, color::TEXT_TERTIARY);
 }
@@ -664,7 +669,7 @@ fn fit_16_9(available: Rect) -> Rect {
 
 /// The largest box of `width` : `height` aspect that fits in `available`,
 /// centered in it.
-fn fit_aspect(available: Rect, width: u32, height: u32) -> Rect {
+pub(crate) fn fit_aspect(available: Rect, width: u32, height: u32) -> Rect {
     if width == 0 || height == 0 {
         return Rect::NOTHING;
     }
@@ -684,7 +689,7 @@ fn scrub_x(track: Rect, t_ms: u64, duration: u64) -> f32 {
 }
 
 /// The bar timecode of `ms`: `HH:MM:SS` and the `.mmm` fraction.
-fn position_timecode(ms: u64) -> (String, String) {
+pub(crate) fn position_timecode(ms: u64) -> (String, String) {
     let seconds = ms / 1000;
     (format!("{:02}:{:02}:{:02}", seconds / 3600, seconds / 60 % 60, seconds % 60), format!(".{:03}", ms % 1000))
 }
@@ -783,26 +788,10 @@ fn track_rows(ui: &mut Ui, track: &TrackInfo, show_cursor: &mut bool, action: &m
     }
 }
 
-/// Why Bake with cursor cannot start for the selected take, if it cannot.
-fn bake_blocked(state: &TakePanelState, recording: bool) -> Option<&'static str> {
-    let track = state.track.as_ref()?;
-    if recording {
-        Some("Stop the recording to bake")
-    } else if state.bake.is_some() {
-        Some("Another bake is running")
-    } else if track.summary.is_none() {
-        Some("The input track could not be read")
-    } else if !track.screen {
-        Some("This take shows only the camera")
-    } else {
-        None
-    }
-}
-
 /// The Actions group at the bottom of the take panel (spec "Review mode"):
 /// Show in folder, Rename and Delete take as text buttons; Rename and Delete
 /// are disabled while a take runs, and for the take being baked. Under them
-/// Bake with cursor, for a take with an input track, and the running bake's
+/// Open in Studio, for a take with an input track, and the running bake's
 /// progress with Cancel.
 fn actions_group(ui: &mut Ui, take: &Take, state: &mut TakePanelState, recording: bool, action: &mut TakeAction) {
     let baking_this = state.bake.as_ref().is_some_and(|job| job.take() == take.name);
@@ -826,10 +815,9 @@ fn actions_group(ui: &mut Ui, take: &Take, state: &mut TakePanelState, recording
             });
         });
         if take.events.is_some() && !baking_this {
-            let blocked = bake_blocked(state, recording);
-            let button = ui.add_enabled(blocked.is_none(), Button::new("Bake with cursor"));
-            if button.on_disabled_hover_text(blocked.unwrap_or_default()).clicked() {
-                *action = TakeAction::Bake;
+            let button = ui.add_enabled(!recording, Button::new("Open in Studio"));
+            if button.on_disabled_hover_text("Studio opens after the recording stops").clicked() {
+                *action = TakeAction::OpenInStudio;
             }
         }
         if let Some(job) = &state.bake {
@@ -1104,10 +1092,10 @@ mod tests {
         Ok(())
     }
 
-    /// The take panel of a take with an input track has the switch, the counts and Bake with cursor, which recording
+    /// The take panel of a take with an input track has the switch, the counts and Open in Studio, which recording
     /// disables; a track without its tail says it is incomplete, and a take without a track has none of it.
     #[test]
-    fn the_take_panel_shows_the_input_track_and_offers_the_bake() -> Result<(), Box<dyn std::error::Error>> {
+    fn the_take_panel_shows_the_input_track_and_offers_studio() -> Result<(), Box<dyn std::error::Error>> {
         let folder = std::env::temp_dir().join(format!("cutmark-recorder-test-{}-panel-track", std::process::id()));
         let _ = std::fs::remove_dir_all(&folder);
         std::fs::create_dir_all(&folder)?;
@@ -1131,12 +1119,13 @@ mod tests {
                 assert!(texts.iter().any(|text| text == wanted), "{name}: {wanted} is shown in {texts:?}");
             }
             assert_eq!(texts.iter().any(|text| text == "Input track incomplete"), !complete, "{name}");
-            assert_eq!(harness.get_by_label("Bake with cursor").accesskit_node().is_disabled(), recording, "{name}");
+            assert_eq!(harness.get_by_label("Open in Studio").accesskit_node().is_disabled(), recording, "{name}");
+            assert!(harness.query_by_label("Bake with cursor").is_none(), "{name}");
             harness.get_by_label("Switch").click();
             harness.run();
-            harness.get_by_label("Bake with cursor").click();
+            harness.get_by_label("Open in Studio").click();
             harness.run();
-            let expected: &[TakeAction] = if recording { &[TakeAction::ShowCursor(false)] } else { &[TakeAction::ShowCursor(false), TakeAction::Bake] };
+            let expected: &[TakeAction] = if recording { &[TakeAction::ShowCursor(false)] } else { &[TakeAction::ShowCursor(false), TakeAction::OpenInStudio] };
             assert_eq!(*asked.borrow(), expected, "{name}");
         }
 
@@ -1145,7 +1134,7 @@ mod tests {
         let harness = panel_harness(300.0, move |ui| {
             take_panel(ui, &days, Some("plain"), &mut state, false, None);
         });
-        assert!(harness.query_by_label("Bake with cursor").is_none() && harness.query_by_label("Switch").is_none());
+        assert!(harness.query_by_label("Open in Studio").is_none() && harness.query_by_label("Switch").is_none());
         std::fs::remove_dir_all(&folder)?;
         Ok(())
     }

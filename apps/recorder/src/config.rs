@@ -219,11 +219,13 @@ pub enum Mode {
     Record,
     /// The takes view, empty until R8.
     Review,
+    /// Turns a take with an input track into a finished video (Studio spec).
+    Studio,
 }
 
 impl Mode {
     /// The modes in the order the switch shows them.
-    pub const ALL: [Mode; 3] = [Mode::Setup, Mode::Record, Mode::Review];
+    pub const ALL: [Mode; 4] = [Mode::Setup, Mode::Record, Mode::Review, Mode::Studio];
 
     /// The label the mode switch and the View menu show.
     pub fn label(self) -> &'static str {
@@ -231,13 +233,14 @@ impl Mode {
             Self::Setup => "Setup",
             Self::Record => "Record",
             Self::Review => "Review",
+            Self::Studio => "Studio",
         }
     }
 }
 
 /// The mode rules (spec "Mode rules"): starting a recording from anywhere switches to Record
 /// and remembers the mode that was open; stopping returns to it; while a take runs, Setup
-/// and Review are disabled in the mode switch.
+/// Review and Studio are disabled in the mode switch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModeState {
     /// The mode the window shows.
@@ -376,6 +379,8 @@ pub struct ModeWidths {
     pub record: PanelWidths,
     /// Review mode's column widths.
     pub review: PanelWidths,
+    /// Studio mode's column widths.
+    pub studio: PanelWidths,
 }
 
 impl ModeWidths {
@@ -385,6 +390,7 @@ impl ModeWidths {
             Mode::Setup => self.setup,
             Mode::Record => self.record,
             Mode::Review => self.review,
+            Mode::Studio => self.studio,
         }
     }
 
@@ -394,13 +400,14 @@ impl ModeWidths {
             Mode::Setup => &mut self.setup,
             Mode::Record => &mut self.record,
             Mode::Review => &mut self.review,
+            Mode::Studio => &mut self.studio,
         }
     }
 
     /// Clamps every mode's widths into the columns' ranges, as they are loaded. What a window
     /// has room for is up to the layout, which keeps the stage's minimum at any window width.
     fn clamp_to_ranges(&mut self) {
-        for widths in [&mut self.setup, &mut self.record, &mut self.review] {
+        for widths in [&mut self.setup, &mut self.record, &mut self.review, &mut self.studio] {
             widths.left = widths.left.clamp(LEFT_PANEL_MIN, LEFT_PANEL_MAX);
             widths.right = widths.right.clamp(RIGHT_PANEL_MIN, RIGHT_PANEL_MAX);
         }
@@ -1322,10 +1329,13 @@ mod mode_tests {
         let state = ModeState::new(Mode::Setup);
         assert!(!state.can_switch(true, Mode::Setup), "Setup is disabled while recording");
         assert!(!state.can_switch(true, Mode::Review), "Review is disabled while recording");
+        assert!(!state.can_switch(true, Mode::Studio), "Studio is disabled while recording");
         assert!(state.can_switch(true, Mode::Record), "Record stays selectable");
         assert!(state.can_switch(false, Mode::Setup));
         assert!(state.can_switch(false, Mode::Record));
         assert!(state.can_switch(false, Mode::Review));
+        assert!(state.can_switch(false, Mode::Studio));
+        assert_eq!(Mode::ALL.last(), Some(&Mode::Studio), "Studio is last in the switch");
     }
 
     #[test]
