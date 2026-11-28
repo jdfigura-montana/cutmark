@@ -4,16 +4,19 @@
 //! The preview is drawn by studio-render on the window's own GPU device into a texture egui shows,
 //! at the size the picture has on screen. A [`Playback`] supplies the source frames, without its
 //! own cursor.
+//!
+//! The panels' controls are in `studio_panel_ui`. A change there shows in the preview on the next
+//! frame and is saved to the take's Studio file half a second after the last one.
 
-use std::path::PathBuf;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use eframe::egui_wgpu::{RenderState, wgpu};
-use egui::{Color32, Pos2, Rect, RichText, Sense, Ui, pos2};
+use egui::{Color32, Pos2, Rect, Sense, Ui, pos2};
 use media_io::player::probe::probe;
 use media_io::player::video::RgbaFrame;
-use studio_render::{RenderError, RenderSettings, StudioFrameInput, StudioRenderer};
-use ui_kit::tokens::{color, radius, space, typography};
+use studio_render::{Background, RenderError, RenderSettings, StudioFrameInput, StudioRenderer};
+use ui_kit::tokens::{radius, space};
 use ui_kit::{PlayKind, PrimaryButton, STAGE_BAR_BUTTON_DIAMETER, StageResponse, Theme};
 
 use crate::bar_ui::{self, BarButton, Companion};
@@ -21,7 +24,10 @@ use crate::layout_ui;
 use crate::playback::Playback;
 use crate::review::{self, Day, ReviewView, Take, bake};
 use crate::review_ui;
+use crate::studio::background;
+use crate::studio::settings::{BackgroundKind, FrameSettings};
 use crate::studio::take::{StudioTake, VideoFacts, render_settings};
+use crate::studio_panel_ui::{self, PanelFacts};
 
 /// Frames are decoded at most this wide for the preview: enough to stay sharp when zoomed in.
 const SOURCE_MAX_WIDTH: u32 = 1920;
@@ -55,12 +61,12 @@ const TOOLS: [(StudioTool, &str); 5] =
     [(StudioTool::Cursor, "Cursor"), (StudioTool::Zoom, "Zoom"), (StudioTool::Keys, "Keys"), (StudioTool::Frame, "Frame"), (StudioTool::Export, "Export")];
 
 impl StudioTool {
-    /// What the panel says until its controls are built.
-    fn placeholder(self) -> &'static str {
+    /// What the panel says while its controls are yet to be built.
+    fn placeholder(self) -> Option<&'static str> {
         match self {
-            Self::Cursor | Self::Keys | Self::Frame => "Coming in T4",
-            Self::Zoom => "Coming in T5",
-            Self::Export => "Coming in T6",
+            Self::Cursor | Self::Keys | Self::Frame => None,
+            Self::Zoom => Some("Coming in T5"),
+            Self::Export => Some("Coming in T6"),
         }
     }
 }
@@ -127,11 +133,98 @@ impl Drop for Preview {
     }
 }
 
+/// What the Frame panel says about a background picture that cannot be shown.
+const NO_IMAGE_NOTE: &str = "No image is picked. The gradient is shown instead.";
+const MISSING_IMAGE_NOTE: &str = "The image is missing. The gradient is shown instead.";
+const BAD_IMAGE_NOTE: &str = "The image could not be opened. The gradient is shown instead.";
+
+/// A background picture on its way to the renderer.
+enum Picture {
+    Decoded(RgbaFrame),
+    /// On the window's GPU device, so it outlives the renderer.
+    Uploaded(wgpu::Texture),
+    /// The note that says why there is none.
+    Failed(&'static str),
+}
+
+/// The background picture of the open take, read once for each path.
+#[derive(Default)]
+struct BackdropImage {
+    loaded: Option<(PathBuf, Picture)>,
+}
+
+impl BackdropImage {
+    /// Reads the picture the frame asks for, unless it is held already. A frame that shows no
+    /// picture keeps the last one.
+    fn sync(&mut self, frame: &FrameSettings) {
+        let Some(path) = wanted_image(frame) else { return };
+        if self.loaded.as_ref().is_some_and(|(held, _)| held == path) {
+            return;
+        }
+        let picture = match background::load(path) {
+            Ok(picture) => Picture::Decoded(picture),
+            Err(err) => {
+                log::warn!("the Studio background {} could not be loaded: {err}", path.display());
+                Picture::Failed(if matches!(err, background::BackgroundError::Missing) { MISSING_IMAGE_NOTE } else { BAD_IMAGE_NOTE })
+            }
+        };
+        self.loaded = Some((path.to_owned(), picture));
+    }
+
+    /// Forgets the picture, so that the next [`Self::sync`] reads the file again.
+    fn forget(&mut self) {
+        self.loaded = None;
+    }
+
+    /// What the Frame panel says under the Image row.
+    fn note(&self, frame: &FrameSettings) -> Option<&'static str> {
+        if frame.background != BackgroundKind::Image {
+            return None;
+        }
+        let Some(path) = &frame.image else { return Some(NO_IMAGE_NOTE) };
+        match &self.loaded {
+            Some((held, Picture::Failed(note))) if held == path => Some(note),
+            _ => None,
+        }
+    }
+
+    /// The picture as the renderer takes it, put on the GPU the first time. None leaves the
+    /// gradient in its place.
+    fn texture(&mut self, frame: &FrameSettings, renderer: &StudioRenderer) -> Option<Background> {
+        let path = wanted_image(frame)?;
+        let (held, picture) = self.loaded.as_mut()?;
+        if held != path {
+            return None;
+        }
+        if let Picture::Decoded(decoded) = picture {
+            *picture = match renderer.upload_rgba(decoded) {
+                Ok(texture) => Picture::Uploaded(texture),
+                Err(err) => {
+                    log::warn!("the Studio background could not be put on the GPU: {err}");
+                    Picture::Failed(BAD_IMAGE_NOTE)
+                }
+            };
+        }
+        match picture {
+            Picture::Uploaded(texture) => Some(Background::Image(texture.clone())),
+            _ => None,
+        }
+    }
+}
+
+/// The picture file the frame shows now.
+fn wanted_image(frame: &FrameSettings) -> Option<&Path> {
+    frame.image.as_deref().filter(|_| frame.enabled && frame.background == BackgroundKind::Image)
+}
+
 /// The take that is open: its playback, its Studio data and its preview.
 struct Session {
     playback: Playback,
     take: StudioTake,
     preview: Option<Preview>,
+    backdrop: BackdropImage,
+    /// Whether the settings changed since the preview last took them.
+    look_changed: bool,
     /// Why the preview cannot be drawn.
     render_error: Option<String>,
     settle_frames: u8,
@@ -154,7 +247,7 @@ impl Session {
             screen: bake::shows_screen(&take.video),
         };
         let take = StudioTake::open(&take.video, events, video).map_err(|err| err.to_string())?;
-        Ok(Self { playback, take, preview: None, render_error: None, settle_frames: SETTLE_FRAMES })
+        Ok(Self { playback, take, preview: None, backdrop: BackdropImage::default(), look_changed: true, render_error: None, settle_frames: SETTLE_FRAMES })
     }
 
     /// Draws the current frame into a preview of `size` pixels and answers its texture. While the
@@ -169,9 +262,20 @@ impl Session {
             // The old texture and renderer go first.
             self.preview = None;
             match Preview::new(gpu, size, &self.take) {
-                Ok(preview) => self.preview = Some(preview),
+                Ok(preview) => {
+                    self.preview = Some(preview);
+                    self.look_changed = true;
+                }
                 Err(err) => self.fail(&err),
             }
+        }
+        if let Some(preview) = &mut self.preview
+            && std::mem::take(&mut self.look_changed)
+        {
+            self.backdrop.sync(&self.take.settings.frame);
+            let image = self.backdrop.texture(&self.take.settings.frame, &preview.renderer);
+            preview.settings = render_settings(&self.take.settings, image);
+            preview.drawn = None;
         }
         if let (Some(preview), Some(frame)) = (&mut self.preview, frame)
             && let Err(err) = preview.draw(&self.take, &frame)
@@ -232,6 +336,7 @@ impl StudioState {
             return;
         }
         if let Some(mut session) = self.session.take() {
+            session.take.flush();
             session.playback.close();
         }
         self.open_error = None;
@@ -243,6 +348,60 @@ impl StudioState {
                 self.open_error = Some(reason);
             }
             None => {}
+        }
+    }
+
+    /// Writes the open take's settings when their wait is over, and asks for the frame that will.
+    pub fn save_when_due(&mut self, ctx: &egui::Context) {
+        if let Some(wait) = self.session.as_mut().and_then(|session| session.take.save_when_due(Instant::now())) {
+            ctx.request_repaint_after(wait);
+        }
+    }
+
+    /// Writes the open take's unsaved settings now, as the app closes.
+    pub fn flush(&mut self) {
+        if let Some(session) = &mut self.session {
+            session.take.flush();
+        }
+    }
+
+    /// The right column: the tool strip and the chosen panel for the open take.
+    pub fn tool_panel(&mut self, ui: &mut Ui) {
+        layout_ui::choice(ui, "studio-tools", &mut self.tool, &TOOLS);
+        ui.add_space(space::SCALE_8);
+        if let Some(text) = self.tool.placeholder() {
+            studio_panel_ui::caption(ui, text);
+            return;
+        }
+        let Some(session) = &mut self.session else {
+            studio_panel_ui::caption(ui, "Open a take to change its settings");
+            return;
+        };
+        session.backdrop.sync(&session.take.settings.frame);
+        let facts = PanelFacts { has_chords: session.take.has_chords(), image_note: session.backdrop.note(&session.take.settings.frame) };
+        let tool = self.tool;
+        let outcome = egui::ScrollArea::vertical()
+            .id_salt("studio-panel")
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                let outcome = studio_panel_ui::show(ui, tool, &mut session.take.settings, facts);
+                if let Some(why) = session.take.save_error() {
+                    ui.add_space(space::SCALE_8);
+                    studio_panel_ui::caption(ui, &format!("Not saved: {why}"));
+                }
+                outcome
+            })
+            .inner;
+        if outcome.image_picked {
+            // The same path can hold a new picture.
+            session.backdrop.forget();
+        }
+        if outcome.changed {
+            session.take.changed(Instant::now());
+            session.look_changed = true;
+            // The preview was drawn before the change.
+            session.settle_frames = session.settle_frames.max(1);
+            ui.ctx().request_repaint();
         }
     }
 
@@ -374,15 +533,6 @@ pub fn stage(ui: &mut Ui, transport: Option<Transport>, add_content: impl FnOnce
     (play.or(right), stage)
 }
 
-/// The right column: the tool strip and the chosen panel.
-pub fn tool_panel(ui: &mut Ui, tool: &mut StudioTool) {
-    layout_ui::choice(ui, "studio-tools", tool, &TOOLS);
-    ui.add_space(space::SCALE_8);
-    ui.add(
-        egui::Label::new(RichText::new(tool.placeholder()).font(ui_kit::fonts::medium(typography::CAPTION_SIZE)).color(color::TEXT_TERTIARY)).selectable(false),
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use chrono::Local;
@@ -420,6 +570,19 @@ mod tests {
             marks: Vec::new(),
             composite: CompositeMode::Baked,
         }
+    }
+
+    #[test]
+    fn a_missing_background_image_is_noted() {
+        let mut backdrop = BackdropImage::default();
+        let mut frame = FrameSettings { enabled: true, background: BackgroundKind::Image, ..FrameSettings::default() };
+        backdrop.sync(&frame);
+        assert_eq!(backdrop.note(&frame), Some(NO_IMAGE_NOTE));
+        frame.image = Some(std::env::temp_dir().join("cutmark-studio-no-such-image.png"));
+        backdrop.sync(&frame);
+        assert_eq!(backdrop.note(&frame), Some(MISSING_IMAGE_NOTE));
+        frame.background = BackgroundKind::Gradient;
+        assert_eq!(backdrop.note(&frame), None);
     }
 
     #[test]

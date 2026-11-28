@@ -1411,12 +1411,13 @@ impl RecorderApp {
 
     /// Scans the Studio list's folder when it is due, then opens the selected take while Studio is
     /// on screen and idle, and closes it otherwise.
-    fn sync_studio(&mut self, running: bool) {
+    fn sync_studio(&mut self, ctx: &egui::Context, running: bool) {
         let shown = self.modes.mode == Mode::Studio && !running;
         if shown && std::mem::take(&mut self.studio.dirty) {
             self.rescan_studio();
         }
         self.studio.sync(shown);
+        self.studio.save_when_due(ctx);
     }
 
     fn rescan_studio(&mut self) {
@@ -1465,7 +1466,7 @@ impl RecorderApp {
                     ui.ctx().request_repaint();
                 }
             });
-            column(ui, right, |ui| studio_ui::tool_panel(ui, &mut self.studio.tool));
+            column(ui, right, |ui| self.studio.tool_panel(ui));
             self.settings_dirty |= resize_dividers(ui, [left, center, right], self.settings.panel_widths.entry(Mode::Studio));
         });
     }
@@ -2311,6 +2312,7 @@ impl eframe::App for RecorderApp {
             self.sync_remote(&ctx);
             self.controller.stop();
             self.profile_store.flush();
+            self.studio.flush();
             if self.settings_dirty {
                 self.save_settings();
             }
@@ -2363,7 +2365,7 @@ impl eframe::App for RecorderApp {
         // while Review is open and idle, closed the moment Review is left or a
         // take starts (the decoder and the audio device are freed).
         self.sync_review_playback(running);
-        self.sync_studio(running);
+        self.sync_studio(&ctx, running);
         // File > Settings (Ctrl+,) opens the Settings dialog (spec "Menus"): only on the
         // press itself, never while the dialog is open or a text field holds the focus.
         if settings_key_pressed(&ctx, self.settings_dialog.open) {

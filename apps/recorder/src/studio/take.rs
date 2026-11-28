@@ -1,7 +1,8 @@
 //! One take as Studio shows it: its input track, its settings and the zoom and cursor path, turned
 //! into what the renderer draws at any time. No UI and no GPU work happens here.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use cursor_render::CaptureMap;
 use events::{Chord, EventsReader};
@@ -10,6 +11,9 @@ use studio_render as render;
 use super::autozoom;
 use super::path::{CursorPoint, StudioPath, cursor_points};
 use super::settings::{self, BackgroundKind, ClickEffect, Highlight, KeysPosition, KeysSize, SettingsError, Shadow, StudioSettings};
+
+/// How long after the last change the settings are written.
+const SAVE_DELAY: Duration = Duration::from_millis(500);
 
 /// Why a take could not be opened in Studio.
 #[derive(Debug, thiserror::Error)]
@@ -67,6 +71,14 @@ pub struct StudioTake {
     track: EventsReader,
     video: VideoFacts,
     pub settings: StudioSettings,
+    /// The settings file.
+    file: PathBuf,
+    /// Whether the settings hold a change the file does not.
+    unsaved: bool,
+    /// When that change is to be written; None while nothing waits.
+    save_at: Option<Instant>,
+    /// Why the last write failed.
+    save_error: Option<String>,
     path: StudioPath,
     /// The times the cursor moved or reappeared, in order.
     moves: Vec<i64>,
@@ -103,7 +115,53 @@ impl StudioTake {
         let chords = track.chords().iter().map(|chord| (chord.time_us, chord_text(&chord.event))).collect();
         drop(map);
         let moves = move_times(&cursor);
-        Ok(Self { track, video, settings, path, moves, clicks, chords })
+        Ok(Self { track, video, settings, file, unsaved: false, save_at: None, save_error: None, path, moves, clicks, chords })
+    }
+
+    /// Whether the take recorded any shortcut.
+    pub fn has_chords(&self) -> bool {
+        !self.chords.is_empty()
+    }
+
+    /// Notes a change to the settings made at `now`. It is written [`SAVE_DELAY`] after the last
+    /// one.
+    pub fn changed(&mut self, now: Instant) {
+        self.unsaved = true;
+        self.save_at = Some(now + SAVE_DELAY);
+    }
+
+    /// Writes the settings when they are due, and answers how long until then while they wait.
+    pub fn save_when_due(&mut self, now: Instant) -> Option<Duration> {
+        let wait = self.save_at?.saturating_duration_since(now);
+        if !wait.is_zero() {
+            return Some(wait);
+        }
+        self.flush();
+        None
+    }
+
+    /// Writes any unsaved change now, as when the take closes. A write that fails is tried again at
+    /// the next change or flush.
+    pub fn flush(&mut self) {
+        self.save_at = None;
+        if !self.unsaved {
+            return;
+        }
+        match settings::save(&self.file, &self.settings) {
+            Ok(()) => {
+                self.unsaved = false;
+                self.save_error = None;
+            }
+            Err(err) => {
+                log::warn!("the Studio settings were not saved: {err}");
+                self.save_error = Some(err.to_string());
+            }
+        }
+    }
+
+    /// Why the settings on screen are not in the file, after a write failed.
+    pub fn save_error(&self) -> Option<&str> {
+        self.save_error.as_deref()
     }
 
     /// The input track; the renderer takes its cursor shapes from it.

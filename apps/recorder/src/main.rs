@@ -35,6 +35,7 @@ mod settings_ui;
 mod status_ui;
 // Nothing calls Studio's logic yet.
 mod studio;
+mod studio_panel_ui;
 mod studio_ui;
 mod sync_flash;
 mod takes;

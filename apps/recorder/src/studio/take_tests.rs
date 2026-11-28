@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use events::{
     CaptureSource, Chord, CursorSample, DisplayInfo, EventsWriter, GeometryChange, GeometryEvent, Header, InputEvent, Modifiers, MouseAction, MouseButton,
@@ -147,6 +148,43 @@ fn the_first_open_creates_the_studio_file_with_segments() -> TestResult {
     emptied.zoom.segments.clear();
     settings::save(&studio, &emptied)?;
     assert!(StudioTake::open(&take, &events, video())?.settings.zoom.segments.is_empty());
+    fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+#[test]
+fn a_settings_change_saves_half_a_second_after_the_last_one() -> TestResult {
+    let dir = fresh_dir("save")?;
+    let (take, events, studio) = (dir.join("take01.mkv"), dir.join("take01.events"), dir.join("take01.studio.json"));
+    fs::write(&events, track_bytes(CaptureSource::Monitor(MONITOR), [])?)?;
+    let mut opened = StudioTake::open(&take, &events, video())?;
+    assert!(!opened.has_chords());
+    let saved_size = || settings::load(&studio).map(|loaded| loaded.settings.cursor.size_percent);
+    let start = Instant::now();
+    let after = |ms| start + Duration::from_millis(ms);
+    assert_eq!(opened.save_when_due(start), None);
+
+    opened.settings.cursor.size_percent = 200;
+    opened.changed(start);
+    opened.settings.cursor.size_percent = 250;
+    opened.changed(after(300));
+    // The second change starts the wait again.
+    assert_eq!(opened.save_when_due(after(600)), Some(Duration::from_millis(200)));
+    assert_eq!(saved_size()?, 150);
+    assert_eq!(opened.save_when_due(after(800)), None);
+    assert_eq!(saved_size()?, 250);
+
+    // Closing the take does not wait.
+    opened.settings.cursor.size_percent = 300;
+    opened.changed(after(900));
+    opened.flush();
+    assert_eq!(saved_size()?, 300);
+    assert_eq!((opened.save_when_due(after(2_000)), opened.save_error()), (None, None));
+
+    // With nothing changed, a flush leaves the file alone.
+    fs::remove_file(&studio)?;
+    opened.flush();
+    assert!(!studio.exists());
     fs::remove_dir_all(&dir)?;
     Ok(())
 }

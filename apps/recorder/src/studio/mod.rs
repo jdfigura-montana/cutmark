@@ -4,7 +4,8 @@
 //! - [`settings`]: the `{stem}.studio.json` file beside the take.
 //! - [`autozoom`]: the zoom segments made from the take's clicks, shortcuts and cursor dwells.
 //! - [`path`]: the zoom view and the smoothed cursor at any time, computed ahead per take.
-//! - [`take`]: one open take, and what the renderer draws it from.
+//! - [`take`]: one open take, what the renderer draws it from, and the saving of its settings.
+//! - [`background`]: the frame's background picture.
 //!
 //! Positions here are source pixels: pixels of the take's video frame. The input track holds desktop
 //! pixels, so the functions that read one take a `to_source` function from the caller. It gets a
@@ -12,6 +13,7 @@
 //! captured frame.
 
 pub mod autozoom;
+pub mod background;
 pub mod path;
 pub mod settings;
 pub mod take;
