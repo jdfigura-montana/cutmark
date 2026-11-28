@@ -1847,6 +1847,13 @@ impl FilmcraftApp {
                 filmcraft_engine::Event::OpenSource(_) => {
                     let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Source });
                 }
+                filmcraft_engine::Event::CueSource(_) => {
+                    // show the Source monitor while the requesting panel keeps the focus
+                    let focused = self.ui.focused;
+                    self.show_panel(PanelKind::Source);
+                    let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: focused });
+                    self.ui.focused = focused;
+                }
                 filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
                 filmcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, ctx.input(|i| i.time))),
                 filmcraft_engine::Event::ProjectChanged { .. } => {}
@@ -2277,7 +2284,7 @@ pub fn playback_mix(session: &Session, seq_id: filmcraft_project::ItemId, sr: u3
         use filmcraft_audio_dsp::channels::Layout;
         let layout = if ch >= 6 && seq.settings.audio_master == filmcraft_project::AudioChannels::Surround51 { Layout::Surround51 } else { Layout::Stereo };
         let mix = if seq_sr == sr {
-            previews.mix_layout(&project, seq_id, cursor, n, &provider, layout, mixdown)
+            previews.mix_layout(&project, seq_id, cursor, n, &provider, filmcraft_engine::previews::MixOutput { layout, mixdown })
         } else {
             // Mix at the sequence rate as one continuous stream, interpolated to the device rate
             // (started afresh when the rate or the channel layout changes while playing).
@@ -2289,7 +2296,9 @@ pub fn playback_mix(session: &Session, seq_id: filmcraft_project::ItemId, sr: u3
                 buf.fill(0.0);
                 return;
             };
-            let channels = r.process(cursor, n, |s0, m| previews.mix_layout(&project, seq_id, s0, m, &provider, layout, mixdown).channels);
+            let channels = r.process(cursor, n, |s0, m| {
+                previews.mix_layout(&project, seq_id, s0, m, &provider, filmcraft_engine::previews::MixOutput { layout, mixdown }).channels
+            });
             filmcraft_frame::AudioBuffer { sample_rate: sr, channels }
         };
         if layout == Layout::Surround51 {

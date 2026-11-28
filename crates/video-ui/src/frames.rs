@@ -26,8 +26,9 @@ pub enum Target {
     Sequence(ItemId),
     /// A single project item at a media time (Source monitor, thumbnails).
     Item(ItemId),
-    /// A GPU frame plan of a sequence (decoded layers + transforms), composited on the GPU.
-    SequencePlan(ItemId),
+    /// A GPU frame plan of a sequence (decoded layers + transforms), composited on the GPU, for
+    /// a device that runs these caps. A plan made for other caps is another frame.
+    SequencePlan(ItemId, filmcraft_render::plan::DeviceCaps),
     /// The Multi-Camera view's angle grid of a multi-camera source at its time: one page (grid
     /// side, 0 = automatic; page) of the shown angles, each at the job's scale.
     MulticamGrid(ItemId, u8, u16),
@@ -550,7 +551,7 @@ impl FrameServer {
     /// Whether the exact frame (image or plan) is ready.
     pub fn is_ready(&self, k: &FrameKey) -> bool {
         match k.target {
-            Target::SequencePlan(_) => self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).map.contains_key(k),
+            Target::SequencePlan(..) => self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).map.contains_key(k),
             _ => self.shared.done.lock().unwrap_or_else(|e| e.into_inner()).map.contains_key(k),
         }
     }
@@ -881,8 +882,8 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
         filmcraft_media::cancel::with_catch_up(job.catch_up, || {
             filmcraft_media::cancel::with_draft(job.key.draft, || {
                 filmcraft_media::cancel::with_background(is_background(job), || {
-                    if let Target::SequencePlan(seq) = job.key.target {
-                        let (plan, pv) = plan_job(job, seq, pool, services, previews);
+                    if let Target::SequencePlan(seq, caps) = job.key.target {
+                        let (plan, pv) = plan_job(job, seq, caps, pool, services, previews);
                         loading = filmcraft_media::pending::take();
                         if !job.cancel.load(Ordering::Relaxed) && !loading {
                             // Convert texels for upload here, not on the UI thread when the frame is shown.
@@ -960,7 +961,14 @@ fn provider(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>) -> J
     JobProvider { inner: pool.provider(job.project.clone(), services.clone()) }
 }
 
-fn plan_job(job: &Job, seq: ItemId, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, previews: &PreviewStore) -> (filmcraft_render::plan::FramePlan, bool) {
+fn plan_job(
+    job: &Job,
+    seq: ItemId,
+    caps: filmcraft_render::plan::DeviceCaps,
+    pool: &Arc<MediaPool>,
+    services: &Arc<dyn Services>,
+    previews: &PreviewStore,
+) -> (filmcraft_render::plan::FramePlan, bool) {
     let opts = filmcraft_render::RenderOptions { scale: job.scale, captions: true, ..Default::default() };
     if let Some(frame) = preview_frame(job, seq, pool, previews)
         && let Some(q) = job.project.sequence(seq)
@@ -983,12 +991,12 @@ fn plan_job(job: &Job, seq: ItemId, pool: &Arc<MediaPool>, services: &Arc<dyn Se
         return (filmcraft_render::plan::FramePlan::Layers { width: w, height: h, layers }, true);
     }
     let provider = provider(job, pool, services);
-    (filmcraft_render::plan::plan_frame(&job.project, seq, job.time, opts, &provider), false)
+    (filmcraft_render::plan::plan_frame(&job.project, seq, job.time, opts, caps, &provider), false)
 }
 
 /// Render a job to RGBA8; the flag says whether it came from a render preview.
 fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, previews: &PreviewStore) -> (Rgba, bool) {
-    if let Target::Sequence(seq) | Target::SequencePlan(seq) = job.key.target
+    if let Target::Sequence(seq) | Target::SequencePlan(seq, _) = job.key.target
         && let Some(f) = preview_frame(job, seq, pool, previews)
         && let Some(q) = job.project.sequence(seq)
     {
@@ -1009,7 +1017,7 @@ fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, pr
     let provider = provider(job, pool, services);
     let opts = filmcraft_render::RenderOptions { scale: job.scale, captions: true, ..Default::default() };
     let img = match job.key.target {
-        Target::Sequence(seq) | Target::SequencePlan(seq) | Target::SequenceLive(seq) => {
+        Target::Sequence(seq) | Target::SequencePlan(seq, _) | Target::SequenceLive(seq) => {
             Some(filmcraft_render::render_sequence(&job.project, seq, job.time, opts, &provider))
         }
         Target::Item(item) => filmcraft_render::render_item(&job.project, item, job.time, job.scale, &provider),
@@ -1043,7 +1051,7 @@ mod tests {
         assert!(!background_work(1, item));
         // the scopes ask for the program frame at 40 while playing: never background
         assert!(!background_work(40, Target::Sequence(ItemId(1))));
-        assert!(!background_work(50, Target::SequencePlan(ItemId(1))));
+        assert!(!background_work(50, Target::SequencePlan(ItemId(1), filmcraft_render::plan::DeviceCaps::NONE)));
     }
 
     #[test]

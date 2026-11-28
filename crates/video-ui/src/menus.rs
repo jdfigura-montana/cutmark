@@ -136,6 +136,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("tool.zoom", "Zoom Tool", [], Some("Z")),
     uic!("tool.type", "Type Tool", [], Some("T")),
     uic!("tool.verticalType", "Vertical Type Tool", [], None),
+    // Placeholder: upstream Script panel not ported. Not in CutMark video spec.
+    uic!("script.thumbnailBack", "Script Thumbnail Back", [], None),
+    uic!("script.thumbnailForward", "Script Thumbnail Forward", [], None),
     uic!("mode.import", "Import", [], None),
     uic!("mode.edit", "Edit", [], None),
     uic!("mode.export", "Export", ["File", "Export"], Some("Cmd+M")),
@@ -178,6 +181,10 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
 
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    // Placeholder: upstream Script panel not ported. Not in CutMark video spec.
+    if matches!(id, "script.thumbnailBack" | "script.thumbnailForward") {
+        return Ok(Value::Null);
+    }
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
     }

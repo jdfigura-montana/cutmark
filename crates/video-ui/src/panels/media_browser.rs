@@ -613,10 +613,11 @@ fn preview_item(
             p.items.insert(
                 ItemId(id),
                 ProjectItem {
+                    custom_label_color: None,
                     id: ItemId(id),
                     name: e.name.clone(),
                     label: Label::Iris,
-                    kind: ItemKind::Media(MediaClip {
+                    kind: ItemKind::Media(Box::new(MediaClip {
                         media: MediaRef::File { path: e.path.clone() },
                         info: info.clone(),
                         interpret: Default::default(),
@@ -626,7 +627,7 @@ fn preview_item(
                         offline: false,
                         proxy: None,
                         identity: None,
-                    }),
+                    })),
                     metadata: Default::default(),
                     created: 0,
                     split: Default::default(),

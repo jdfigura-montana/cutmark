@@ -13,24 +13,24 @@ license = "LicenseRef-Cutmark-Proprietary"
 [workspace.dependencies]
 # FilmCraft engine, pinned. Read-only upstream: never edited here. Names kept so engine imports
 # do not change.
-filmcraft-time = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "30536bc5d0ddf690f2181b7b97182db8658a6038" }
-filmcraft-geom = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "30536bc5d0ddf690f2181b7b97182db8658a6038" }
-filmcraft-color = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "30536bc5d0ddf690f2181b7b97182db8658a6038" }
-filmcraft-frame = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "30536bc5d0ddf690f2181b7b97182db8658a6038" }
-filmcraft-media = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "30536bc5d0ddf690f2181b7b97182db8658a6038" }
-filmcraft-project = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "30536bc5d0ddf690f2181b7b97182db8658a6038" }
-filmcraft-edit = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "30536bc5d0ddf690f2181b7b97182db8658a6038" }
-filmcraft-text = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "30536bc5d0ddf690f2181b7b97182db8658a6038" }
-filmcraft-tts = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "30536bc5d0ddf690f2181b7b97182db8658a6038" }
-filmcraft-render = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "30536bc5d0ddf690f2181b7b97182db8658a6038" }
-filmcraft-audio-dsp = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "30536bc5d0ddf690f2181b7b97182db8658a6038" }
-filmcraft-codecs = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "30536bc5d0ddf690f2181b7b97182db8658a6038" }
-filmcraft-interchange = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "30536bc5d0ddf690f2181b7b97182db8658a6038" }
-filmcraft-platform = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "30536bc5d0ddf690f2181b7b97182db8658a6038" }
-filmcraft-engine = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "30536bc5d0ddf690f2181b7b97182db8658a6038" }
-filmcraft-export = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "30536bc5d0ddf690f2181b7b97182db8658a6038" }
-filmcraft-gpu = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "30536bc5d0ddf690f2181b7b97182db8658a6038" }
-filmcraft-scopes = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "30536bc5d0ddf690f2181b7b97182db8658a6038" }
+filmcraft-time = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "a9429d82d2e5b87539eb38926d5fc0f2ddcd7724" }
+filmcraft-geom = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "a9429d82d2e5b87539eb38926d5fc0f2ddcd7724" }
+filmcraft-color = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "a9429d82d2e5b87539eb38926d5fc0f2ddcd7724" }
+filmcraft-frame = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "a9429d82d2e5b87539eb38926d5fc0f2ddcd7724" }
+filmcraft-media = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "a9429d82d2e5b87539eb38926d5fc0f2ddcd7724" }
+filmcraft-project = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "a9429d82d2e5b87539eb38926d5fc0f2ddcd7724" }
+filmcraft-edit = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "a9429d82d2e5b87539eb38926d5fc0f2ddcd7724" }
+filmcraft-text = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "a9429d82d2e5b87539eb38926d5fc0f2ddcd7724" }
+filmcraft-tts = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "a9429d82d2e5b87539eb38926d5fc0f2ddcd7724" }
+filmcraft-render = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "a9429d82d2e5b87539eb38926d5fc0f2ddcd7724" }
+filmcraft-audio-dsp = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "a9429d82d2e5b87539eb38926d5fc0f2ddcd7724" }
+filmcraft-codecs = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "a9429d82d2e5b87539eb38926d5fc0f2ddcd7724" }
+filmcraft-interchange = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "a9429d82d2e5b87539eb38926d5fc0f2ddcd7724" }
+filmcraft-platform = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "a9429d82d2e5b87539eb38926d5fc0f2ddcd7724" }
+filmcraft-engine = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "a9429d82d2e5b87539eb38926d5fc0f2ddcd7724" }
+filmcraft-export = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "a9429d82d2e5b87539eb38926d5fc0f2ddcd7724" }
+filmcraft-gpu = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "a9429d82d2e5b87539eb38926d5fc0f2ddcd7724" }
+filmcraft-scopes = { git = "https://github.com/jdfigura-montana/filmcraft", rev = "a9429d82d2e5b87539eb38926d5fc0f2ddcd7724" }
 
 # Shared frontend components; keep this dependency above the engine boundary.
 craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "5c874d51eeb3de70e735c8ce87a59a7dedd47675", features = ["serde"] }
@@ -83,50 +83,20 @@ opt-level = 1
 debug = "line-tables-only"
 
 # Codec hot loops: debug-build tests (RFC/oracle vectors) are minutes slower below opt-level 3.
-[profile.dev.package.filmcraft-h264]
-opt-level = 3
-
-[profile.dev.package.filmcraft-h264enc]
-opt-level = 3
-
-[profile.dev.package.filmcraft-hevc]
-opt-level = 3
-
-[profile.dev.package.filmcraft-prores]
-opt-level = 3
-
-[profile.dev.package.filmcraft-dnx]
-opt-level = 3
-
-[profile.dev.package.filmcraft-apv]
+[profile.dev.package.craft-video]
 opt-level = 3
 
 [profile.dev.package.filmcraft-dng]
 opt-level = 3
 
-[profile.dev.package.filmcraft-av1]
-opt-level = 3
-
-[profile.dev.package.filmcraft-aac]
-opt-level = 3
-
-[profile.dev.package.filmcraft-flac]
+[profile.dev.package.craft-audio]
 opt-level = 3
 
 # Audio effects: realtime-factor tests and long convolution / spectral runs.
 [profile.dev.package.filmcraft-audio-dsp]
 opt-level = 3
 
-[profile.dev.package.filmcraft-mxf]
-opt-level = 3
-
-[profile.dev.package.filmcraft-opus]
-opt-level = 3
-
-[profile.dev.package.filmcraft-vp8]
-opt-level = 3
-
-[profile.dev.package.filmcraft-vp9]
+[profile.dev.package.craft-media]
 opt-level = 3
 
 [profile.release]

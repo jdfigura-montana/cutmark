@@ -90,6 +90,40 @@ impl Driver {
         let v = self.ok("ui.elements", json!({"prefix": prefix}));
         v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
     }
+
+    /// Run frames until `done` holds, for at most two minutes of wall-clock time.
+    fn wait_until(&mut self, what: &str, mut done: impl FnMut(&mut Self) -> bool) {
+        let t0 = std::time::Instant::now();
+        while !done(self) {
+            assert!(t0.elapsed().as_secs() < 120, "timed out waiting for {what}");
+            self.frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    fn rect(&mut self, id: &str) -> [f64; 4] {
+        let v = self.ok("ui.elements", json!({"prefix": id}));
+        let e = v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).unwrap_or_else(|| panic!("no element {id}"));
+        let r: Vec<f64> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+        [r[0], r[1], r[2], r[3]]
+    }
+
+    /// Scrolls Effect Controls with the wheel over its parameter list until element `id` sits in
+    /// the panel's upper part, where the user sees it. Stops when the element no longer moves
+    /// (the list is at its end).
+    fn reveal(&mut self, id: &str) {
+        let p = self.rect("panel.EffectControls");
+        let mut last = None;
+        for _ in 0..30 {
+            let e = self.rect(id);
+            if e[1] + e[3] <= p[1] + p[3] * 0.6 || last == Some(e[1]) {
+                return;
+            }
+            last = Some(e[1]);
+            self.ok("ui.scroll", json!({"x": p[0] + 40.0, "y": p[1] + p[3] / 2.0, "dy": -40.0}));
+            self.frames(3);
+        }
+    }
 }
 
 /// Clips on a video track in `sequence.inspect` JSON.
@@ -593,16 +627,15 @@ fn eyedropper_picks_a_key_color_on_a_selected_clip() {
     d.exec("effects.apply", json!({"effect": "Color Key"}));
     d.ok("ui.panel.show", json!({"panel": "EffectControls"}));
     d.frames(4);
-    let color = |d: &mut Driver| d.sequence()["video"][0]["items"][0]["effects"][0]["params"]["color"]["value"].clone();
+    let color = |d: &mut Driver| {
+        let seq = d.sequence();
+        seq["video"][0]["items"][0]["effects"].as_array().unwrap().iter().find(|e| e["effect"] == "color_key").unwrap()["params"]["color"]["value"].clone()
+    };
     let before = color(&mut d);
+    d.reveal("effectControls.color_key.color.eyedropper");
     d.ok("ui.click", json!({"id": "effectControls.color_key.color.eyedropper"}));
     d.frames(2);
     d.ok("ui.click", json!({"id": "program.picture"}));
-    for _ in 0..200 {
-        if color(&mut d) != before {
-            break;
-        }
-        d.frames(1);
-    }
+    d.wait_until("the eyedropper to fill Key Color", |d| color(d) != before);
     assert_ne!(color(&mut d), before, "the eyedropper filled Key Color from the Program picture");
 }
