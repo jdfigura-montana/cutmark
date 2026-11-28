@@ -19,6 +19,9 @@ expect_used = "deny"
 panic = "deny"
 
 [dependencies]
+ab_glyph = "0.2.32"
+cursor-render = { version = "0.1.0", path = "../cursor-render" }
+events = { version = "0.1.0", path = "../events" }
 media-io = { version = "0.1.0", path = "../media-io" }
 thiserror.workspace = true
 wgpu = "30.0.1"

@@ -84,18 +84,20 @@ fn cursor<'a>(events: &'a EventsReader, time_us: i64, map: &CaptureMap, style: &
     // The hotspot stays on the recorded position at every scale.
     let (left, top) = (x - f64::from(shape.hotspot_x) * kx, y - f64::from(shape.hotspot_y) * ky);
     let dest = Rect { left, top, right: left + f64::from(shape.width) * kx, bottom: top + f64::from(shape.height) * ky };
-    Some(CursorLayer { shape, picture: animation_frame(shape, time_us)?, dest, clip: projection.area() })
+    let picture = shape.frames.get(animation_frame(shape, time_us)?)?;
+    Some(CursorLayer { shape, picture, dest, clip: projection.area() })
 }
 
-/// The frame an animated cursor shows. The animation runs on the video's clock, so the same time
-/// always gives the same frame.
-fn animation_frame(shape: &CursorShape, time_us: i64) -> Option<&ShapeFrame> {
+/// The index of the frame an animated cursor shows; None for a shape without frames. The animation
+/// runs on the video's clock, so the same time always gives the same frame. The Studio renderer
+/// uses this too.
+pub fn animation_frame(shape: &CursorShape, time_us: i64) -> Option<usize> {
     let total: i64 = shape.frames.iter().map(|frame| i64::from(frame.duration_us)).sum();
     if total == 0 {
-        return shape.frames.first();
+        return (!shape.frames.is_empty()).then_some(0);
     }
     let mut left = time_us.rem_euclid(total);
-    shape.frames.iter().find(|frame| {
+    shape.frames.iter().position(|frame| {
         let shows = left < i64::from(frame.duration_us);
         left -= i64::from(frame.duration_us);
         shows

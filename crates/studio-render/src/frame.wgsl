@@ -1,5 +1,5 @@
-// Pass 2: the background, the shadow, and the picture with rounded corners on top. Colours are
-// mixed as their sRGB values, as image editors do.
+// The frame pass: the background, the shadow, the picture with rounded corners on top, and last
+// the shortcut overlay. Colours are mixed as their sRGB values, as image editors do.
 
 struct Frame {
     // The picture's place in output pixels: top left (xy) and size (zw).
@@ -14,12 +14,16 @@ struct Frame {
     // The shadow's blur (x), downward offset (y) and opacity (z), and 1 when the target encodes
     // sRGB by itself (w).
     shadow: vec4<f32>,
+    // The key caps' place in output pixels: top left (xy) and size (zw), all 0 without any.
+    keys: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var picture: texture_2d<f32>;
 @group(0) @binding(2) var backdrop: texture_2d<f32>;
 @group(0) @binding(3) var linear_sampler: sampler;
+// Premultiplied, at its own size.
+@group(0) @binding(4) var key_caps: texture_2d<f32>;
 
 @vertex
 fn vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -65,6 +69,12 @@ fn fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let texel = clamp(vec2<i32>(floor(point - frame.content.xy)), vec2<i32>(0), last);
     let coverage = clamp(0.5 - distance_to_picture(point, vec2<f32>(0.0)), 0.0, 1.0);
     color = mix(color, textureLoad(picture, texel, 0).rgb, coverage);
+
+    let in_keys = point - frame.keys.xy;
+    if all(in_keys >= vec2<f32>(0.0)) && all(in_keys < frame.keys.zw) {
+        let cap = textureLoad(key_caps, vec2<i32>(floor(in_keys)), 0);
+        color = color * (1.0 - cap.a) + cap.rgb;
+    }
 
     if frame.shadow.w > 0.5 {
         color = to_linear(color);

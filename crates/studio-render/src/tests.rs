@@ -69,8 +69,19 @@ fn render_in(format: wgpu::TextureFormat, output: (u32, u32), source: &RgbaFrame
     let mut renderer = StudioRenderer::new(device.clone(), queue, output, format).unwrap();
     let source = renderer.upload_rgba(source).unwrap();
     let target = target(&device, output, format);
-    renderer.render(&source, view, style, &target.create_view(&Default::default())).unwrap();
+    let settings = framed_by(style);
+    renderer.render(&source, &input(view, &settings), &target.create_view(&Default::default())).unwrap();
     Some(renderer.read_back(&target).unwrap())
+}
+
+/// The default settings with this frame.
+fn framed_by(frame: &FrameStyle) -> RenderSettings {
+    RenderSettings { frame: frame.clone(), ..RenderSettings::default() }
+}
+
+/// A frame at time 0 with nothing but the picture.
+fn input(view_rect: ViewRect, settings: &RenderSettings) -> StudioFrameInput<'_> {
+    StudioFrameInput { t_us: 0, view_rect, cursor: None, clicks: &[], chord: None, settings }
 }
 
 fn render(output: (u32, u32), source: &RgbaFrame, view: ViewRect, style: &FrameStyle) -> Option<RgbaFrame> {
@@ -181,8 +192,8 @@ fn image_background_covers_the_output_without_distortion() {
     let image = renderer.upload_rgba(&image).unwrap();
     let source = renderer.upload_rgba(&frame_of(160, 90, |_, _| BLUE)).unwrap();
     let target = target(&device, (320, 180), wgpu::TextureFormat::Rgba8Unorm);
-    let style = framed(Background::Image(image), 0.0, Shadow::Off);
-    renderer.render(&source, ViewRect::full(160, 90), &style, &target.create_view(&Default::default())).unwrap();
+    let settings = framed_by(&framed(Background::Image(image), 0.0, Shadow::Off));
+    renderer.render(&source, &input(ViewRect::full(160, 90), &settings), &target.create_view(&Default::default())).unwrap();
     let out = renderer.read_back(&target).unwrap();
     assert_color(&out, 0, 0, [0, 255, 0]);
     assert_color(&out, 319, 179, [0, 255, 0]);
@@ -218,8 +229,292 @@ fn bad_inputs_are_errors() {
     let target = target(&device, (16, 16), format);
     let view = target.create_view(&Default::default());
     let empty = ViewRect { x: 0.0, y: 0.0, width: 0.0, height: 4.0 };
-    assert!(matches!(renderer.render(&source, empty, &FrameStyle::default(), &view), Err(RenderError::View(_))));
+    let settings = RenderSettings::default();
+    assert!(matches!(renderer.render(&source, &input(empty, &settings), &view), Err(RenderError::View(_))));
     // The target has no TEXTURE_BINDING usage, and the source has no COPY_SRC usage.
-    assert!(matches!(renderer.render(&target, ViewRect::full(16, 16), &FrameStyle::default(), &view), Err(RenderError::Texture { .. })));
+    assert!(matches!(renderer.render(&target, &input(ViewRect::full(16, 16), &settings), &view), Err(RenderError::Texture { .. })));
     assert!(matches!(renderer.read_back(&source), Err(RenderError::NotReadable)));
+    let mut short_shape = two_tone_shape(1);
+    short_shape.frames[0].bgra.pop();
+    assert!(matches!(renderer.set_cursor_shapes([&short_shape]), Err(RenderError::Shape { id: 1 })));
+}
+
+const GREY: [u8; 3] = [90, 90, 90];
+const GREEN: [u8; 3] = [0, 255, 0];
+const PURE_RED: [u8; 3] = [255, 0, 0];
+
+/// A solid, opaque BGRA picture of 4 x 4 pixels: red on the left, green on the right.
+fn two_tone_shape(id: u32) -> CursorShape {
+    let bgra = (0..16).flat_map(|at| if at % 4 < 2 { [0, 0, 255, 255] } else { [0, 255, 0, 255] }).collect();
+    CursorShape { id, width: 4, height: 4, hotspot_x: 1, hotspot_y: 1, frames: vec![ShapeFrame { duration_us: 0, bgra }] }
+}
+
+/// A renderer over a grey source, with the output at the source's size.
+struct Stage {
+    renderer: StudioRenderer,
+    source: wgpu::Texture,
+    target: wgpu::Texture,
+    size: (u32, u32),
+}
+
+impl Stage {
+    fn new(size: (u32, u32)) -> Option<Self> {
+        Self::in_format(size, wgpu::TextureFormat::Rgba8Unorm)
+    }
+
+    fn in_format(size: (u32, u32), format: wgpu::TextureFormat) -> Option<Self> {
+        let (device, queue) = gpu()?;
+        let mut renderer = StudioRenderer::new(device.clone(), queue, size, format).unwrap();
+        renderer.set_cursor_shapes([&two_tone_shape(7)]).unwrap();
+        let source = renderer.upload_rgba(&frame_of(size.0, size.1, |_, _| GREY)).unwrap();
+        let target = target(&device, size, format);
+        Some(Self { renderer, source, target, size })
+    }
+
+    fn full(&self) -> ViewRect {
+        ViewRect::full(self.size.0, self.size.1)
+    }
+
+    fn render(&mut self, input: &StudioFrameInput<'_>) -> RgbaFrame {
+        self.renderer.render(&self.source, input, &self.target.create_view(&Default::default())).unwrap();
+        self.renderer.read_back(&self.target).unwrap()
+    }
+}
+
+/// The test cursor with its hotspot at (100, 50) of the source.
+fn cursor(idle_us: i64) -> CursorDraw {
+    CursorDraw { x: 100.0, y: 50.0, shape: 7, scale: 1.0, idle_us }
+}
+
+fn real_size() -> RenderSettings {
+    RenderSettings { cursor: CursorLook { size: 1.0, ..CursorLook::default() }, ..RenderSettings::default() }
+}
+
+#[test]
+fn the_cursor_lands_on_its_pixel_at_1x_and_2x() {
+    let Some(mut stage) = Stage::new((320, 180)) else { return };
+    let settings = real_size();
+    // At 1x the hotspot (1, 1) puts the picture's top left corner on (99, 49), copied exactly.
+    let out = stage.render(&StudioFrameInput { cursor: Some(cursor(0)), ..input(stage.full(), &settings) });
+    for (x, y, color) in [(99, 49, PURE_RED), (100, 52, PURE_RED), (101, 49, GREEN), (102, 52, GREEN)] {
+        assert_color(&out, x, y, color);
+    }
+    for (x, y) in [(98, 49), (103, 49), (99, 48), (102, 53)] {
+        assert_color(&out, x, y, GREY);
+    }
+    // At 2x on the view from (50, 25), source (100, 50) is output (100, 50), and the picture is
+    // 8 px wide from (98, 48). Its outermost pixels are blended by the enlarging.
+    let half = ViewRect { x: 50.0, y: 25.0, width: 160.0, height: 90.0 };
+    let out = stage.render(&StudioFrameInput { cursor: Some(cursor(0)), ..input(half, &settings) });
+    for (x, y, color) in [(99, 49, PURE_RED), (100, 54, PURE_RED), (103, 49, GREEN), (104, 54, GREEN)] {
+        assert_color(&out, x, y, color);
+    }
+    for (x, y) in [(96, 49), (107, 49), (99, 46), (104, 57)] {
+        assert_color(&out, x, y, GREY);
+    }
+}
+
+#[test]
+fn the_cursor_grows_with_size_and_with_its_own_scale() {
+    let Some(mut stage) = Stage::new((320, 180)) else { return };
+    let mut settings = real_size();
+    settings.cursor.size = 2.0;
+    // Size 2 on a video at half the desktop's size is real size again.
+    let draw = CursorDraw { scale: 0.5, ..cursor(0) };
+    let out = stage.render(&StudioFrameInput { cursor: Some(draw), ..input(stage.full(), &settings) });
+    assert_color(&out, 99, 49, PURE_RED);
+    assert_color(&out, 102, 52, GREEN);
+    assert_color(&out, 103, 52, GREY);
+}
+
+#[test]
+fn the_cursor_is_hidden_after_the_idle_time_with_a_fade() {
+    let Some(mut stage) = Stage::new((320, 180)) else { return };
+    let mut settings = real_size();
+    settings.cursor.hide_idle_s = Some(3.0);
+    let red_at_hotspot = |stage: &mut Stage, settings: &RenderSettings, idle_us| {
+        let full = stage.full();
+        let out = stage.render(&StudioFrameInput { cursor: Some(cursor(idle_us)), ..input(full, settings) });
+        pixel(&out, 99, 49)[0]
+    };
+    assert_eq!(red_at_hotspot(&mut stage, &settings, 3_000_000), 255);
+    let fading = red_at_hotspot(&mut stage, &settings, 3_000_000 + IDLE_FADE_US / 2);
+    assert!((150..200).contains(&fading), "{fading}");
+    assert_eq!(red_at_hotspot(&mut stage, &settings, 3_000_000 + IDLE_FADE_US), GREY[0]);
+    assert_eq!(red_at_hotspot(&mut stage, &settings, 60_000_000), GREY[0]);
+    settings.cursor.hide_idle_s = None;
+    assert_eq!(red_at_hotspot(&mut stage, &settings, 60_000_000), 255);
+    settings.cursor.visible = false;
+    assert_eq!(red_at_hotspot(&mut stage, &settings, 0), GREY[0]);
+}
+
+#[test]
+fn an_animated_cursor_follows_the_frame_time_and_a_full_atlas_starts_over() {
+    let Some(mut stage) = Stage::new((320, 180)) else { return };
+    // 70 frames of the largest size are more than the atlas holds. Frame n is blue n.
+    let frames = (0..70u8).map(|n| ShapeFrame { duration_us: 1_000, bgra: [n, 0, 0, 255].repeat(256 * 256) }).collect();
+    let shape = CursorShape { id: 1, width: 256, height: 256, hotspot_x: 0, hotspot_y: 0, frames };
+    stage.renderer.set_cursor_shapes([&shape]).unwrap();
+    let settings = real_size();
+    let draw = CursorDraw { x: 0.0, y: 0.0, shape: 1, ..cursor(0) };
+    for n in (0..70u8).chain([0, 69]) {
+        let full = stage.full();
+        let out = stage.render(&StudioFrameInput { t_us: i64::from(n) * 1_000, cursor: Some(draw), ..input(full, &settings) });
+        assert_color(&out, 100, 100, [0, 0, n]);
+    }
+}
+
+#[test]
+fn the_click_ring_shows_at_the_click_and_is_gone_after_its_time() {
+    // At 540 lines the lengths are half of those at 1080p: a new ring has a radius of 6.
+    let Some(mut stage) = Stage::new((960, 540)) else { return };
+    let mut settings = RenderSettings::default();
+    settings.cursor.click_color = GREEN;
+    let clicks = [ClickDraw { x: 480.0, y: 270.0, time_us: 1_000_000 }];
+    let mut at = |t_us, view| stage.render(&StudioFrameInput { t_us, clicks: &clicks, ..input(view, &settings) });
+    let full = ViewRect::full(960, 540);
+    let plain = at(0, full);
+    let first = at(1_000_000, full);
+    assert!(pixel(&first, 486, 270)[1] > 200, "{:?}", pixel(&first, 486, 270));
+    assert_color(&first, 480, 270, GREY);
+    // Zoomed 2x on the click, the ring is twice as wide.
+    let zoomed = at(1_000_000, ViewRect { x: 240.0, y: 135.0, width: 480.0, height: 270.0 });
+    assert!(pixel(&zoomed, 492, 270)[1] > 200, "{:?}", pixel(&zoomed, 492, 270));
+    assert_color(&zoomed, 486, 270, GREY);
+    // It grows and fades.
+    let late = at(1_000_000 + 3 * CLICK_EFFECT_US / 4, full);
+    assert_color(&late, 486, 270, GREY);
+    let strongest = (488..500).map(|x| pixel(&late, x, 270)[1]).max().unwrap();
+    assert!(strongest > GREY[1] + 10 && strongest < 150, "{strongest}");
+    for t_us in [999_999, 1_000_000 + CLICK_EFFECT_US, 2_000_000] {
+        assert_eq!(at(t_us, full).data, plain.data, "at {t_us}");
+    }
+}
+
+#[test]
+fn the_ripple_fills_its_middle_and_none_draws_nothing() {
+    let Some(mut stage) = Stage::new((960, 540)) else { return };
+    let mut settings = RenderSettings::default();
+    settings.cursor.click_color = GREEN;
+    let clicks = [ClickDraw { x: 480.0, y: 270.0, time_us: 0 }];
+    let full = stage.full();
+    settings.cursor.click_effect = ClickEffect::Ripple;
+    let out = stage.render(&StudioFrameInput { t_us: 100_000, clicks: &clicks, ..input(full, &settings) });
+    let middle = pixel(&out, 480, 270)[1];
+    assert!(middle > GREY[1] + 20 && middle < 200, "{middle}");
+    settings.cursor.click_effect = ClickEffect::None;
+    let out = stage.render(&StudioFrameInput { t_us: 100_000, clicks: &clicks, ..input(full, &settings) });
+    assert!(out.data.as_chunks::<4>().0.iter().all(|pixel| pixel[..3] == GREY));
+}
+
+#[test]
+fn the_spotlight_darkens_all_but_a_circle_around_the_cursor() {
+    let Some(mut stage) = Stage::new((960, 540)) else { return };
+    let mut settings = real_size();
+    settings.cursor.visible = false;
+    // 160 px at 1080p is 80 px here.
+    settings.cursor.highlight = Highlight::Spotlight { radius: 160.0 };
+    let draw = CursorDraw { x: 480.0, y: 270.0, ..cursor(0) };
+    let full = stage.full();
+    let out = stage.render(&StudioFrameInput { cursor: Some(draw), ..input(full, &settings) });
+    assert_color(&out, 480, 270, GREY);
+    assert_color(&out, 480 + 60, 270, GREY);
+    // 45% of 90 is left outside.
+    assert_color(&out, 480 + 100, 270, [40; 3]);
+    assert_color(&out, 0, 0, [40; 3]);
+    let edge = pixel(&out, 480 + 80, 270)[0];
+    assert!((55..75).contains(&edge), "{edge}");
+}
+
+/// The box around every pixel that differs between two frames: left, top, then right and bottom
+/// just past it.
+fn changed_box(before: &RgbaFrame, after: &RgbaFrame) -> Option<(u32, u32, u32, u32)> {
+    let changed = (0..before.height).flat_map(|y| (0..before.width).map(move |x| (x, y))).filter(|&(x, y)| pixel(before, x, y) != pixel(after, x, y));
+    changed.fold(None, |found, (x, y)| {
+        let (left, top, right, bottom) = found.unwrap_or((x, y, x + 1, y + 1));
+        Some((left.min(x), top.min(y), right.max(x + 1), bottom.max(y + 1)))
+    })
+}
+
+#[test]
+fn the_key_caps_sit_at_the_chosen_position_and_do_not_zoom() {
+    // At 540 lines a medium cap is 26 px tall and the margin is 28 px.
+    let Some(mut stage) = Stage::new((960, 540)) else { return };
+    let mut settings = RenderSettings::default();
+    let full = stage.full();
+    let plain = stage.render(&input(full, &settings));
+    for position in [KeysPosition::BottomCenter, KeysPosition::BottomLeft, KeysPosition::BottomRight, KeysPosition::TopCenter] {
+        settings.keys.position = position;
+        let out = stage.render(&StudioFrameInput { chord: Some("Ctrl+Shift+S"), ..input(full, &settings) });
+        let (left, top, right, bottom) = changed_box(&plain, &out).expect("an overlay");
+        assert_eq!(bottom - top, 26, "{position:?}");
+        assert!((100..300).contains(&(right - left)), "{position:?}: {}", right - left);
+        match position {
+            KeysPosition::TopCenter => assert_eq!(top, 28),
+            _ => assert_eq!(bottom, 540 - 28, "{position:?}"),
+        }
+        match position {
+            KeysPosition::BottomLeft => assert_eq!(left, 28),
+            KeysPosition::BottomRight => assert_eq!(right, 960 - 28),
+            _ => assert!((left + right).abs_diff(960) <= 1, "{position:?}: {left} to {right}"),
+        }
+        // Dark glass with light text on it.
+        let inside = || (top..bottom).flat_map(|y| (left..right).map(move |x| (x, y))).map(|(x, y)| pixel(&out, x, y)[0]);
+        assert!(inside().any(|red| red > 200), "{position:?}: no text");
+        assert!(inside().filter(|&red| red < 50).count() > (right - left) as usize * 8, "{position:?}: no cap");
+        // The same frame again comes from the kept picture, and zooming moves nothing.
+        let half = ViewRect { x: 240.0, y: 135.0, width: 480.0, height: 270.0 };
+        let zoomed = stage.render(&StudioFrameInput { chord: Some("Ctrl+Shift+S"), ..input(half, &settings) });
+        assert_eq!(zoomed.data, out.data, "{position:?}");
+    }
+    settings.keys.show = false;
+    let out = stage.render(&StudioFrameInput { chord: Some("Ctrl+Shift+S"), ..input(full, &settings) });
+    assert_eq!(out.data, plain.data);
+}
+
+#[test]
+fn key_caps_go_over_the_frame_and_follow_size_and_chord() {
+    let Some(mut stage) = Stage::new((960, 540)) else { return };
+    let mut settings = framed_by(&framed(Background::Solid(RED), 12.0, Shadow::Off));
+    let full = stage.full();
+    let plain = stage.render(&input(full, &settings));
+    let mut shown = |settings: &RenderSettings, chord: &str| {
+        let out = stage.render(&StudioFrameInput { chord: Some(chord), ..input(full, settings) });
+        changed_box(&plain, &out).expect("an overlay")
+    };
+    // 10% padding is 54 px, so the caps reach from the picture into the background.
+    let medium = shown(&settings, "Ctrl+S");
+    assert_eq!(medium.3, 540 - 28);
+    let mut heights = Vec::new();
+    for size in [KeysSize::Small, KeysSize::Medium, KeysSize::Large] {
+        settings.keys.size = size;
+        let (_, top, _, bottom) = shown(&settings, "Ctrl+S");
+        heights.push(bottom - top);
+    }
+    assert_eq!(heights, vec![20, 26, 34]);
+    // A new chord replaces the kept picture, and one too wide for the output is made smaller.
+    let (left, top, right, bottom) = shown(&settings, &["Shift"; 20].join("+"));
+    assert!(left >= 27 && right <= 933 && bottom - top < 34, "{left}, {top}, {right}, {bottom}");
+}
+
+#[test]
+fn key_caps_have_the_same_colors_on_an_srgb_target() {
+    let render = |format| {
+        let mut stage = Stage::in_format((960, 540), format)?;
+        let settings = RenderSettings::default();
+        let full = stage.full();
+        Some(stage.render(&StudioFrameInput { chord: Some("Alt+Tab"), ..input(full, &settings) }))
+    };
+    let (Some(plain), Some(srgb)) = (render(wgpu::TextureFormat::Rgba8Unorm), render(wgpu::TextureFormat::Rgba8UnormSrgb)) else { return };
+    let worst = plain.data.iter().zip(&srgb.data).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+    assert!(worst <= 2, "{worst}");
+}
+
+#[test]
+fn chords_split_into_keys() {
+    assert_eq!(keys::split_chord("Ctrl+Shift+S"), vec!["Ctrl", "Shift", "S"]);
+    assert_eq!(keys::split_chord("F5"), vec!["F5"]);
+    assert_eq!(keys::split_chord("Ctrl++"), vec!["Ctrl", "+"]);
+    assert_eq!(keys::split_chord("+"), vec!["+"]);
+    assert!(keys::split_chord("").is_empty());
 }

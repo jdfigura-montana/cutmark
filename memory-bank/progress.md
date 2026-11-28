@@ -1,6 +1,7 @@
 # Progress
 
 ## Done
+- Recorder Phase 14 T2b (2026-11-27): studio-render draws the cursor, click effects and spotlight on the zoomed picture and the shortcut key caps over the framed output. cargo test studio-render 20 and cursor-render 20 passed, fmt + clippy clean. check.ps1, cargo deny and release build not run. Details in activeContext.md.
 - Recorder Phase 14 T2a (2026-11-27): crates/studio-render, the zoom and frame passes on wgpu with upload and read back; not in CI. 9 tests and clippy passed; check.ps1 and release build not run. Details in activeContext.md.
 - Recorder Phase 14 T1 (2026-11-27): Studio settings file, auto-zoom and the zoom and cursor path table, plus the two Studio files in the take file group. cargo test -p cutmark-recorder 464 passed, fmt + clippy clean. check.ps1, release build and a real take not run. Details in activeContext.md.
 - Recorder Phase 11 I6b (2026-11-27): a recording or the replay buffer turning on cancels a running bake, and the Review preview uses the stream's colour standard (BT.709 for untagged HD). cargo test cutmark-recorder 441 passed, media-io 66 passed; fmt + clippy clean. check.ps1, release build and a real-app run not done. Details in activeContext.md.

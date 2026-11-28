@@ -16,7 +16,7 @@ mod tests;
 
 pub use cpu::{draw, render};
 pub use map::{CaptureMap, Projection, Rect};
-pub use plan::{CLICK_RING_US, CursorLayer, Plan, RingLayer, SMOOTHING_WINDOW_US, plan};
+pub use plan::{CLICK_RING_US, CursorLayer, Plan, RingLayer, SMOOTHING_WINDOW_US, animation_frame, plan};
 
 /// The smallest cursor scale: real size.
 pub const MIN_SCALE: f32 = 1.0;
