@@ -355,8 +355,13 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
             d.candidates.clear();
             d.candidate = None;
         }
-        Some("offlineAll") | Some("cancel") => {
+        Some("offlineAll") => {
             let _ = app.session.execute("media.offlineAll", json!({}));
+            keep = false;
+        }
+        // Cancel leaves the files missing for this session only; the next open asks again.
+        Some("cancel") => {
+            app.session.offline.prompt = false;
             keep = false;
         }
         _ => {}
